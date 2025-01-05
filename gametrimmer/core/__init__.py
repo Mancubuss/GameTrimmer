@@ -1,1 +1,1 @@
-"""Core package for GameTrimmer."""
+content=IiIiQ29yZSBwYWNrYWdlIGZvciBHYW1lVHJpbW1lci4iIiI=
