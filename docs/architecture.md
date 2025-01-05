@@ -1,1 +1,24 @@
-{"encoding":"base64","content":"IyBBcmNoaXRlY3R1cmUKCiMjIFByb2plY3QgU3RydWN0dXJlCmBgYApnYW1ldHJpbW1lci8KfOKAlOKAlCBjb3JlLwp8ICAgfOKAlOKAlCBzY2FubmVyLnB5ICAgICAjIFNjYW5uZXIgYWJzdHJhY3QgaW50ZXJmYWNlCnwgICB84pSU4pSAIHN0ZWFtLnB5ICAgICAgICMgU3RlYW0gaW1wbGVtZW50YXRpb24KfCAgIHzilJTilIAgc3RvcmFnZS5weSAgICAgIyBTdG9yYWdlIG1hbmFnZW1lbnQKfOKAlOKAlCBydWxlcy8KfCAgIHzilJTilIAgcGF0dGVybnMuanNvbiAgIyBSdWxlcyBpbiBKU09OCnwgICB84pSU4pSAIHZhbGlkYXRvci5weSAgICMgUmVnZXggdmFsaWRhdGlvbgp8ICAg4pSU4pSAIG1hbmFnZXIucHkgICAgICMgUnVsZXMgbWFuYWdlbWVudAp84pSU4pSAIHVpLwp8ICAg4pSU4pSAIG1haW4ucHkgICAgICAgICMgR1VJICh0a2ludGVyKQrilJTilIAgdGVzdHMvICAgICAgICAgICAgIyBWYWxpZGF0aW9uIHRlc3RzCmBgYAoKIyMgRGF0YWJhc2UKU1FMaXRlIHdpbGwgYmUgdXNlZCBmb3I6Ci0gU2NhbiByZXN1bHRzIGNhY2hpbmcKLSBPcGVyYXRpb24gbG9nZ2luZwotIFBhdGhzIGFuZCBzZXR0aW5ncyBzdG9yYWdlCi0gVGVtcG9yYXJ5IHN0b3JhZ2UgdHJhY2tpbmc="}
+# Architecture
+
+## Project Structure
+```
+gametrimmer/
+├── core/
+│   ├── scanner.py     # Scanner abstract interface
+│   ├── steam.py       # Steam implementation
+│   └── storage.py     # Storage management
+├── rules/
+│   ├── patterns.json  # Rules in JSON
+│   ├── validator.py   # Regex validation
+│   └── manager.py     # Rules management
+├── ui/
+│   └── main.py        # GUI (tkinter)
+└── tests/             # Validation tests
+```
+
+## Database
+SQLite will be used for:
+- Scan results caching
+- Operation logging
+- Paths and settings storage
+- Temporary storage tracking
