@@ -1,1 +1,1 @@
-content=IiIiQ29yZSBwYWNrYWdlIGZvciBHYW1lVHJpbW1lci4iIiI=
+{"encoding": "base64", "content": "IiIiQ29yZSBwYWNrYWdlIGZvciBHYW1lVHJpbW1lci4iIiI="}
