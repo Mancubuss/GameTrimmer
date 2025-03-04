@@ -1,70 +1,60 @@
 @echo off
-chcp 65001 > nul
-setlocal
-
 echo Checking requirements...
 
-REM Перевіряємо наявність CMake
-where cmake >nul 2>nul
-if %ERRORLEVEL% NEQ 0 (
-    echo Помилка: CMake не знайдено. Будь ласка, встановіть CMake.
-    pause
-    exit /b 1
-)
-
-REM Перевіряємо наявність Visual Studio
-if not exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
-    echo Помилка: Visual Studio не знайдено. Будь ласка, встановіть Visual Studio 2022.
-    pause
-    exit /b 1
-)
-
 REM Перевіряємо наявність Qt
-if not exist "C:\Qt\6.8.2\msvc2022_64\bin\windeployqt.exe" (
-    echo Помилка: Qt не знайдено. Будь ласка, встановіть Qt 6.8.2 для MSVC 2022 64-bit.
-    pause
+set QT_DIR=C:\Qt\6.8.2\msvc2022_64
+if not exist "%QT_DIR%\bin\windeployqt.exe" (
+    echo Error: Qt not found at %QT_DIR%
+    exit /b 1
+)
+
+REM Перевіряємо наявність CMake
+where /q cmake
+if errorlevel 1 (
+    echo Error: CMake not found in PATH
     exit /b 1
 )
 
 echo Building GameTrimmer...
 
-REM Створюємо теку для збірки якщо її немає
-if not exist "build" mkdir build
+REM Створюємо та переходимо в теку build
+if exist build rmdir /s /q build
+mkdir build
 cd build
 
-REM Генеруємо файли проекту за допомогою CMake
+REM Генеруємо проект
 echo Generating project files...
 cmake -G "Visual Studio 17 2022" -A x64 ..
-if %ERRORLEVEL% NEQ 0 (
-    echo Помилка: Не вдалося згенерувати проектні файли.
-    cd ..
-    pause
-    exit /b 1
-)
 
-REM Компілюємо проект
+REM Збираємо проект
 echo Building project...
 cmake --build . --config Release
-if %ERRORLEVEL% NEQ 0 (
-    echo Помилка: Не вдалося скомпілювати проект.
-    cd ..
-    pause
-    exit /b 1
-)
 
-REM Копіюємо Qt DLL файли
+REM Копіюємо залежності Qt
 echo Copying Qt dependencies...
-"C:\Qt\6.8.2\msvc2022_64\bin\windeployqt.exe" --release "src\Release\GameTrimmer.exe"
-if %ERRORLEVEL% NEQ 0 (
-    echo Помилка: Не вдалося скопіювати Qt DLL файли.
-    cd ..
-    pause
-    exit /b 1
-)
+"%QT_DIR%\bin\windeployqt.exe" --no-translations --no-system-d3d-compiler --no-opengl-sw --no-svg --no-network src\Release\GameTrimmer.exe
+
+REM Видаляємо російську локалізацію, якщо вона є
+if exist src\Release\translations\qt_ru.qm del src\Release\translations\qt_ru.qm
+
+REM Видаляємо невикористані плагіни та директорії
+if exist src\Release\generic rmdir /s /q src\Release\generic
+if exist src\Release\iconengines rmdir /s /q src\Release\iconengines
+if exist src\Release\imageformats rmdir /s /q src\Release\imageformats
+if exist src\Release\networkinformation rmdir /s /q src\Release\networkinformation
+if exist src\Release\styles rmdir /s /q src\Release\styles
+if exist src\Release\tls rmdir /s /q src\Release\tls
+
+REM Видаляємо невикористані DLL
+if exist src\Release\opengl32sw.dll del src\Release\opengl32sw.dll
+if exist src\Release\D3Dcompiler_47.dll del src\Release\D3Dcompiler_47.dll
+if exist src\Release\Qt6Network.dll del src\Release\Qt6Network.dll
+if exist src\Release\Qt6Svg.dll del src\Release\Qt6Svg.dll
 
 echo Build complete!
-cd ..
 
 REM Запускаємо програму
 echo Starting GameTrimmer...
-start build\src\Release\GameTrimmer.exe 
+start src\Release\GameTrimmer.exe
+
+cd .. 
