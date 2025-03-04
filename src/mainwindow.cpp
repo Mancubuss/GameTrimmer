@@ -7,6 +7,7 @@
 #include <QStandardItemModel>
 #include <QDirIterator>
 #include <QFileInfo>
+#include <QIcon>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -15,6 +16,9 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
     setupModels();
+    
+    // Встановлюємо іконку вікна
+    setWindowIcon(QIcon(":/gametrimmer.ico"));
 }
 
 MainWindow::~MainWindow()
