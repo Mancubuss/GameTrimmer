@@ -1239,6 +1239,7 @@ dependencies = [
  "eframe",
  "gametrimmer-core",
  "rusqlite",
+ "tempfile",
 ]
 
 [[package]]
