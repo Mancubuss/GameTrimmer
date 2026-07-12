@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 eframe = "0.35.0"
 gametrimmer-core = { path = "../core" }
+rfd = "0.17.2"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 
 [dev-dependencies]

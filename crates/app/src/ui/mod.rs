@@ -3,5 +3,6 @@
 
 pub mod bottom_bar;
 pub mod dialogs;
+pub mod libraries_panel;
 pub mod top_bar;
 pub mod tree_view;

@@ -3,6 +3,7 @@
 //! UI thread through an `mpsc` channel of [`WorkerMsg`].
 
 pub mod delete;
+pub mod manual;
 pub mod scan;
 
 use std::io;
@@ -33,6 +34,12 @@ pub enum WorkerMsg {
     Cancelled,
     /// Something went wrong; `msg` is a user-facing Ukrainian description.
     Error { msg: String },
+    /// A non-fatal issue during scanning (one provider failed, or a manual
+    /// library's folder is currently missing) - the scan continues.
+    Warning { msg: String },
+    /// The background "Додати теку..." folder picker finished. `None` means
+    /// the user cancelled the dialog.
+    FolderPicked { path: Option<PathBuf> },
 }
 
 /// Outcome of removing one file, matched back to its `files.id` row.

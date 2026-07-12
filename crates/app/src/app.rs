@@ -13,6 +13,7 @@ use eframe::egui;
 use crate::model::{self, CategoryGroup, FindingItem};
 use crate::ui;
 use crate::worker::delete::DeleteItem;
+use crate::worker::manual::{self, LibraryRow};
 use crate::worker::{self, WorkerMsg};
 
 pub const APP_TITLE: &str = "GameTrimmer";
@@ -37,9 +38,20 @@ pub struct GameTrimmerApp {
     pub busy: bool,
     pub progress: Option<(usize, usize, String)>,
     pub status_message: String,
+    /// Non-fatal issues surfaced during the last scan (a provider failed, a
+    /// manual library's folder is currently missing, ...). Cleared at the
+    /// start of every scan.
+    pub warnings: Vec<String>,
 
     pub findings: Vec<FindingItem>,
     pub tree: Vec<CategoryGroup>,
+
+    /// Every registered library (all vendors), for the library management
+    /// list. Refreshed after every add/remove and on startup.
+    pub libraries: Vec<LibraryRow>,
+    /// True while the background "Додати теку..." folder-picker thread is
+    /// running, so the button can't be clicked twice concurrently.
+    pub folder_picker_active: bool,
 
     /// Indices into `findings` awaiting the user's confirmation in the
     /// delete modal.
@@ -57,6 +69,7 @@ impl GameTrimmerApp {
             },
             None => "помилка визначення шляху до бази даних".to_string(),
         };
+        let libraries = Self::load_libraries(db_path.as_deref());
 
         let (tx, rx) = mpsc::channel();
 
@@ -70,10 +83,96 @@ impl GameTrimmerApp {
             busy: false,
             progress: None,
             status_message: String::new(),
+            warnings: Vec::new(),
             findings: Vec::new(),
             tree: Vec::new(),
+            libraries,
+            folder_picker_active: false,
             confirm_delete: None,
             remove_summary: None,
+        }
+    }
+
+    /// Reads every `game_libraries` row for the library management list.
+    /// Returns an empty list (rather than propagating the error into the
+    /// UI) if the database can't be opened - the DB status line already
+    /// reports that problem.
+    fn load_libraries(db_path: Option<&std::path::Path>) -> Vec<LibraryRow> {
+        let Some(db_path) = db_path else {
+            return Vec::new();
+        };
+        let Ok(conn) = gametrimmer_core::db::open(db_path) else {
+            return Vec::new();
+        };
+        manual::list_libraries(&conn).unwrap_or_default()
+    }
+
+    fn refresh_libraries(&mut self) {
+        self.libraries = Self::load_libraries(self.db_path.as_deref());
+    }
+
+    /// Spawns the (blocking) folder-picker dialog on a background thread so
+    /// the UI thread never blocks on it; the result comes back through the
+    /// existing worker channel as [`WorkerMsg::FolderPicked`].
+    pub fn start_add_library(&mut self) {
+        if self.folder_picker_active {
+            return;
+        }
+        self.folder_picker_active = true;
+
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let path = rfd::FileDialog::new()
+                .set_title("Виберіть теку бібліотеки")
+                .pick_folder();
+            let _ = tx.send(WorkerMsg::FolderPicked { path });
+        });
+    }
+
+    /// Registers a user-picked folder as a manual library and refreshes the
+    /// library list. Errors are surfaced as a warning rather than a full
+    /// scan-blocking error, since the folder picker can run at any time.
+    fn add_manual_library(&mut self, path: PathBuf) {
+        let Some(db_path) = self.db_path.clone() else {
+            self.warnings.push("Немає шляху до бази даних.".to_string());
+            return;
+        };
+
+        match gametrimmer_core::db::open(&db_path) {
+            Ok(conn) => {
+                if let Err(err) = manual::add_manual_library(&conn, &path) {
+                    self.warnings
+                        .push(format!("Не вдалося додати теку {}: {err}", path.display()));
+                    return;
+                }
+                self.refresh_libraries();
+            }
+            Err(err) => self
+                .warnings
+                .push(format!("Помилка відкриття бази даних: {err}")),
+        }
+    }
+
+    /// Removes a manual library (and, cascading, its games/files/findings)
+    /// and refreshes the library list.
+    pub fn remove_manual_library(&mut self, library_id: i64) {
+        let Some(db_path) = self.db_path.clone() else {
+            self.warnings.push("Немає шляху до бази даних.".to_string());
+            return;
+        };
+
+        match gametrimmer_core::db::open(&db_path) {
+            Ok(mut conn) => {
+                if let Err(err) = manual::remove_library(&mut conn, library_id) {
+                    self.warnings
+                        .push(format!("Не вдалося прибрати бібліотеку: {err}"));
+                    return;
+                }
+                self.refresh_libraries();
+            }
+            Err(err) => self
+                .warnings
+                .push(format!("Помилка відкриття бази даних: {err}")),
         }
     }
 
@@ -90,6 +189,7 @@ impl GameTrimmerApp {
         self.busy = true;
         self.progress = None;
         self.status_message.clear();
+        self.warnings.clear();
         self.remove_summary = None;
 
         let handle = worker::scan::spawn_scan(db_path, Arc::clone(&self.cancel), self.tx.clone());
@@ -237,6 +337,15 @@ impl GameTrimmerApp {
                 self.progress = None;
                 self._worker = None;
                 self.status_message = format!("Помилка: {msg}");
+            }
+            WorkerMsg::Warning { msg } => {
+                self.warnings.push(msg);
+            }
+            WorkerMsg::FolderPicked { path } => {
+                self.folder_picker_active = false;
+                if let Some(path) = path {
+                    self.add_manual_library(path);
+                }
             }
         }
     }
