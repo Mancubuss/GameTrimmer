@@ -11,3 +11,6 @@ path = "src/main.rs"
 eframe = "0.35.0"
 gametrimmer-core = { path = "../core" }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
