@@ -1,0 +1,368 @@
+//! Static language dictionary: canonical language keys plus their aliases,
+//! grouped by trust level (see docs/04_implementation_plan.md §5.2).
+//!
+//! - Level A (`level_a`): self-sufficient — full English/native names, Steam
+//!   folder names (`schinese`, `koreana`, `latam`, ...), and common
+//!   region-tagged forms (`pt-br`, `zh-cn`, `spanish(spain)`, ...).
+//! - Level B (`level_b`): three-letter ISO 639-2/3 codes — need a positive
+//!   context marker nearby to be trusted.
+//! - Level C (`level_c`): two-letter ISO 639-1 codes — never trusted alone,
+//!   only as part of a confirmed language family (see `family.rs`).
+//!
+//! The dictionary is intentionally hand-curated rather than derived from a
+//! generic `xx-YY` regex: enumerating the region tags actually seen in game
+//! localization folders is safer (zero false positives from things like
+//! "up-to" or "re-do" matching a loose 2-3+2 letter pattern) at a modest cost
+//! in recall for obscure locales.
+
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Level {
+    A,
+    B,
+    C,
+}
+
+pub struct LangEntry {
+    pub key: &'static str,
+    pub level_a: &'static [&'static str],
+    pub level_b: &'static [&'static str],
+    pub level_c: &'static [&'static str],
+}
+
+/// Default keep-list: canonical keys that `LangDetector::new()` never flags.
+pub const KEEP_DEFAULT: &[&str] = &["uk", "en"];
+
+pub static LANGS: &[LangEntry] = &[
+    LangEntry {
+        key: "en",
+        level_a: &[
+            "english", "en-us", "en-gb", "en-uk", "en-au", "en-ca", "en-ie", "en-nz", "en-za",
+        ],
+        level_b: &["eng"],
+        level_c: &["en"],
+    },
+    LangEntry {
+        key: "uk",
+        level_a: &["ukrainian", "ukrainska", "українська", "uk-ua", "ua"],
+        level_b: &["ukr"],
+        level_c: &["uk"],
+    },
+    LangEntry {
+        key: "fr",
+        level_a: &[
+            "french",
+            "francais",
+            "français",
+            "french(france)",
+            "fr-fr",
+            "fr-be",
+            "fr-ch",
+        ],
+        level_b: &["fra", "fre"],
+        level_c: &["fr"],
+    },
+    LangEntry {
+        key: "de",
+        level_a: &["german", "deutsch", "de-de", "de-at", "de-ch"],
+        level_b: &["deu", "ger"],
+        level_c: &["de"],
+    },
+    LangEntry {
+        key: "es",
+        level_a: &["spanish", "espanol", "español", "spanish(spain)", "es-es"],
+        level_b: &["spa"],
+        level_c: &["es"],
+    },
+    LangEntry {
+        key: "es-419",
+        level_a: &[
+            "latam",
+            "spanish(latinamerica)",
+            "spanish(mexico)",
+            "es-mx",
+            "es-419",
+            "es-ar",
+            "es-co",
+            "es-cl",
+        ],
+        level_b: &[],
+        level_c: &[],
+    },
+    LangEntry {
+        key: "pt",
+        level_a: &["portuguese", "portugues", "português", "pt-pt"],
+        level_b: &["por"],
+        level_c: &["pt"],
+    },
+    LangEntry {
+        key: "pt-br",
+        level_a: &["brazilian", "portuguese(brazil)", "pt-br"],
+        level_b: &[],
+        level_c: &[],
+    },
+    LangEntry {
+        key: "it",
+        level_a: &["italian", "italiano", "it-it"],
+        level_b: &["ita"],
+        level_c: &["it"],
+    },
+    LangEntry {
+        key: "ru",
+        level_a: &["russian", "russkiy", "русский", "ru-ru"],
+        level_b: &["rus"],
+        level_c: &["ru"],
+    },
+    LangEntry {
+        key: "pl",
+        level_a: &["polish", "polski", "pl-pl"],
+        level_b: &["pol"],
+        level_c: &["pl"],
+    },
+    LangEntry {
+        key: "cs",
+        level_a: &["czech", "cestina", "čeština", "cs-cz"],
+        level_b: &["ces", "cze"],
+        level_c: &["cs"],
+    },
+    LangEntry {
+        key: "ja",
+        level_a: &["japanese", "nihongo", "ja-jp"],
+        level_b: &["jpn"],
+        level_c: &["ja"],
+    },
+    LangEntry {
+        key: "ko",
+        level_a: &["korean", "koreana", "hangugeo", "ko-kr"],
+        level_b: &["kor"],
+        level_c: &["ko"],
+    },
+    LangEntry {
+        key: "zh-hans",
+        level_a: &[
+            "schinese",
+            "simplifiedchinese",
+            "chinesesimplified",
+            "zh-cn",
+            "zh-hans",
+            "zh-sg",
+        ],
+        level_b: &[],
+        level_c: &[],
+    },
+    LangEntry {
+        key: "zh-hant",
+        level_a: &[
+            "tchinese",
+            "traditionalchinese",
+            "chinesetraditional",
+            "zh-tw",
+            "zh-hant",
+            "zh-hk",
+            "zh-mo",
+        ],
+        level_b: &[],
+        level_c: &[],
+    },
+    LangEntry {
+        key: "tr",
+        level_a: &["turkish", "turkce", "türkçe", "tr-tr"],
+        level_b: &["tur"],
+        level_c: &["tr"],
+    },
+    LangEntry {
+        key: "ar",
+        level_a: &["arabic", "alarabiya", "ar-sa", "ar-eg", "ar-ae"],
+        level_b: &["ara"],
+        level_c: &["ar"],
+    },
+    LangEntry {
+        key: "th",
+        level_a: &["thai", "phasathai", "th-th"],
+        level_b: &["tha"],
+        level_c: &["th"],
+    },
+    LangEntry {
+        key: "vi",
+        level_a: &["vietnamese", "tiengviet", "vi-vn"],
+        level_b: &["vie"],
+        level_c: &["vi"],
+    },
+    LangEntry {
+        key: "hu",
+        level_a: &["hungarian", "magyar", "hu-hu"],
+        level_b: &["hun"],
+        level_c: &["hu"],
+    },
+    LangEntry {
+        key: "nl",
+        level_a: &["dutch", "nederlands", "nl-nl", "nl-be"],
+        level_b: &["nld", "dut"],
+        level_c: &["nl"],
+    },
+    LangEntry {
+        key: "da",
+        level_a: &["danish", "dansk", "da-dk"],
+        level_b: &["dan"],
+        level_c: &["da"],
+    },
+    LangEntry {
+        key: "no",
+        level_a: &["norwegian", "norsk", "nb-no", "nn-no", "no-no"],
+        level_b: &["nor", "nob", "nno"],
+        level_c: &["no"],
+    },
+    LangEntry {
+        key: "sv",
+        level_a: &["swedish", "svenska", "sv-se"],
+        level_b: &["swe"],
+        level_c: &["sv"],
+    },
+    LangEntry {
+        key: "fi",
+        level_a: &["finnish", "suomi", "fi-fi"],
+        level_b: &["fin"],
+        level_c: &["fi"],
+    },
+    LangEntry {
+        key: "el",
+        level_a: &["greek", "ellinika", "el-gr"],
+        level_b: &["ell", "gre"],
+        level_c: &["el"],
+    },
+    LangEntry {
+        key: "ro",
+        level_a: &["romanian", "romana", "română", "ro-ro"],
+        level_b: &["ron", "rum"],
+        level_c: &["ro"],
+    },
+    LangEntry {
+        key: "bg",
+        level_a: &["bulgarian", "balgarski", "bg-bg"],
+        level_b: &["bul"],
+        level_c: &["bg"],
+    },
+    LangEntry {
+        key: "hr",
+        level_a: &["croatian", "hrvatski", "hr-hr"],
+        level_b: &["hrv"],
+        level_c: &["hr"],
+    },
+    LangEntry {
+        key: "sr",
+        level_a: &["serbian", "srpski", "sr-rs"],
+        level_b: &["srp"],
+        level_c: &["sr"],
+    },
+    LangEntry {
+        key: "sk",
+        level_a: &["slovak", "slovencina", "slovenčina", "sk-sk"],
+        level_b: &["slk", "slo"],
+        level_c: &["sk"],
+    },
+    LangEntry {
+        key: "sl",
+        level_a: &["slovenian", "slovenscina", "slovenščina", "sl-si"],
+        level_b: &["slv"],
+        level_c: &["sl"],
+    },
+    LangEntry {
+        key: "id",
+        level_a: &["indonesian", "bahasaindonesia", "id-id"],
+        level_b: &["ind"],
+        level_c: &["id"],
+    },
+    LangEntry {
+        key: "hi",
+        level_a: &["hindi", "hi-in"],
+        level_b: &["hin"],
+        level_c: &["hi"],
+    },
+    LangEntry {
+        key: "he",
+        level_a: &["hebrew", "ivrit", "he-il"],
+        level_b: &["heb"],
+        // "iw" is the legacy ISO 639-1 code for Hebrew, but as a bare
+        // 2-letter token it is exactly the kind of ambiguous short code
+        // (studio/project prefixes like "IW_0501_intro.bik") that must
+        // never be self-sufficient — Level C, family-gated like every
+        // other two-letter code.
+        level_c: &["he", "iw"],
+    },
+];
+
+/// alias (lowercase) -> (canonical key, trust level)
+static ALIAS_MAP: LazyLock<HashMap<&'static str, (&'static str, Level)>> = LazyLock::new(|| {
+    let mut map = HashMap::new();
+    for entry in LANGS {
+        // Every canonical key resolves to itself at Level A, so callers can
+        // pass either an alias or a bare canonical key (e.g. in a keep-list).
+        map.entry(entry.key).or_insert((entry.key, Level::A));
+        for alias in entry.level_a {
+            map.insert(alias, (entry.key, Level::A));
+        }
+        for alias in entry.level_b {
+            map.insert(alias, (entry.key, Level::B));
+        }
+        for alias in entry.level_c {
+            map.insert(alias, (entry.key, Level::C));
+        }
+    }
+    map
+});
+
+/// Looks up a lowercase token/segment-piece in the dictionary.
+pub fn lookup(text: &str) -> Option<(&'static str, Level)> {
+    ALIAS_MAP.get(text).copied()
+}
+
+/// Generic `<lang>[-_]<REGION>` locale-tag pattern (docs/04_implementation_plan.md
+/// §5.2: `[a-z]{2,3}[-_][a-z]{2}`), for locale tags not already covered by
+/// a curated literal alias (e.g. `es-mx` -> `es-419` and `pt-br` are
+/// curated Level A entries checked by `lookup` first; this only fires for
+/// combinations like `es_AR`, `fr_MG`, `ja_JP` that aren't individually
+/// enumerated). Accepted **only if the leading part is itself a
+/// dictionary-known language** — the same safety gate the corpus
+/// collection tool documents (see `tests/corpus/README.md`) to reject
+/// coincidental hyphenated/underscored words like `non-eu`, `read-me`, or
+/// `no-go` (whose second part isn't a real region code, or whose first
+/// part isn't a real language). The trust level returned is whatever
+/// level the *prefix* itself carries in the dictionary — almost always
+/// Level B or C — so a bare two-letter prefix like `es`/`fr` still
+/// requires family confirmation (or a Level B iso3 prefix still requires a
+/// marker) exactly as a standalone occurrence of that prefix would; this
+/// function only widens *which strings count as an occurrence at all*, it
+/// never grants extra trust.
+///
+/// The canonical returned is the prefix language's own canonical (region
+/// is informational only, e.g. `es_AR` -> `es`, not a distinct `es-ar`
+/// canonical) since we don't curate a canonical per region combination.
+pub fn lookup_locale_tag(text: &str) -> Option<(&'static str, Level)> {
+    let (prefix, rest) = text.split_once(['-', '_'])?;
+    if !(2..=3).contains(&prefix.len()) || !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    // Region: exactly 2 ASCII letters (ISO 3166-1 alpha-2 shape). A
+    // trailing third part (`ja_JP_TRADITIONAL`, `zh_Hant_TW`) is allowed
+    // and ignored — we only need to confirm the piece *starts* with a
+    // real `lang-REGION` shape, not validate every trailing segment.
+    let region = rest.split(['-', '_']).next().unwrap_or(rest);
+    if region.len() != 2 || !region.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    lookup(prefix)
+}
+
+/// Normalizes an arbitrary user-supplied language key (e.g. from a keep-list)
+/// to its canonical form. Falls back to the lowercased input if unknown, so
+/// forward-compatible keys (not yet in the dictionary) still work as an
+/// exact-match keep entry.
+pub fn normalize_lang_key(input: &str) -> String {
+    let lower = input.trim().to_lowercase();
+    match lookup(&lower) {
+        Some((canonical, _)) => canonical.to_string(),
+        None => lower,
+    }
+}

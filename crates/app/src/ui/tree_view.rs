@@ -7,7 +7,7 @@ use eframe::egui::collapsing_header::CollapsingState;
 use crate::app::GameTrimmerApp;
 use crate::model::{
     self, category_display, format_size, group_selection_state, group_size_bytes, toggle_group,
-    CategoryGroup, GameGroup,
+    CategoryGroup, DisplayCategory, GameGroup,
 };
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
@@ -72,7 +72,7 @@ fn show_category(app: &mut GameTrimmerApp, ui: &mut egui::Ui, group: &CategoryGr
 fn show_game(
     app: &mut GameTrimmerApp,
     ui: &mut egui::Ui,
-    category: gametrimmer_core::rules::Category,
+    category: DisplayCategory,
     group: &GameGroup,
 ) {
     let (all_selected, any_selected) = group_selection_state(&app.findings, &group.item_indices);
@@ -114,9 +114,13 @@ fn show_file_row(app: &mut GameTrimmerApp, ui: &mut egui::Ui, index: usize) {
     ui.checkbox(&mut item.selected, "");
     ui.label(&item.row.rel_path);
     ui.label(format_size(item.row.size));
-    ui.label(format!(
-        "{}% \u{2014} {}",
-        item.row.confidence, item.row.rule_desc
-    ));
+    let confidence_label = match &item.row.lang_tag {
+        Some(lang) => format!(
+            "{}% [{}] \u{2014} {}",
+            item.row.confidence, lang, item.row.rule_desc
+        ),
+        None => format!("{}% \u{2014} {}", item.row.confidence, item.row.rule_desc),
+    };
+    ui.label(confidence_label);
     ui.end_row();
 }
