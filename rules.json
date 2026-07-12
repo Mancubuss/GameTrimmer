@@ -1,0 +1,158 @@
+[
+  {
+    "category": "redist_folder",
+    "pattern": "^_?commonredist(s)?$",
+    "desc": "Спільна тека редистрибутивів (наприклад _CommonRedist)",
+    "confidence": 90
+  },
+  {
+    "category": "redist_folder",
+    "pattern": "^directx.*$",
+    "desc": "Тека редистрибутиву MS DirectX",
+    "confidence": 90
+  },
+  {
+    "category": "redist_folder",
+    "pattern": "^(msvc.*|vcredist)$",
+    "desc": "Тека MS Visual C++ Runtime",
+    "confidence": 90
+  },
+  {
+    "category": "redist_folder",
+    "pattern": "^(g4w|wmfdist11|wmf)$",
+    "desc": "Застарілі інсталятори MS (Games for Windows Live / WMF)",
+    "confidence": 90
+  },
+  {
+    "category": "redist_folder",
+    "pattern": "^3rd$",
+    "desc": "Тека сторонніх редистрибутивів (3rd party)",
+    "confidence": 75
+  },
+  {
+    "category": "redist_folder",
+    "pattern": "^.*(dependenc|prereq|install|redist).*$",
+    "desc": "Узагальнена тека залежностей/редистрибутивів/інсталяторів",
+    "confidence": 65
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^(UplayInstaller|UbisoftConnectInstaller|EAappInstaller)\\.exe$",
+    "desc": "Інсталятори платформ дистрибуції (Uplay/Ubisoft Connect/EA app)",
+    "confidence": 95
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^(wic_(x64|x86)|xpsepsc|.*netfx).*\\.(exe|msi)$",
+    "desc": "MS .NET Framework / Windows Imaging Component редистрибутив",
+    "confidence": 90
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^dxwebsetup\\.exe$",
+    "desc": "MS DirectX Web Installer",
+    "confidence": 95
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^vcredist.*\\.exe$",
+    "desc": "Інсталятор MS Visual C++ Redist",
+    "confidence": 95
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^(gfwl.*|arcadeinstall.*|gamespyinstaller.*)\\.exe$",
+    "desc": "Застарілі інсталятори платформ (GFWL/GameSpy Arcade)",
+    "confidence": 90
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^.*kb\\d{5,8}.*\\.exe$",
+    "desc": "Оновлення MS System Update (KB)",
+    "confidence": 90
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^.*msxml.*\\.exe$",
+    "desc": "Редистрибутив MS XML",
+    "confidence": 90
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^physx.*\\.exe$",
+    "desc": "Інсталятор NVidia PhysX",
+    "confidence": 95
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^(openalweax|oalinst)\\.exe$",
+    "desc": "Інсталятор OpenAL",
+    "confidence": 90
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^rapture3d_.*\\.exe$",
+    "desc": "Інсталятор Rapture 3D",
+    "confidence": 90
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^amd_.*setup.*\\.exe$",
+    "desc": "AMD Dual-Core Optimizer",
+    "confidence": 90
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^.*battleeye.*\\.exe$",
+    "desc": "Інсталятор BattlEye Anti-Cheat Engine",
+    "confidence": 90
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^xna.*\\.(msi|exe)$",
+    "desc": "Редистрибутив MS XNA Framework",
+    "confidence": 90
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^dotnet.*\\.(exe|msi)$",
+    "desc": "Інсталятор MS .NET Framework",
+    "confidence": 90
+  },
+  {
+    "category": "docs_folder",
+    "pattern": "^(docs|documents|manuals?)$",
+    "desc": "Тека документації",
+    "confidence": 85
+  },
+  {
+    "category": "docs_file",
+    "pattern": "^.+\\.(pdf|rtf)$",
+    "desc": "Файл документації (PDF/RTF)",
+    "confidence": 85
+  },
+  {
+    "category": "bonus",
+    "pattern": "^(bonus|artbook|soundtrack|extras)$",
+    "desc": "Бонусні матеріали (артбук, саундтрек тощо)",
+    "confidence": 80
+  },
+  {
+    "category": "bonus",
+    "pattern": "^(support|help)$",
+    "desc": "Тека підтримки/довідки (може містити редистрибутиви або довідкові файли)",
+    "confidence": 70
+  },
+  {
+    "category": "bonus",
+    "pattern": "^ea\\s?help$",
+    "desc": "Файли довідки EA Help",
+    "confidence": 65
+  },
+  {
+    "category": "dev_leftovers",
+    "pattern": "^(thumbs\\.db|testapp.*\\.exe)$",
+    "desc": "Залишки розробки (кеш Thumbs.db, тестові виконувані файли)",
+    "confidence": 90
+  }
+]
