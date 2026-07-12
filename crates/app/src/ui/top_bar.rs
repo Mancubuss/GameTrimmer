@@ -40,6 +40,19 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             ui.label(&app.status_message);
         }
 
+        if !app.warnings.is_empty() {
+            let count = app.warnings.len();
+            egui::CollapsingHeader::new(format!("Попередження ({count})"))
+                .default_open(false)
+                .show(ui, |ui| {
+                    for warning in app.warnings.clone() {
+                        ui.label(warning);
+                    }
+                });
+        }
+
+        ui.add_space(4.0);
+        crate::ui::libraries_panel::show(app, ui);
         ui.add_space(4.0);
     });
 }

@@ -13,15 +13,14 @@ use std::thread::JoinHandle;
 use gametrimmer_core::db;
 use gametrimmer_core::error::Result as CoreResult;
 use gametrimmer_core::langdetect::{LangDetector, LangFinding};
-use gametrimmer_core::providers::steam::SteamProvider;
-use gametrimmer_core::providers::{DiscoveredLibrary, LibraryProvider};
+use gametrimmer_core::providers::{self, DiscoveredLibrary};
 use gametrimmer_core::rules::{Finding, RuleEngine};
 use gametrimmer_core::scanner::{scan_dir, store_files};
 use rusqlite::{params, Connection};
 
 use crate::model::{category_key, DisplayCategory, FindingRow};
 
-use super::{resolve_rules_path, WorkerMsg};
+use super::{manual, resolve_rules_path, WorkerMsg};
 
 /// Spawns the scan job on a new thread. `cancel` is polled between games so
 /// the user can abort a long scan early.
@@ -62,16 +61,32 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>) {
         }
     };
 
-    let libraries = match SteamProvider.discover() {
-        Ok(libraries) => libraries,
+    // Every vendor provider is tried; one provider failing (registry key
+    // missing, launcher config unreadable, ...) must not abort the whole
+    // scan - it is reported as a warning and the rest still run.
+    let mut libraries: Vec<DiscoveredLibrary> = Vec::new();
+    for provider in providers::all() {
+        match provider.discover() {
+            Ok(mut discovered) => libraries.append(&mut discovered),
+            Err(err) => send_warning(tx, format!("Провайдер \"{}\": {err}", provider.name())),
+        }
+    }
+
+    match manual::discover_manual_libraries(&conn) {
+        Ok((manual_libraries, manual_warnings)) => {
+            for warning in manual_warnings {
+                send_warning(tx, warning);
+            }
+            libraries.extend(manual_libraries);
+        }
         Err(err) => {
-            send_error(tx, format!("Помилка пошуку бібліотек Steam: {err}"));
+            send_error(tx, format!("Помилка читання ручних бібліотек: {err}"));
             return;
         }
-    };
+    }
 
     if libraries.is_empty() {
-        send_error(tx, "Steam-бібліотек не знайдено.".to_string());
+        send_error(tx, "Бібліотек не знайдено.".to_string());
         return;
     }
 
@@ -128,6 +143,10 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>) {
 
 fn send_error(tx: &Sender<WorkerMsg>, msg: String) {
     let _ = tx.send(WorkerMsg::Error { msg });
+}
+
+fn send_warning(tx: &Sender<WorkerMsg>, msg: String) {
+    let _ = tx.send(WorkerMsg::Warning { msg });
 }
 
 /// Writes discovered libraries and their games into the database,
