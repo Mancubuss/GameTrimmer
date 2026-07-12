@@ -3,6 +3,7 @@
 //! background thread; the only database connection used here is opened
 //! and dropped within this thread.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -11,13 +12,14 @@ use std::thread::JoinHandle;
 
 use gametrimmer_core::db;
 use gametrimmer_core::error::Result as CoreResult;
+use gametrimmer_core::langdetect::{LangDetector, LangFinding};
 use gametrimmer_core::providers::steam::SteamProvider;
 use gametrimmer_core::providers::{DiscoveredLibrary, LibraryProvider};
-use gametrimmer_core::rules::RuleEngine;
+use gametrimmer_core::rules::{Finding, RuleEngine};
 use gametrimmer_core::scanner::{scan_dir, store_files};
 use rusqlite::{params, Connection};
 
-use crate::model::{category_key, FindingRow};
+use crate::model::{category_key, DisplayCategory, FindingRow};
 
 use super::{resolve_rules_path, WorkerMsg};
 
@@ -47,6 +49,10 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>) {
             return;
         }
     };
+
+    // Keep-list is Ukrainian + English for now; a configurable keep-list is
+    // a future phase (see docs/04_implementation_plan.md).
+    let lang_detector = LangDetector::new();
 
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
@@ -97,7 +103,14 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>) {
             game_name: name.clone(),
         });
 
-        match scan_and_classify_game(&mut conn, &engine, game_id, &name, &install_dir) {
+        match scan_and_classify_game(
+            &mut conn,
+            &engine,
+            &lang_detector,
+            game_id,
+            &name,
+            &install_dir,
+        ) {
             Ok(mut game_findings) => findings.append(&mut game_findings),
             Err(err) => {
                 // A single game failing to scan (permissions, moved folder, ...)
@@ -166,11 +179,13 @@ fn persist_libraries(
 }
 
 /// Scans one game's install directory, replaces its indexed files, and
-/// classifies each file through the rule engine, persisting findings and
-/// returning them for the UI.
+/// classifies each file through both the rule engine and the localization
+/// detector, persisting the winning finding per file and returning them for
+/// the UI.
 fn scan_and_classify_game(
     conn: &mut Connection,
     engine: &RuleEngine,
+    lang_detector: &LangDetector,
     game_id: i64,
     name: &str,
     install_dir: &Path,
@@ -187,51 +202,97 @@ fn scan_and_classify_game(
 
     store_files(conn, game_id, &entries)?;
 
-    let file_ids: Vec<(i64, String)> = {
+    let file_ids: HashMap<String, i64> = {
         let mut stmt = conn.prepare("SELECT id, rel_path FROM files WHERE game_id = ?1")?;
-        let rows = stmt
-            .query_map(params![game_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        rows
+        let rows = stmt.query_map(params![game_id], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(0)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
     };
 
-    let mut findings = Vec::with_capacity(file_ids.len());
+    // `analyze_game` needs sibling context (the language-family heuristic),
+    // so it runs once over all of this game's files rather than per-file.
+    let lang_findings: HashMap<usize, LangFinding> =
+        lang_detector.analyze_game(&entries).into_iter().collect();
+
+    let mut findings = Vec::with_capacity(entries.len());
     {
         let mut insert_finding = conn.prepare_cached(
-            "INSERT INTO findings (file_id, category, rule_id, confidence) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag) VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
 
-        for (file_id, rel_path) in file_ids {
-            let Some(finding) = engine.classify(&rel_path) else {
+        for (index, entry) in entries.iter().enumerate() {
+            let Some(&file_id) = file_ids.get(&entry.rel_path) else {
+                continue;
+            };
+
+            let rule_finding = engine.classify(&entry.rel_path);
+            let lang_finding = lang_findings.get(&index);
+
+            let Some(combined) = combine_finding(rule_finding, lang_finding) else {
                 continue;
             };
 
             insert_finding.execute(params![
                 file_id,
-                category_key(finding.category),
-                finding.rule_desc,
-                finding.confidence
+                category_key(combined.category),
+                combined.rule_id,
+                combined.confidence,
+                combined.lang_tag.as_deref(),
             ])?;
-
-            let size = entries
-                .iter()
-                .find(|entry| entry.rel_path == rel_path)
-                .map(|entry| entry.size)
-                .unwrap_or(0);
 
             findings.push(FindingRow {
                 file_id,
                 game_id,
                 game_name: name.to_string(),
                 install_dir: install_dir.to_path_buf(),
-                rel_path,
-                size,
-                category: finding.category,
-                rule_desc: finding.rule_desc,
-                confidence: finding.confidence,
+                rel_path: entry.rel_path.clone(),
+                size: entry.size,
+                category: combined.category,
+                rule_desc: combined.rule_id,
+                confidence: combined.confidence,
+                lang_tag: combined.lang_tag,
             });
         }
     }
 
     Ok(findings)
+}
+
+/// One file's finding after reconciling the rule engine and the localization
+/// detector, ready to persist and display.
+struct CombinedFinding {
+    category: DisplayCategory,
+    rule_id: String,
+    confidence: u8,
+    lang_tag: Option<String>,
+}
+
+/// Merges a rules-engine finding with a localization finding for the same
+/// file. A file can match both (e.g. a "bonus" folder that also contains
+/// Spanish voice-over); only the higher-confidence finding is kept. Ties are
+/// resolved in favor of the rules engine, since a specific category match is
+/// more informative than a bare language cue at equal confidence.
+fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<CombinedFinding> {
+    match (rule, lang) {
+        (Some(r), Some(l)) if l.confidence > r.confidence => Some(CombinedFinding {
+            category: DisplayCategory::Loc(l.kind),
+            rule_id: l.reason.clone(),
+            confidence: l.confidence,
+            lang_tag: Some(l.lang_tag.clone()),
+        }),
+        (Some(r), _) => Some(CombinedFinding {
+            category: DisplayCategory::Rule(r.category),
+            rule_id: r.rule_desc,
+            confidence: r.confidence,
+            lang_tag: None,
+        }),
+        (None, Some(l)) => Some(CombinedFinding {
+            category: DisplayCategory::Loc(l.kind),
+            rule_id: l.reason.clone(),
+            confidence: l.confidence,
+            lang_tag: Some(l.lang_tag.clone()),
+        }),
+        (None, None) => None,
+    }
 }

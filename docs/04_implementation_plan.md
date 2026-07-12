@@ -112,7 +112,12 @@ trait LibraryProvider {
 
 ### 5.3. Контекстний скоринг сегментів шляху
 
-- **Позитивні маркери локалізації** (підвищують упевненість): `sound`, `soundbanks`, `voice`, `vo`, `audio`, `speech`, `dub`, `subtitles`, `caption`, `text`, `strings`, `loc`, `localization`, `localized`, `lang`, `language`, `l10n`, `movies` + мовний токен у назві файлу.
+- **Позитивні маркери локалізації** (підвищують упевненість), з визначенням типу знахідки:
+  - озвучка (Audio): `sound`, `soundbanks`, `voice`, `vo`, `audio`, `speech`, `dub`, `wwise`, `fmod`;
+  - тексти/субтитри (Text): `subtitles`, `caption`, `text`, `strings`, `loc`, `localization`, `localized`, `lang`, `language`, `l10n`, `i18n`, `translations`;
+  - відео (Video): `movies`, `videos`, `cinematics`, `cutscenes`, `fmv` + відеорозширення `.bik/.bk2/.usm/.wmv` з мовним токеном;
+  - шрифти (Font): `font`, `fonts` + мовний токен (CJK-шрифтові паки бувають на десятки МБ);
+  - локалізовані документи покриваються Text; повні мовні паки та локалізовані текстури — лише через евристику «мовної сім'ї» (тека `textures` — негативний маркер, безпека понад повноту).
 - **Негативні маркери ігрового вмісту** (блокують): `art`, `units`, `models`, `textures`, `structures`, `buildings`, `history`, `decisions`, `events`, `missions`, `maps`, `scripts`, `music`.
 
 Приклади з ТЗ проходять коректно:
