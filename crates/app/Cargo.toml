@@ -1,0 +1,13 @@
+[package]
+name = "gametrimmer"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gametrimmer"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.35.0"
+gametrimmer-core = { path = "../core" }
+rusqlite = { version = "0.40.1", features = ["bundled"] }

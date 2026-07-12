@@ -1,0 +1,485 @@
+//! Steam library discovery: registry -> libraryfolders.vdf -> appmanifest_*.acf.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+use winreg::RegKey;
+
+use crate::error::Result;
+
+use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+
+pub struct SteamProvider;
+
+impl LibraryProvider for SteamProvider {
+    fn name(&self) -> &'static str {
+        "steam"
+    }
+
+    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        let Some(root) = find_steam_root() else {
+            return Ok(Vec::new());
+        };
+
+        let mut library_roots = vec![root.clone()];
+        let libraryfolders_path = root.join("steamapps").join("libraryfolders.vdf");
+        if let Ok(contents) = std::fs::read_to_string(&libraryfolders_path) {
+            library_roots.extend(parse_libraryfolders(&contents));
+        }
+
+        let mut seen = HashSet::new();
+        let unique_roots: Vec<PathBuf> = library_roots
+            .into_iter()
+            .filter(|path| seen.insert(path.to_string_lossy().to_lowercase()))
+            .collect();
+
+        let libraries = unique_roots
+            .into_iter()
+            .filter_map(|library_root| discover_library(&library_root))
+            .collect();
+
+        Ok(libraries)
+    }
+}
+
+/// Reads one library's `steamapps` directory and returns its discovered games.
+/// Returns `None` if the library root or its `steamapps` folder doesn't exist.
+fn discover_library(library_root: &Path) -> Option<DiscoveredLibrary> {
+    let steamapps_dir = library_root.join("steamapps");
+    if !steamapps_dir.is_dir() {
+        return None;
+    }
+
+    let entries = std::fs::read_dir(&steamapps_dir).ok()?;
+    let games = entries
+        .flatten()
+        .filter(|entry| is_appmanifest(&entry.path()))
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .filter_map(|contents| parse_appmanifest(&contents, library_root))
+        .filter(|game| game.install_dir.is_dir())
+        .collect();
+
+    Some(DiscoveredLibrary {
+        vendor: "steam",
+        path: library_root.to_path_buf(),
+        games,
+    })
+}
+
+fn is_appmanifest(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("appmanifest_") && name.ends_with(".acf"))
+}
+
+/// Locates the Steam installation root via the Windows registry
+/// (`HKCU\Software\Valve\Steam\SteamPath`, fallback `HKLM\SOFTWARE\WOW6432Node\Valve\Steam\InstallPath`).
+pub fn find_steam_root() -> Option<PathBuf> {
+    let raw = read_hkcu_steam_path().or_else(read_hklm_install_path)?;
+    let path = PathBuf::from(normalize_slashes(&raw));
+    path.is_dir().then_some(path)
+}
+
+fn read_hkcu_steam_path() -> Option<String> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu.open_subkey("Software\\Valve\\Steam").ok()?;
+    key.get_value::<String, _>("SteamPath").ok()
+}
+
+fn read_hklm_install_path() -> Option<String> {
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let key = hklm
+        .open_subkey("SOFTWARE\\WOW6432Node\\Valve\\Steam")
+        .ok()?;
+    key.get_value::<String, _>("InstallPath").ok()
+}
+
+fn normalize_slashes(raw: &str) -> String {
+    raw.replace('/', "\\")
+}
+
+/// Parses the text of `steamapps/libraryfolders.vdf` and returns the library root paths.
+pub fn parse_libraryfolders(vdf: &str) -> Vec<PathBuf> {
+    let root = parse_vdf(vdf);
+    let mut paths = Vec::new();
+    collect_library_paths(&root, &mut paths);
+
+    let mut seen = HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| seen.insert(path.to_string_lossy().to_lowercase()))
+        .collect()
+}
+
+/// Recursively collects the value of every `"path"` key found in the tree.
+/// Valve's `libraryfolders.vdf` nests each library under a numbered block
+/// (`"0"`, `"1"`, ...) that carries a `"path"` field alongside other metadata
+/// (an `"apps"` block, etc.) - walking the whole tree is robust to that shape
+/// without hard-coding the numbered-block structure.
+fn collect_library_paths(value: &VdfValue, out: &mut Vec<PathBuf>) {
+    let VdfValue::Obj(entries) = value else {
+        return;
+    };
+
+    for (key, val) in entries {
+        if key.eq_ignore_ascii_case("path") {
+            if let VdfValue::Str(s) = val {
+                out.push(PathBuf::from(normalize_slashes(s)));
+            }
+        }
+    }
+    for (_, val) in entries {
+        collect_library_paths(val, out);
+    }
+}
+
+/// Parses the text of one `appmanifest_<id>.acf`; returns the game it describes.
+/// `library_root` is the library the manifest belongs to (used to build `install_dir`).
+pub fn parse_appmanifest(acf: &str, library_root: &Path) -> Option<GameInstall> {
+    let root = parse_vdf(acf);
+    let VdfValue::Obj(entries) = &root else {
+        return None;
+    };
+
+    let app_state = entries.iter().find_map(|(key, val)| {
+        if key.eq_ignore_ascii_case("AppState") {
+            match val {
+                VdfValue::Obj(fields) => Some(fields),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })?;
+
+    let get_field = |field: &str| -> Option<String> {
+        app_state.iter().find_map(|(key, val)| {
+            if key.eq_ignore_ascii_case(field) {
+                match val {
+                    VdfValue::Str(s) => Some(s.clone()),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        })
+    };
+
+    let name = get_field("name").filter(|s| !s.trim().is_empty())?;
+    let installdir = get_field("installdir").filter(|s| !s.trim().is_empty())?;
+    let app_id = get_field("appid");
+
+    let install_dir = library_root
+        .join("steamapps")
+        .join("common")
+        .join(installdir);
+
+    Some(GameInstall {
+        name,
+        install_dir,
+        app_id,
+    })
+}
+
+/// A minimal in-memory representation of Valve's KeyValues (VDF) text format:
+/// either a leaf string, or an object holding an ordered list of key/value pairs
+/// (values may themselves be nested objects).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VdfValue {
+    Str(String),
+    Obj(Vec<(String, VdfValue)>),
+}
+
+enum VdfToken {
+    Text(String),
+    Open,
+    Close,
+}
+
+/// Tokenizes VDF text into quoted-string, `{`, and `}` tokens.
+/// Handles `\\` and `\"` escapes inside quoted strings and skips `//` comments.
+fn tokenize_vdf(input: &str) -> Vec<VdfToken> {
+    let mut tokens = Vec::new();
+    let mut chars = input.chars().peekable();
+
+    while let Some(&c) = chars.peek() {
+        match c {
+            '"' => {
+                chars.next();
+                let mut s = String::new();
+                while let Some(&c) = chars.peek() {
+                    match c {
+                        '"' => {
+                            chars.next();
+                            break;
+                        }
+                        '\\' => {
+                            chars.next();
+                            if let Some(&escaped) = chars.peek() {
+                                match escaped {
+                                    '\\' => s.push('\\'),
+                                    '"' => s.push('"'),
+                                    'n' => s.push('\n'),
+                                    't' => s.push('\t'),
+                                    other => s.push(other),
+                                }
+                                chars.next();
+                            }
+                        }
+                        _ => {
+                            s.push(c);
+                            chars.next();
+                        }
+                    }
+                }
+                tokens.push(VdfToken::Text(s));
+            }
+            '{' => {
+                tokens.push(VdfToken::Open);
+                chars.next();
+            }
+            '}' => {
+                tokens.push(VdfToken::Close);
+                chars.next();
+            }
+            '/' => {
+                chars.next();
+                if chars.peek() == Some(&'/') {
+                    for c in chars.by_ref() {
+                        if c == '\n' {
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => {
+                chars.next();
+            }
+        }
+    }
+
+    tokens
+}
+
+/// Parses a sequence of key/value (and key/object) pairs starting at `*pos`,
+/// stopping at a matching `Close` token or end of input.
+fn parse_object(tokens: &[VdfToken], pos: &mut usize) -> Vec<(String, VdfValue)> {
+    let mut entries = Vec::new();
+
+    while *pos < tokens.len() {
+        match &tokens[*pos] {
+            VdfToken::Close => {
+                *pos += 1;
+                break;
+            }
+            VdfToken::Open => {
+                // Unexpected object without a preceding key; skip it defensively.
+                *pos += 1;
+            }
+            VdfToken::Text(key) => {
+                let key = key.clone();
+                *pos += 1;
+                if *pos >= tokens.len() {
+                    break;
+                }
+                match &tokens[*pos] {
+                    VdfToken::Open => {
+                        *pos += 1;
+                        let child = parse_object(tokens, pos);
+                        entries.push((key, VdfValue::Obj(child)));
+                    }
+                    VdfToken::Text(value) => {
+                        let value = value.clone();
+                        *pos += 1;
+                        entries.push((key, VdfValue::Str(value)));
+                    }
+                    VdfToken::Close => {
+                        // Malformed: key without a value; drop it and keep going.
+                        *pos += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    entries
+}
+
+fn parse_vdf(input: &str) -> VdfValue {
+    let tokens = tokenize_vdf(input);
+    let mut pos = 0;
+    VdfValue::Obj(parse_object(&tokens, &mut pos))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_libraryfolders_reads_all_numbered_blocks_with_escaped_backslashes() {
+        let vdf = r#"
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"D:\\PortableApps\\Portable\\Games\\Steam"
+		"label"		"Steam Home"
+		"contentid"		"882536142594950971"
+		"apps"
+		{
+			"228980"		"1366752304"
+			"812140"		"116303258020"
+		}
+	}
+	"1"
+	{
+		"path"		"F:\\SteamLibrary"
+		"label"		""
+		"apps"
+		{
+			"620"		"12753874736"
+			"730"		"36644248671"
+		}
+	}
+	"2"
+	{
+		"path"		"G:\\SteamLibrary"
+		"label"		""
+		"apps"
+		{
+			"22320"		"1142479546"
+		}
+	}
+}
+"#;
+
+        let paths = parse_libraryfolders(vdf);
+
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from(r"D:\PortableApps\Portable\Games\Steam"),
+                PathBuf::from(r"F:\SteamLibrary"),
+                PathBuf::from(r"G:\SteamLibrary"),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_libraryfolders_dedupes_repeated_paths() {
+        let vdf = r#"
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"F:\\SteamLibrary"
+	}
+	"1"
+	{
+		"path"		"F:\\SteamLibrary"
+	}
+}
+"#;
+
+        let paths = parse_libraryfolders(vdf);
+
+        assert_eq!(paths, vec![PathBuf::from(r"F:\SteamLibrary")]);
+    }
+
+    #[test]
+    fn parse_libraryfolders_returns_empty_for_no_libraries() {
+        let vdf = r#"
+"libraryfolders"
+{
+}
+"#;
+
+        assert!(parse_libraryfolders(vdf).is_empty());
+    }
+
+    #[test]
+    fn parse_appmanifest_reads_real_world_acf() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"universe"		"1"
+	"LauncherPath"		"E:\\SteamLibrary\\steamcmd.exe"
+	"name"		"Portal 2"
+	"StateFlags"		"4"
+	"installdir"		"Portal 2"
+	"LastUpdated"		"1713987003"
+	"LastPlayed"		"0"
+	"SizeOnDisk"		"12753874736"
+	"InstalledDepots"
+	{
+		"621"
+		{
+			"manifest"		"9163237585984972139"
+			"size"		"12753874736"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+}
+"#;
+        let library_root = Path::new(r"F:\SteamLibrary");
+
+        let game = parse_appmanifest(acf, library_root).expect("expected a parsed game");
+
+        assert_eq!(game.name, "Portal 2");
+        assert_eq!(game.app_id.as_deref(), Some("620"));
+        assert_eq!(
+            game.install_dir,
+            PathBuf::from(r"F:\SteamLibrary\steamapps\common\Portal 2")
+        );
+    }
+
+    #[test]
+    fn parse_appmanifest_returns_none_when_name_missing() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"installdir"		"Portal 2"
+}
+"#;
+        assert!(parse_appmanifest(acf, Path::new(r"F:\SteamLibrary")).is_none());
+    }
+
+    #[test]
+    fn parse_appmanifest_returns_none_when_installdir_missing() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"name"		"Portal 2"
+}
+"#;
+        assert!(parse_appmanifest(acf, Path::new(r"F:\SteamLibrary")).is_none());
+    }
+
+    #[test]
+    fn parse_appmanifest_returns_none_on_garbage_input() {
+        assert!(
+            parse_appmanifest("not a vdf file at all", Path::new(r"F:\SteamLibrary")).is_none()
+        );
+        assert!(parse_appmanifest("", Path::new(r"F:\SteamLibrary")).is_none());
+    }
+
+    #[test]
+    fn parse_appmanifest_ignores_empty_name_and_installdir() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"name"		""
+	"installdir"		""
+}
+"#;
+        assert!(parse_appmanifest(acf, Path::new(r"F:\SteamLibrary")).is_none());
+    }
+}
