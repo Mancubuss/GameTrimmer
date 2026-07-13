@@ -69,6 +69,15 @@ fn configure(conn: &Connection) -> Result<()> {
     // `journal_mode` returns a row, so use `pragma_update` instead of `execute`.
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // With WAL, `synchronous=NORMAL` only fsyncs at checkpoints instead of on
+    // every commit - safe here (a crash loses at most the last few WAL
+    // frames, never corrupts the DB) and removes the dominant per-transaction
+    // cost for a scan that commits once per game (or per batch of games).
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // Bigger page cache (in KiB, negative = KiB rather than pages) so a full
+    // rescan's repeated `files`/`findings` writes for the same game hit
+    // cache instead of round-tripping to disk.
+    conn.pragma_update(None, "cache_size", -20_000i64)?;
     Ok(())
 }
 
