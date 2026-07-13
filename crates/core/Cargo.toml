@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ntfs = "0.4.0"
 rayon = "1.12.0"
 regex = "1.13.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
@@ -12,6 +13,7 @@ serde_json = "1.0.150"
 thiserror = "2.0.18"
 trash = "5.2.6"
 walkdir = "2.5.0"
+windows = { version = "0.62.2", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"] }
 winreg = "0.56.0"
 
 [dev-dependencies]
