@@ -1,6 +1,7 @@
 //! Filesystem scanning and indexing into SQLite.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
 use rayon::prelude::*;
@@ -74,19 +75,23 @@ pub fn scan_dir(dir: &Path) -> Result<Vec<FileEntry>> {
     Ok(entries)
 }
 
-/// Replaces the indexed files of `game_id` with `entries` in a single
-/// transaction (delete + batch insert with a prepared statement).
-pub fn store_files(
-    conn: &mut Connection,
+/// Replaces the indexed files of `game_id` with `entries`, using whatever
+/// transaction (if any) is already open on `conn`. Callers that want a
+/// standalone commit for just this game should use [`store_files`] instead;
+/// callers batching several games into one commit (see
+/// `worker::scan::persist_prepared_game` in the app crate) call this
+/// directly on a [`rusqlite::Transaction`] (which derefs to `&Connection`)
+/// they opened themselves and commit once after several games.
+pub fn store_files_no_tx(
+    conn: &Connection,
     game_id: i64,
     entries: &[FileEntry],
 ) -> Result<ScanStats> {
-    let tx = conn.transaction()?;
-    tx.execute("DELETE FROM files WHERE game_id = ?1", params![game_id])?;
+    conn.execute("DELETE FROM files WHERE game_id = ?1", params![game_id])?;
 
     let mut stats = ScanStats::default();
     {
-        let mut stmt = tx.prepare_cached(
+        let mut stmt = conn.prepare_cached(
             "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (?1, ?2, ?3, ?4)",
         )?;
         for entry in entries {
@@ -97,6 +102,20 @@ pub fn store_files(
         }
     }
 
+    Ok(stats)
+}
+
+/// Replaces the indexed files of `game_id` with `entries` in its own,
+/// single-game transaction (delete + batch insert with a prepared
+/// statement). A thin wrapper around [`store_files_no_tx`] for callers that
+/// don't need to share a transaction across multiple games.
+pub fn store_files(
+    conn: &mut Connection,
+    game_id: i64,
+    entries: &[FileEntry],
+) -> Result<ScanStats> {
+    let tx = conn.transaction()?;
+    let stats = store_files_no_tx(&tx, game_id, entries)?;
     tx.commit()?;
     Ok(stats)
 }
@@ -110,6 +129,47 @@ pub fn scan_games_parallel(
     dirs.par_iter()
         .map(|(game_id, dir)| (*game_id, scan_dir(dir)))
         .collect()
+}
+
+/// Like [`scan_games_parallel`], but bounded to `num_threads` workers instead
+/// of rayon's default (one per CPU core): scanning is IO-bound, so a handful
+/// more threads than cores can keep multiple disk queues busy, while an
+/// unbounded pool would oversubscribe for no benefit and complicate reasoning
+/// about how many games are "in flight" when cancellation is requested.
+///
+/// `cancel` is checked once per game, right before that game's scan starts:
+/// games not yet dispatched are skipped (returned as
+/// [`CoreError::Other`]("cancelled")) as soon as cancellation is observed,
+/// while games already handed to a worker thread still run to completion -
+/// at most `num_threads` of them.
+pub fn scan_games_bounded(
+    dirs: &[(i64, std::path::PathBuf)],
+    num_threads: usize,
+    cancel: &AtomicBool,
+) -> Vec<(i64, Result<Vec<FileEntry>>)> {
+    let scan_one = |game_id: i64, dir: &Path| -> (i64, Result<Vec<FileEntry>>) {
+        if cancel.load(Ordering::Relaxed) {
+            return (game_id, Err(CoreError::Other("cancelled".to_string())));
+        }
+        (game_id, scan_dir(dir))
+    };
+
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads.max(1))
+        .build()
+    {
+        Ok(pool) => pool.install(|| {
+            dirs.par_iter()
+                .map(|(game_id, dir)| scan_one(*game_id, dir))
+                .collect()
+        }),
+        // A pool failing to build (extremely unlikely) must not lose the
+        // scan entirely - fall back to sequential scanning.
+        Err(_) => dirs
+            .iter()
+            .map(|(game_id, dir)| scan_one(*game_id, dir))
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +322,86 @@ mod tests {
         assert_eq!(entries_b.len(), 1);
         assert_eq!(entries_b[0].rel_path, "sub\\fileB.txt");
         assert_eq!(entries_b[0].size, 2);
+    }
+
+    #[test]
+    fn scan_games_bounded_scans_multiple_dirs_with_a_small_pool() {
+        let dir_a = tempfile::tempdir().expect("create temp dir a");
+        let dir_b = tempfile::tempdir().expect("create temp dir b");
+
+        write_file(&dir_a.path().join("fileA.txt"), b"aaaa");
+        write_file(&dir_b.path().join("sub").join("fileB.txt"), b"bb");
+
+        let dirs = vec![
+            (1i64, dir_a.path().to_path_buf()),
+            (2i64, dir_b.path().to_path_buf()),
+        ];
+        let cancel = AtomicBool::new(false);
+
+        let results = scan_games_bounded(&dirs, 2, &cancel);
+        assert_eq!(results.len(), 2);
+
+        let mut by_id: std::collections::HashMap<i64, Vec<FileEntry>> = results
+            .into_iter()
+            .map(|(id, res)| (id, res.expect("scan should succeed")))
+            .collect();
+
+        let entries_a = by_id.remove(&1).expect("game 1 present");
+        assert_eq!(entries_a[0].rel_path, "fileA.txt");
+
+        let entries_b = by_id.remove(&2).expect("game 2 present");
+        assert_eq!(entries_b[0].rel_path, "sub\\fileB.txt");
+    }
+
+    #[test]
+    fn scan_games_bounded_skips_games_not_yet_dispatched_once_cancelled() {
+        let dir_a = tempfile::tempdir().expect("create temp dir a");
+        write_file(&dir_a.path().join("fileA.txt"), b"aaaa");
+
+        let dirs = vec![(1i64, dir_a.path().to_path_buf())];
+        let cancel = AtomicBool::new(true);
+
+        let results = scan_games_bounded(&dirs, 2, &cancel);
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].1.is_err(),
+            "a game not yet dispatched when cancel is already set must be skipped"
+        );
+    }
+
+    #[test]
+    fn store_files_no_tx_replaces_previous_entries_within_a_caller_owned_transaction() {
+        let mut conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('steam', 'C:/Games')",
+            [],
+        )
+        .expect("insert library");
+        conn.execute(
+            "INSERT INTO games (library_id, name, install_dir) VALUES (1, 'Test Game', 'C:/Games/Test')",
+            [],
+        )
+        .expect("insert game");
+
+        let game_id = 1i64;
+        let entries = vec![FileEntry {
+            rel_path: "a.txt".into(),
+            size: 10,
+            mtime: Some(100),
+        }];
+
+        let tx = conn.transaction().expect("begin transaction");
+        let stats = store_files_no_tx(&tx, game_id, &entries).expect("store within shared tx");
+        assert_eq!(stats.files, 1);
+        tx.commit().expect("commit shared tx");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE game_id = ?1",
+                params![game_id],
+                |row| row.get(0),
+            )
+            .expect("count files");
+        assert_eq!(count, 1);
     }
 }
