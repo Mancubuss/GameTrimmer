@@ -5,6 +5,7 @@
 pub mod delete;
 pub mod manual;
 pub mod scan;
+pub(crate) mod scan_route;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -27,7 +28,13 @@ pub enum WorkerMsg {
         game_name: String,
     },
     /// The scan finished successfully with the given findings.
-    Done { findings: Vec<FindingRow> },
+    Done {
+        findings: Vec<FindingRow>,
+        /// Human-readable Ukrainian summary of how the scan was carried out
+        /// (MFT index vs. walkdir counts, elapsed time) - see
+        /// `worker::scan_route::format_scan_summary`.
+        scan_summary: String,
+    },
     /// A delete operation finished (possibly with some per-file failures).
     RemoveDone { outcomes: Vec<RemoveOutcome> },
     /// The scan was cancelled by the user before completion.
