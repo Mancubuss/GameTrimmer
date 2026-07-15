@@ -3,6 +3,7 @@
 //! UI thread through an `mpsc` channel of [`WorkerMsg`].
 
 pub mod delete;
+pub mod load;
 pub mod manual;
 pub mod scan;
 pub(crate) mod scan_route;

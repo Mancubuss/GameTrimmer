@@ -104,14 +104,15 @@ impl GameTrimmerApp {
             None => "помилка визначення шляху до бази даних".to_string(),
         };
         let libraries = Self::load_libraries(db_path.as_deref());
+        let has_saved_findings = Self::has_saved_findings(db_path.as_deref());
         let elevated = elevation::is_elevated();
 
         let (tx, rx) = mpsc::channel();
 
-        Self {
-            db_path,
+        let mut app = Self {
+            db_path: db_path.clone(),
             db_status,
-            tx,
+            tx: tx.clone(),
             rx,
             cancel: Arc::new(AtomicBool::new(false)),
             _worker: None,
@@ -132,7 +133,24 @@ impl GameTrimmerApp {
             remove_summary: None,
             elevated,
             show_elevation_prompt: !elevated,
+        };
+
+        // Show the previous scan's results immediately rather than an empty
+        // screen: if the database already holds at least one `findings` row
+        // (from an earlier "Сканувати бібліотеки" run), load and display it
+        // right away. A missing db_path, a database that fails to open, or
+        // one with no saved findings yet all fall through unchanged - the
+        // ordinary empty startup screen, waiting for the user to scan.
+        if has_saved_findings {
+            if let Some(db_path) = db_path {
+                app.busy = true;
+                app.status_message =
+                    "Завантаження результатів попереднього сканування...".to_string();
+                app._worker = Some(worker::load::spawn_load(db_path, tx));
+            }
         }
+
+        app
     }
 
     /// Reads every `game_libraries` row for the library management list.
@@ -151,6 +169,24 @@ impl GameTrimmerApp {
 
     fn refresh_libraries(&mut self) {
         self.libraries = Self::load_libraries(self.db_path.as_deref());
+    }
+
+    /// Whether the database already has at least one saved `findings` row
+    /// from a previous scan - decides whether `new()` auto-loads results on
+    /// startup. `false` (rather than propagating an error) if the database
+    /// can't be opened, matching `load_libraries`'s "DB status line already
+    /// reports that problem" approach.
+    fn has_saved_findings(db_path: Option<&std::path::Path>) -> bool {
+        let Some(db_path) = db_path else {
+            return false;
+        };
+        let Ok(conn) = gametrimmer_core::db::open(db_path) else {
+            return false;
+        };
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM findings LIMIT 1)", [], |row| {
+            row.get::<_, bool>(0)
+        })
+        .unwrap_or(false)
     }
 
     /// Spawns the (blocking) folder-picker dialog on a background thread so
