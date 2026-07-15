@@ -3,7 +3,7 @@
 //! background thread; the only database connection used here is opened
 //! and dropped within this thread.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -20,7 +20,7 @@ use gametrimmer_core::rules::{Finding, RuleEngine};
 use gametrimmer_core::scanner::{scan_dir, store_files_no_tx, FileEntry};
 use rusqlite::{params, Connection};
 
-use crate::model::{category_key, DisplayCategory, FindingRow};
+use crate::model::{source_key, FindingRow, FindingSource};
 
 use super::scan_route::{self, ScanRoute};
 use super::{manual, resolve_rules_path, WorkerMsg};
@@ -696,10 +696,14 @@ fn persist_libraries(
 struct PreparedFinding {
     rel_path: String,
     size: u64,
-    category: DisplayCategory,
+    source: FindingSource,
     rule_id: String,
     confidence: u8,
     lang_tag: Option<String>,
+    /// UI-only folder-grouping metadata; see [`assign_group_dirs`]. Not
+    /// persisted to the database - `persist_prepared_game` writes only the
+    /// columns backing `Finding`/`FindingRow`'s other fields.
+    group_dir: Option<String>,
 }
 
 /// The result of scanning and classifying one game: no DB state, so it can
@@ -753,24 +757,37 @@ fn classify_game(
     let lang_findings: HashMap<usize, LangFinding> =
         lang_detector.analyze_game(&entries).into_iter().collect();
 
-    let mut findings = Vec::with_capacity(entries.len());
+    // First pass: combine each entry's rule/localization findings, keeping
+    // the entry's index into `entries` so `assign_group_dirs` (which needs
+    // the full file list, not just the flagged ones) can be run afterwards.
+    let mut combined_by_index: Vec<(usize, CombinedFinding)> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let rule_finding = engine.classify(&entry.rel_path);
         let lang_finding = lang_findings.get(&index);
 
-        let Some(combined) = combine_finding(rule_finding, lang_finding) else {
-            continue;
-        };
-
-        findings.push(PreparedFinding {
-            rel_path: entry.rel_path.clone(),
-            size: entry.size,
-            category: combined.category,
-            rule_id: combined.rule_id,
-            confidence: combined.confidence,
-            lang_tag: combined.lang_tag,
-        });
+        if let Some(combined) = combine_finding(rule_finding, lang_finding) {
+            combined_by_index.push((index, combined));
+        }
     }
+
+    let flagged: HashSet<usize> = combined_by_index.iter().map(|(index, _)| *index).collect();
+    let group_dirs = assign_group_dirs(&entries, &flagged);
+
+    let findings = combined_by_index
+        .into_iter()
+        .map(|(index, combined)| {
+            let entry = &entries[index];
+            PreparedFinding {
+                rel_path: entry.rel_path.clone(),
+                size: entry.size,
+                source: combined.source,
+                rule_id: combined.rule_id,
+                confidence: combined.confidence,
+                lang_tag: combined.lang_tag,
+                group_dir: group_dirs.get(&index).cloned(),
+            }
+        })
+        .collect();
 
     PreparedGame {
         game_id,
@@ -779,6 +796,82 @@ fn classify_game(
         entries,
         findings,
     }
+}
+
+/// Assigns each flagged file (identified by its index into `entries`) the
+/// `\`-separated path of its shallowest fully-flagged ancestor directory,
+/// for UI-only tree grouping (see `model::build_tree`).
+///
+/// Rationale: a folder where *every* file is flagged as non-essential can be
+/// shown - and deleted - as one unit instead of scattering its files across
+/// whichever categories happen to match each of them individually. The
+/// *shallowest* such ancestor is chosen deliberately: it is the largest unit
+/// that is still wholly non-essential, so collapsing to it merges the most
+/// files while remaining exactly as safe to remove as any single flagged
+/// descendant. A directory must contain at least 2 files to be collapsible -
+/// a single-file "folder" gains nothing from collapsing, since the file's
+/// own row already represents it - and the (implicit) game root is never a
+/// candidate, since there is no bounding folder above it to collapse into.
+pub(crate) fn assign_group_dirs(
+    entries: &[FileEntry],
+    flagged: &HashSet<usize>,
+) -> HashMap<usize, String> {
+    // Directory path -> (total files under it, flagged files under it).
+    let mut dir_stats: HashMap<String, (u32, u32)> = HashMap::new();
+    let mut dir_chains: Vec<Vec<String>> = Vec::with_capacity(entries.len());
+
+    for (index, entry) in entries.iter().enumerate() {
+        let chain = dir_prefixes(&entry.rel_path);
+        for dir in &chain {
+            let stats = dir_stats.entry(dir.clone()).or_insert((0, 0));
+            stats.0 += 1;
+            if flagged.contains(&index) {
+                stats.1 += 1;
+            }
+        }
+        dir_chains.push(chain);
+    }
+
+    let mut group_dirs = HashMap::new();
+    for &index in flagged {
+        // `chain` is shallowest-first, so the first collapsible entry found
+        // is the shallowest collapsible ancestor.
+        let collapsible = dir_chains[index].iter().find(|dir| {
+            let (total, flagged_count) = dir_stats.get(dir.as_str()).copied().unwrap_or((0, 0));
+            total >= 2 && total == flagged_count
+        });
+        if let Some(dir) = collapsible {
+            group_dirs.insert(index, dir.clone());
+        }
+    }
+
+    group_dirs
+}
+
+/// The `\`-separated ancestor directory paths of `rel_path`, shallowest
+/// first, excluding the (implicit, empty) game root and the file name
+/// itself. E.g. `"a\b\c\file.txt"` -> `["a", "a\\b", "a\\b\\c"]`; a file
+/// directly under the game root (no directory segments) yields an empty
+/// list.
+fn dir_prefixes(rel_path: &str) -> Vec<String> {
+    let segments: Vec<&str> = rel_path
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.len() <= 1 {
+        return Vec::new();
+    }
+
+    let mut prefixes = Vec::with_capacity(segments.len() - 1);
+    let mut acc = String::new();
+    for segment in &segments[..segments.len() - 1] {
+        if !acc.is_empty() {
+            acc.push('\\');
+        }
+        acc.push_str(segment);
+        prefixes.push(acc.clone());
+    }
+    prefixes
 }
 
 /// Persists one already-scanned-and-classified game: replaces its indexed
@@ -821,7 +914,7 @@ fn persist_prepared_game(
 
         insert_finding.execute(params![
             file_id,
-            category_key(finding.category),
+            source_key(finding.source),
             finding.rule_id,
             finding.confidence,
             finding.lang_tag.as_deref(),
@@ -834,10 +927,11 @@ fn persist_prepared_game(
             install_dir: prepared.install_dir.clone(),
             rel_path: finding.rel_path.clone(),
             size: finding.size,
-            category: finding.category,
+            source: finding.source,
             rule_desc: finding.rule_id.clone(),
             confidence: finding.confidence,
             lang_tag: finding.lang_tag.clone(),
+            group_dir: finding.group_dir.clone(),
         });
     }
 
@@ -868,7 +962,7 @@ fn scan_and_classify_game(
 /// One file's finding after reconciling the rule engine and the localization
 /// detector, ready to persist and display.
 struct CombinedFinding {
-    category: DisplayCategory,
+    source: FindingSource,
     rule_id: String,
     confidence: u8,
     lang_tag: Option<String>,
@@ -882,19 +976,19 @@ struct CombinedFinding {
 fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<CombinedFinding> {
     match (rule, lang) {
         (Some(r), Some(l)) if l.confidence > r.confidence => Some(CombinedFinding {
-            category: DisplayCategory::Loc(l.kind),
+            source: FindingSource::Loc(l.kind),
             rule_id: l.reason.clone(),
             confidence: l.confidence,
             lang_tag: Some(l.lang_tag.clone()),
         }),
         (Some(r), _) => Some(CombinedFinding {
-            category: DisplayCategory::Rule(r.category),
+            source: FindingSource::Rule(r.category),
             rule_id: r.rule_desc,
             confidence: r.confidence,
             lang_tag: None,
         }),
         (None, Some(l)) => Some(CombinedFinding {
-            category: DisplayCategory::Loc(l.kind),
+            source: FindingSource::Loc(l.kind),
             rule_id: l.reason.clone(),
             confidence: l.confidence,
             lang_tag: Some(l.lang_tag.clone()),
@@ -1353,5 +1447,113 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_file(&dir.path().join("save.dat"), b"data");
         assert!(root_nonempty_on_disk(dir.path()));
+    }
+
+    fn entry(rel_path: &str) -> FileEntry {
+        FileEntry {
+            rel_path: rel_path.to_string(),
+            size: 1,
+            mtime: None,
+        }
+    }
+
+    #[test]
+    fn dir_prefixes_lists_ancestors_shallowest_first_excluding_root_and_file_name() {
+        assert_eq!(
+            dir_prefixes(r"a\b\c\file.txt"),
+            vec!["a".to_string(), r"a\b".to_string(), r"a\b\c".to_string()]
+        );
+    }
+
+    #[test]
+    fn dir_prefixes_is_empty_for_a_file_directly_under_the_game_root() {
+        assert!(dir_prefixes("readme.txt").is_empty());
+    }
+
+    #[test]
+    fn assign_group_dirs_collapses_a_folder_where_every_file_is_flagged() {
+        let entries = vec![entry(r"junk\a.txt"), entry(r"junk\b.txt")];
+        let flagged: HashSet<usize> = [0, 1].into_iter().collect();
+
+        let groups = assign_group_dirs(&entries, &flagged);
+
+        assert_eq!(groups.get(&0), Some(&"junk".to_string()));
+        assert_eq!(groups.get(&1), Some(&"junk".to_string()));
+    }
+
+    #[test]
+    fn assign_group_dirs_does_not_collapse_a_folder_with_an_unflagged_file() {
+        let entries = vec![
+            entry(r"mixed\a.txt"),
+            entry(r"mixed\b.txt"), // not flagged below
+        ];
+        let flagged: HashSet<usize> = [0].into_iter().collect();
+
+        let groups = assign_group_dirs(&entries, &flagged);
+
+        assert_eq!(
+            groups.get(&0),
+            None,
+            "the folder has an unflagged member, so it must not collapse"
+        );
+    }
+
+    #[test]
+    fn assign_group_dirs_does_not_collapse_a_single_file_folder() {
+        let entries = vec![entry(r"lonely\only.txt")];
+        let flagged: HashSet<usize> = [0].into_iter().collect();
+
+        let groups = assign_group_dirs(&entries, &flagged);
+
+        assert_eq!(
+            groups.get(&0),
+            None,
+            "a folder with only one file gains nothing from collapsing"
+        );
+    }
+
+    #[test]
+    fn assign_group_dirs_picks_the_shallowest_collapsible_ancestor() {
+        // Both "top" and "top\\nested" are fully flagged and have >= 2
+        // files; "top" is shallower and must win.
+        let entries = vec![
+            entry(r"top\nested\a.txt"),
+            entry(r"top\nested\b.txt"),
+            entry(r"top\c.txt"),
+        ];
+        let flagged: HashSet<usize> = [0, 1, 2].into_iter().collect();
+
+        let groups = assign_group_dirs(&entries, &flagged);
+
+        assert_eq!(groups.get(&0), Some(&"top".to_string()));
+        assert_eq!(groups.get(&1), Some(&"top".to_string()));
+        assert_eq!(groups.get(&2), Some(&"top".to_string()));
+    }
+
+    #[test]
+    fn assign_group_dirs_never_collapses_the_game_root() {
+        // Two flagged files directly at the root: there is no directory
+        // string representing the root itself for them to collapse into.
+        let entries = vec![entry("a.txt"), entry("b.txt")];
+        let flagged: HashSet<usize> = [0, 1].into_iter().collect();
+
+        let groups = assign_group_dirs(&entries, &flagged);
+
+        assert!(groups.is_empty(), "root-level files are always orphans");
+    }
+
+    #[test]
+    fn assign_group_dirs_leaves_unflagged_files_out_of_the_result() {
+        let entries = vec![entry(r"junk\a.txt"), entry(r"junk\b.txt")];
+        let flagged: HashSet<usize> = [0].into_iter().collect();
+
+        let groups = assign_group_dirs(&entries, &flagged);
+
+        assert_eq!(
+            groups.len(),
+            0,
+            "\"junk\" has only 1 of 2 files flagged, so it can't collapse, \
+             and the one flagged file has no other collapsible ancestor"
+        );
     }
 }

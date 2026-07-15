@@ -2,6 +2,7 @@
 
 mod app;
 mod elevation;
+mod export;
 mod model;
 mod ui;
 mod worker;

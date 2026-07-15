@@ -22,6 +22,16 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 app.cancel_scan();
             }
 
+            let export_clicked = ui
+                .add_enabled(
+                    !app.busy && !app.export_active && !app.findings.is_empty(),
+                    egui::Button::new("Експортувати…"),
+                )
+                .clicked();
+            if export_clicked {
+                app.start_export();
+            }
+
             ui.separator();
             ui.label(format!("База даних: {}", app.db_status));
         });

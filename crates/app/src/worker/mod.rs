@@ -47,6 +47,14 @@ pub enum WorkerMsg {
     /// The background "Додати теку..." folder picker finished. `None` means
     /// the user cancelled the dialog.
     FolderPicked { path: Option<PathBuf> },
+    /// The background "Експортувати..." export finished. `path` is `None`
+    /// when the user cancelled the save dialog (in which case `error` is
+    /// also `None`); `error` is set if the save dialog returned a path but
+    /// writing the CSV failed.
+    ExportDone {
+        path: Option<PathBuf>,
+        error: Option<String>,
+    },
 }
 
 /// Outcome of removing one file, matched back to its `files.id` row.
