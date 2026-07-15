@@ -89,13 +89,24 @@ fn main() {
     }
 
     let mft_start = Instant::now();
-    let mft_results = match mftscan::scan_roots(&roots) {
+    let mut last_pct = u64::MAX;
+    let mut progress_cb = |p: mftscan::MftProgress| {
+        let pct = (p.records_done * 100)
+            .checked_div(p.records_total)
+            .unwrap_or(0);
+        if pct != last_pct {
+            eprint!("\r  reading $MFT on {}: {pct}%", p.volume);
+            last_pct = pct;
+        }
+    };
+    let mft_results = match mftscan::scan_roots(&roots, Some(&mut progress_cb), None) {
         Ok(results) => results,
         Err(err) => {
-            eprintln!("MFT scan failed unexpectedly: {err}");
+            eprintln!("\nMFT scan failed unexpectedly: {err}");
             return;
         }
     };
+    eprintln!();
     let mft_elapsed = mft_start.elapsed();
 
     report("MFT scan", &mft_results, mft_elapsed, &games);
