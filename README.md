@@ -31,7 +31,7 @@ cargo build --release
 
 ## Історія
 
-Початковий прототип на C++20 + Qt 6.8 збережено в гілках `legacy/cpp-qt` та `winapi-version`.
+Попередні спроби збережено в архівних гілках: `legacy/cpp-qt` (C++20 + Qt 6.8), `legacy/winapi-cpp` (C++/WinAPI), `legacy/python` (перший прототип).
 
 ## Ліцензія
 
