@@ -1,19 +1,34 @@
 //! UI-side data model: findings grouped for the tree view, plus selection
 //! and formatting helpers. Nothing here touches the database directly.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use gametrimmer_core::langdetect::LangKind;
 use gametrimmer_core::rules::Category;
 
-/// Category shown in the tree: either a rules-engine category (redist,
+/// Granular source of a finding: either a rules-engine category (redist,
 /// docs, bonus, ...) or a localization-detector kind (audio, text, video,
-/// font, unknown). Both variants wrap public `core` types unchanged; this
-/// enum exists only so the app can group and display them uniformly.
+/// font, unknown). Both variants wrap public `core` types unchanged. Kept on
+/// every row so the persistence key and the file's original rule/detector
+/// provenance survive the coarser [`DisplayCategory`] grouping used by the
+/// tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DisplayCategory {
+pub enum FindingSource {
     Rule(Category),
     Loc(LangKind),
+}
+
+/// Top-level category shown in the tree, merged from the granular
+/// rule/localization sources in [`FindingSource`] (see [`display_category`]
+/// for the mapping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DisplayCategory {
+    Redist,
+    Docs,
+    Bonus,
+    Loc,
+    Other,
 }
 
 /// One classified file, as produced by the scan worker.
@@ -25,7 +40,7 @@ pub struct FindingRow {
     pub install_dir: PathBuf,
     pub rel_path: String,
     pub size: u64,
-    pub category: DisplayCategory,
+    pub source: FindingSource,
     /// For rule findings: the rule's `desc`. For localization findings: the
     /// detector's `reason`. Persisted as-is into `findings.rule_id`.
     pub rule_desc: String,
@@ -33,6 +48,21 @@ pub struct FindingRow {
     /// Set only for localization findings; the normalized language key
     /// (e.g. "es", "pt-br"). Persisted into `findings.lang_tag`.
     pub lang_tag: Option<String>,
+    /// `\`-separated path (relative to the game root) of the shallowest
+    /// ancestor directory in which every file is flagged as non-essential -
+    /// letting the tree collapse that folder into a single node instead of
+    /// scattering its files across categories. `None` when no such ancestor
+    /// exists (an "orphan" finding, shown as its own row). UI-only grouping
+    /// metadata, computed by `worker::scan::assign_group_dirs` - never
+    /// persisted to the database.
+    pub group_dir: Option<String>,
+}
+
+impl FindingRow {
+    /// The coarse category this row is grouped under in the tree.
+    pub fn display_category(&self) -> DisplayCategory {
+        display_category(self.source)
+    }
 }
 
 /// A [`FindingRow`] plus UI-only state. Kept in a flat `Vec` so tree nodes
@@ -47,55 +77,95 @@ pub struct FindingItem {
     pub removed: bool,
 }
 
-/// Fixed display order for categories in the tree (matches docs/04 §5.5):
-/// rules-engine categories first, then localization categories.
-pub const CATEGORY_ORDER: [DisplayCategory; 11] = [
-    DisplayCategory::Rule(Category::RedistFolder),
-    DisplayCategory::Rule(Category::RedistFile),
-    DisplayCategory::Rule(Category::DocsFolder),
-    DisplayCategory::Rule(Category::DocsFile),
-    DisplayCategory::Rule(Category::Bonus),
-    DisplayCategory::Rule(Category::DevLeftovers),
-    DisplayCategory::Loc(LangKind::Audio),
-    DisplayCategory::Loc(LangKind::Text),
-    DisplayCategory::Loc(LangKind::Video),
-    DisplayCategory::Loc(LangKind::Font),
-    DisplayCategory::Loc(LangKind::Unknown),
+/// Fixed display order for the 5 top-level categories in the tree.
+pub const CATEGORY_ORDER: [DisplayCategory; 5] = [
+    DisplayCategory::Redist,
+    DisplayCategory::Docs,
+    DisplayCategory::Bonus,
+    DisplayCategory::Loc,
+    DisplayCategory::Other,
 ];
+
+/// Maps a granular finding source onto its top-level display category.
+pub fn display_category(source: FindingSource) -> DisplayCategory {
+    match source {
+        FindingSource::Rule(Category::RedistFolder) | FindingSource::Rule(Category::RedistFile) => {
+            DisplayCategory::Redist
+        }
+        FindingSource::Rule(Category::DocsFolder) | FindingSource::Rule(Category::DocsFile) => {
+            DisplayCategory::Docs
+        }
+        FindingSource::Rule(Category::Bonus) => DisplayCategory::Bonus,
+        FindingSource::Rule(Category::DevLeftovers) => DisplayCategory::Other,
+        FindingSource::Loc(_) => DisplayCategory::Loc,
+    }
+}
 
 /// Human-readable Ukrainian label for a category header.
 pub fn category_display(category: DisplayCategory) -> &'static str {
     match category {
-        DisplayCategory::Rule(Category::RedistFolder) => "Редистрибутиви (теки)",
-        DisplayCategory::Rule(Category::RedistFile) => "Редистрибутиви (файли)",
-        DisplayCategory::Rule(Category::DocsFolder) => "Документація (теки)",
-        DisplayCategory::Rule(Category::DocsFile) => "Документація (файли)",
-        DisplayCategory::Rule(Category::Bonus) => "Бонусні матеріали",
-        DisplayCategory::Rule(Category::DevLeftovers) => "Залишки розробки",
-        DisplayCategory::Loc(LangKind::Audio) => "Локалізація: озвучка",
-        DisplayCategory::Loc(LangKind::Text) => "Локалізація: тексти й субтитри",
-        DisplayCategory::Loc(LangKind::Video) => "Локалізація: відео",
-        DisplayCategory::Loc(LangKind::Font) => "Локалізація: шрифти",
-        DisplayCategory::Loc(LangKind::Unknown) => "Локалізація: інше",
+        DisplayCategory::Redist => "Дистрибутиви",
+        DisplayCategory::Docs => "Документація і довідкові матеріали",
+        DisplayCategory::Bonus => "Бонусні матеріали",
+        DisplayCategory::Loc => "Файли локалізацій",
+        DisplayCategory::Other => "Інше",
     }
 }
 
-/// Stable string key used when persisting a category into `findings.category`.
-/// Mirrors the `category` values used in `rules.json` for rule findings, and
-/// the `loc_*` scheme requested for localization findings.
-pub fn category_key(category: DisplayCategory) -> &'static str {
+/// Stable string key used when persisting a finding's granular source into
+/// `findings.category`. Mirrors the `category` values used in `rules.json`
+/// for rule findings, and the `loc_*` scheme used for localization findings.
+/// Unaffected by the 5-way display grouping: the DB always keeps the
+/// granular value.
+pub fn source_key(source: FindingSource) -> &'static str {
+    match source {
+        FindingSource::Rule(Category::RedistFolder) => "redist_folder",
+        FindingSource::Rule(Category::RedistFile) => "redist_file",
+        FindingSource::Rule(Category::DocsFolder) => "docs_folder",
+        FindingSource::Rule(Category::DocsFile) => "docs_file",
+        FindingSource::Rule(Category::Bonus) => "bonus",
+        FindingSource::Rule(Category::DevLeftovers) => "dev_leftovers",
+        FindingSource::Loc(LangKind::Audio) => "loc_audio",
+        FindingSource::Loc(LangKind::Text) => "loc_text",
+        FindingSource::Loc(LangKind::Video) => "loc_video",
+        FindingSource::Loc(LangKind::Font) => "loc_font",
+        FindingSource::Loc(LangKind::Unknown) => "loc_unknown",
+    }
+}
+
+/// Inverse of [`source_key`]: reparses a `findings.category` value read back
+/// from the database into its granular [`FindingSource`]. Returns `None` for
+/// any string that isn't one of the keys `source_key` produces - e.g. a
+/// category written by a future version of the app, or by `rules.json`
+/// changes that predate a saved scan. Callers (see `worker::load`) must skip
+/// such rows rather than fail the whole load, since the row is otherwise
+/// perfectly readable.
+pub fn parse_source_key(key: &str) -> Option<FindingSource> {
+    match key {
+        "redist_folder" => Some(FindingSource::Rule(Category::RedistFolder)),
+        "redist_file" => Some(FindingSource::Rule(Category::RedistFile)),
+        "docs_folder" => Some(FindingSource::Rule(Category::DocsFolder)),
+        "docs_file" => Some(FindingSource::Rule(Category::DocsFile)),
+        "bonus" => Some(FindingSource::Rule(Category::Bonus)),
+        "dev_leftovers" => Some(FindingSource::Rule(Category::DevLeftovers)),
+        "loc_audio" => Some(FindingSource::Loc(LangKind::Audio)),
+        "loc_text" => Some(FindingSource::Loc(LangKind::Text)),
+        "loc_video" => Some(FindingSource::Loc(LangKind::Video)),
+        "loc_font" => Some(FindingSource::Loc(LangKind::Font)),
+        "loc_unknown" => Some(FindingSource::Loc(LangKind::Unknown)),
+        _ => None,
+    }
+}
+
+/// Stable short key for a display category, used for egui persistent ids
+/// (collapsing header open/closed state) instead of the Ukrainian label.
+pub fn category_ui_key(category: DisplayCategory) -> &'static str {
     match category {
-        DisplayCategory::Rule(Category::RedistFolder) => "redist_folder",
-        DisplayCategory::Rule(Category::RedistFile) => "redist_file",
-        DisplayCategory::Rule(Category::DocsFolder) => "docs_folder",
-        DisplayCategory::Rule(Category::DocsFile) => "docs_file",
-        DisplayCategory::Rule(Category::Bonus) => "bonus",
-        DisplayCategory::Rule(Category::DevLeftovers) => "dev_leftovers",
-        DisplayCategory::Loc(LangKind::Audio) => "loc_audio",
-        DisplayCategory::Loc(LangKind::Text) => "loc_text",
-        DisplayCategory::Loc(LangKind::Video) => "loc_video",
-        DisplayCategory::Loc(LangKind::Font) => "loc_font",
-        DisplayCategory::Loc(LangKind::Unknown) => "loc_unknown",
+        DisplayCategory::Redist => "redist",
+        DisplayCategory::Docs => "docs",
+        DisplayCategory::Bonus => "bonus",
+        DisplayCategory::Loc => "loc",
+        DisplayCategory::Other => "other",
     }
 }
 
@@ -107,54 +177,302 @@ pub fn default_selected(confidence: u8) -> bool {
     confidence >= AUTO_SELECT_CONFIDENCE_THRESHOLD
 }
 
-/// One game's findings within a category, holding indices into the flat
-/// `findings` vec.
+/// One node in the tree, either a collapsed folder (every file under it is
+/// flagged, see `worker::scan::assign_group_dirs`) or a single orphan file
+/// with no collapsible ancestor. Always nested under a [`GameNode`], so it
+/// carries no game identity of its own.
 #[derive(Debug, Clone)]
-pub struct GameGroup {
+pub enum TreeNode {
+    Folder {
+        /// `\`-separated path relative to the game root.
+        group_dir: String,
+        item_indices: Vec<usize>,
+        total_bytes: u64,
+    },
+    File {
+        index: usize,
+    },
+}
+
+/// One display category's nodes within a game, in display order.
+#[derive(Debug, Clone)]
+pub struct CategoryNode {
+    pub category: DisplayCategory,
+    pub nodes: Vec<TreeNode>,
+    /// Concatenated `findings` indices of every node in `nodes` (a folder
+    /// contributes its whole member list, a file its single index).
+    /// Precomputed once in `build_tree` so the virtualized tree view's
+    /// per-frame header rendering never has to re-walk `nodes` to collect
+    /// this - see `ui::tree_view`.
+    pub all_indices: Vec<usize>,
+    /// Total bytes of `all_indices` - precomputed for the same reason.
+    pub total_bytes: u64,
+}
+
+/// One game's categories, in display order. Every finding of a game lives
+/// under exactly one such node, so the game never appears more than once
+/// per disk in the tree.
+#[derive(Debug, Clone)]
+pub struct GameNode {
     pub game_id: i64,
     pub game_name: String,
-    pub item_indices: Vec<usize>,
+    pub categories: Vec<CategoryNode>,
+    /// Concatenated `findings` indices across every category. See
+    /// `CategoryNode::all_indices` for why this is precomputed.
+    pub all_indices: Vec<usize>,
+    /// Total bytes of `all_indices` - precomputed for the same reason.
+    pub total_bytes: u64,
 }
 
-/// One category's games, in display order.
+/// One physical disk's games, largest first.
 #[derive(Debug, Clone)]
-pub struct CategoryGroup {
-    pub category: DisplayCategory,
-    pub games: Vec<GameGroup>,
+pub struct DiskGroup {
+    pub disk: String,
+    pub games: Vec<GameNode>,
+    /// Concatenated `findings` indices across every game. See
+    /// `CategoryNode::all_indices` for why this is precomputed.
+    pub all_indices: Vec<usize>,
+    /// Total bytes of `all_indices` - precomputed for the same reason.
+    pub total_bytes: u64,
 }
 
-/// Rebuilds the category -> game -> items tree from scratch, skipping
-/// removed items. Cheap enough to call after every scan/delete completion.
-pub fn build_tree(items: &[FindingItem]) -> Vec<CategoryGroup> {
-    let mut tree = Vec::new();
-
-    for &category in &CATEGORY_ORDER {
-        let mut games: Vec<GameGroup> = Vec::new();
-
-        for (index, item) in items.iter().enumerate() {
-            if item.removed || item.row.category != category {
-                continue;
+/// Uppercase drive-letter label (e.g. `"E:"`) for `install_dir`'s volume,
+/// used to group games by physical disk in the tree. Non-drive roots (UNC
+/// shares, verbatim device paths, ...) fall back to a label built from the
+/// path's first component instead.
+fn disk_label(install_dir: &Path) -> String {
+    match install_dir.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                format!("{}:", (letter as char).to_ascii_uppercase())
             }
-
-            match games.iter_mut().find(|g| g.game_id == item.row.game_id) {
-                Some(group) => group.item_indices.push(index),
-                None => games.push(GameGroup {
-                    game_id: item.row.game_id,
-                    game_name: item.row.game_name.clone(),
-                    item_indices: vec![index],
-                }),
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                format!(
+                    "\\\\{}\\{}",
+                    server.to_string_lossy(),
+                    share.to_string_lossy()
+                )
             }
-        }
+            _ => prefix.as_os_str().to_string_lossy().to_string(),
+        },
+        Some(Component::Normal(segment)) => segment.to_string_lossy().to_string(),
+        _ => "?".to_string(),
+    }
+}
 
-        if games.is_empty() {
-            continue;
-        }
-
-        games.sort_by(|a, b| a.game_name.cmp(&b.game_name));
-        tree.push(CategoryGroup { category, games });
+/// The display category holding the majority of `indices`' bytes. Ties are
+/// resolved by `CATEGORY_ORDER` position (earliest wins), so a folder shared
+/// across several granular sources always lands in exactly one category,
+/// never split across several - this is the dedup guarantee the tree relies
+/// on.
+fn majority_category(items: &[FindingItem], indices: &[usize]) -> DisplayCategory {
+    let mut bytes_by_category: HashMap<DisplayCategory, u64> = HashMap::new();
+    for &index in indices {
+        let row = &items[index].row;
+        *bytes_by_category.entry(row.display_category()).or_insert(0) += row.size;
     }
 
-    tree
+    let mut best = CATEGORY_ORDER[0];
+    let mut best_bytes = bytes_by_category.get(&best).copied().unwrap_or(0);
+    for &category in &CATEGORY_ORDER[1..] {
+        let bytes = bytes_by_category.get(&category).copied().unwrap_or(0);
+        if bytes > best_bytes {
+            best = category;
+            best_bytes = bytes;
+        }
+    }
+    best
+}
+
+/// Total bytes represented by a tree node - a folder's precomputed total, or
+/// a single file's size - used to sort nodes within a category.
+fn node_bytes(items: &[FindingItem], node: &TreeNode) -> u64 {
+    match node {
+        TreeNode::Folder { total_bytes, .. } => *total_bytes,
+        TreeNode::File { index } => items[*index].row.size,
+    }
+}
+
+/// All flat `findings` indices held under one node - a folder's whole
+/// member list, or a single orphan file's index. Used to build
+/// `CategoryNode::all_indices`/`DiskGroup::all_indices` once in
+/// `build_tree`.
+fn node_all_indices(node: &TreeNode) -> Vec<usize> {
+    match node {
+        TreeNode::Folder { item_indices, .. } => item_indices.clone(),
+        TreeNode::File { index } => vec![*index],
+    }
+}
+
+/// Secondary, deterministic sort key for nodes whose byte totals tie -
+/// otherwise their relative order would depend on hash-map iteration order.
+fn node_sort_key(items: &[FindingItem], node: &TreeNode) -> String {
+    match node {
+        TreeNode::Folder { group_dir, .. } => group_dir.clone(),
+        TreeNode::File { index } => items[*index].row.rel_path.clone(),
+    }
+}
+
+/// Case-insensitive comparison with a case-sensitive tie-break. UI-only path
+/// sorting (Windows paths, not full ICU collation) - lowercasing both sides
+/// groups paths that only differ by case together, while the case-sensitive
+/// second pass keeps the order fully deterministic instead of comparing two
+/// differently-cased duplicates as equal.
+fn path_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    a.to_lowercase()
+        .cmp(&b.to_lowercase())
+        .then_with(|| a.cmp(b))
+}
+
+/// Per-game accumulation used while building the tree: the game's display
+/// name plus its findings split into folder-collapsible buckets and orphans.
+struct GameBucket {
+    game_name: String,
+    /// group_dir -> indices, for folder-collapsible findings.
+    folders: HashMap<String, Vec<usize>>,
+    /// Findings with no collapsible ancestor.
+    orphans: Vec<usize>,
+}
+
+/// Builds one game's category list (display order; within each category,
+/// folders first - largest total first - then individual files by path).
+fn build_game_categories(items: &[FindingItem], bucket: GameBucket) -> Vec<CategoryNode> {
+    let mut nodes_by_category: HashMap<DisplayCategory, Vec<TreeNode>> = HashMap::new();
+
+    for (group_dir, mut indices) in bucket.folders {
+        // Member files are collected in scan order (insertion order into the
+        // group_dir bucket), which for the MFT scan path is not path order -
+        // sort explicitly so the folder's children always read top-to-bottom
+        // by path regardless of how the scan visited them.
+        indices.sort_by(|&a, &b| path_cmp(&items[a].row.rel_path, &items[b].row.rel_path));
+        let total_bytes = group_size_bytes(items, &indices);
+        let category = majority_category(items, &indices);
+        nodes_by_category
+            .entry(category)
+            .or_default()
+            .push(TreeNode::Folder {
+                group_dir,
+                item_indices: indices,
+                total_bytes,
+            });
+    }
+    for index in bucket.orphans {
+        nodes_by_category
+            .entry(items[index].row.display_category())
+            .or_default()
+            .push(TreeNode::File { index });
+    }
+
+    CATEGORY_ORDER
+        .iter()
+        .filter_map(|&category| {
+            let nodes = nodes_by_category.remove(&category)?;
+            // Folders first (largest total_bytes first, so the biggest
+            // clean-up opportunities lead), then individual files by path -
+            // deliberately not interleaved by size, per the tree's design:
+            // top-level ordering communicates cleanup priority, file ordering
+            // within that communicates "where is it".
+            let (mut folders, mut files): (Vec<TreeNode>, Vec<TreeNode>) = nodes
+                .into_iter()
+                .partition(|node| matches!(node, TreeNode::Folder { .. }));
+            folders.sort_by(|a, b| {
+                node_bytes(items, b)
+                    .cmp(&node_bytes(items, a))
+                    .then_with(|| path_cmp(&node_sort_key(items, a), &node_sort_key(items, b)))
+            });
+            files.sort_by(|a, b| path_cmp(&node_sort_key(items, a), &node_sort_key(items, b)));
+            let mut nodes = folders;
+            nodes.append(&mut files);
+            let all_indices: Vec<usize> = nodes.iter().flat_map(node_all_indices).collect();
+            let total_bytes = group_size_bytes(items, &all_indices);
+            Some(CategoryNode {
+                category,
+                nodes,
+                all_indices,
+                total_bytes,
+            })
+        })
+        .collect()
+}
+
+/// Rebuilds the disk -> game -> category -> folder/file tree from scratch,
+/// skipping removed items. Cheap enough to call after every scan/delete
+/// completion.
+///
+/// Every game appears exactly once under its disk, holding all of its
+/// findings - the tree never scatters one game's rows across the disk.
+/// Within a game, every flagged file with a `group_dir` (see
+/// `worker::scan::assign_group_dirs`) is merged into one `TreeNode::Folder`
+/// per `group_dir`, placed under the single display category holding the
+/// majority of that folder's bytes (`majority_category`) - this is what
+/// keeps a shared folder from appearing in more than one category. Findings
+/// without a `group_dir` become standalone `TreeNode::File` nodes in their
+/// own display category. Within a category, folders precede individual
+/// files (see `build_game_categories`); within a folder, member files are
+/// ordered by path (see `path_cmp`).
+pub fn build_tree(items: &[FindingItem]) -> Vec<DiskGroup> {
+    let mut game_buckets: HashMap<(String, i64), GameBucket> = HashMap::new();
+
+    for (index, item) in items.iter().enumerate() {
+        if item.removed {
+            continue;
+        }
+        let disk = disk_label(&item.row.install_dir);
+        let bucket = game_buckets
+            .entry((disk, item.row.game_id))
+            .or_insert_with(|| GameBucket {
+                game_name: item.row.game_name.clone(),
+                folders: HashMap::new(),
+                orphans: Vec::new(),
+            });
+        match &item.row.group_dir {
+            Some(dir) => bucket.folders.entry(dir.clone()).or_default().push(index),
+            None => bucket.orphans.push(index),
+        }
+    }
+
+    let mut games_by_disk: HashMap<String, Vec<GameNode>> = HashMap::new();
+    for ((disk, game_id), bucket) in game_buckets {
+        let game_name = bucket.game_name.clone();
+        let categories = build_game_categories(items, bucket);
+        let all_indices: Vec<usize> = categories
+            .iter()
+            .flat_map(|category_node| category_node.all_indices.iter().copied())
+            .collect();
+        let total_bytes = group_size_bytes(items, &all_indices);
+        games_by_disk.entry(disk).or_default().push(GameNode {
+            game_id,
+            game_name,
+            categories,
+            all_indices,
+            total_bytes,
+        });
+    }
+
+    let mut disks: Vec<DiskGroup> = games_by_disk
+        .into_iter()
+        .map(|(disk, mut games)| {
+            games.sort_by(|a, b| {
+                b.total_bytes
+                    .cmp(&a.total_bytes)
+                    .then_with(|| a.game_name.cmp(&b.game_name))
+            });
+            let all_indices: Vec<usize> = games
+                .iter()
+                .flat_map(|game| game.all_indices.iter().copied())
+                .collect();
+            let total_bytes = group_size_bytes(items, &all_indices);
+            DiskGroup {
+                disk,
+                games,
+                all_indices,
+                total_bytes,
+            }
+        })
+        .collect();
+
+    disks.sort_by(|a, b| a.disk.cmp(&b.disk));
+    disks
 }
 
 /// Whether every / any item in `indices` is currently selected. Used to
@@ -171,10 +489,26 @@ pub fn group_selection_state(items: &[FindingItem], indices: &[usize]) -> (bool,
 /// currently selected, otherwise deselects all.
 pub fn toggle_group(items: &mut [FindingItem], indices: &[usize]) {
     let (all_selected, _) = group_selection_state(items, indices);
-    let new_state = !all_selected;
+    set_group_selection(items, indices, !all_selected);
+}
+
+/// Sets every item in `indices` to the given selection state. Used by the
+/// bulk-selection actions (select all on a disk, all of a category, ...).
+pub fn set_group_selection(items: &mut [FindingItem], indices: &[usize], selected: bool) {
     for &index in indices {
-        items[index].selected = new_state;
+        items[index].selected = selected;
     }
+}
+
+/// The lowest confidence among `indices` - the group's "weakest link",
+/// shown as a warning on group headers so the user knows the group needs a
+/// closer look before deleting. 100 for an empty group.
+pub fn group_min_confidence(items: &[FindingItem], indices: &[usize]) -> u8 {
+    indices
+        .iter()
+        .map(|&index| items[index].row.confidence)
+        .min()
+        .unwrap_or(100)
 }
 
 /// Total size in bytes of the selected, non-removed items in `indices`.
@@ -208,7 +542,28 @@ mod tests {
     fn item(
         game_id: i64,
         game_name: &str,
-        category: DisplayCategory,
+        source: FindingSource,
+        confidence: u8,
+        size: u64,
+    ) -> FindingItem {
+        item_at(
+            game_id,
+            game_name,
+            "C:\\Games\\Test",
+            "file.txt",
+            source,
+            confidence,
+            size,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn item_at(
+        game_id: i64,
+        game_name: &str,
+        install_dir: &str,
+        rel_path: &str,
+        source: FindingSource,
         confidence: u8,
         size: u64,
     ) -> FindingItem {
@@ -217,13 +572,14 @@ mod tests {
                 file_id: 0,
                 game_id,
                 game_name: game_name.to_string(),
-                install_dir: PathBuf::from("C:\\Games\\Test"),
-                rel_path: "file.txt".to_string(),
+                install_dir: PathBuf::from(install_dir),
+                rel_path: rel_path.to_string(),
                 size,
-                category,
+                source,
                 rule_desc: "test rule".to_string(),
                 confidence,
                 lang_tag: None,
+                group_dir: None,
             },
             selected: default_selected(confidence),
             removed: false,
@@ -243,7 +599,7 @@ mod tests {
         let mut found = item(
             game_id,
             game_name,
-            DisplayCategory::Loc(kind),
+            FindingSource::Loc(kind),
             confidence,
             size,
         );
@@ -252,27 +608,142 @@ mod tests {
         found
     }
 
+    fn with_group_dir(mut found: FindingItem, group_dir: &str) -> FindingItem {
+        found.row.group_dir = Some(group_dir.to_string());
+        found
+    }
+
     #[test]
-    fn build_tree_groups_by_category_then_game() {
+    fn display_category_maps_every_source_to_the_five_top_level_categories() {
+        assert_eq!(
+            display_category(FindingSource::Rule(Category::RedistFolder)),
+            DisplayCategory::Redist
+        );
+        assert_eq!(
+            display_category(FindingSource::Rule(Category::RedistFile)),
+            DisplayCategory::Redist
+        );
+        assert_eq!(
+            display_category(FindingSource::Rule(Category::DocsFolder)),
+            DisplayCategory::Docs
+        );
+        assert_eq!(
+            display_category(FindingSource::Rule(Category::DocsFile)),
+            DisplayCategory::Docs
+        );
+        assert_eq!(
+            display_category(FindingSource::Rule(Category::Bonus)),
+            DisplayCategory::Bonus
+        );
+        assert_eq!(
+            display_category(FindingSource::Rule(Category::DevLeftovers)),
+            DisplayCategory::Other
+        );
+        for kind in [
+            LangKind::Audio,
+            LangKind::Text,
+            LangKind::Video,
+            LangKind::Font,
+            LangKind::Unknown,
+        ] {
+            assert_eq!(
+                display_category(FindingSource::Loc(kind)),
+                DisplayCategory::Loc
+            );
+        }
+    }
+
+    #[test]
+    fn source_key_preserves_the_original_granular_persistence_strings() {
+        assert_eq!(
+            source_key(FindingSource::Rule(Category::RedistFolder)),
+            "redist_folder"
+        );
+        assert_eq!(
+            source_key(FindingSource::Rule(Category::RedistFile)),
+            "redist_file"
+        );
+        assert_eq!(
+            source_key(FindingSource::Rule(Category::DocsFolder)),
+            "docs_folder"
+        );
+        assert_eq!(
+            source_key(FindingSource::Rule(Category::DocsFile)),
+            "docs_file"
+        );
+        assert_eq!(source_key(FindingSource::Rule(Category::Bonus)), "bonus");
+        assert_eq!(
+            source_key(FindingSource::Rule(Category::DevLeftovers)),
+            "dev_leftovers"
+        );
+        assert_eq!(source_key(FindingSource::Loc(LangKind::Audio)), "loc_audio");
+        assert_eq!(source_key(FindingSource::Loc(LangKind::Text)), "loc_text");
+        assert_eq!(source_key(FindingSource::Loc(LangKind::Video)), "loc_video");
+        assert_eq!(source_key(FindingSource::Loc(LangKind::Font)), "loc_font");
+        assert_eq!(
+            source_key(FindingSource::Loc(LangKind::Unknown)),
+            "loc_unknown"
+        );
+    }
+
+    #[test]
+    fn parse_source_key_round_trips_every_finding_source_variant() {
+        let all_sources = [
+            FindingSource::Rule(Category::RedistFolder),
+            FindingSource::Rule(Category::RedistFile),
+            FindingSource::Rule(Category::DocsFolder),
+            FindingSource::Rule(Category::DocsFile),
+            FindingSource::Rule(Category::Bonus),
+            FindingSource::Rule(Category::DevLeftovers),
+            FindingSource::Loc(LangKind::Audio),
+            FindingSource::Loc(LangKind::Text),
+            FindingSource::Loc(LangKind::Video),
+            FindingSource::Loc(LangKind::Font),
+            FindingSource::Loc(LangKind::Unknown),
+        ];
+
+        for source in all_sources {
+            assert_eq!(
+                parse_source_key(source_key(source)),
+                Some(source),
+                "round-trip through source_key/parse_source_key must recover {source:?}"
+            );
+        }
+
+        assert_eq!(
+            parse_source_key("not_a_real_category"),
+            None,
+            "an unrecognized category string must parse to None, not panic"
+        );
+    }
+
+    #[test]
+    fn category_ui_key_is_stable_and_distinct_per_category() {
+        let keys: Vec<&str> = CATEGORY_ORDER.iter().map(|&c| category_ui_key(c)).collect();
+        assert_eq!(keys, vec!["redist", "docs", "bonus", "loc", "other"]);
+    }
+
+    #[test]
+    fn build_tree_groups_by_disk_then_game_then_category() {
         let items = vec![
             item(
                 1,
                 "Game A",
-                DisplayCategory::Rule(Category::RedistFolder),
+                FindingSource::Rule(Category::RedistFolder),
                 90,
                 100,
             ),
             item(
                 1,
                 "Game A",
-                DisplayCategory::Rule(Category::RedistFile),
+                FindingSource::Rule(Category::RedistFile),
                 95,
                 50,
             ),
             item(
                 2,
                 "Game B",
-                DisplayCategory::Rule(Category::RedistFolder),
+                FindingSource::Rule(Category::RedistFolder),
                 90,
                 200,
             ),
@@ -280,20 +751,107 @@ mod tests {
 
         let tree = build_tree(&items);
 
-        assert_eq!(tree.len(), 2, "two distinct categories present");
-        let redist_folder = tree
-            .iter()
-            .find(|g| g.category == DisplayCategory::Rule(Category::RedistFolder))
-            .expect("redist folder category present");
+        assert_eq!(tree.len(), 1, "all games share the same disk (C:)");
+        assert_eq!(tree[0].disk, "C:");
         assert_eq!(
-            redist_folder.games.len(),
+            tree[0].games.len(),
             2,
-            "two distinct games under redist folder"
+            "each game appears exactly once under its disk"
+        );
+
+        let game_a = tree[0]
+            .games
+            .iter()
+            .find(|game| game.game_name == "Game A")
+            .expect("Game A node present");
+        assert_eq!(
+            game_a.categories.len(),
+            1,
+            "both redist_folder and redist_file collapse into the single Redist category"
+        );
+        assert_eq!(game_a.categories[0].category, DisplayCategory::Redist);
+        assert_eq!(
+            game_a.categories[0].nodes.len(),
+            2,
+            "two orphan files (no group_dir set) become two separate nodes"
         );
     }
 
     #[test]
-    fn build_tree_groups_localization_categories_by_game() {
+    fn build_tree_sorts_games_within_a_disk_by_total_bytes_descending() {
+        let items = vec![
+            item(
+                1,
+                "Small Game",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                10,
+            ),
+            item(
+                2,
+                "Big Game",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                1000,
+            ),
+        ];
+
+        let tree = build_tree(&items);
+
+        assert_eq!(tree[0].games[0].game_name, "Big Game");
+        assert_eq!(tree[0].games[1].game_name, "Small Game");
+    }
+
+    #[test]
+    fn build_tree_separates_disks() {
+        let items = vec![
+            item_at(
+                1,
+                "Game A",
+                "E:\\Games\\A",
+                "file.txt",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                10,
+            ),
+            item_at(
+                2,
+                "Game B",
+                "D:\\Games\\B",
+                "file.txt",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                10,
+            ),
+        ];
+
+        let tree = build_tree(&items);
+
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[0].disk, "D:", "disks are sorted alphabetically");
+        assert_eq!(tree[1].disk, "E:");
+    }
+
+    #[test]
+    fn build_tree_uses_first_component_for_non_drive_roots() {
+        let items = vec![item_at(
+            1,
+            "Networked Game",
+            "\\\\server\\share\\Games\\A",
+            "file.txt",
+            FindingSource::Rule(Category::Bonus),
+            90,
+            10,
+        )];
+
+        let tree = build_tree(&items);
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].disk, "\\\\server\\share");
+    }
+
+    #[test]
+    fn build_tree_groups_localization_categories_together() {
         let items = vec![
             loc_item(1, "Game A", LangKind::Audio, "es", 90, 100),
             loc_item(1, "Game A", LangKind::Text, "fr", 88, 20),
@@ -302,16 +860,16 @@ mod tests {
 
         let tree = build_tree(&items);
 
-        assert_eq!(
-            tree.len(),
-            2,
-            "audio and text localization categories both present"
-        );
-        let audio = tree
-            .iter()
-            .find(|g| g.category == DisplayCategory::Loc(LangKind::Audio))
-            .expect("localization audio category present");
-        assert_eq!(audio.games.len(), 2, "two distinct games under loc_audio");
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].games.len(), 2);
+        for game in &tree[0].games {
+            assert_eq!(
+                game.categories.len(),
+                1,
+                "audio and text localization findings collapse into one Loc category"
+            );
+            assert_eq!(game.categories[0].category, DisplayCategory::Loc);
+        }
     }
 
     #[test]
@@ -319,7 +877,7 @@ mod tests {
         let mut items = vec![item(
             1,
             "Game A",
-            DisplayCategory::Rule(Category::Bonus),
+            FindingSource::Rule(Category::Bonus),
             90,
             10,
         )];
@@ -328,6 +886,417 @@ mod tests {
         let tree = build_tree(&items);
 
         assert!(tree.is_empty(), "removed items must not appear in the tree");
+    }
+
+    #[test]
+    fn build_tree_collapses_a_fully_flagged_folder_into_one_node() {
+        let items = vec![
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "junk\\a.txt",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    100,
+                ),
+                "junk",
+            ),
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "junk\\b.txt",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    50,
+                ),
+                "junk",
+            ),
+        ];
+
+        let tree = build_tree(&items);
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].games.len(), 1);
+        let game = &tree[0].games[0];
+        assert_eq!(game.categories.len(), 1);
+        assert_eq!(
+            game.categories[0].nodes.len(),
+            1,
+            "one folder node, not two file nodes"
+        );
+        match &game.categories[0].nodes[0] {
+            TreeNode::Folder {
+                group_dir,
+                item_indices,
+                total_bytes,
+            } => {
+                assert_eq!(group_dir, "junk");
+                assert_eq!(item_indices.len(), 2);
+                assert_eq!(*total_bytes, 150);
+            }
+            TreeNode::File { .. } => panic!("expected a folder node"),
+        }
+    }
+
+    #[test]
+    fn build_tree_places_a_shared_folder_in_exactly_one_category_by_byte_majority() {
+        // A folder with mixed sources: 100 bytes of Docs, 10 bytes of Bonus.
+        // Byte majority must put the whole folder under Docs, never split.
+        let items = vec![
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "extras\\manual.pdf",
+                    FindingSource::Rule(Category::DocsFile),
+                    85,
+                    100,
+                ),
+                "extras",
+            ),
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "extras\\poster.jpg",
+                    FindingSource::Rule(Category::Bonus),
+                    80,
+                    10,
+                ),
+                "extras",
+            ),
+        ];
+
+        let tree = build_tree(&items);
+
+        let game = &tree[0].games[0];
+        assert_eq!(
+            game.categories.len(),
+            1,
+            "the shared folder appears in exactly one category"
+        );
+        assert_eq!(game.categories[0].category, DisplayCategory::Docs);
+        let TreeNode::Folder { item_indices, .. } = &game.categories[0].nodes[0] else {
+            panic!("expected a folder node");
+        };
+        assert_eq!(item_indices.len(), 2, "both member findings stay together");
+    }
+
+    #[test]
+    fn build_tree_majority_category_tie_breaks_by_category_order() {
+        // Equal bytes on both sides (Redist vs Docs) - CATEGORY_ORDER lists
+        // Redist before Docs, so Redist must win the tie.
+        let items = vec![
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "mixed\\setup.exe",
+                    FindingSource::Rule(Category::RedistFile),
+                    90,
+                    50,
+                ),
+                "mixed",
+            ),
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "mixed\\readme.pdf",
+                    FindingSource::Rule(Category::DocsFile),
+                    85,
+                    50,
+                ),
+                "mixed",
+            ),
+        ];
+
+        let tree = build_tree(&items);
+
+        assert_eq!(
+            tree[0].games[0].categories[0].category,
+            DisplayCategory::Redist
+        );
+    }
+
+    #[test]
+    fn build_tree_orphan_files_appear_individually_in_their_own_category() {
+        let items = vec![item_at(
+            1,
+            "Game A",
+            "C:\\Games\\A",
+            "loose.txt",
+            FindingSource::Rule(Category::DevLeftovers),
+            90,
+            10,
+        )];
+
+        let tree = build_tree(&items);
+
+        let game = &tree[0].games[0];
+        assert_eq!(game.categories[0].category, DisplayCategory::Other);
+        match &game.categories[0].nodes[0] {
+            TreeNode::File { index } => assert_eq!(*index, 0),
+            TreeNode::Folder { .. } => panic!("expected an orphan file node"),
+        }
+    }
+
+    #[test]
+    fn build_tree_sorts_orphan_files_within_a_category_by_path_not_size() {
+        // Orphan files are sorted by rel_path, independent of size - "b_small"
+        // is 10 bytes and "a_big" is 1000 bytes, but "a_big" still sorts
+        // first because it comes first alphabetically.
+        let items = vec![
+            item_at(
+                1,
+                "Game A",
+                "C:\\Games\\A",
+                "b_small.txt",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                10,
+            ),
+            item_at(
+                1,
+                "Game A",
+                "C:\\Games\\A",
+                "a_big.txt",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                1000,
+            ),
+        ];
+
+        let tree = build_tree(&items);
+
+        let TreeNode::File { index: first } = tree[0].games[0].categories[0].nodes[0] else {
+            panic!("expected file nodes");
+        };
+        assert_eq!(
+            items[first].row.rel_path, "a_big.txt",
+            "files sort by path, not by size"
+        );
+    }
+
+    #[test]
+    fn build_tree_orders_folders_before_files_within_a_category() {
+        // A small folder (30 bytes total) and a much bigger orphan file
+        // (1000 bytes) share a category - folders must still lead, since
+        // top-level ordering groups by node kind before by size.
+        let items = vec![
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "junk\\a.txt",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    20,
+                ),
+                "junk",
+            ),
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "junk\\b.txt",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    10,
+                ),
+                "junk",
+            ),
+            item_at(
+                1,
+                "Game A",
+                "C:\\Games\\A",
+                "huge_loose_file.bin",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                1000,
+            ),
+        ];
+
+        let tree = build_tree(&items);
+
+        let nodes = &tree[0].games[0].categories[0].nodes;
+        assert_eq!(nodes.len(), 2, "one folder node + one file node");
+        assert!(
+            matches!(nodes[0], TreeNode::Folder { .. }),
+            "folder must come first even though the file is much larger"
+        );
+        assert!(matches!(nodes[1], TreeNode::File { .. }));
+    }
+
+    #[test]
+    fn build_tree_sorts_folder_member_indices_by_path() {
+        // Inserted in reverse path order (b.txt before a.txt) - build_tree
+        // must reorder item_indices so they read in path order regardless of
+        // scan/insertion order (the MFT scan path does not visit in path
+        // order).
+        let items = vec![
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "junk\\b.txt",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    10,
+                ),
+                "junk",
+            ),
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "junk\\a.txt",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    20,
+                ),
+                "junk",
+            ),
+        ];
+
+        let tree = build_tree(&items);
+
+        let TreeNode::Folder { item_indices, .. } = &tree[0].games[0].categories[0].nodes[0] else {
+            panic!("expected a folder node");
+        };
+        assert_eq!(
+            items[item_indices[0]].row.rel_path, "junk\\a.txt",
+            "member indices are sorted by path, not insertion order"
+        );
+        assert_eq!(items[item_indices[1]].row.rel_path, "junk\\b.txt");
+    }
+
+    #[test]
+    fn build_tree_aggregates_all_indices_and_total_bytes_at_category_and_disk_level() {
+        let items = vec![
+            // A collapsible folder (2 members, 150 bytes) under Bonus.
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "junk\\a.txt",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    100,
+                ),
+                "junk",
+            ),
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game A",
+                    "C:\\Games\\A",
+                    "junk\\b.txt",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    50,
+                ),
+                "junk",
+            ),
+            // An orphan file (20 bytes) under Bonus, same disk.
+            item_at(
+                1,
+                "Game A",
+                "C:\\Games\\A",
+                "loose.jpg",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                20,
+            ),
+            // An orphan file (5 bytes) under Docs, same disk - a second
+            // category, so the disk-level aggregate must span categories.
+            item_at(
+                1,
+                "Game A",
+                "C:\\Games\\A",
+                "readme.pdf",
+                FindingSource::Rule(Category::DocsFile),
+                90,
+                5,
+            ),
+        ];
+
+        let tree = build_tree(&items);
+        assert_eq!(tree.len(), 1);
+        let disk = &tree[0];
+        assert_eq!(disk.games.len(), 1);
+        let game = &disk.games[0];
+
+        let bonus = game
+            .categories
+            .iter()
+            .find(|c| c.category == DisplayCategory::Bonus)
+            .expect("bonus category present");
+        assert_eq!(
+            bonus.all_indices.len(),
+            3,
+            "2 folder members + 1 orphan = 3 indices"
+        );
+        assert_eq!(bonus.total_bytes, 100 + 50 + 20);
+        let expected_bonus_indices: std::collections::HashSet<usize> =
+            bonus.nodes.iter().flat_map(node_all_indices).collect();
+        assert_eq!(
+            bonus
+                .all_indices
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<usize>>(),
+            expected_bonus_indices,
+            "category all_indices must match the union of its nodes' members"
+        );
+
+        let docs = game
+            .categories
+            .iter()
+            .find(|c| c.category == DisplayCategory::Docs)
+            .expect("docs category present");
+        assert_eq!(docs.all_indices.len(), 1);
+        assert_eq!(docs.total_bytes, 5);
+
+        assert_eq!(
+            game.all_indices.len(),
+            4,
+            "game-level aggregate spans every category (3 + 1)"
+        );
+        assert_eq!(game.total_bytes, 100 + 50 + 20 + 5);
+
+        assert_eq!(
+            disk.all_indices.len(),
+            4,
+            "disk-level aggregate spans every game"
+        );
+        assert_eq!(disk.total_bytes, 100 + 50 + 20 + 5);
+        let expected_disk_indices: std::collections::HashSet<usize> = disk
+            .games
+            .iter()
+            .flat_map(|g| g.all_indices.iter().copied())
+            .collect();
+        assert_eq!(
+            disk.all_indices
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<usize>>(),
+            expected_disk_indices,
+            "disk all_indices must match the union of its games' members"
+        );
     }
 
     #[test]
@@ -340,8 +1309,8 @@ mod tests {
     #[test]
     fn toggle_group_selects_all_then_deselects_all() {
         let mut items = vec![
-            item(1, "Game A", DisplayCategory::Rule(Category::Bonus), 50, 10),
-            item(1, "Game A", DisplayCategory::Rule(Category::Bonus), 50, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 50, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 50, 10),
         ];
         items[0].selected = false;
         items[1].selected = false;
@@ -363,8 +1332,8 @@ mod tests {
     #[test]
     fn group_selection_state_detects_partial_selection() {
         let mut items = vec![
-            item(1, "Game A", DisplayCategory::Rule(Category::Bonus), 90, 10),
-            item(1, "Game A", DisplayCategory::Rule(Category::Bonus), 50, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 50, 10),
         ];
         items[0].selected = true;
         items[1].selected = false;
@@ -383,78 +1352,48 @@ mod tests {
     }
 
     #[test]
-    fn category_display_and_key_cover_localization_categories() {
+    fn category_display_covers_all_five_categories() {
+        assert_eq!(category_display(DisplayCategory::Redist), "Дистрибутиви");
         assert_eq!(
-            category_display(DisplayCategory::Loc(LangKind::Audio)),
-            "Локалізація: озвучка"
+            category_display(DisplayCategory::Docs),
+            "Документація і довідкові матеріали"
         );
         assert_eq!(
-            category_display(DisplayCategory::Loc(LangKind::Text)),
-            "Локалізація: тексти й субтитри"
+            category_display(DisplayCategory::Bonus),
+            "Бонусні матеріали"
         );
-        assert_eq!(
-            category_display(DisplayCategory::Loc(LangKind::Video)),
-            "Локалізація: відео"
-        );
-        assert_eq!(
-            category_display(DisplayCategory::Loc(LangKind::Font)),
-            "Локалізація: шрифти"
-        );
-        assert_eq!(
-            category_display(DisplayCategory::Loc(LangKind::Unknown)),
-            "Локалізація: інше"
-        );
-
-        assert_eq!(
-            category_key(DisplayCategory::Loc(LangKind::Audio)),
-            "loc_audio"
-        );
-        assert_eq!(
-            category_key(DisplayCategory::Loc(LangKind::Text)),
-            "loc_text"
-        );
-        assert_eq!(
-            category_key(DisplayCategory::Loc(LangKind::Video)),
-            "loc_video"
-        );
-        assert_eq!(
-            category_key(DisplayCategory::Loc(LangKind::Font)),
-            "loc_font"
-        );
-        assert_eq!(
-            category_key(DisplayCategory::Loc(LangKind::Unknown)),
-            "loc_unknown"
-        );
+        assert_eq!(category_display(DisplayCategory::Loc), "Файли локалізацій");
+        assert_eq!(category_display(DisplayCategory::Other), "Інше");
     }
 
     /// The scan worker dedups a file with both a rules-engine finding and a
     /// localization finding by keeping the higher-confidence one. This is
     /// the model-level contract that dedup logic in `worker::scan` relies
-    /// on: whichever wins becomes the row's `category`/`rule_desc`/
+    /// on: whichever wins becomes the row's `source`/`rule_desc`/
     /// `confidence`/`lang_tag`, never both.
     #[test]
     fn dedup_by_file_keeps_the_higher_confidence_finding() {
-        fn winner(rule_confidence: u8, lang_confidence: u8) -> DisplayCategory {
+        fn winner(rule_confidence: u8, lang_confidence: u8) -> FindingSource {
             // Mirrors `worker::scan::combine_finding`'s tie-break: rules win ties.
             if lang_confidence > rule_confidence {
-                DisplayCategory::Loc(LangKind::Audio)
+                FindingSource::Loc(LangKind::Audio)
             } else {
-                DisplayCategory::Rule(Category::Bonus)
+                FindingSource::Rule(Category::Bonus)
             }
         }
 
-        assert_eq!(winner(70, 95), DisplayCategory::Loc(LangKind::Audio));
-        assert_eq!(winner(95, 70), DisplayCategory::Rule(Category::Bonus));
+        assert_eq!(winner(70, 95), FindingSource::Loc(LangKind::Audio));
+        assert_eq!(winner(95, 70), FindingSource::Rule(Category::Bonus));
         assert_eq!(
             winner(90, 90),
-            DisplayCategory::Rule(Category::Bonus),
+            FindingSource::Rule(Category::Bonus),
             "ties favor the rules engine"
         );
     }
 
     #[test]
     fn file_row_confidence_label_includes_lang_tag_when_present() {
-        let rule_row = item(1, "Game A", DisplayCategory::Rule(Category::Bonus), 90, 10);
+        let rule_row = item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10);
         let loc_row = loc_item(1, "Game A", LangKind::Audio, "es", 90, 10);
 
         let rule_label = format!(

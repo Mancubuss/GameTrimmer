@@ -11,7 +11,8 @@ use std::thread::JoinHandle;
 use eframe::egui;
 
 use crate::elevation;
-use crate::model::{self, CategoryGroup, FindingItem};
+use crate::export;
+use crate::model::{self, DiskGroup, FindingItem};
 use crate::ui;
 use crate::worker::delete::DeleteItem;
 use crate::worker::manual::{self, LibraryRow};
@@ -45,7 +46,26 @@ pub struct GameTrimmerApp {
     pub warnings: Vec<String>,
 
     pub findings: Vec<FindingItem>,
-    pub tree: Vec<CategoryGroup>,
+    pub tree: Vec<DiskGroup>,
+    /// Explicit user expand/collapse choices for the virtualized tree view,
+    /// keyed by a stable node key (see `ui::tree_view`). Absent key = the
+    /// node's default (disks open, games/folders closed, categories open).
+    /// Cleared whenever a fresh tree is built (`WorkerMsg::Done`) but kept
+    /// across `WorkerMsg::RemoveDone` so the user's expanded state survives
+    /// deletions.
+    pub tree_toggles: std::collections::HashMap<String, bool>,
+    /// Keyboard cursor: index into the tree view's current list of visible
+    /// rows (see `ui::tree_view::build_visible_rows`). `None` until the user
+    /// starts navigating with the keyboard or clicks a row. Reset whenever a
+    /// fresh tree is built.
+    pub tree_cursor: Option<usize>,
+    /// The findings tree's scroll offset as of the last rendered frame, used
+    /// to compute keyboard-driven scrolling (PgUp/PgDn, keeping the cursor
+    /// in view) before the current frame's scroll area is laid out.
+    pub tree_scroll_offset: f32,
+    /// The findings tree viewport height as of the last rendered frame - the
+    /// "page" for PgUp/PgDn.
+    pub tree_viewport_height: f32,
 
     /// Every registered library (all vendors), for the library management
     /// list. Refreshed after every add/remove and on startup.
@@ -53,6 +73,9 @@ pub struct GameTrimmerApp {
     /// True while the background "Додати теку..." folder-picker thread is
     /// running, so the button can't be clicked twice concurrently.
     pub folder_picker_active: bool,
+    /// True while the background "Експортувати..." save-dialog thread is
+    /// running, so the button can't be clicked twice concurrently.
+    pub export_active: bool,
 
     /// Indices into `findings` awaiting the user's confirmation in the
     /// delete modal.
@@ -98,8 +121,13 @@ impl GameTrimmerApp {
             warnings: Vec::new(),
             findings: Vec::new(),
             tree: Vec::new(),
+            tree_toggles: std::collections::HashMap::new(),
+            tree_cursor: None,
+            tree_scroll_offset: 0.0,
+            tree_viewport_height: 0.0,
             libraries,
             folder_picker_active: false,
+            export_active: false,
             confirm_delete: None,
             remove_summary: None,
             elevated,
@@ -190,6 +218,39 @@ impl GameTrimmerApp {
         }
     }
 
+    /// Spawns the (blocking) export save-dialog on a background thread. The
+    /// CSV text is built on the UI thread first (cheap - `findings`/`tree`
+    /// are already in memory, and this avoids sharing app state with the
+    /// background thread); the thread then only shows the dialog and writes
+    /// the prebuilt string. No-op if an export is already running or there
+    /// are no findings to export.
+    pub fn start_export(&mut self) {
+        if self.export_active || self.findings.is_empty() {
+            return;
+        }
+        self.export_active = true;
+
+        let csv = export::export_csv(&self.findings, &self.tree);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let picked = rfd::FileDialog::new()
+                .set_title("Експорт результатів аналізу")
+                .set_file_name("gametrimmer_analysis.csv")
+                .add_filter("CSV", &["csv"])
+                .add_filter("Текстовий файл", &["txt"])
+                .save_file();
+
+            let (path, error) = match picked {
+                Some(path) => match export::write_export(&path, &csv) {
+                    Ok(()) => (Some(path), None),
+                    Err(err) => (None, Some(err.to_string())),
+                },
+                None => (None, None),
+            };
+            let _ = tx.send(WorkerMsg::ExportDone { path, error });
+        });
+    }
+
     pub fn start_scan(&mut self) {
         if self.busy {
             return;
@@ -233,6 +294,22 @@ impl GameTrimmerApp {
 
     pub fn cancel_scan(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Selects every non-removed finding (the "Вибрати все" action).
+    pub fn select_all(&mut self) {
+        for item in &mut self.findings {
+            if !item.removed {
+                item.selected = true;
+            }
+        }
+    }
+
+    /// Deselects every finding (the "Зняти вибір" action).
+    pub fn deselect_all(&mut self) {
+        for item in &mut self.findings {
+            item.selected = false;
+        }
     }
 
     /// Selects the currently-checked, non-removed findings and opens the
@@ -333,6 +410,12 @@ impl GameTrimmerApp {
                     })
                     .collect();
                 self.tree = model::build_tree(&self.findings);
+                // A fresh scan means a fresh tree shape - stale toggle keys
+                // (folders/categories that no longer exist, or now mean
+                // something else) must not leak into it, and the keyboard
+                // cursor's row index no longer points at the same row.
+                self.tree_toggles.clear();
+                self.tree_cursor = None;
                 self.status_message =
                     format!("{scan_summary} Знайдено {count} файл(ів) для перевірки.");
             }
@@ -385,6 +468,17 @@ impl GameTrimmerApp {
                 if let Some(path) = path {
                     self.add_manual_library(path);
                 }
+            }
+            WorkerMsg::ExportDone { path, error } => {
+                self.export_active = false;
+                if let Some(error) = error {
+                    self.warnings
+                        .push(format!("Не вдалося зберегти експорт: {error}"));
+                } else if let Some(path) = path {
+                    self.status_message = format!("Експортовано: {}", path.display());
+                }
+                // `path` and `error` both `None` means the user cancelled
+                // the save dialog - nothing to report.
             }
         }
     }
