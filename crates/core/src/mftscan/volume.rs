@@ -17,8 +17,40 @@ use windows::Win32::Storage::FileSystem::{
 
 use crate::error::{CoreError, Result};
 
-/// Opens `\\.\<letter>:` for raw, read-only, non-exclusive access.
-pub fn open_volume(letter: char) -> Result<File> {
+use super::aligned::{sector_size, AlignedReader};
+
+/// Buffer size for the [`AlignedReader`] wrapping a volume handle. The
+/// dominant access pattern is the streaming `$MFT` pass, which reads the
+/// table strictly sequentially - a large buffer turns that into few big
+/// `ReadFile` syscalls instead of one per 64 KiB default-buffer fill. Raw
+/// volume reads bypass the OS read-ahead cache, so the request size is the
+/// only thing that amortizes per-syscall latency here. One buffer of this
+/// size exists per concurrently-open volume, so the memory cost is bounded
+/// and small.
+const VOLUME_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+
+/// Opens `\\.\<letter>:` for raw, read-only, non-exclusive access, wrapped
+/// in an [`AlignedReader`] so every read against the handle is
+/// sector-aligned. Raw volume handles reject unaligned reads with
+/// `ERROR_INVALID_PARAMETER`, which the `ntfs` crate turns into a panic
+/// rather than an `Err` - see [`super::aligned`] for the full explanation.
+/// The alignment used is the volume's actual physical sector size (via
+/// [`sector_size`]), falling back to a safe default if that query fails.
+pub fn open_volume(letter: char) -> Result<AlignedReader<File>> {
+    let file = open_volume_file(letter)?;
+    let alignment = sector_size(letter);
+    Ok(AlignedReader::with_buffer_size(
+        file,
+        alignment,
+        VOLUME_BUFFER_SIZE,
+    ))
+}
+
+/// Opens `\\.\<letter>:` for raw, read-only, non-exclusive access, returning
+/// the bare `File`. Internal: [`open_volume`] is the entry point callers
+/// outside this module should use, since a bare `File` over a volume handle
+/// must never be read from directly (see module docs).
+fn open_volume_file(letter: char) -> Result<File> {
     let device_path = format!(r"\\.\{}:", letter.to_ascii_uppercase());
     let wide: Vec<u16> = device_path
         .encode_utf16()

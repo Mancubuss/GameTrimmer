@@ -1,6 +1,25 @@
 //! Pure path-reconstruction and root-filtering logic for MFT scanning. No
 //! I/O and no `ntfs`/`windows` types here - this is the part that is
 //! meaningfully unit-testable without a real NTFS volume.
+//!
+//! # Why matching happens in FRN space, not string space
+//! A previous implementation reconstructed the full path *string* of every
+//! file on the volume and compared it against every root with a
+//! per-component case-folded prefix check. That is
+//! `O(files x roots x path components)` with allocations inside the inner
+//! loop - measured on a real machine it turned a seconds-long `$MFT` read
+//! into a 26-second scan on a 24-root volume, and into an hour-plus on a
+//! 1000+-root volume. This implementation instead:
+//!
+//! 1. resolves each root directory to its File Record Number once (walking
+//!    *down* a `(parent FRN, folded name) -> FRN` directory index), then
+//! 2. classifies every directory FRN by walking *up* the parent chain with
+//!    memoization - pure `u64` lookups, no strings - and only
+//! 3. builds relative-path strings for files that actually fall under some
+//!    root.
+//!
+//! Total work is `O(records)` with small constants, independent of the
+//! number of roots.
 
 use std::collections::HashMap;
 
@@ -17,115 +36,142 @@ pub struct ScanRoot {
     pub root_rel: String,
 }
 
-/// Follows a record's *primary* (first) alias upward to the volume root,
-/// returning the ancestor path relative to the volume root (no leading or
-/// trailing `\`). Returns `None` if the chain is broken (a referenced parent
-/// is missing from `map`) or cyclic.
-fn ancestor_path(
+/// The case fold used for every name comparison - Windows paths are
+/// case-insensitive, and this matches the fold the previous string-based
+/// implementation applied per component.
+fn fold(name: &str) -> String {
+    name.to_lowercase()
+}
+
+/// Which roots a directory belongs to, and the directory's path relative to
+/// each of those roots (empty string for the root directory itself). Almost
+/// always 0 or 1 entries; more only when roots are nested or duplicated.
+type DirClassification = Vec<(usize, String)>;
+
+/// Ensures `memo` contains the classification for directory `frn`,
+/// recursing up the (primary-alias) parent chain. A missing parent record
+/// or a parent cycle yields an empty classification - such directories
+/// simply cannot be resolved to any root, mirroring how a broken/cyclic
+/// chain dropped the file in the string-based implementation.
+fn ensure_classified(
     frn: u64,
     map: &FrnMap,
-    memo: &mut HashMap<u64, Option<String>>,
-) -> Option<String> {
-    if frn == ROOT_FRN {
-        return Some(String::new());
-    }
-    if let Some(cached) = memo.get(&frn) {
-        return cached.clone();
+    roots_at_frn: &HashMap<u64, Vec<usize>>,
+    memo: &mut HashMap<u64, DirClassification>,
+) {
+    if memo.contains_key(&frn) {
+        return;
     }
 
-    // Cycle guard: if we recurse back into `frn` before this call returns,
-    // the lookup above will find this placeholder and report "no path"
-    // rather than looping forever.
-    memo.insert(frn, None);
+    // Cycle guard: if the parent chain leads back to `frn`, the recursive
+    // call finds this placeholder and stops instead of looping forever.
+    memo.insert(frn, Vec::new());
 
-    let result = map.get(&frn).and_then(|record| {
-        let primary = record.aliases.first()?;
-        let parent_path = ancestor_path(primary.parent_frn, map, memo)?;
-        Some(if parent_path.is_empty() {
-            primary.name.clone()
-        } else {
-            format!("{parent_path}\\{}", primary.name)
-        })
-    });
+    let mut entries: DirClassification = Vec::new();
 
-    memo.insert(frn, result.clone());
-    result
+    if frn != ROOT_FRN {
+        if let Some(record) = map.get(&frn) {
+            if let Some(primary) = record.aliases.first() {
+                ensure_classified(primary.parent_frn, map, roots_at_frn, memo);
+                if let Some(parent_entries) = memo.get(&primary.parent_frn) {
+                    for (root_idx, parent_rel) in parent_entries {
+                        let rel = if parent_rel.is_empty() {
+                            primary.name.clone()
+                        } else {
+                            format!("{parent_rel}\\{}", primary.name)
+                        };
+                        entries.push((*root_idx, rel));
+                    }
+                }
+            }
+        }
+    }
+
+    // A root anchored exactly at this directory contributes itself with an
+    // empty relative prefix - in addition to (not instead of) any enclosing
+    // roots inherited from the parent chain above, so nested roots each see
+    // the file.
+    if let Some(indices) = roots_at_frn.get(&frn) {
+        for &root_idx in indices {
+            entries.push((root_idx, String::new()));
+        }
+    }
+
+    memo.insert(frn, entries);
 }
 
-/// Reconstructs every full path (relative to the volume root) that `frn` is
-/// known by - one per `$FILE_NAME` alias, so a hard-linked file yields one
-/// path per link.
-fn full_paths_for(frn: u64, map: &FrnMap, memo: &mut HashMap<u64, Option<String>>) -> Vec<String> {
-    let Some(record) = map.get(&frn) else {
-        return Vec::new();
-    };
-
-    record
-        .aliases
-        .iter()
-        .filter_map(|alias| {
-            let parent_path = ancestor_path(alias.parent_frn, map, memo)?;
-            Some(if parent_path.is_empty() {
-                alias.name.clone()
-            } else {
-                format!("{parent_path}\\{}", alias.name)
-            })
-        })
-        .collect()
-}
-
-/// Returns the part of `full_path` below `root_rel`, or `None` if `full_path`
-/// is not strictly inside `root_rel`. Comparison is done component-by-component
-/// with a Unicode-aware case fold (Windows paths are case-insensitive), and
-/// the returned suffix keeps the original casing from `full_path`.
-fn strip_root(full_path: &str, root_rel: &str) -> Option<String> {
-    if root_rel.is_empty() {
-        return Some(full_path.to_string());
-    }
-
-    let full_components: Vec<&str> = full_path.split('\\').collect();
-    let root_components: Vec<&str> = root_rel.split('\\').collect();
-
-    if full_components.len() <= root_components.len() {
-        return None; // full_path must be strictly deeper than root_rel
-    }
-
-    let matches = root_components
-        .iter()
-        .zip(full_components.iter())
-        .all(|(r, f)| r.to_lowercase() == f.to_lowercase());
-
-    if !matches {
-        return None;
-    }
-
-    Some(full_components[root_components.len()..].join("\\"))
-}
-
-/// Reconstructs full paths for every file record in `map`, then filters them
-/// down to the given `roots`, producing one `FileEntry` list per game id.
-/// Directories are never emitted (only used as ancestors). Games with no
-/// matching files get an empty `Vec`, not an error.
+/// Reconstructs relative paths for every file record in `map` that falls
+/// under one of the given `roots`, producing one `FileEntry` list per game
+/// id. Directories are never emitted (only used as ancestors). Games with
+/// no matching files get an empty `Vec`, not an error. Several roots may
+/// name the same directory (two store entries sharing one install dir) -
+/// each gets its own full copy of the files.
 pub fn scan_frn_map(map: &FrnMap, roots: &[ScanRoot]) -> Vec<(i64, Vec<FileEntry>)> {
-    let mut memo: HashMap<u64, Option<String>> = HashMap::new();
+    // 1. Directory child index: (parent FRN, folded name) -> child dir FRN.
+    //    Built over directory records only, so its size is the directory
+    //    count, not the file count.
+    let mut dir_children: HashMap<(u64, String), u64> = HashMap::new();
+    for (&frn, record) in map {
+        if !record.is_directory {
+            continue;
+        }
+        for alias in &record.aliases {
+            dir_children.insert((alias.parent_frn, fold(&alias.name)), frn);
+        }
+    }
+
+    // 2. Resolve each root's relative path to its directory FRN by walking
+    //    down the index component by component. Roots that don't resolve
+    //    (deleted or renamed since discovery) simply match nothing, which is
+    //    the string implementation's behavior too.
+    let mut roots_at_frn: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (root_idx, root) in roots.iter().enumerate() {
+        let mut frn = ROOT_FRN;
+        let mut resolved = true;
+        if !root.root_rel.is_empty() {
+            for component in root.root_rel.split('\\') {
+                match dir_children.get(&(frn, fold(component))) {
+                    Some(&child) => frn = child,
+                    None => {
+                        resolved = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if resolved {
+            roots_at_frn.entry(frn).or_default().push(root_idx);
+        }
+    }
+
+    // 3+4. Classify each file's parent directory (memoized, FRN space) and
+    //      emit entries only for files that belong to some root.
+    let mut memo: HashMap<u64, DirClassification> = HashMap::new();
     let mut results: HashMap<i64, Vec<FileEntry>> =
         roots.iter().map(|r| (r.game_id, Vec::new())).collect();
 
-    for (&frn, record) in map {
+    for record in map.values() {
         if record.is_directory {
             continue;
         }
 
-        for full_path in full_paths_for(frn, map, &mut memo) {
-            for root in roots {
-                if let Some(rel_path) = strip_root(&full_path, &root.root_rel) {
-                    if let Some(bucket) = results.get_mut(&root.game_id) {
-                        bucket.push(FileEntry {
-                            rel_path,
-                            size: record.size,
-                            mtime: record.mtime,
-                        });
-                    }
+        for alias in &record.aliases {
+            ensure_classified(alias.parent_frn, map, &roots_at_frn, &mut memo);
+            let Some(parent_entries) = memo.get(&alias.parent_frn) else {
+                continue;
+            };
+            for (root_idx, dir_rel) in parent_entries {
+                let rel_path = if dir_rel.is_empty() {
+                    alias.name.clone()
+                } else {
+                    format!("{dir_rel}\\{}", alias.name)
+                };
+                if let Some(bucket) = results.get_mut(&roots[*root_idx].game_id) {
+                    bucket.push(FileEntry {
+                        rel_path,
+                        size: record.size,
+                        mtime: record.mtime,
+                    });
                 }
             }
         }
@@ -188,14 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn reconstructs_nested_full_path() {
-        let map = sample_map();
-        let mut memo = HashMap::new();
-        let paths = full_paths_for(104, &map, &mut memo);
-        assert_eq!(paths, vec!["SteamLibrary\\HalfLife\\data\\save1.sav"]);
-    }
-
-    #[test]
     fn filters_files_under_matching_root_only() {
         let map = sample_map();
         let roots = vec![ScanRoot {
@@ -243,6 +281,53 @@ mod tests {
         assert_eq!(portal_paths, vec!["portal.exe"]);
     }
 
+    /// Two store entries can share one install directory (e.g. the Half-Life
+    /// 2 VR episodes all live in `Half-Life 2 VR`) - every game id sharing a
+    /// root directory must get its own full copy of the files.
+    #[test]
+    fn duplicate_roots_on_the_same_dir_each_get_all_files() {
+        let map = sample_map();
+        let roots = vec![
+            ScanRoot {
+                game_id: 1,
+                root_rel: "SteamLibrary\\HalfLife".to_string(),
+            },
+            ScanRoot {
+                game_id: 2,
+                root_rel: "SteamLibrary\\HalfLife".to_string(),
+            },
+        ];
+
+        let results = scan_frn_map(&map, &roots);
+        let by_id: HashMap<i64, Vec<FileEntry>> = results.into_iter().collect();
+
+        assert_eq!(by_id[&1].len(), 2);
+        assert_eq!(by_id[&2].len(), 2);
+    }
+
+    /// A root nested inside another root: files under the inner root belong
+    /// to both games, with paths relative to each root respectively.
+    #[test]
+    fn nested_roots_both_see_inner_files() {
+        let map = sample_map();
+        let roots = vec![
+            ScanRoot {
+                game_id: 1,
+                root_rel: "SteamLibrary\\HalfLife".to_string(),
+            },
+            ScanRoot {
+                game_id: 2,
+                root_rel: "SteamLibrary\\HalfLife\\data".to_string(),
+            },
+        ];
+
+        let results = scan_frn_map(&map, &roots);
+        let by_id: HashMap<i64, Vec<FileEntry>> = results.into_iter().collect();
+
+        assert!(by_id[&1].iter().any(|e| e.rel_path == "data\\save1.sav"));
+        assert!(by_id[&2].iter().any(|e| e.rel_path == "save1.sav"));
+    }
+
     #[test]
     fn root_with_no_files_yields_empty_vec_not_missing_entry() {
         let map = sample_map();
@@ -274,7 +359,7 @@ mod tests {
     #[test]
     fn hard_linked_file_yields_one_path_per_alias() {
         let mut map = sample_map();
-        // Give hl.exe (104's sibling, frn 102) a second hard-linked name inside Portal.
+        // Give hl.exe (frn 102) a second hard-linked name inside Portal.
         map.get_mut(&102).unwrap().aliases.push(NameAlias {
             parent_frn: 105,
             name: "hl_link.exe".to_string(),
