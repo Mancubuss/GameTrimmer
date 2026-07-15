@@ -54,6 +54,14 @@ pub struct Rule {
     pub desc: String,
     /// 0-100.
     pub confidence: u8,
+    /// Optional per-rule override of the category's default depth limit
+    /// ([`MAX_REDIST_DEPTH`] for redist rules, unlimited otherwise). Lets a
+    /// highly specific pattern (e.g. `vc_redist.*.exe`) match inside nested
+    /// vendor folders like `Support\Software\VCRedist\` without loosening
+    /// the shallow default that keeps generic patterns away from deep asset
+    /// trees.
+    #[serde(default)]
+    pub max_depth: Option<usize>,
 }
 
 /// A classification produced by the engine for one file.
@@ -71,6 +79,9 @@ struct CompiledRule {
     regex: Regex,
     desc: String,
     confidence: u8,
+    /// The effective depth limit for this rule: the rule's own `max_depth`
+    /// if given, otherwise the category default (see [`Rule::max_depth`]).
+    max_depth: usize,
 }
 
 #[derive(Debug)]
@@ -95,11 +106,17 @@ impl RuleEngine {
                     ))
                 })?;
 
+            let default_depth = if rule.category.is_depth_limited() {
+                MAX_REDIST_DEPTH
+            } else {
+                usize::MAX
+            };
             rules.push(CompiledRule {
                 category: rule.category,
                 regex,
                 desc: rule.desc,
                 confidence: rule.confidence,
+                max_depth: rule.max_depth.unwrap_or(default_depth),
             });
         }
 
@@ -133,18 +150,11 @@ impl RuleEngine {
             let is_match = if rule.category.matches_folder_segments() {
                 folder_segments.iter().enumerate().any(|(i, segment)| {
                     let depth = i + 1;
-                    if rule.category.is_depth_limited() && depth > MAX_REDIST_DEPTH {
-                        return false;
-                    }
-                    rule.regex.is_match(segment)
+                    depth <= rule.max_depth && rule.regex.is_match(segment)
                 })
             } else {
                 let file_depth = folder_segments.len() + 1;
-                if rule.category.is_depth_limited() && file_depth > MAX_REDIST_DEPTH {
-                    false
-                } else {
-                    rule.regex.is_match(file_name)
-                }
+                file_depth <= rule.max_depth && rule.regex.is_match(file_name)
             };
 
             if !is_match {
@@ -233,6 +243,42 @@ mod tests {
         let finding = engine.classify("data\\assets\\textures\\installations\\wall.dds");
 
         assert_eq!(finding, None);
+    }
+
+    #[test]
+    fn classify_respects_a_per_rule_max_depth_override() {
+        let json = r#"[
+            {"category": "redist_file", "pattern": "^vc_?redist.*\\.exe$", "desc": "MS Visual C++ Redist", "confidence": 95, "max_depth": 4}
+        ]"#;
+        let engine = RuleEngine::from_json(json).unwrap();
+
+        // Depth 4 (3 folders + file) is beyond the category default of 2,
+        // but within this rule's own override.
+        let finding = engine
+            .classify(r"Support\Software\VCRedist\vc_redist.x64.exe")
+            .expect("max_depth override should allow the deeper match");
+        assert_eq!(finding.category, Category::RedistFile);
+
+        // Depth 5 is beyond even the override.
+        assert_eq!(
+            engine.classify(r"a\b\c\d\vc_redist.x64.exe"),
+            None,
+            "the override is still a limit, not an unlimited pass"
+        );
+    }
+
+    #[test]
+    fn repo_rules_classify_nested_vc_redist_as_redist_not_bonus() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        // Real-world layout (Assassin's Creed Mirage): the redist installer
+        // lives 3 folders deep under "Support", which alone matches a
+        // low-confidence bonus rule - the specific redist file rule must win.
+        let finding = engine
+            .classify(r"Support\Software\VCRedist\vc_redist.x64.exe")
+            .expect("vc_redist installer should be classified");
+
+        assert_eq!(finding.category, Category::RedistFile);
     }
 
     #[test]

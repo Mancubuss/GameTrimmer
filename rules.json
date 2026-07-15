@@ -9,13 +9,15 @@
     "category": "redist_folder",
     "pattern": "^directx.*$",
     "desc": "Тека редистрибутиву MS DirectX",
-    "confidence": 90
+    "confidence": 90,
+    "max_depth": 4
   },
   {
     "category": "redist_folder",
-    "pattern": "^(msvc.*|vcredist)$",
+    "pattern": "^(msvc.*|vc_?redist)$",
     "desc": "Тека MS Visual C++ Runtime",
-    "confidence": 90
+    "confidence": 90,
+    "max_depth": 4
   },
   {
     "category": "redist_folder",
@@ -49,15 +51,17 @@
   },
   {
     "category": "redist_file",
-    "pattern": "^dxwebsetup\\.exe$",
-    "desc": "MS DirectX Web Installer",
-    "confidence": 95
+    "pattern": "^(dxwebsetup|dxsetup)\\.exe$",
+    "desc": "Інсталятор MS DirectX",
+    "confidence": 95,
+    "max_depth": 4
   },
   {
     "category": "redist_file",
-    "pattern": "^vcredist.*\\.exe$",
+    "pattern": "^vc_?redist.*\\.exe$",
     "desc": "Інсталятор MS Visual C++ Redist",
-    "confidence": 95
+    "confidence": 95,
+    "max_depth": 4
   },
   {
     "category": "redist_file",
@@ -154,5 +158,17 @@
     "pattern": "^(thumbs\\.db|testapp.*\\.exe)$",
     "desc": "Залишки розробки (кеш Thumbs.db, тестові виконувані файли)",
     "confidence": 90
+  },
+  {
+    "category": "dev_leftovers",
+    "pattern": "^(desktop\\.ini|\\.ds_store|ehthumbs\\.db)$",
+    "desc": "Службові файли провідника ОС (desktop.ini, .DS_Store, ehthumbs.db)",
+    "confidence": 90
+  },
+  {
+    "category": "dev_leftovers",
+    "pattern": "^.*\\.pdb$",
+    "desc": "Символи налагодження (PDB), залишок збірки розробника",
+    "confidence": 75
   }
 ]
