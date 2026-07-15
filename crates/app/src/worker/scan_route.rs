@@ -1,0 +1,374 @@
+//! Pure routing logic for choosing the MFT-index scan path vs. a regular
+//! `walkdir` scan, per game install root.
+//!
+//! Everything in this module is decided from plain data gathered by the
+//! caller elsewhere (elevation status, drive-letter parsing, per-volume
+//! `mftscan::is_available` results, canonicalization outcomes, and the
+//! actual `mftscan::scan_roots` results) - no filesystem, registry, or
+//! privilege-token access happens here, which is what makes it unit
+//! testable without a real NTFS volume or Administrator rights.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use gametrimmer_core::mftscan::MediaKind;
+
+/// One game root as input to the first routing pass, before any MFT scan
+/// has been attempted.
+#[derive(Debug, Clone)]
+pub struct RootCheck {
+    pub game_id: i64,
+    pub install_dir: PathBuf,
+    /// The drive letter of `install_dir`'s *nominal* path (e.g. `Some('G')`
+    /// for `G:\SteamLibrary\...`), or `None` for a UNC path or anything else
+    /// without a `<letter>:` prefix.
+    pub volume_letter: Option<char>,
+    /// `true` when canonicalizing `install_dir` resolves to a different
+    /// path (a junction, symlink, mount point, or `subst` drive), or when
+    /// canonicalization itself failed. Both cases get the same safe
+    /// treatment: the nominal path cannot be trusted to be a plain subtree
+    /// of its volume, so it must be walked directly.
+    pub canonical_mismatch: bool,
+}
+
+/// Why a root is being scanned with `walkdir` instead of the MFT index.
+/// Carried only for diagnostics/tests right now - callers don't currently
+/// need to distinguish these beyond "not MFT".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkdirReason {
+    /// The process is not running elevated, so no volume can be opened for
+    /// raw MFT reads at all.
+    NotElevated,
+    /// `install_dir` is not on a lettered local drive (e.g. a UNC path).
+    NoVolumeLetter,
+    /// `mftscan::is_available` returned `false` for this root's volume.
+    VolumeUnavailable,
+    /// This root's volume reports no seek penalty (SSD/NVMe): a directory
+    /// walk of just the library subtrees beats reading the entire volume's
+    /// `$MFT` there, even on a cold cache - measured at ~40x on a real
+    /// machine (mft_bench: 0.6s cold walkdir vs 26s MFT on an SSD volume).
+    SsdVolume,
+    /// The nominal path resolves elsewhere on disk (junction, symlink,
+    /// mount point, or `subst` drive) - only a direct walk sees its real
+    /// contents.
+    CanonicalMismatch,
+    /// The MFT scan attempt for this root returned an error (either the
+    /// whole volume failed to open, or something about this specific root).
+    MftFailed,
+    /// The MFT scan returned zero files for this root, but the root is not
+    /// actually empty on disk - treated as a scan failure rather than a
+    /// genuinely empty game folder.
+    MftEmptyOnNonEmptyDisk,
+}
+
+/// Where a root ends up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanRoute {
+    Mft,
+    Walkdir(WalkdirReason),
+}
+
+/// Whether the MFT path is worth taking on a volume of this media kind.
+/// The MFT path is *correct* on any NTFS volume; this is purely a speed
+/// call (see [`WalkdirReason::SsdVolume`]). `Unknown` keeps the MFT path:
+/// it is the behavior the user explicitly opted into via elevation, and it
+/// is never wrong - merely not always fastest.
+pub fn mft_worthwhile(media: MediaKind) -> bool {
+    match media {
+        MediaKind::SeekPenalty | MediaKind::Unknown => true,
+        MediaKind::NoSeekPenalty => false,
+    }
+}
+
+/// First routing pass, before any MFT scan is attempted: decides whether a
+/// root is even a *candidate* for the MFT path. Only roots that come back
+/// [`ScanRoute::Mft`] here are worth passing into `mftscan::scan_roots` at
+/// all; the rest already have a definitive `walkdir` reason and don't need
+/// the (comparatively expensive) MFT pass to touch them.
+///
+/// `volume_ssd` is consulted before `volume_available`: an SSD volume is
+/// routed to walkdir without ever being probed for raw-open availability,
+/// so its absence from `volume_available` is expected and must not read as
+/// "unavailable".
+pub fn initial_route(
+    elevated: bool,
+    check: &RootCheck,
+    volume_available: &HashMap<char, bool>,
+    volume_ssd: &HashMap<char, bool>,
+) -> ScanRoute {
+    if !elevated {
+        return ScanRoute::Walkdir(WalkdirReason::NotElevated);
+    }
+    let Some(letter) = check.volume_letter else {
+        return ScanRoute::Walkdir(WalkdirReason::NoVolumeLetter);
+    };
+    if check.canonical_mismatch {
+        return ScanRoute::Walkdir(WalkdirReason::CanonicalMismatch);
+    }
+    if volume_ssd.get(&letter).copied().unwrap_or(false) {
+        return ScanRoute::Walkdir(WalkdirReason::SsdVolume);
+    }
+    if volume_available.get(&letter).copied().unwrap_or(false) {
+        ScanRoute::Mft
+    } else {
+        ScanRoute::Walkdir(WalkdirReason::VolumeUnavailable)
+    }
+}
+
+/// Distinct volume letters worth querying `mftscan::is_available` for: those
+/// with at least one root that is elevated-eligible, has a drive letter, and
+/// has no canonicalization mismatch. Roots already decided otherwise (not
+/// elevated, no drive letter, canonical mismatch) don't need their volume
+/// probed at all, so this can save an `is_available` call (itself a raw
+/// volume open) per volume that turns out not to matter.
+pub fn volumes_to_check(elevated: bool, checks: &[RootCheck]) -> Vec<char> {
+    if !elevated {
+        return Vec::new();
+    }
+    let mut letters: Vec<char> = checks
+        .iter()
+        .filter(|c| !c.canonical_mismatch)
+        .filter_map(|c| c.volume_letter)
+        .collect();
+    letters.sort_unstable();
+    letters.dedup();
+    letters
+}
+
+/// Second routing pass, after `mftscan::scan_roots` has actually been tried
+/// for a candidate root: folds in the scan's own success/failure and the
+/// "empty result but non-empty on disk" rule. `nonempty_on_disk` is only
+/// meaningful (and only needs to have been computed by the caller) when
+/// `entries_empty` is `true`.
+pub fn finalize_mft_result(mft_ok: bool, entries_empty: bool, nonempty_on_disk: bool) -> ScanRoute {
+    if !mft_ok {
+        return ScanRoute::Walkdir(WalkdirReason::MftFailed);
+    }
+    if entries_empty && nonempty_on_disk {
+        return ScanRoute::Walkdir(WalkdirReason::MftEmptyOnNonEmptyDisk);
+    }
+    ScanRoute::Mft
+}
+
+/// Case-insensitive path comparison used to detect junctions, symlinks,
+/// mount points, and `subst` drives: if canonicalizing a root's nominal path
+/// resolves to something other than the nominal path itself (compared this
+/// way), the root cannot be trusted to be a plain subtree of its volume, and
+/// must be walked directly instead of resolved through the MFT index.
+pub fn paths_case_insensitively_equal(a: &Path, b: &Path) -> bool {
+    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+}
+
+/// Builds the "(MFT: X, обхід тек: Y)" scan-method breakdown shown in the
+/// final status line after a scan completes.
+pub fn format_scan_summary(total: usize, mft: usize, walkdir: usize, elapsed_secs: f64) -> String {
+    format!("Проскановано {total} ігор (MFT: {mft}, обхід тек: {walkdir}) за {elapsed_secs:.1} с.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(letter: Option<char>, canonical_mismatch: bool) -> RootCheck {
+        RootCheck {
+            game_id: 1,
+            install_dir: PathBuf::from(r"G:\SteamLibrary\Game"),
+            volume_letter: letter,
+            canonical_mismatch,
+        }
+    }
+
+    #[test]
+    fn not_elevated_always_routes_to_walkdir() {
+        let c = check(Some('G'), false);
+        let mut available = HashMap::new();
+        available.insert('G', true);
+
+        assert_eq!(
+            initial_route(false, &c, &available, &HashMap::new()),
+            ScanRoute::Walkdir(WalkdirReason::NotElevated)
+        );
+    }
+
+    #[test]
+    fn elevated_with_no_volume_letter_routes_to_walkdir() {
+        let c = check(None, false);
+        let available = HashMap::new();
+
+        assert_eq!(
+            initial_route(true, &c, &available, &HashMap::new()),
+            ScanRoute::Walkdir(WalkdirReason::NoVolumeLetter)
+        );
+    }
+
+    #[test]
+    fn elevated_with_canonical_mismatch_routes_to_walkdir_even_if_volume_available() {
+        let c = check(Some('G'), true);
+        let mut available = HashMap::new();
+        available.insert('G', true);
+
+        assert_eq!(
+            initial_route(true, &c, &available, &HashMap::new()),
+            ScanRoute::Walkdir(WalkdirReason::CanonicalMismatch)
+        );
+    }
+
+    #[test]
+    fn elevated_with_unavailable_volume_routes_to_walkdir() {
+        let c = check(Some('G'), false);
+        let mut available = HashMap::new();
+        available.insert('G', false);
+
+        assert_eq!(
+            initial_route(true, &c, &available, &HashMap::new()),
+            ScanRoute::Walkdir(WalkdirReason::VolumeUnavailable)
+        );
+    }
+
+    #[test]
+    fn elevated_with_volume_missing_from_map_routes_to_walkdir() {
+        let c = check(Some('G'), false);
+        let available = HashMap::new(); // 'G' never queried/known
+
+        assert_eq!(
+            initial_route(true, &c, &available, &HashMap::new()),
+            ScanRoute::Walkdir(WalkdirReason::VolumeUnavailable)
+        );
+    }
+
+    #[test]
+    fn elevated_with_available_volume_and_no_mismatch_is_mft_candidate() {
+        let c = check(Some('G'), false);
+        let mut available = HashMap::new();
+        available.insert('G', true);
+
+        assert_eq!(
+            initial_route(true, &c, &available, &HashMap::new()),
+            ScanRoute::Mft
+        );
+    }
+
+    #[test]
+    fn elevated_ssd_volume_routes_to_walkdir_without_availability_probe() {
+        let c = check(Some('G'), false);
+        // 'G' is deliberately absent from `available`: an SSD volume must
+        // be routed away before availability is ever consulted.
+        let available = HashMap::new();
+        let mut ssd = HashMap::new();
+        ssd.insert('G', true);
+
+        assert_eq!(
+            initial_route(true, &c, &available, &ssd),
+            ScanRoute::Walkdir(WalkdirReason::SsdVolume)
+        );
+    }
+
+    #[test]
+    fn elevated_non_ssd_volume_still_follows_availability() {
+        let c = check(Some('G'), false);
+        let mut available = HashMap::new();
+        available.insert('G', true);
+        let mut ssd = HashMap::new();
+        ssd.insert('G', false);
+
+        assert_eq!(initial_route(true, &c, &available, &ssd), ScanRoute::Mft);
+    }
+
+    #[test]
+    fn mft_worthwhile_only_rejects_no_seek_penalty() {
+        assert!(mft_worthwhile(MediaKind::SeekPenalty));
+        assert!(mft_worthwhile(MediaKind::Unknown));
+        assert!(!mft_worthwhile(MediaKind::NoSeekPenalty));
+    }
+
+    #[test]
+    fn volumes_to_check_is_empty_when_not_elevated() {
+        let checks = vec![check(Some('G'), false), check(Some('D'), false)];
+        assert!(volumes_to_check(false, &checks).is_empty());
+    }
+
+    #[test]
+    fn volumes_to_check_dedups_and_sorts_letters() {
+        let checks = vec![
+            check(Some('G'), false),
+            check(Some('D'), false),
+            check(Some('G'), false),
+        ];
+        assert_eq!(volumes_to_check(true, &checks), vec!['D', 'G']);
+    }
+
+    #[test]
+    fn volumes_to_check_skips_no_letter_and_canonical_mismatch_roots() {
+        let checks = vec![
+            check(None, false),      // no drive letter - skip
+            check(Some('C'), true),  // canonical mismatch - skip
+            check(Some('G'), false), // real candidate
+        ];
+        assert_eq!(volumes_to_check(true, &checks), vec!['G']);
+    }
+
+    #[test]
+    fn finalize_mft_result_error_routes_to_walkdir_regardless_of_emptiness() {
+        assert_eq!(
+            finalize_mft_result(false, true, true),
+            ScanRoute::Walkdir(WalkdirReason::MftFailed)
+        );
+        assert_eq!(
+            finalize_mft_result(false, false, false),
+            ScanRoute::Walkdir(WalkdirReason::MftFailed)
+        );
+    }
+
+    #[test]
+    fn finalize_mft_result_empty_but_nonempty_on_disk_routes_to_walkdir() {
+        assert_eq!(
+            finalize_mft_result(true, true, true),
+            ScanRoute::Walkdir(WalkdirReason::MftEmptyOnNonEmptyDisk)
+        );
+    }
+
+    #[test]
+    fn finalize_mft_result_genuinely_empty_root_stays_on_mft() {
+        assert_eq!(finalize_mft_result(true, true, false), ScanRoute::Mft);
+    }
+
+    #[test]
+    fn finalize_mft_result_nonempty_result_stays_on_mft() {
+        assert_eq!(finalize_mft_result(true, false, false), ScanRoute::Mft);
+        // `nonempty_on_disk` is meaningless once entries aren't empty, but
+        // must not be able to flip the outcome either way.
+        assert_eq!(finalize_mft_result(true, false, true), ScanRoute::Mft);
+    }
+
+    #[test]
+    fn paths_case_insensitively_equal_ignores_case() {
+        assert!(paths_case_insensitively_equal(
+            Path::new(r"G:\SteamLibrary\Game"),
+            Path::new(r"g:\steamlibrary\game"),
+        ));
+    }
+
+    #[test]
+    fn paths_case_insensitively_equal_detects_real_differences() {
+        assert!(!paths_case_insensitively_equal(
+            Path::new(r"G:\SteamLibrary\Game"),
+            Path::new(r"D:\Elsewhere\Game"),
+        ));
+    }
+
+    #[test]
+    fn format_scan_summary_matches_expected_shape() {
+        assert_eq!(
+            format_scan_summary(10, 7, 3, 2.5),
+            "Проскановано 10 ігор (MFT: 7, обхід тек: 3) за 2.5 с."
+        );
+    }
+
+    #[test]
+    fn format_scan_summary_rounds_elapsed_to_one_decimal() {
+        assert_eq!(
+            format_scan_summary(1, 0, 1, 0.04),
+            "Проскановано 1 ігор (MFT: 0, обхід тек: 1) за 0.0 с."
+        );
+    }
+}

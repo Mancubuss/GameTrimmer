@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 
+use crate::elevation;
 use crate::model::{self, CategoryGroup, FindingItem};
 use crate::ui;
 use crate::worker::delete::DeleteItem;
@@ -57,6 +58,16 @@ pub struct GameTrimmerApp {
     /// delete modal.
     pub confirm_delete: Option<Vec<usize>>,
     pub remove_summary: Option<RemoveSummary>,
+
+    /// Whether this process currently holds Administrator rights - gates
+    /// the MFT index scan path (see `crate::elevation`, `worker::scan_route`).
+    /// Checked once at startup; a relaunch-elevated always restarts the
+    /// process, so this never needs to change while running.
+    pub elevated: bool,
+    /// Whether the startup modal offering a UAC relaunch (for faster MFT
+    /// scanning) is currently shown. Only ever `true` at startup, and only
+    /// when `!elevated`.
+    pub show_elevation_prompt: bool,
 }
 
 impl GameTrimmerApp {
@@ -70,6 +81,7 @@ impl GameTrimmerApp {
             None => "помилка визначення шляху до бази даних".to_string(),
         };
         let libraries = Self::load_libraries(db_path.as_deref());
+        let elevated = elevation::is_elevated();
 
         let (tx, rx) = mpsc::channel();
 
@@ -90,6 +102,8 @@ impl GameTrimmerApp {
             folder_picker_active: false,
             confirm_delete: None,
             remove_summary: None,
+            elevated,
+            show_elevation_prompt: !elevated,
         }
     }
 
@@ -192,8 +206,29 @@ impl GameTrimmerApp {
         self.warnings.clear();
         self.remove_summary = None;
 
-        let handle = worker::scan::spawn_scan(db_path, Arc::clone(&self.cancel), self.tx.clone());
+        let handle = worker::scan::spawn_scan(
+            db_path,
+            Arc::clone(&self.cancel),
+            self.tx.clone(),
+            self.elevated,
+        );
         self._worker = Some(handle);
+    }
+
+    /// Attempts to relaunch the app elevated (triggers a UAC prompt). On
+    /// success the current process exits immediately, handing off to the
+    /// new elevated instance; on failure (user declined UAC, or the
+    /// relaunch could not start) this just dismisses the modal - the
+    /// session continues unelevated, never a hard failure.
+    pub fn relaunch_elevated(&mut self) {
+        if elevation::relaunch_elevated() {
+            std::process::exit(0);
+        }
+        self.show_elevation_prompt = false;
+    }
+
+    pub fn continue_without_elevation(&mut self) {
+        self.show_elevation_prompt = false;
     }
 
     pub fn cancel_scan(&mut self) {
@@ -278,7 +313,10 @@ impl GameTrimmerApp {
             } => {
                 self.progress = Some((current, total, game_name));
             }
-            WorkerMsg::Done { findings } => {
+            WorkerMsg::Done {
+                findings,
+                scan_summary,
+            } => {
                 self.busy = false;
                 self.progress = None;
                 self._worker = None;
@@ -295,7 +333,8 @@ impl GameTrimmerApp {
                     })
                     .collect();
                 self.tree = model::build_tree(&self.findings);
-                self.status_message = format!("Готово. Знайдено {count} файл(ів) для перевірки.");
+                self.status_message =
+                    format!("{scan_summary} Знайдено {count} файл(ів) для перевірки.");
             }
             WorkerMsg::RemoveDone { outcomes } => {
                 self.busy = false;

@@ -9,10 +9,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use gametrimmer_core::db;
 use gametrimmer_core::error::{CoreError, Result as CoreResult};
 use gametrimmer_core::langdetect::{LangDetector, LangFinding};
+use gametrimmer_core::mftscan;
 use gametrimmer_core::providers::{self, DiscoveredLibrary};
 use gametrimmer_core::rules::{Finding, RuleEngine};
 use gametrimmer_core::scanner::{scan_dir, store_files_no_tx, FileEntry};
@@ -20,6 +22,7 @@ use rusqlite::{params, Connection};
 
 use crate::model::{category_key, DisplayCategory, FindingRow};
 
+use super::scan_route::{self, ScanRoute};
 use super::{manual, resolve_rules_path, WorkerMsg};
 
 /// Worker threads used for scanning+classifying games in parallel. Chosen
@@ -38,16 +41,20 @@ const SCAN_THREADS: usize = 6;
 const WRITE_BATCH_SIZE: usize = 24;
 
 /// Spawns the scan job on a new thread. `cancel` is polled between games so
-/// the user can abort a long scan early.
+/// the user can abort a long scan early. `elevated` reflects whether this
+/// process holds Administrator rights right now (see `crate::elevation`) -
+/// it gates the MFT index scan path, which needs raw volume read access.
 pub fn spawn_scan(
     db_path: PathBuf,
     cancel: Arc<AtomicBool>,
     tx: Sender<WorkerMsg>,
+    elevated: bool,
 ) -> JoinHandle<()> {
-    std::thread::spawn(move || run_scan(&db_path, &cancel, &tx))
+    std::thread::spawn(move || run_scan(&db_path, &cancel, &tx, elevated))
 }
 
-fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>) {
+fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevated: bool) {
+    let started_at = Instant::now();
     let Some(rules_path) = resolve_rules_path() else {
         send_error(
             tx,
@@ -118,7 +125,27 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>) {
         games: games.len(),
     });
 
+    if cancel.load(Ordering::Relaxed) {
+        let _ = tx.send(WorkerMsg::Cancelled);
+        return;
+    }
+
     let total = games.len();
+
+    // A single, non-cancellable pre-pass: for every game whose install root
+    // is eligible (elevated, on an NTFS volume that opens, not behind a
+    // junction/symlink/mount point/`subst`), try reading its files straight
+    // out of that volume's Master File Table instead of walking its
+    // directory tree. Ineligible roots, and roots the pass itself rejects,
+    // simply have no entry in `mft_pass.entries` - `dispatch_scans` falls
+    // back to a normal `scan_dir` walk for those, exactly as before this
+    // path existed.
+    let mft_pass = run_mft_pass(elevated, &games, cancel, tx);
+
+    if cancel.load(Ordering::Relaxed) {
+        let _ = tx.send(WorkerMsg::Cancelled);
+        return;
+    }
 
     // Scanning+classification (IO and CPU work, no DB) happens in parallel
     // across `SCAN_THREADS` worker threads; only the DB writes are
@@ -132,7 +159,14 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>) {
     let write_outcome = std::thread::scope(|scope| {
         let writer = scope.spawn(|| run_writer(&mut conn, result_rx, tx, total, cancel));
 
-        dispatch_scans(&games, &engine, &lang_detector, cancel, &result_tx);
+        dispatch_scans(
+            &games,
+            &engine,
+            &lang_detector,
+            cancel,
+            &result_tx,
+            &mft_pass.entries,
+        );
         // Dropping the last sender lets the writer's `for outcome in rx`
         // loop end once every dispatched scan has reported in.
         drop(result_tx);
@@ -156,7 +190,17 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>) {
         return;
     }
 
-    let _ = tx.send(WorkerMsg::Done { findings });
+    let scan_summary = scan_route::format_scan_summary(
+        total,
+        mft_pass.mft_count,
+        mft_pass.walkdir_count,
+        started_at.elapsed().as_secs_f64(),
+    );
+
+    let _ = tx.send(WorkerMsg::Done {
+        findings,
+        scan_summary,
+    });
 }
 
 /// One game's outcome after scanning+classifying it, sent from a scan worker
@@ -181,12 +225,19 @@ enum GameOutcome {
 /// once set, games not yet started are reported as cancelled immediately
 /// instead of being scanned, while games already running on a worker thread
 /// (up to `SCAN_THREADS` of them) still finish normally.
+///
+/// `mft_entries` holds the file lists the MFT pass already obtained for
+/// some games (see `run_mft_pass`) - a game present here skips `scan_dir`
+/// entirely and goes straight to classification; a game absent from it (the
+/// common case when not elevated, or whenever the MFT pass rejected that
+/// root) is scanned with `scan_dir` exactly as before this path existed.
 fn dispatch_scans(
     games: &[(i64, String, PathBuf)],
     engine: &RuleEngine,
     lang_detector: &LangDetector,
     cancel: &AtomicBool,
     result_tx: &Sender<GameOutcome>,
+    mft_entries: &HashMap<i64, Vec<FileEntry>>,
 ) {
     let run_one = |game_id: i64, name: &str, install_dir: &Path, result_tx: Sender<GameOutcome>| {
         if cancel.load(Ordering::Relaxed) {
@@ -198,14 +249,25 @@ fn dispatch_scans(
             return;
         }
 
-        let outcome = match scan_and_prepare_game(engine, lang_detector, game_id, name, install_dir)
-        {
-            Ok(prepared) => GameOutcome::Scanned(prepared),
-            Err(error) => GameOutcome::Failed {
-                name: name.to_string(),
-                install_dir: install_dir.to_path_buf(),
-                error,
-            },
+        let outcome = match mft_entries.get(&game_id) {
+            Some(entries) => GameOutcome::Scanned(classify_game(
+                engine,
+                lang_detector,
+                game_id,
+                name,
+                install_dir,
+                entries.clone(),
+            )),
+            None => {
+                match scan_and_prepare_game(engine, lang_detector, game_id, name, install_dir) {
+                    Ok(prepared) => GameOutcome::Scanned(prepared),
+                    Err(error) => GameOutcome::Failed {
+                        name: name.to_string(),
+                        install_dir: install_dir.to_path_buf(),
+                        error,
+                    },
+                }
+            }
         };
         let _ = result_tx.send(outcome);
     };
@@ -228,6 +290,218 @@ fn dispatch_scans(
             }
         }
     }
+}
+
+/// Result of the MFT index pre-pass: file entries for every game that ended
+/// up going through the MFT path, plus how many games went each way (for
+/// the final status line - see `scan_route::format_scan_summary`).
+struct MftPassOutcome {
+    entries: HashMap<i64, Vec<FileEntry>>,
+    mft_count: usize,
+    walkdir_count: usize,
+}
+
+/// Runs the (single, non-cancellable) MFT index pass ahead of the per-game
+/// scan dispatch: for every game whose install root is eligible (see
+/// `scan_route::initial_route`), tries to read its files straight out of
+/// the NTFS volume's Master File Table instead of walking its directory
+/// tree. Ineligible roots, and roots the pass itself rejects (see
+/// `scan_route::finalize_mft_result`), are simply left out of the returned
+/// map - `dispatch_scans` transparently falls back to `scan_dir` (walkdir)
+/// for any game id not present in it.
+///
+/// Every game ends up in exactly one of the two buckets that make up
+/// `mft_count + walkdir_count`, by construction: `walkdir_count` is derived
+/// as `total - mft_count` rather than tracked incrementally, so the two
+/// numbers can never drift apart even if a routing edge case is missed.
+///
+/// `cancel` is threaded down into `mftscan::scan_roots` so a cancellation
+/// during this (otherwise non-cancellable) pass stops promptly instead of
+/// reading an entire large volume to completion first. `tx` receives one
+/// `WorkerMsg::Progress` per chunk of `$MFT` records read on each volume,
+/// so the UI shows something during what used to be a silent, seemingly
+/// stuck phase - see `mftscan::MftProgress`.
+fn run_mft_pass(
+    elevated: bool,
+    games: &[(i64, String, PathBuf)],
+    cancel: &AtomicBool,
+    tx: &Sender<WorkerMsg>,
+) -> MftPassOutcome {
+    let total = games.len();
+
+    if !elevated {
+        return MftPassOutcome {
+            entries: HashMap::new(),
+            mft_count: 0,
+            walkdir_count: total,
+        };
+    }
+
+    let checks: Vec<scan_route::RootCheck> = games
+        .iter()
+        .map(|(game_id, _, install_dir)| scan_route::RootCheck {
+            game_id: *game_id,
+            install_dir: install_dir.clone(),
+            volume_letter: mftscan::volume_letter(install_dir),
+            canonical_mismatch: canonical_mismatch(install_dir),
+        })
+        .collect();
+
+    // Media-type routing: on a volume without a seek penalty (SSD/NVMe) a
+    // directory walk of just the library subtrees beats reading the whole
+    // volume's $MFT, so such volumes are routed to walkdir without even
+    // probing raw-open availability. HDDs (and unknown media) stay on the
+    // MFT path - that is where it wins by orders of magnitude on a cold
+    // cache. See scan_route::mft_worthwhile / WalkdirReason::SsdVolume.
+    let mut volume_available: HashMap<char, bool> = HashMap::new();
+    let mut volume_ssd: HashMap<char, bool> = HashMap::new();
+    for letter in scan_route::volumes_to_check(elevated, &checks) {
+        if scan_route::mft_worthwhile(mftscan::media_kind(letter)) {
+            volume_ssd.insert(letter, false);
+            volume_available.insert(letter, mftscan::is_available(letter));
+        } else {
+            volume_ssd.insert(letter, true);
+        }
+    }
+
+    // Group MFT candidates by volume so that a panic or error while
+    // scanning one volume (see `scan_volume_catching_panics`) can never
+    // affect another volume's already-decided-good results - each volume
+    // gets its own `mftscan::scan_roots` call.
+    let mut candidates_by_volume: HashMap<char, Vec<(i64, PathBuf)>> = HashMap::new();
+    for check in &checks {
+        if scan_route::initial_route(elevated, check, &volume_available, &volume_ssd)
+            != ScanRoute::Mft
+        {
+            continue;
+        }
+        let Some(letter) = check.volume_letter else {
+            continue; // structurally unreachable (Mft route implies Some), never panics either way
+        };
+        candidates_by_volume
+            .entry(letter)
+            .or_default()
+            .push((check.game_id, check.install_dir.clone()));
+    }
+
+    let install_dir_by_id: HashMap<i64, &PathBuf> =
+        games.iter().map(|(id, _, dir)| (*id, dir)).collect();
+
+    let mut entries_by_id: HashMap<i64, Vec<FileEntry>> = HashMap::new();
+
+    for roots in candidates_by_volume.into_values() {
+        let game_ids: Vec<i64> = roots.iter().map(|(id, _)| *id).collect();
+
+        let mut progress_cb = |p: mftscan::MftProgress| {
+            let pct = (p.records_done * 100)
+                .checked_div(p.records_total)
+                .unwrap_or(0);
+            let _ = tx.send(WorkerMsg::Progress {
+                current: p.records_done as usize,
+                total: p.records_total as usize,
+                game_name: format!("Читання файлової таблиці {}: — {pct}%", p.volume),
+            });
+        };
+
+        let results = scan_volume_catching_panics(
+            || mftscan::scan_roots(&roots, Some(&mut progress_cb), Some(cancel)),
+            &game_ids,
+        );
+
+        for (game_id, result) in results {
+            let mft_ok = result.is_ok();
+            let entries = result.unwrap_or_default();
+            let entries_empty = entries.is_empty();
+            let nonempty_on_disk = entries_empty
+                && install_dir_by_id
+                    .get(&game_id)
+                    .is_some_and(|dir| root_nonempty_on_disk(dir));
+
+            if let ScanRoute::Mft =
+                scan_route::finalize_mft_result(mft_ok, entries_empty, nonempty_on_disk)
+            {
+                entries_by_id.insert(game_id, entries);
+            }
+        }
+    }
+
+    let mft_count = entries_by_id.len();
+    MftPassOutcome {
+        entries: entries_by_id,
+        mft_count,
+        walkdir_count: total - mft_count,
+    }
+}
+
+/// Whether canonicalizing `install_dir` resolves to a path other than the
+/// nominal one - a junction, symlink, mount point, or `subst` drive - which
+/// means the volume's raw MFT contents can't be trusted to reflect what's
+/// actually at `install_dir`. Uses `dunce::canonicalize` rather than
+/// `std::fs::canonicalize` so the comparison isn't defeated by the `\\?\`
+/// verbatim prefix Windows' own canonicalization adds. A canonicalization
+/// failure (e.g. a permissions issue) gets the same safe treatment as a
+/// mismatch: fall back to walkdir rather than trust the nominal path.
+fn canonical_mismatch(install_dir: &Path) -> bool {
+    match dunce::canonicalize(install_dir) {
+        Ok(canonical) => !scan_route::paths_case_insensitively_equal(&canonical, install_dir),
+        Err(_) => true,
+    }
+}
+
+/// Cheap, non-recursive check for whether `dir` has at least one entry on
+/// disk. Used only to catch the rare case where the MFT pass reports zero
+/// files for a root that plainly isn't empty (see
+/// `scan_route::WalkdirReason::MftEmptyOnNonEmptyDisk`) - a full recursive
+/// walk here would defeat the point of the MFT path being fast, so this
+/// only looks at the root's immediate directory entries.
+fn root_nonempty_on_disk(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false)
+}
+
+/// Calls `scan_fn` - one volume's worth of `mftscan::scan_roots` - catching
+/// any panic it raises rather than letting it tear down the whole scan job.
+///
+/// This exists because the underlying `ntfs` crate has been observed to
+/// panic (rather than return `Err`) on certain real-world volume layouts;
+/// `mftscan` itself is hardened against this at the source, but this is a
+/// second, independent safety net at the call site, since a panic must
+/// never be allowed to escape the scan worker thread. A caught panic is
+/// treated exactly like a volume-level `Err` from `scan_roots` (case "c" of
+/// the MFT/walkdir fallback contract): every game on that volume falls back
+/// to `walkdir`.
+///
+/// This is only safe to call from the scan worker's own thread (the MFT
+/// pass is not parallelized across threads) - `catch_unwind` only catches a
+/// panic unwinding through the *current* thread. If this were ever
+/// parallelized (rayon, spawned threads), each parallel task would need its
+/// own `catch_unwind` inside its own closure; a panic on another thread does
+/// not unwind through this one, and (for rayon specifically) a panicked
+/// task's `scope()` call re-raises the panic on the *joining* thread only
+/// after every task in the scope has finished, not from inside a
+/// `catch_unwind` wrapped around a single task.
+fn scan_volume_catching_panics(
+    scan_fn: impl FnOnce() -> CoreResult<Vec<(i64, CoreResult<Vec<FileEntry>>)>>,
+    game_ids: &[i64],
+) -> Vec<(i64, CoreResult<Vec<FileEntry>>)> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(scan_fn)) {
+        Ok(Ok(results)) => results,
+        Ok(Err(err)) => volume_failure_results(game_ids, err.to_string()),
+        Err(_) => {
+            volume_failure_results(game_ids, "паніка під час MFT-сканування тому".to_string())
+        }
+    }
+}
+
+fn volume_failure_results(
+    game_ids: &[i64],
+    message: String,
+) -> Vec<(i64, CoreResult<Vec<FileEntry>>)> {
+    game_ids
+        .iter()
+        .map(|&game_id| (game_id, Err(CoreError::Other(message.clone()))))
+        .collect()
 }
 
 /// The single database writer: receives every game's scan outcome and
@@ -438,10 +712,10 @@ struct PreparedGame {
     findings: Vec<PreparedFinding>,
 }
 
-/// Scans one game's install directory and classifies each file through both
-/// the rule engine and the localization detector. Pure CPU+IO - touches no
-/// database, so this is what runs in parallel across scan worker threads;
-/// only [`persist_prepared_game`] needs a `Connection`.
+/// Scans one game's install directory with a regular directory walk, then
+/// classifies the result via [`classify_game`]. This is the `walkdir` path;
+/// games the MFT pass already has entries for skip straight to
+/// `classify_game` instead (see `dispatch_scans`).
 fn scan_and_prepare_game(
     engine: &RuleEngine,
     lang_detector: &LangDetector,
@@ -450,7 +724,30 @@ fn scan_and_prepare_game(
     install_dir: &Path,
 ) -> CoreResult<PreparedGame> {
     let entries = scan_dir(install_dir)?;
+    Ok(classify_game(
+        engine,
+        lang_detector,
+        game_id,
+        name,
+        install_dir,
+        entries,
+    ))
+}
 
+/// Classifies an already-obtained file list - from either `scan_dir`
+/// (walkdir) or the MFT index pass - through both the rule engine and the
+/// localization detector. Pure CPU work, no filesystem or database access,
+/// so this is what actually runs in parallel across scan worker threads
+/// regardless of which path supplied `entries`; only
+/// [`persist_prepared_game`] needs a `Connection`.
+fn classify_game(
+    engine: &RuleEngine,
+    lang_detector: &LangDetector,
+    game_id: i64,
+    name: &str,
+    install_dir: &Path,
+    entries: Vec<FileEntry>,
+) -> PreparedGame {
     // `analyze_game` needs sibling context (the language-family heuristic),
     // so it runs once over all of this game's files rather than per-file.
     let lang_findings: HashMap<usize, LangFinding> =
@@ -475,13 +772,13 @@ fn scan_and_prepare_game(
         });
     }
 
-    Ok(PreparedGame {
+    PreparedGame {
         game_id,
         name: name.to_string(),
         install_dir: install_dir.to_path_buf(),
         entries,
         findings,
-    })
+    }
 }
 
 /// Persists one already-scanned-and-classified game: replaces its indexed
@@ -904,5 +1201,157 @@ mod tests {
             1,
             "the vanished library's game must still be present, untouched"
         );
+    }
+
+    /// The `ntfs` crate has been observed to panic (rather than return
+    /// `Err`) on certain real-world volume layouts. `scan_volume_catching_panics`
+    /// is the safety net around every per-volume MFT scan call - this
+    /// reproduces that scenario with a mock scanner that panics, and asserts
+    /// the whole volume falls back to a per-game `Err` (i.e. `walkdir`)
+    /// instead of the panic escaping and taking down the scan worker
+    /// thread (or the process).
+    #[test]
+    fn scan_volume_catching_panics_converts_panic_to_per_game_walkdir_fallback() {
+        let game_ids = vec![10i64, 20i64, 30i64];
+
+        let results = scan_volume_catching_panics(
+            || -> CoreResult<Vec<(i64, CoreResult<Vec<FileEntry>>)>> {
+                panic!("simulated ntfs crate panic on a malformed volume")
+            },
+            &game_ids,
+        );
+
+        assert_eq!(
+            results.len(),
+            game_ids.len(),
+            "every game on the panicking volume must still get a result slot"
+        );
+        for (game_id, result) in &results {
+            assert!(
+                game_ids.contains(game_id),
+                "unexpected game id {game_id} in fallback results"
+            );
+            assert!(
+                result.is_err(),
+                "a panicking MFT scan must fall back to walkdir (Err), not silently succeed"
+            );
+        }
+    }
+
+    /// Sibling case: a plain `Err` (no panic) from the scan function must be
+    /// handled the same way as a panic - every game on that volume falls
+    /// back to walkdir.
+    #[test]
+    fn scan_volume_catching_panics_converts_err_to_per_game_walkdir_fallback() {
+        let game_ids = vec![1i64, 2i64];
+
+        let results = scan_volume_catching_panics(
+            || -> CoreResult<Vec<(i64, CoreResult<Vec<FileEntry>>)>> {
+                Err(CoreError::Other("volume would not open".to_string()))
+            },
+            &game_ids,
+        );
+
+        assert_eq!(results.len(), game_ids.len());
+        assert!(results.iter().all(|(_, result)| result.is_err()));
+    }
+
+    /// A successful scan must pass its results through unchanged.
+    #[test]
+    fn scan_volume_catching_panics_passes_through_successful_results() {
+        let game_ids = vec![1i64];
+
+        let results = scan_volume_catching_panics(
+            || {
+                Ok(vec![(
+                    1i64,
+                    Ok(vec![FileEntry {
+                        rel_path: "a.txt".into(),
+                        size: 1,
+                        mtime: None,
+                    }]),
+                )])
+            },
+            &game_ids,
+        );
+
+        assert_eq!(results.len(), 1);
+        let (game_id, result) = &results[0];
+        assert_eq!(*game_id, 1);
+        let entries = result.as_ref().expect("successful scan stays Ok");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].rel_path, "a.txt");
+    }
+
+    /// `run_mft_pass` must never attempt the MFT path at all when not
+    /// elevated - every game goes to `walkdir`, and no volume is even
+    /// probed (there is nothing to unit-test for "no volume probed"
+    /// directly without real disks, but the entries map being empty and the
+    /// counts matching `total`/`0` is the observable contract).
+    #[test]
+    fn run_mft_pass_routes_everything_to_walkdir_when_not_elevated() {
+        let games = vec![
+            (1i64, "Game A".to_string(), PathBuf::from(r"G:\Games\A")),
+            (2i64, "Game B".to_string(), PathBuf::from(r"D:\Games\B")),
+        ];
+
+        let cancel = AtomicBool::new(false);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let outcome = run_mft_pass(false, &games, &cancel, &tx);
+
+        assert!(outcome.entries.is_empty());
+        assert_eq!(outcome.mft_count, 0);
+        assert_eq!(outcome.walkdir_count, 2);
+    }
+
+    /// Games with no drive letter (e.g. a UNC path) must never end up in the
+    /// MFT entries map, even when elevated - there is no volume to probe.
+    #[test]
+    fn run_mft_pass_routes_unc_paths_to_walkdir_even_when_elevated() {
+        let games = vec![(
+            1i64,
+            "Networked Game".to_string(),
+            PathBuf::from(r"\\server\share\Games\A"),
+        )];
+
+        let cancel = AtomicBool::new(false);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let outcome = run_mft_pass(true, &games, &cancel, &tx);
+
+        assert!(outcome.entries.is_empty());
+        assert_eq!(outcome.mft_count, 0);
+        assert_eq!(outcome.walkdir_count, 1);
+    }
+
+    #[test]
+    fn canonical_mismatch_is_true_for_a_path_that_does_not_exist() {
+        // A directory that doesn't exist can't be canonicalized, and the
+        // safe assumption for a canonicalization failure is "mismatch" -
+        // walkdir handles (and reports) a missing directory on its own.
+        let missing = Path::new(r"Z:\this\path\does\not\exist\at\all");
+        assert!(canonical_mismatch(missing));
+    }
+
+    #[test]
+    fn canonical_mismatch_is_false_for_a_real_directory_scanned_by_its_own_canonical_path() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // Canonicalize once up front so the "nominal" path passed in is
+        // already the canonical one - the whole point of this test is that
+        // a root with no junction/symlink in its way must not be flagged.
+        let canonical = dunce::canonicalize(dir.path()).expect("canonicalize temp dir");
+        assert!(!canonical_mismatch(&canonical));
+    }
+
+    #[test]
+    fn root_nonempty_on_disk_is_false_for_an_empty_directory() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        assert!(!root_nonempty_on_disk(dir.path()));
+    }
+
+    #[test]
+    fn root_nonempty_on_disk_is_true_once_a_file_exists_inside() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_file(&dir.path().join("save.dat"), b"data");
+        assert!(root_nonempty_on_disk(dir.path()));
     }
 }
