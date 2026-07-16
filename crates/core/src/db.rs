@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS operations (
     status   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_files_game_id     ON files(game_id);
 CREATE INDEX IF NOT EXISTS idx_findings_file_id  ON findings(file_id);
 ";
@@ -90,8 +95,14 @@ fn apply_schema(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
 
-    const EXPECTED_TABLES: [&str; 5] =
-        ["game_libraries", "games", "files", "findings", "operations"];
+    const EXPECTED_TABLES: [&str; 6] = [
+        "game_libraries",
+        "games",
+        "files",
+        "findings",
+        "operations",
+        "settings",
+    ];
 
     #[test]
     fn open_in_memory_creates_all_tables() {

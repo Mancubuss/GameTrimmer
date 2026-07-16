@@ -16,12 +16,21 @@ use app::{GameTrimmerApp, APP_TITLE};
 const WINDOW_SIZE: [f32; 2] = [900.0, 600.0];
 const SYSTEM_FONT_PATH: &str = r"C:\Windows\Fonts\segoeui.ttf";
 const SYSTEM_FONT_NAME: &str = "segoe-ui";
+/// The 256x256 PNG frame of `assets/gametrimmer.ico`, used as the runtime
+/// window icon (the exe-resource icon embedded by `build.rs` covers
+/// Explorer/taskbar, but winit never reads it for the window itself).
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/gametrimmer_256.png");
 
 fn main() -> eframe::Result {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(APP_TITLE)
+        .with_inner_size(WINDOW_SIZE);
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(APP_TITLE)
-            .with_inner_size(WINDOW_SIZE),
+        viewport,
         ..Default::default()
     };
 
@@ -34,6 +43,26 @@ fn main() -> eframe::Result {
             Ok(Box::new(GameTrimmerApp::new()))
         }),
     )
+}
+
+/// Decodes the embedded window icon. `None` (falling back to the default
+/// window icon) if the embedded PNG is somehow undecodable - never a panic.
+fn window_icon() -> Option<egui::IconData> {
+    match image::load_from_memory(WINDOW_ICON_PNG) {
+        Ok(decoded) => {
+            let rgba = decoded.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            Some(egui::IconData {
+                rgba: rgba.into_raw(),
+                width,
+                height,
+            })
+        }
+        Err(err) => {
+            eprintln!("Не вдалося декодувати іконку вікна: {err}");
+            None
+        }
+    }
 }
 
 /// Loads the system font (Segoe UI) at runtime so Cyrillic text renders

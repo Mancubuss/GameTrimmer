@@ -1,4 +1,4 @@
-//! Top panel: scan button, DB status line, and scan progress/cancel.
+//! Top panel: scan/export/settings buttons and scan progress/cancel.
 
 use eframe::egui;
 
@@ -33,8 +33,16 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             }
 
             ui.separator();
-            ui.label(format!("База даних: {}", app.db_status));
+            if ui.button("Налаштування…").clicked() {
+                app.show_settings = true;
+            }
         });
+
+        // The database lives next to the executable, so its path carries no
+        // information for the user - only a failure to open it is shown.
+        if let Some(db_error) = &app.db_error {
+            ui.colored_label(ui.visuals().error_fg_color, db_error);
+        }
 
         if let Some((current, total, game_name)) = app.progress.clone() {
             let fraction = if total == 0 {

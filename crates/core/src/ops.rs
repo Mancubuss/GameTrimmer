@@ -8,18 +8,50 @@ use rusqlite::Connection;
 use crate::error::Result;
 
 /// Abstraction over the actual removal mechanism so tests never touch the
-/// real Recycle Bin.
+/// real Recycle Bin or filesystem.
 pub trait Remover {
     fn remove(&self, path: &Path) -> Result<()>;
+    /// Stable action name journaled into the `operations` table.
+    fn action(&self) -> &'static str;
 }
 
-/// Production remover: sends paths to the Windows Recycle Bin via the `trash` crate.
+/// Recoverable remover: sends paths to the Windows Recycle Bin via the
+/// `trash` crate. Slower than [`PermanentDelete`] (each file goes through
+/// the shell), but recoverable.
 pub struct RecycleBin;
 
 impl Remover for RecycleBin {
     fn remove(&self, path: &Path) -> Result<()> {
         trash::delete(path)?;
         Ok(())
+    }
+
+    fn action(&self) -> &'static str {
+        "recycle"
+    }
+}
+
+/// Fast remover: deletes files/directories permanently via `std::fs`, with
+/// no way to recover. The default for game libraries - anything removed by
+/// mistake can always be re-downloaded from the store.
+pub struct PermanentDelete;
+
+impl Remover for PermanentDelete {
+    fn remove(&self, path: &Path) -> Result<()> {
+        // `symlink_metadata` (not `metadata`) so a symlink/junction inside a
+        // game folder is removed as the link itself, never by following it
+        // into whatever it points at.
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.is_dir() {
+            std::fs::remove_dir_all(path)?;
+        } else {
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    fn action(&self) -> &'static str {
+        "delete"
     }
 }
 
@@ -54,7 +86,7 @@ pub fn remove_with_log(
         // INSERT as "pending"
         conn.execute(
             "INSERT INTO operations (ts, action, src_path, dst_path, status) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![ts, "recycle", &src_path, None::<String>, "pending"],
+            rusqlite::params![ts, remover.action(), &src_path, None::<String>, "pending"],
         )?;
 
         let last_id = conn.last_insert_rowid();
@@ -127,6 +159,10 @@ mod tests {
             Err(crate::error::CoreError::Other(
                 "path not registered in mock".to_string(),
             ))
+        }
+
+        fn action(&self) -> &'static str {
+            "recycle"
         }
     }
 
@@ -233,5 +269,69 @@ mod tests {
 
         assert_eq!(action, "recycle");
         assert_eq!(src_path, "C:\\Games\\TestGame");
+    }
+
+    #[test]
+    fn permanent_delete_removes_a_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let file_path = dir.path().join("junk.txt");
+        std::fs::write(&file_path, b"payload").expect("write test file");
+
+        PermanentDelete
+            .remove(&file_path)
+            .expect("permanent delete should succeed");
+
+        assert!(!file_path.exists(), "file must be gone after removal");
+    }
+
+    #[test]
+    fn permanent_delete_removes_a_directory_recursively() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let sub_dir = dir.path().join("redist");
+        std::fs::create_dir(&sub_dir).expect("create sub dir");
+        std::fs::write(sub_dir.join("setup.exe"), b"payload").expect("write nested file");
+
+        PermanentDelete
+            .remove(&sub_dir)
+            .expect("permanent delete should succeed");
+
+        assert!(!sub_dir.exists(), "directory must be gone after removal");
+    }
+
+    #[test]
+    fn permanent_delete_reports_a_missing_path_as_an_error() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let missing = dir.path().join("never_existed.bin");
+
+        assert!(
+            PermanentDelete.remove(&missing).is_err(),
+            "a missing path must surface as a per-file error, not silent success"
+        );
+    }
+
+    #[test]
+    fn permanent_delete_journals_the_delete_action() {
+        let mut conn = crate::db::open_in_memory().expect("open in-memory db");
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let file_path = dir.path().join("junk.txt");
+        std::fs::write(&file_path, b"payload").expect("write test file");
+
+        remove_with_log(
+            &mut conn,
+            &PermanentDelete,
+            std::slice::from_ref(&file_path),
+        )
+        .expect("remove_with_log should succeed");
+
+        let (action, status): (String, String) = conn
+            .query_row(
+                "SELECT action, status FROM operations WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("query_row");
+
+        assert_eq!(action, "delete");
+        assert_eq!(status, "done");
     }
 }

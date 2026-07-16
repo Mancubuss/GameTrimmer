@@ -6,3 +6,4 @@ pub mod ops;
 pub mod providers;
 pub mod rules;
 pub mod scanner;
+pub mod settings;

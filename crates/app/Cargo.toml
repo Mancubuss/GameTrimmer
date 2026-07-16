@@ -7,9 +7,13 @@ edition.workspace = true
 name = "gametrimmer"
 path = "src/main.rs"
 
+[build-dependencies]
+winresource = "0.1.23"
+
 [dependencies]
 dunce = "1.0.5"
 eframe = "0.35.0"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 gametrimmer-core = { path = "../core" }
 rayon = "1.12.0"
 rfd = "0.17.2"

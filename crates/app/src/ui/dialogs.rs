@@ -4,6 +4,8 @@
 
 use eframe::egui;
 
+use gametrimmer_core::settings::DeleteMethod;
+
 use crate::app::GameTrimmerApp;
 use crate::model::{format_size, group_size_bytes};
 
@@ -62,6 +64,24 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let count = indices.len();
     let bytes = group_size_bytes(&app.findings, &indices);
 
+    let (question, confirm_label) = match app.settings.delete_method {
+        DeleteMethod::Permanent => (
+            format!(
+                "Безповоротно видалити {count} файл(ів) ({})? Відновлення буде \
+                 неможливе (гру можна перевстановити з магазину).",
+                format_size(bytes)
+            ),
+            "Видалити безповоротно",
+        ),
+        DeleteMethod::RecycleBin => (
+            format!(
+                "Перемістити {count} файл(ів) ({}) у Кошик?",
+                format_size(bytes)
+            ),
+            "Перемістити в Кошик",
+        ),
+    };
+
     let mut confirmed = false;
     let mut cancelled = false;
 
@@ -69,16 +89,13 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.set_min_width(320.0);
         ui.heading("Підтвердження видалення");
         ui.add_space(8.0);
-        ui.label(format!(
-            "Перемістити {count} файл(ів) ({}) у Кошик?",
-            format_size(bytes)
-        ));
+        ui.label(question);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button("Скасувати").clicked() {
                 cancelled = true;
             }
-            if ui.button("Перемістити в Кошик").clicked() {
+            if ui.button(confirm_label).clicked() {
                 confirmed = true;
             }
         });
@@ -112,7 +129,11 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.set_min_width(360.0);
         ui.heading("Результат видалення");
         ui.add_space(8.0);
-        ui.label(format!("Успішно переміщено в Кошик: {succeeded}"));
+        let success_line = match app.settings.delete_method {
+            DeleteMethod::Permanent => format!("Успішно видалено: {succeeded}"),
+            DeleteMethod::RecycleBin => format!("Успішно переміщено в Кошик: {succeeded}"),
+        };
+        ui.label(success_line);
         ui.label(format!("Помилок: {failed_count}"));
 
         if !failed_preview.is_empty() {
