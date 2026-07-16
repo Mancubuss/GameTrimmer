@@ -2,6 +2,7 @@
 //! filesystem runs on a spawned `std::thread`, communicating back to the
 //! UI thread through an `mpsc` channel of [`WorkerMsg`].
 
+pub mod compact;
 pub mod delete;
 pub mod load;
 pub mod manual;
@@ -54,6 +55,12 @@ pub enum WorkerMsg {
     /// writing the CSV failed.
     ExportDone {
         path: Option<PathBuf>,
+        error: Option<String>,
+    },
+    /// The background "Стиснути базу даних" job finished.
+    CompactDone {
+        before_bytes: u64,
+        after_bytes: u64,
         error: Option<String>,
     },
 }

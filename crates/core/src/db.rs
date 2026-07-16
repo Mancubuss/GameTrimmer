@@ -91,6 +91,27 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Compacts the database: truncates the WAL and rebuilds the main file.
+///
+/// Deletes accumulate free pages in the main file over time (rows removed
+/// after a "Видалити вибране" run don't shrink the file on disk). `VACUUM`
+/// rebuilds the file without that free space, but it cannot see rows still
+/// sitting in the WAL, so `wal_checkpoint(TRUNCATE)` runs first to fold the
+/// WAL back into the main file and shrink the WAL file itself to zero bytes.
+pub fn compact(conn: &Connection) -> Result<()> {
+    // Like `journal_mode` in `configure()`, `wal_checkpoint` returns a row
+    // (busy, log frames, checkpointed frames) - `execute`/`execute_batch`
+    // would fail with "query returned unexpected row", so use `query_row`.
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    conn.execute("VACUUM", [])?;
+    // `VACUUM` itself writes through the WAL, re-inflating the file that the
+    // first checkpoint just truncated. A second checkpoint folds those pages
+    // back in, so the on-disk result doesn't depend on this being the last
+    // open connection (SQLite only auto-truncates on final close).
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +187,57 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM game_libraries", [], |row| row.get(0))
             .expect("count libraries");
         assert_eq!(count, 1, "data must survive reopen");
+    }
+
+    /// Deleting a large batch of rows leaves free pages behind; `compact`
+    /// must reclaim them (shrinking `page_count`) without touching data
+    /// written before the delete.
+    #[test]
+    fn compact_shrinks_page_count_and_preserves_earlier_data() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("gametrimmer.db");
+        let conn = open(&db_path).expect("open file-backed db");
+
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES (?1, ?2)",
+            ("steam", "D:/SteamLibrary"),
+        )
+        .expect("insert library");
+
+        for i in 0..5_000 {
+            conn.execute(
+                "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (NULL, ?1, ?2, NULL)",
+                (format!("file_{i}.txt"), i as i64),
+            )
+            .expect("insert file");
+        }
+
+        let page_count_before: i64 = conn
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .expect("read page_count before compact");
+
+        conn.execute("DELETE FROM files", [])
+            .expect("delete all files");
+
+        compact(&conn).expect("compact should succeed");
+
+        let page_count_after: i64 = conn
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .expect("read page_count after compact");
+
+        assert!(
+            page_count_after < page_count_before,
+            "compact should shrink page_count: before={page_count_before}, after={page_count_after}"
+        );
+
+        let (vendor, path): (String, String) = conn
+            .query_row(
+                "SELECT vendor, path FROM game_libraries WHERE path = ?1",
+                ["D:/SteamLibrary"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("data written before compaction must survive");
+        assert_eq!(vendor, "steam");
+        assert_eq!(path, "D:/SteamLibrary");
     }
 }
