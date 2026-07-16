@@ -1,12 +1,14 @@
-//! The "Видалити вибране в Кошик" job: moves the given files to the
-//! Windows Recycle Bin and journals every attempt via `gametrimmer_core::ops`.
+//! The "Видалити вибране" job: removes the given files using the method
+//! chosen in settings (permanent delete by default, or the Recycle Bin)
+//! and journals every attempt via `gametrimmer_core::ops`.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
 use gametrimmer_core::db;
-use gametrimmer_core::ops::{remove_with_log, RecycleBin};
+use gametrimmer_core::ops::{remove_with_log, PermanentDelete, RecycleBin, Remover};
+use gametrimmer_core::settings::DeleteMethod;
 
 use super::{RemoveOutcome, WorkerMsg};
 
@@ -20,12 +22,18 @@ pub struct DeleteItem {
 pub fn spawn_delete(
     db_path: PathBuf,
     items: Vec<DeleteItem>,
+    method: DeleteMethod,
     tx: Sender<WorkerMsg>,
 ) -> JoinHandle<()> {
-    std::thread::spawn(move || run_delete(&db_path, items, &tx))
+    std::thread::spawn(move || run_delete(&db_path, items, method, &tx))
 }
 
-fn run_delete(db_path: &Path, items: Vec<DeleteItem>, tx: &Sender<WorkerMsg>) {
+fn run_delete(
+    db_path: &Path,
+    items: Vec<DeleteItem>,
+    method: DeleteMethod,
+    tx: &Sender<WorkerMsg>,
+) {
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
@@ -36,9 +44,14 @@ fn run_delete(db_path: &Path, items: Vec<DeleteItem>, tx: &Sender<WorkerMsg>) {
         }
     };
 
+    let remover: &dyn Remover = match method {
+        DeleteMethod::Permanent => &PermanentDelete,
+        DeleteMethod::RecycleBin => &RecycleBin,
+    };
+
     let paths: Vec<PathBuf> = items.iter().map(|item| item.full_path.clone()).collect();
 
-    let outcomes = match remove_with_log(&mut conn, &RecycleBin, &paths) {
+    let outcomes = match remove_with_log(&mut conn, remover, &paths) {
         Ok(outcomes) => outcomes,
         Err(err) => {
             let _ = tx.send(WorkerMsg::Error {

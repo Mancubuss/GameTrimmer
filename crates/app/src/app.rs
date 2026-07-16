@@ -10,6 +10,8 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 
+use gametrimmer_core::settings::{DeleteMethod, Settings};
+
 use crate::elevation;
 use crate::export;
 use crate::model::{self, DiskGroup, FindingItem};
@@ -28,7 +30,16 @@ pub struct RemoveSummary {
 
 pub struct GameTrimmerApp {
     db_path: Option<PathBuf>,
-    pub db_status: String,
+    /// Set only when the database could not be located or opened at startup;
+    /// the path itself is not shown in the UI (the database always lives
+    /// next to the executable).
+    pub db_error: Option<String>,
+
+    /// Persisted user settings (deletion method, ...), loaded from the
+    /// database at startup and saved on every change in the settings dialog.
+    pub settings: Settings,
+    /// Whether the settings dialog is currently open.
+    pub show_settings: bool,
 
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
@@ -96,12 +107,23 @@ pub struct GameTrimmerApp {
 impl GameTrimmerApp {
     pub fn new() -> Self {
         let db_path = worker::db_path().ok();
-        let db_status = match &db_path {
+        let (db_error, settings) = match &db_path {
             Some(path) => match gametrimmer_core::db::open(path) {
-                Ok(_) => path.display().to_string(),
-                Err(err) => format!("помилка відкриття {}: {err}", path.display()),
+                Ok(conn) => {
+                    // Unreadable settings are not fatal - fall back to the
+                    // defaults rather than blocking startup.
+                    let settings = gametrimmer_core::settings::load(&conn).unwrap_or_default();
+                    (None, settings)
+                }
+                Err(err) => (
+                    Some(format!("Помилка відкриття бази даних: {err}")),
+                    Settings::default(),
+                ),
             },
-            None => "помилка визначення шляху до бази даних".to_string(),
+            None => (
+                Some("Помилка визначення шляху до бази даних.".to_string()),
+                Settings::default(),
+            ),
         };
         let libraries = Self::load_libraries(db_path.as_deref());
         let has_saved_findings = Self::has_saved_findings(db_path.as_deref());
@@ -111,7 +133,9 @@ impl GameTrimmerApp {
 
         let mut app = Self {
             db_path: db_path.clone(),
-            db_status,
+            db_error,
+            settings,
+            show_settings: false,
             tx: tx.clone(),
             rx,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -393,8 +417,41 @@ impl GameTrimmerApp {
 
         self.busy = true;
         self.status_message = "Видалення вибраних файлів...".to_string();
-        let handle = worker::delete::spawn_delete(db_path, items, self.tx.clone());
+        let handle = worker::delete::spawn_delete(
+            db_path,
+            items,
+            self.settings.delete_method,
+            self.tx.clone(),
+        );
         self._worker = Some(handle);
+    }
+
+    /// Applies a new deletion method and persists it immediately, so the
+    /// choice survives a restart even if the dialog is closed by killing
+    /// the app. A save failure keeps the in-memory choice for this session
+    /// and surfaces as a warning.
+    pub fn set_delete_method(&mut self, method: DeleteMethod) {
+        if self.settings.delete_method == method {
+            return;
+        }
+        self.settings = Settings {
+            delete_method: method,
+        };
+        self.persist_settings();
+    }
+
+    fn persist_settings(&mut self) {
+        let Some(db_path) = self.db_path.clone() else {
+            self.warnings
+                .push("Налаштування не збережено: немає шляху до бази даних.".to_string());
+            return;
+        };
+        let result = gametrimmer_core::db::open(&db_path)
+            .and_then(|conn| gametrimmer_core::settings::save(&conn, &self.settings));
+        if let Err(err) = result {
+            self.warnings
+                .push(format!("Не вдалося зберегти налаштування: {err}"));
+        }
     }
 
     /// Drains every pending [`WorkerMsg`] and applies it to app state.
@@ -529,5 +586,6 @@ impl eframe::App for GameTrimmerApp {
         ui::bottom_bar::show(self, ui);
         ui::tree_view::show(self, ui);
         ui::dialogs::show(self, ui);
+        ui::settings_dialog::show(self, ui);
     }
 }

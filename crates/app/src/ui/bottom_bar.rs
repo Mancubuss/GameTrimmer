@@ -64,7 +64,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             let delete_clicked = ui
                 .add_enabled(
                     selected_count > 0 && !app.busy,
-                    egui::Button::new("Видалити вибране в Кошик"),
+                    egui::Button::new("Видалити вибране"),
                 )
                 .clicked();
             if delete_clicked {
