@@ -426,6 +426,23 @@ impl GameTrimmerApp {
         self._worker = Some(handle);
     }
 
+    /// Spawns the "Стиснути базу даних" job (WAL checkpoint + `VACUUM`).
+    /// No-op while another job is running.
+    pub fn start_compact(&mut self) {
+        if self.busy {
+            return;
+        }
+        let Some(db_path) = self.db_path.clone() else {
+            self.status_message = "Немає шляху до бази даних.".to_string();
+            return;
+        };
+
+        self.busy = true;
+        self.status_message = "Стискання бази даних...".to_string();
+        let handle = worker::compact::spawn_compact(db_path, self.tx.clone());
+        self._worker = Some(handle);
+    }
+
     /// Applies a new deletion method and persists it immediately, so the
     /// choice survives a restart even if the dialog is closed by killing
     /// the app. A save failure keeps the in-memory choice for this session
@@ -572,6 +589,24 @@ impl GameTrimmerApp {
                 }
                 // `path` and `error` both `None` means the user cancelled
                 // the save dialog - nothing to report.
+            }
+            WorkerMsg::CompactDone {
+                before_bytes,
+                after_bytes,
+                error,
+            } => {
+                self.busy = false;
+                self._worker = None;
+                match error {
+                    Some(err) => self.status_message = err,
+                    None => {
+                        self.status_message = format!(
+                            "Базу даних стиснуто: {} → {}.",
+                            model::format_size(before_bytes),
+                            model::format_size(after_bytes)
+                        );
+                    }
+                }
             }
         }
     }

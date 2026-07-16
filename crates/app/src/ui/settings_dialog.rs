@@ -2,7 +2,8 @@
 //! (see `GameTrimmerApp::set_delete_method`), so "Закрити" only dismisses
 //! the dialog - there is no separate save step to forget.
 //!
-//! Planned sections (see BACKLOG.md): keep-list languages, scanned artifact
+//! Sections: deletion method, database maintenance ("Стиснути базу даних").
+//! Planned (see BACKLOG.md): keep-list languages, scanned artifact
 //! categories, app language, theme.
 
 use eframe::egui;
@@ -17,6 +18,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     }
 
     let mut close = false;
+    let mut compact_clicked = false;
     let mut picked_method = app.settings.delete_method;
 
     egui::Modal::new(egui::Id::new("gt_settings")).show(ui.ctx(), |ui| {
@@ -26,26 +28,45 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
         ui.label("Спосіб видалення файлів:");
         ui.add_space(4.0);
-        ui.radio_value(
-            &mut picked_method,
-            DeleteMethod::Permanent,
-            "Остаточне видалення (найшвидше)",
-        );
-        ui.indent("gt_settings_permanent_hint", |ui| {
-            ui.small(
-                "Файли видаляються безповоротно. Якщо видалиться щось потрібне — \
-                 гру завжди можна перевстановити з магазину.",
+        // Disabled while a worker is running: changing the method persists
+        // immediately through a fresh DB connection, which would race an
+        // in-flight `VACUUM` (it needs exclusive access) or delete job.
+        ui.add_enabled_ui(!app.busy, |ui| {
+            ui.radio_value(
+                &mut picked_method,
+                DeleteMethod::Permanent,
+                "Остаточне видалення (найшвидше)",
             );
+            ui.indent("gt_settings_permanent_hint", |ui| {
+                ui.small(
+                    "Файли видаляються безповоротно. Якщо видалиться щось потрібне — \
+                     гру завжди можна перевстановити з магазину.",
+                );
+            });
+            ui.add_space(4.0);
+            ui.radio_value(
+                &mut picked_method,
+                DeleteMethod::RecycleBin,
+                "У Кошик Windows (повільніше)",
+            );
+            ui.indent("gt_settings_recycle_hint", |ui| {
+                ui.small("Файли можна відновити з Кошика, доки його не очищено.");
+            });
         });
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.label("База даних:");
         ui.add_space(4.0);
-        ui.radio_value(
-            &mut picked_method,
-            DeleteMethod::RecycleBin,
-            "У Кошик Windows (повільніше)",
-        );
-        ui.indent("gt_settings_recycle_hint", |ui| {
-            ui.small("Файли можна відновити з Кошика, доки його не очищено.");
-        });
+        if ui
+            .add_enabled(!app.busy, egui::Button::new("Стиснути базу даних"))
+            .clicked()
+        {
+            compact_clicked = true;
+        }
+        ui.small("Звільняє місце, яке база даних більше не використовує після видалень.");
 
         ui.add_space(12.0);
         if ui.button("Закрити").clicked() {
@@ -54,6 +75,9 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     });
 
     app.set_delete_method(picked_method);
+    if compact_clicked {
+        app.start_compact();
+    }
     if close {
         app.show_settings = false;
     }
