@@ -107,6 +107,11 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
         }
     }
 
+    // Different providers (and the manual list) can discover the same root
+    // folder - e.g. the Epic manifests and the vendor-folder scan both find
+    // F:\Epic. Merge them so persist_libraries sees each library once.
+    let libraries = providers::merge_libraries_by_path(libraries);
+
     if libraries.is_empty() {
         send_error(tx, "Бібліотек не знайдено.".to_string());
         return;

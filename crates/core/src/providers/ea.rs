@@ -7,7 +7,6 @@
 //! Games found under both roots (e.g. after an Origin -> EA app migration)
 //! are de-duplicated by install directory.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 use winreg::enums::HKEY_LOCAL_MACHINE;
@@ -32,7 +31,7 @@ impl LibraryProvider for EaProvider {
         let mut games = read_registry_games(ORIGIN_GAMES_KEY);
         games.extend(read_registry_games(EA_DESKTOP_INSTALLED_GAMES_KEY));
 
-        let games = dedupe_by_install_dir(games)
+        let games = super::dedupe_by_install_dir(games)
             .into_iter()
             .filter(|game| game.install_dir.is_dir())
             .map(refine_name_from_installer_xml)
@@ -92,17 +91,6 @@ fn build_game_install(entry: RawEaEntry) -> Option<GameInstall> {
         install_dir: path,
         app_id: Some(entry.id),
     })
-}
-
-/// De-duplicates games by install directory (case-insensitive), keeping the
-/// first occurrence - Origin Games entries are read before EA Desktop ones,
-/// so a legacy Origin entry wins over a migrated EA app entry for the same path.
-fn dedupe_by_install_dir(games: Vec<GameInstall>) -> Vec<GameInstall> {
-    let mut seen = HashSet::new();
-    games
-        .into_iter()
-        .filter(|game| seen.insert(game.install_dir.to_string_lossy().to_lowercase()))
-        .collect()
 }
 
 /// Best-effort override of the display name using `<title>` from
@@ -193,27 +181,6 @@ mod tests {
             install_dir: Some("".to_string()),
         };
         assert!(build_game_install(entry).is_none());
-    }
-
-    #[test]
-    fn dedupe_by_install_dir_keeps_first_occurrence_case_insensitively() {
-        let games = vec![
-            GameInstall {
-                name: "From Origin".to_string(),
-                install_dir: PathBuf::from(r"F:\EA Games\Apex Legends"),
-                app_id: Some("origin-id".to_string()),
-            },
-            GameInstall {
-                name: "From EA Desktop".to_string(),
-                install_dir: PathBuf::from(r"f:\ea games\apex legends"),
-                app_id: Some("ea-desktop-id".to_string()),
-            },
-        ];
-
-        let deduped = dedupe_by_install_dir(games);
-
-        assert_eq!(deduped.len(), 1);
-        assert_eq!(deduped[0].name, "From Origin");
     }
 
     #[test]
