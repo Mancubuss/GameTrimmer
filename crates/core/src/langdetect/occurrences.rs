@@ -2,11 +2,8 @@
 
 use std::collections::HashSet;
 
-use crate::langdetect::dict::{self, Level};
-use crate::langdetect::markers::{
-    LOC_SPECIFIC, POSITIVE_AUDIO, POSITIVE_FONT, POSITIVE_LOC_GENERIC, POSITIVE_TEXT,
-    POSITIVE_VIDEO,
-};
+use crate::langdetect::data::LangData;
+use crate::langdetect::dict::Level;
 use crate::langdetect::tokens::Segment;
 
 #[derive(Debug, Clone)]
@@ -62,7 +59,7 @@ pub struct Occurrence {
 /// re-interpreted as a free-standing two-letter language token in its own
 /// right, or a keep-listed file could end up flagged under a different,
 /// wrong language.
-pub fn collect_occurrences(segments: &[Segment]) -> Vec<Occurrence> {
+pub fn collect_occurrences(data: &LangData, segments: &[Segment]) -> Vec<Occurrence> {
     let mut seen: HashSet<(usize, usize, usize, &'static str)> = HashSet::new();
     let mut out = Vec::new();
 
@@ -71,10 +68,10 @@ pub fn collect_occurrences(segments: &[Segment]) -> Vec<Occurrence> {
         let seg_stem_end = seg.lower.find('.').unwrap_or(seg.lower.len());
 
         for piece in &seg.weak_pieces {
-            let direct = dict::lookup(&piece.text);
+            let direct = data.lookup(&piece.text);
             let via_tag = direct
                 .is_none()
-                .then(|| dict::lookup_locale_tag(&piece.text))
+                .then(|| data.lookup_locale_tag(&piece.text))
                 .flatten();
             if let Some((canonical, level)) = direct.or(via_tag) {
                 // A generic locale-tag match tolerates trailing parts
@@ -125,7 +122,7 @@ pub fn collect_occurrences(segments: &[Segment]) -> Vec<Occurrence> {
             if !b.text.chars().all(|c| c.is_ascii_alphabetic()) {
                 continue;
             }
-            if let Some((canonical, Level::C)) = dict::lookup(&a.text) {
+            if let Some((canonical, Level::C)) = data.lookup(&a.text) {
                 covered.push((a.start, b.end));
                 let key = (seg.index, a.start, b.end, canonical);
                 if seen.insert(key) {
@@ -154,7 +151,7 @@ pub fn collect_occurrences(segments: &[Segment]) -> Vec<Occurrence> {
             if nested {
                 continue;
             }
-            if let Some((canonical, level)) = dict::lookup(&piece.text) {
+            if let Some((canonical, level)) = data.lookup(&piece.text) {
                 let stem_end = seg_stem_end;
                 let neighbor_atoms = || {
                     [atom_idx.checked_sub(1), atom_idx.checked_add(1)]
@@ -163,9 +160,9 @@ pub fn collect_occurrences(segments: &[Segment]) -> Vec<Occurrence> {
                         .filter_map(|i| seg.atoms.get(i))
                 };
                 let neighbors_generic_loc_atom =
-                    neighbor_atoms().any(|a| POSITIVE_LOC_GENERIC.contains(&a.text.as_str()));
+                    neighbor_atoms().any(|a| data.loc_generic.contains(a.text.as_str()));
                 let neighbors_loc_atom = neighbors_generic_loc_atom
-                    || neighbor_atoms().any(|a| LOC_SPECIFIC.contains(&a.text.as_str()));
+                    || neighbor_atoms().any(|a| data.loc_specific.contains(a.text.as_str()));
                 // LOC_SPECIFIC words are handled by the (level-gated)
                 // loc-pair check above — they must not double as asset
                 // adjacency, or `intro_no_subtitles.bik` would sneak a
@@ -173,11 +170,11 @@ pub fn collect_occurrences(segments: &[Segment]) -> Vec<Occurrence> {
                 let neighbors_asset_atom = piece.end <= stem_end
                     && neighbor_atoms().any(|a| {
                         let word = a.text.as_str();
-                        !LOC_SPECIFIC.contains(&word)
-                            && (POSITIVE_AUDIO.contains(&word)
-                                || POSITIVE_TEXT.contains(&word)
-                                || POSITIVE_VIDEO.contains(&word)
-                                || POSITIVE_FONT.contains(&word))
+                        !data.loc_specific.contains(word)
+                            && (data.audio.contains(word)
+                                || data.text.contains(word)
+                                || data.video.contains(word)
+                                || data.font.contains(word))
                     });
 
                 let key = (seg.index, piece.start, piece.end, canonical);
@@ -209,17 +206,20 @@ mod tests {
     use super::*;
     use crate::langdetect::tokens::tokenize_path;
 
+    fn occs_for(path: &str) -> Vec<Occurrence> {
+        let segs = tokenize_path(path);
+        collect_occurrences(&LangData::builtin(), &segs)
+    }
+
     #[test]
     fn finds_full_name_token() {
-        let segs = tokenize_path("base\\sound\\soundbanks\\hhpc\\Spanish(Spain)_patch_1.snd");
-        let occs = collect_occurrences(&segs);
+        let occs = occs_for("base\\sound\\soundbanks\\hhpc\\Spanish(Spain)_patch_1.snd");
         assert!(occs.iter().any(|o| o.canonical == "es"));
     }
 
     #[test]
     fn finds_locale_tag_as_compound_piece() {
-        let segs = tokenize_path("loc\\pt-br\\strings.json");
-        let occs = collect_occurrences(&segs);
+        let occs = occs_for("loc\\pt-br\\strings.json");
         assert!(occs
             .iter()
             .any(|o| o.canonical == "pt-br" && o.whole_segment));
@@ -227,8 +227,7 @@ mod tests {
 
     #[test]
     fn finds_iso3_code() {
-        let segs = tokenize_path("localization\\pol\\quests.json");
-        let occs = collect_occurrences(&segs);
+        let occs = occs_for("localization\\pol\\quests.json");
         assert!(occs
             .iter()
             .any(|o| o.canonical == "pl" && o.level == Level::B && o.whole_segment));
@@ -236,15 +235,13 @@ mod tests {
 
     #[test]
     fn marks_loc_adjacent_language_atom() {
-        let segs = tokenize_path("Game\\CookedPCConsole\\Opening_LOC_JPN.upk");
-        let occs = collect_occurrences(&segs);
+        let occs = occs_for("Game\\CookedPCConsole\\Opening_LOC_JPN.upk");
         assert!(occs.iter().any(|o| o.canonical == "ja" && o.loc_adjacent));
     }
 
     #[test]
     fn embedded_token_is_not_whole_segment() {
-        let segs = tokenize_path("entities\\french_colonization\\lamp01.ent");
-        let occs = collect_occurrences(&segs);
+        let occs = occs_for("entities\\french_colonization\\lamp01.ent");
         let fr = occs
             .iter()
             .find(|o| o.canonical == "fr")

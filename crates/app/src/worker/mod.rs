@@ -6,6 +6,7 @@ pub mod compact;
 pub mod delete;
 pub mod load;
 pub mod manual;
+pub mod rules_io;
 pub mod scan;
 pub(crate) mod scan_route;
 
@@ -15,7 +16,9 @@ use std::path::{Path, PathBuf};
 use crate::model::FindingRow;
 
 const DB_FILE_NAME: &str = "gametrimmer.db";
-const RULES_FILE_NAME: &str = "rules.json";
+pub(crate) const RULES_FILE_NAME: &str = "rules.json";
+/// Localization-detector data pack (community rules).
+pub const L10N_RULES_FILE_NAME: &str = "l10n_rules.json";
 
 /// Messages sent from a worker thread back to the UI thread.
 #[derive(Debug)]
@@ -69,6 +72,20 @@ pub enum WorkerMsg {
         path: Option<PathBuf>,
         error: Option<String>,
     },
+    /// The background «Експортувати правила» job finished. `path` is the
+    /// folder the two pack files were written into; `path` and `error` both
+    /// `None` means the user cancelled the folder picker.
+    RulesExportDone {
+        path: Option<PathBuf>,
+        error: Option<String>,
+    },
+    /// The background «Імпортувати правила» job finished. `summary` is the
+    /// ready-to-show Ukrainian merge summary; `summary` and `error` both
+    /// `None` means the user cancelled the file picker.
+    RulesImportDone {
+        summary: Option<String>,
+        error: Option<String>,
+    },
     /// The background "Стиснути базу даних" job finished.
     CompactDone {
         error: Option<String>,
@@ -90,32 +107,50 @@ pub struct RemoveOutcome {
     pub purged: bool,
 }
 
-/// Resolves the database path: `gametrimmer.db` next to the executable.
-pub fn db_path() -> io::Result<PathBuf> {
+/// The directory every data file lives in: next to the executable.
+fn exe_dir() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let dir = exe
         .parent()
         .ok_or_else(|| io::Error::other("не вдалося визначити директорію виконуваного файлу"))?;
-    Ok(dir.join(DB_FILE_NAME))
+    Ok(dir.to_path_buf())
 }
 
-/// Resolves `rules.json`: first next to the executable (portable build),
-/// then falling back to the repo root (`cargo run` during development).
-/// Returns `None` if neither location has the file - callers must report
-/// this to the user rather than panicking.
-pub fn resolve_rules_path() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(RULES_FILE_NAME);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
+/// Resolves the database path: `gametrimmer.db` next to the executable.
+pub fn db_path() -> io::Result<PathBuf> {
+    Ok(exe_dir()?.join(DB_FILE_NAME))
+}
 
-    let fallback = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join(RULES_FILE_NAME);
-    fallback.is_file().then_some(fallback)
+/// Ensures `dir/file_name` exists, seeding it with `builtin` on first use.
+/// An existing file is never touched - user edits and imported community
+/// packs always win over the embedded defaults.
+fn ensure_data_file_in(dir: &Path, file_name: &str, builtin: &str) -> io::Result<PathBuf> {
+    let path = dir.join(file_name);
+    if !path.is_file() {
+        std::fs::write(&path, builtin)?;
+    }
+    Ok(path)
+}
+
+/// Ensures `rules.json` (category rules) exists next to the executable and
+/// returns its path, materializing the embedded defaults on first run. The
+/// scanner reads rules exclusively from this file - never from an invisible
+/// built-in - so users always have the full effective rule set on disk to
+/// audit and edit.
+pub fn ensure_rules_path() -> io::Result<PathBuf> {
+    ensure_data_file_in(
+        &exe_dir()?,
+        RULES_FILE_NAME,
+        gametrimmer_core::rules::BUILTIN_RULES_JSON,
+    )
+}
+
+/// Ensures `l10n_rules.json` (the localization detector's data pack) exists
+/// next to the executable and returns its path, materializing the built-in
+/// tables on first run - same transparency contract as [`ensure_rules_path`].
+pub fn ensure_l10n_rules_path() -> io::Result<PathBuf> {
+    let builtin = gametrimmer_core::langdetect::LangPack::builtin()
+        .to_json_pretty()
+        .map_err(io::Error::other)?;
+    ensure_data_file_in(&exe_dir()?, L10N_RULES_FILE_NAME, &builtin)
 }

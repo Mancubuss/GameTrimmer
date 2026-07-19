@@ -105,6 +105,16 @@ pub struct GameTrimmerApp {
     /// True while the background "Експортувати..." save-dialog thread is
     /// running, so the button can't be clicked twice concurrently.
     pub export_active: bool,
+    /// True while a background rules export/import thread (its file dialog
+    /// plus the file work) is running - guards both settings-dialog rule
+    /// buttons at once, since they write/read the same pack files.
+    pub rules_io_active: bool,
+    /// Outcome of the last rules export/import, shown inside the settings
+    /// dialog (the top-bar status line is hidden behind the modal, so the
+    /// result must be visible right where the buttons are): `Ok` carries
+    /// the success summary, `Err` the failure text. Cleared when a new
+    /// rules operation starts and when the dialog closes.
+    pub rules_io_result: Option<Result<String, String>>,
 
     /// Indices into `findings` awaiting the user's confirmation in the
     /// delete modal.
@@ -179,6 +189,8 @@ impl GameTrimmerApp {
             libraries,
             folder_picker_active: false,
             export_active: false,
+            rules_io_active: false,
+            rules_io_result: None,
             confirm_delete: None,
             remove_summary: None,
             compact_after_delete: false,
@@ -335,6 +347,65 @@ impl GameTrimmerApp {
                 None => (None, None),
             };
             let _ = tx.send(WorkerMsg::ExportDone { path, error });
+        });
+    }
+
+    /// Spawns the «Експортувати правила» flow: a blocking folder picker on
+    /// a background thread, then writing both pack files there (see
+    /// `worker::rules_io::export_packs_to`). Result comes back as
+    /// [`WorkerMsg::RulesExportDone`].
+    pub fn start_rules_export(&mut self) {
+        if self.rules_io_active {
+            return;
+        }
+        self.rules_io_active = true;
+        self.rules_io_result = None;
+
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let picked = rfd::FileDialog::new()
+                .set_title("Виберіть теку для експорту правил")
+                .pick_folder();
+
+            let (path, error) = match picked {
+                Some(dir) => match worker::rules_io::export_packs_to(&dir) {
+                    Ok(()) => (Some(dir), None),
+                    Err(err) => (None, Some(err)),
+                },
+                None => (None, None),
+            };
+            let _ = tx.send(WorkerMsg::RulesExportDone { path, error });
+        });
+    }
+
+    /// Spawns the «Імпортувати правила» flow: a blocking multi-file picker
+    /// on a background thread, then merging each picked pack into the
+    /// current files (see `worker::rules_io::import_pack_files`). Result
+    /// comes back as [`WorkerMsg::RulesImportDone`]. The settings dialog
+    /// additionally disables the button while a scan runs, since the import
+    /// rewrites the files a scan reads at startup.
+    pub fn start_rules_import(&mut self) {
+        if self.rules_io_active {
+            return;
+        }
+        self.rules_io_active = true;
+        self.rules_io_result = None;
+
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let picked = rfd::FileDialog::new()
+                .set_title("Виберіть файли правил для імпорту")
+                .add_filter("Правила GameTrimmer (JSON)", &["json"])
+                .pick_files();
+
+            let (summary, error) = match picked {
+                Some(files) => match worker::rules_io::import_pack_files(&files) {
+                    Ok(summary) => (Some(summary), None),
+                    Err(err) => (None, Some(err)),
+                },
+                None => (None, None),
+            };
+            let _ = tx.send(WorkerMsg::RulesImportDone { summary, error });
         });
     }
 
@@ -521,7 +592,11 @@ impl GameTrimmerApp {
             self.tree_dirty = false;
         }
 
-        if received_any || self.busy {
+        // `rules_io_active` keeps frames coming while a rules export/import
+        // runs behind its native file dialog, so the result label appears
+        // the moment the background thread reports back - not on the next
+        // mouse move.
+        if received_any || self.busy || self.rules_io_active {
             ctx.request_repaint();
         }
     }
@@ -682,6 +757,31 @@ impl GameTrimmerApp {
                 }
                 // `path` and `error` both `None` means the user cancelled
                 // the save dialog - nothing to report.
+            }
+            WorkerMsg::RulesExportDone { path, error } => {
+                self.rules_io_active = false;
+                if let Some(error) = error {
+                    let msg = format!("Не вдалося експортувати правила: {error}");
+                    self.rules_io_result = Some(Err(msg.clone()));
+                    self.warnings.push(msg);
+                } else if let Some(path) = path {
+                    let msg = format!("Правила експортовано до {}", path.display());
+                    self.rules_io_result = Some(Ok(msg.clone()));
+                    self.status_message = msg;
+                }
+                // Both `None`: the folder picker was cancelled.
+            }
+            WorkerMsg::RulesImportDone { summary, error } => {
+                self.rules_io_active = false;
+                if let Some(error) = error {
+                    let msg = format!("Не вдалося імпортувати правила: {error}");
+                    self.rules_io_result = Some(Err(msg.clone()));
+                    self.warnings.push(msg);
+                } else if let Some(summary) = summary {
+                    self.rules_io_result = Some(Ok(summary.clone()));
+                    self.status_message = summary;
+                }
+                // Both `None`: the file picker was cancelled.
             }
             WorkerMsg::CompactDone { error, skipped } => {
                 self.busy = false;
