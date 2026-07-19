@@ -4,14 +4,17 @@
 //!
 //! Sections: deletion method, keep-list languages (never flagged by the
 //! localization detector - see `gametrimmer_core::settings::keep_languages`),
-//! database maintenance ("Стиснути базу даних"), analysis rule packs
-//! (export/import - see docs/05_rules_pack_plan.md).
+//! scan-routing mode (MFT index vs. directory walk - see
+//! `gametrimmer_core::settings::ScanRouting` and
+//! `crate::worker::scan_route`), database maintenance ("Стиснути базу
+//! даних"), analysis rule packs (export/import - see
+//! docs/05_rules_pack_plan.md).
 //! Planned (see BACKLOG.md): scanned artifact categories, app language, theme.
 
 use eframe::egui;
 
 use gametrimmer_core::langdetect::LangData;
-use gametrimmer_core::settings::DeleteMethod;
+use gametrimmer_core::settings::{DeleteMethod, ScanRouting};
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
@@ -28,6 +31,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let mut import_rules_clicked = false;
     let mut picked_method = app.settings.delete_method;
     let mut picked_keep_languages = app.settings.keep_languages.clone();
+    let mut picked_scan_routing = app.settings.scan_routing;
 
     egui::Modal::new(egui::Id::new("gt_settings")).show(ui.ctx(), |ui| {
         ui.set_min_width(420.0);
@@ -101,6 +105,46 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.separator();
         ui.add_space(8.0);
 
+        ui.label(s.scan_routing_label);
+        ui.add_space(4.0);
+        // Disabled while a worker is running: the new mode only takes
+        // effect on the *next* scan (see `GameTrimmerApp::set_scan_routing`),
+        // so there is nothing for it to apply to mid-scan, and persisting
+        // immediately would still race a concurrent DB connection like the
+        // sections above.
+        ui.add_enabled_ui(!app.busy, |ui| {
+            ui.radio_value(
+                &mut picked_scan_routing,
+                ScanRouting::Auto,
+                s.scan_routing_auto_label,
+            );
+            ui.indent("gt_settings_scan_routing_auto_hint", |ui| {
+                ui.small(s.scan_routing_auto_hint);
+            });
+            ui.add_space(4.0);
+            ui.radio_value(
+                &mut picked_scan_routing,
+                ScanRouting::ForceMft,
+                s.scan_routing_force_mft_label,
+            );
+            ui.indent("gt_settings_scan_routing_force_mft_hint", |ui| {
+                ui.small(s.scan_routing_force_mft_hint);
+            });
+            ui.add_space(4.0);
+            ui.radio_value(
+                &mut picked_scan_routing,
+                ScanRouting::ForceWalkdir,
+                s.scan_routing_force_walkdir_label,
+            );
+            ui.indent("gt_settings_scan_routing_force_walkdir_hint", |ui| {
+                ui.small(s.scan_routing_force_walkdir_hint);
+            });
+        });
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
         ui.label(s.database_label);
         ui.add_space(4.0);
         if ui
@@ -160,6 +204,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     app.set_delete_method(picked_method);
     app.set_keep_languages(picked_keep_languages);
+    app.set_scan_routing(picked_scan_routing);
     if compact_clicked {
         app.start_compact();
     }
