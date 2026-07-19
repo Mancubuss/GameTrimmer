@@ -41,7 +41,12 @@ pub static LANGS: &[LangEntry] = &[
         level_a: &[
             "english", "en-us", "en-gb", "en-uk", "en-au", "en-ca", "en-ie", "en-nz", "en-za",
         ],
-        level_b: &["eng"],
+        // "int" = INTernational, the English master locale in Unreal-style
+        // conventions (`*_LOC_INT.upk`, `UnrealEd.INT.xaml`, `Sounds\int\`).
+        // Mapping it to English routes such files into the keep-list instead
+        // of misreading the neighboring token as a removable language
+        // (screenshot report cases 42, 53, 61, 65).
+        level_b: &["eng", "int"],
         level_c: &["en"],
     },
     LangEntry {
@@ -68,13 +73,13 @@ pub static LANGS: &[LangEntry] = &[
         key: "de",
         level_a: &["german", "deutsch", "de-de", "de-at", "de-ch"],
         level_b: &["deu", "ger"],
-        level_c: &["de"],
+        level_c: &["de", "ge"],
     },
     LangEntry {
         key: "es",
         level_a: &["spanish", "espanol", "español", "spanish(spain)", "es-es"],
         level_b: &["spa"],
-        level_c: &["es"],
+        level_c: &["es", "sp"],
     },
     LangEntry {
         key: "es-419",
@@ -100,8 +105,8 @@ pub static LANGS: &[LangEntry] = &[
     LangEntry {
         key: "pt-br",
         level_a: &["brazilian", "portuguese(brazil)", "pt-br"],
-        level_b: &[],
-        level_c: &[],
+        level_b: &["bra"],
+        level_c: &["br"],
     },
     LangEntry {
         key: "it",
@@ -124,24 +129,28 @@ pub static LANGS: &[LangEntry] = &[
     LangEntry {
         key: "cs",
         level_a: &["czech", "cestina", "čeština", "cs-cz"],
-        level_b: &["ces", "cze"],
-        level_c: &["cs"],
+        level_b: &["ces", "cze", "czch"],
+        level_c: &["cs", "cz"],
     },
     LangEntry {
         key: "ja",
         level_a: &["japanese", "nihongo", "ja-jp"],
         level_b: &["jpn"],
-        level_c: &["ja"],
+        level_c: &["ja", "jp"],
     },
     LangEntry {
         key: "ko",
         level_a: &["korean", "koreana", "hangugeo", "ko-kr"],
         level_b: &["kor"],
-        level_c: &["ko"],
+        level_c: &["ko", "kr"],
     },
     LangEntry {
         key: "zh-hans",
         level_a: &[
+            // Plain "chinese" maps to Simplified as the more common
+            // variant; a neighboring "(traditional)" qualifier still
+            // resolves the file correctly at the folder-family level.
+            "chinese",
             "schinese",
             "simplifiedchinese",
             "chinesesimplified",
@@ -149,8 +158,8 @@ pub static LANGS: &[LangEntry] = &[
             "zh-hans",
             "zh-sg",
         ],
-        level_b: &[],
-        level_c: &[],
+        level_b: &["chn"],
+        level_c: &["zh"],
     },
     LangEntry {
         key: "zh-hant",
@@ -200,7 +209,7 @@ pub static LANGS: &[LangEntry] = &[
         key: "nl",
         level_a: &["dutch", "nederlands", "nl-nl", "nl-be"],
         level_b: &["nld", "dut"],
-        level_c: &["nl"],
+        level_c: &["nl", "du"],
     },
     LangEntry {
         key: "da",
@@ -344,15 +353,47 @@ pub fn lookup_locale_tag(text: &str) -> Option<(&'static str, Level)> {
     if !(2..=3).contains(&prefix.len()) || !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
         return None;
     }
-    // Region: exactly 2 ASCII letters (ISO 3166-1 alpha-2 shape). A
-    // trailing third part (`ja_JP_TRADITIONAL`, `zh_Hant_TW`) is allowed
-    // and ignored — we only need to confirm the piece *starts* with a
-    // real `lang-REGION` shape, not validate every trailing segment.
+    // Region: 2 ASCII letters (ISO 3166-1 alpha-2 shape). For a 2-letter
+    // language prefix a 3-letter region is also accepted (`zh-TWA` in
+    // ARK's localization folders) — but NOT for a 3-letter prefix, where
+    // 3+3 shapes are overwhelmingly non-locale compounds (`KOR_INT` is a
+    // KotOR mission folder, not Korean). A trailing third part
+    // (`ja_JP_TRADITIONAL`, `zh_Hant_TW`) is allowed and ignored — we only
+    // need to confirm the piece *starts* with a real `lang-REGION` shape,
+    // not validate every trailing segment.
     let region = rest.split(['-', '_']).next().unwrap_or(rest);
-    if region.len() != 2 || !region.chars().all(|c| c.is_ascii_alphabetic()) {
+    let max_region_len = if prefix.len() == 2 { 3 } else { 2 };
+    if !(2..=max_region_len).contains(&region.len())
+        || !region.chars().all(|c| c.is_ascii_alphabetic())
+    {
         return None;
     }
     lookup(prefix)
+}
+
+/// Steam-style single-word aliases that exist only as localization-industry
+/// vocabulary (see [`is_industry_alias`]).
+const INDUSTRY_WORDS: &[&str] = &[
+    "schinese",
+    "tchinese",
+    "koreana",
+    "latam",
+    "simplifiedchinese",
+    "traditionalchinese",
+    "chinesesimplified",
+    "chinesetraditional",
+];
+
+/// True if a matched Level A alias is *localization-industry vocabulary*
+/// rather than a plain natural-language word: region-qualified forms
+/// (`spanish(spain)`, `pt-br`, `en-us`) and Steam folder names
+/// (`schinese`, `koreana`, `latam`). Such tokens never double as ordinary
+/// game-content words, so a filename carrying one is trustworthy on its
+/// own — unlike plain full names (`german`, `russian`, `italian`), which
+/// the 2026-07-16 screenshot report showed naming factions, cars, weapons,
+/// and scenery far more often than localizations.
+pub fn is_industry_alias(matched: &str) -> bool {
+    matched.contains('(') || matched.contains('-') || INDUSTRY_WORDS.contains(&matched)
 }
 
 /// Normalizes an arbitrary user-supplied language key (e.g. from a keep-list)

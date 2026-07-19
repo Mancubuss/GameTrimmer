@@ -51,10 +51,37 @@ const MIN_FAMILY_SIZE: usize = 3;
 /// family cuts that risk sharply while still confirming genuine sets, which
 /// in practice virtually always cover many more than 3 languages.
 const MIN_FAMILY_SIZE_BARE_ONLY: usize = 5;
+/// Mechanism 1 analogue of [`MIN_FAMILY_SIZE_BARE_ONLY`]: identical-shape
+/// siblings are much stronger evidence than same-position ones, but the
+/// 2026-07-16 screenshot report still found an exact-shape, 3-distinct
+/// bare-code coincidence (`ee_body01_f_de/el/he.ee` — Pathfinder character
+/// bundles where de/el/he are body-variant codes, not German/Greek/Hebrew).
+/// Genuine bare-code sets essentially always cover 4+ languages.
+const MIN_SHAPE_FAMILY_SIZE_BARE_ONLY: usize = 4;
 const SHAPE_PLACEHOLDER: char = '\u{1}';
 
 /// One family-candidate occurrence: (file index, canonical language, trust level).
 type FamilyMember = (usize, &'static str, Level);
+
+/// One mechanism-3 candidate: the file's remaining (non-language) atoms are
+/// kept — split into those before and after the language token — so
+/// coincidental same-position matches can be filtered out. See
+/// `compute_directory_occurrence_family`.
+struct PositionMember {
+    file_idx: usize,
+    canonical: &'static str,
+    level: Level,
+    /// Non-language atoms preceding the language token in the name.
+    before_atoms: HashSet<String>,
+    /// Non-language atoms following it (suffixes, extensions).
+    after_atoms: HashSet<String>,
+}
+
+impl PositionMember {
+    fn all_atoms(&self) -> impl Iterator<Item = &String> {
+        self.before_atoms.iter().chain(self.after_atoms.iter())
+    }
+}
 
 /// (parent_dir, shape-with-placeholder) -> sibling occurrences.
 type ShapeGroups = HashMap<(String, String), Vec<FamilyMember>>;
@@ -62,7 +89,7 @@ type ShapeGroups = HashMap<(String, String), Vec<FamilyMember>>;
 /// (parent_dir, atom-sequence variant, "from start"|"from end", atom index)
 /// -> sibling occurrences. See `compute_directory_occurrence_family` for
 /// what "variant" distinguishes.
-type PositionGroups = HashMap<(String, u8, bool, usize), Vec<FamilyMember>>;
+type PositionGroups = HashMap<(String, u8, bool, usize), Vec<PositionMember>>;
 
 #[derive(Debug, Clone)]
 pub struct FamilyHit {
@@ -124,6 +151,7 @@ pub fn compute_family(
     compute_file_shape_family(seg_lists, occ_lists, keep, &mut result);
     compute_directory_occurrence_family(seg_lists, occ_lists, keep, &mut result);
     compute_folder_family(seg_lists, keep, &mut result);
+    compute_prefixed_folder_family(seg_lists, occ_lists, keep, &mut result);
     result
 }
 
@@ -157,7 +185,13 @@ fn compute_file_shape_family(
 
     for ((parent_dir, _shape), members) in &shape_groups {
         let distinct: HashSet<&'static str> = members.iter().map(|(_, c, _)| *c).collect();
-        if distinct.len() < MIN_FAMILY_SIZE {
+        let all_bare = members.iter().all(|(_, _, level)| *level == Level::C);
+        let threshold = if all_bare {
+            MIN_SHAPE_FAMILY_SIZE_BARE_ONLY
+        } else {
+            MIN_FAMILY_SIZE
+        };
+        if distinct.len() < threshold {
             continue;
         }
         for (file_idx, canonical, level) in members.iter().copied() {
@@ -262,21 +296,89 @@ fn compute_directory_occurrence_family(
                     continue;
                 };
                 let from_end = atoms.len() - 1 - atom_idx;
-                position_groups
-                    .entry((parent_dir.clone(), variant, true, atom_idx))
-                    .or_default()
-                    .push((i, occ.canonical, occ.level));
-                position_groups
-                    .entry((parent_dir.clone(), variant, false, from_end))
-                    .or_default()
-                    .push((i, occ.canonical, occ.level));
+                let before_atoms: HashSet<String> = atoms
+                    .iter()
+                    .filter(|a| a.end <= occ.start)
+                    .map(|a| a.text.clone())
+                    .collect();
+                let after_atoms: HashSet<String> = atoms
+                    .iter()
+                    .filter(|a| a.start >= occ.end)
+                    .map(|a| a.text.clone())
+                    .collect();
+                for (from_start, idx) in [(true, atom_idx), (false, from_end)] {
+                    position_groups
+                        .entry((parent_dir.clone(), variant, from_start, idx))
+                        .or_default()
+                        .push(PositionMember {
+                            file_idx: i,
+                            canonical: occ.canonical,
+                            level: occ.level,
+                            before_atoms: before_atoms.clone(),
+                            after_atoms: after_atoms.clone(),
+                        });
+                }
             }
         }
     }
 
     for ((parent_dir, _variant, _from_start, _idx), members) in &position_groups {
-        let distinct: HashSet<&'static str> = members.iter().map(|(_, c, _)| *c).collect();
-        let all_bare = members.iter().all(|(_, _, level)| *level == Level::C);
+        // Filter 1 (2026-07-16 report): a "language" that accounts for more
+        // than half the group is a constant naming convention, not the
+        // varying slot of a per-language set — `*_bg_*` background textures
+        // sharing a trailing `_raw` atom with genuine `startup_screen_3_de`
+        // siblings (Wreckfest), or `_hi` highlight bitmaps (DA: Origins).
+        let mut per_lang: HashMap<&'static str, usize> = HashMap::new();
+        for m in members {
+            *per_lang.entry(m.canonical).or_default() += 1;
+        }
+        let survivors: Vec<&PositionMember> = members
+            .iter()
+            .filter(|m| per_lang[m.canonical] * 2 <= members.len())
+            .collect();
+
+        // Filter 2 (2026-07-16 report): a member must be *supported* by a
+        // different-language member — sharing a distinctive
+        // (non-universal) atom, or 3+ atoms outright, or 2+ atoms that sit
+        // *before* the language token in both names (a shared naming stem:
+        // `VO_Gameplay_Charles_DE` / `VO_Gameplay_William_FR`). Atoms
+        // present in more than half the group (framework suffixes like
+        // `_SF`, extensions) are "universal" and don't count as
+        // distinctive on their own. This keeps genuine sets whose stems
+        // differ per file (`FemaleVoice9_German` / `FemaleVoice9_Italian`;
+        // `Spanish(Spain)_patch_1.snd` / `French(France)_patch_1.snd`)
+        // while rejecting coincidental same-position matches with
+        // unrelated names (`wp_consp_ar` against `uefonts_jpn` share only
+        // the trailing universal `sf`+`upk`; `l01_keep_cs` against
+        // `dlc_arena_crowd_cries_de`; Flatout `MountSV` vs `Statue_JA`).
+        let mut atom_freq: HashMap<&str, usize> = HashMap::new();
+        for m in &survivors {
+            for atom in m.all_atoms() {
+                *atom_freq.entry(atom.as_str()).or_default() += 1;
+            }
+        }
+        let supported: Vec<&&PositionMember> = survivors
+            .iter()
+            .filter(|m| {
+                survivors.iter().any(|n| {
+                    if n.canonical == m.canonical {
+                        return false;
+                    }
+                    let m_all: HashSet<&String> = m.all_atoms().collect();
+                    let shared: Vec<&String> =
+                        n.all_atoms().filter(|a| m_all.contains(a)).collect();
+                    let shared_before = m.before_atoms.intersection(&n.before_atoms).count();
+                    shared
+                        .iter()
+                        .any(|atom| atom_freq[atom.as_str()] * 2 <= survivors.len())
+                        || shared.len() >= 3
+                        || shared_before >= 2
+                })
+            })
+            .collect();
+
+        let distinct: HashSet<&'static str> = supported.iter().map(|m| m.canonical).collect();
+        let all_bare = supported.iter().all(|m| m.level == Level::C);
         let threshold = if all_bare {
             MIN_FAMILY_SIZE_BARE_ONLY
         } else {
@@ -285,8 +387,19 @@ fn compute_directory_occurrence_family(
         if distinct.len() < threshold {
             continue;
         }
-        for (file_idx, canonical, level) in members.iter().copied() {
-            if keep.contains(canonical) {
+        // A survivor that failed pair-support but whose language the
+        // supported members already confirmed rides along: once
+        // `VO_Gameplay_*_DE/FR/KO` prove a German set exists here,
+        // `R2_Stingers_DE` in the same slot is German too. Languages the
+        // supported set does NOT contain stay out (`wp_consp_ar` never
+        // revives via a ja/ko/de family), and over-represented constants
+        // were already dropped before this point.
+        let flagged: Vec<&&PositionMember> = survivors
+            .iter()
+            .filter(|m| distinct.contains(m.canonical))
+            .collect();
+        for member in &flagged {
+            if keep.contains(member.canonical) {
                 continue;
             }
             let reason = format!(
@@ -296,10 +409,10 @@ fn compute_directory_occurrence_family(
             );
             upsert(
                 result,
-                file_idx,
+                member.file_idx,
                 FamilyHit {
-                    canonical,
-                    confidence: family_confidence(level),
+                    canonical: member.canonical,
+                    confidence: family_confidence(member.level),
                     reason,
                 },
             );
@@ -368,6 +481,94 @@ fn compute_folder_family(
             {
                 let reason = format!(
                     "мовна сім'я підтек з {count} мов у теці '{}'",
+                    display_dir(&parent_prefix)
+                );
+                upsert(
+                    result,
+                    i,
+                    FamilyHit {
+                        canonical,
+                        confidence,
+                        reason,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// Mechanism 4 (2026-07-16 report, Mafia II miss): sibling subdirectories
+/// that share an identical name shape around a varying language token —
+/// `sds_de\ sds_fr\ sds_jp\ sds_pl\ ...`. Mechanism 2 requires the *entire*
+/// folder name to be a language token, so prefixed conventions like Mafia
+/// II's `sds_<lang>` were invisible even though the set structure is
+/// unmistakable. Like mechanism 2, a confirmed prefixed folder family flags
+/// every file underneath a non-keep member folder (files inside carry no
+/// language token of their own).
+fn compute_prefixed_folder_family(
+    seg_lists: &[Vec<Segment>],
+    occ_lists: &[Vec<Occurrence>],
+    keep: &HashSet<String>,
+    result: &mut HashMap<usize, FamilyHit>,
+) {
+    // (parent_prefix, folder-name shape) -> child folder lower ->
+    // (canonical, level).
+    type ShapeChildren = HashMap<(String, String), HashMap<String, (&'static str, Level)>>;
+    let mut shape_children: ShapeChildren = HashMap::new();
+
+    for (i, segs) in seg_lists.iter().enumerate() {
+        for occ in &occ_lists[i] {
+            if occ.is_filename || occ.whole_segment {
+                continue; // whole-segment folders are mechanism 2's job
+            }
+            let seg = &segs[occ.seg_index];
+            let parent_prefix = dir_key(segs, seg.index);
+            let shape = shape_of(&seg.lower, occ.start, occ.end);
+            shape_children
+                .entry((parent_prefix, shape))
+                .or_default()
+                .insert(seg.lower.clone(), (occ.canonical, occ.level));
+        }
+    }
+
+    let mut confirmed: HashMap<(String, String), (&'static str, u8, usize)> = HashMap::new();
+    for ((parent_prefix, _shape), children) in &shape_children {
+        let distinct: HashSet<&'static str> = children.values().map(|(c, _)| *c).collect();
+        let all_bare = children.values().all(|(_, level)| *level == Level::C);
+        let threshold = if all_bare {
+            MIN_FAMILY_SIZE_BARE_ONLY
+        } else {
+            MIN_FAMILY_SIZE
+        };
+        if distinct.len() < threshold {
+            continue;
+        }
+        for (child_lower, &(canonical, level)) in children {
+            if keep.contains(canonical) {
+                continue;
+            }
+            confirmed.insert(
+                (parent_prefix.clone(), child_lower.clone()),
+                (canonical, family_confidence(level), distinct.len()),
+            );
+        }
+    }
+
+    if confirmed.is_empty() {
+        return;
+    }
+
+    for (i, segs) in seg_lists.iter().enumerate() {
+        if segs.len() < 2 {
+            continue;
+        }
+        for j in 0..segs.len() - 1 {
+            let parent_prefix = dir_key(segs, j);
+            if let Some(&(canonical, confidence, count)) =
+                confirmed.get(&(parent_prefix.clone(), segs[j].lower.clone()))
+            {
+                let reason = format!(
+                    "мовна сім'я підтек зі спільним префіксом ({count} мов) у теці '{}'",
                     display_dir(&parent_prefix)
                 );
                 upsert(

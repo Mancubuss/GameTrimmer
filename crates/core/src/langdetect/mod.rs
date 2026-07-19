@@ -86,8 +86,36 @@ impl LangDetector {
 
         let mut out = Vec::with_capacity(files.len());
         for (i, (file, segs)) in files.iter().zip(seg_lists.iter()).enumerate() {
-            let has_filename_lang_token = occ_lists[i].iter().any(|o| o.is_filename);
             let ext = file_extension(&file.rel_path);
+
+            // Executable code is never a removable localization, whatever
+            // its name says: NVIDIA Streamline ships `sl.dlss.dll` ("sl" is
+            // not Slovenian) and installers routinely embed helper DLLs.
+            // The one exception: .NET satellite assemblies
+            // (`de\Foo.resources.dll`) exist *only* as per-language
+            // resource containers.
+            let is_satellite_assembly = file.rel_path.to_lowercase().ends_with(".resources.dll");
+            if matches!(ext.as_deref(), Some("dll") | Some("exe")) && !is_satellite_assembly {
+                continue;
+            }
+            // A file living under a keep-language folder belongs to that
+            // language, no matter what its own name resembles: GRID keeps
+            // Japanese-named engine cues (`collision_drift_jpn_01.raw`)
+            // inside `audio\speech\en\` — the `en\` folder wins. The same
+            // goes for a file whose own name carries an unambiguous (A/B)
+            // keep-language token: `ai_voice_sk_vo_english.spk` is English
+            // VO ("sk" is a mission code), `*_LOC_INT.upk` is the English
+            // master locale.
+            let named_keep_language = occ_lists[i].iter().any(|occ| {
+                occ.is_filename
+                    && !matches!(occ.level, dict::Level::C)
+                    && self.keep.contains(occ.canonical)
+            });
+            if named_keep_language || self.under_keep_language_folder(segs) {
+                continue;
+            }
+
+            let has_filename_lang_token = occ_lists[i].iter().any(|o| o.is_filename);
             let ctx = scan_markers(segs, has_filename_lang_token, ext.as_deref());
 
             if let Some(finding) =
@@ -97,6 +125,18 @@ impl LangDetector {
             }
         }
         out
+    }
+
+    /// True if any directory segment of the path *is* (entirely) a
+    /// keep-language token: `en\`, `english\`, `int\` (the Unreal-style
+    /// English master locale), `uk\`, ...
+    fn under_keep_language_folder(&self, segs: &[tokens::Segment]) -> bool {
+        segs.iter()
+            .filter(|seg| !seg.is_filename)
+            .any(|seg| match dict::lookup(&seg.lower) {
+                Some((canonical, _)) => self.keep.contains(canonical),
+                None => false,
+            })
     }
 }
 
@@ -122,9 +162,27 @@ fn append_marker_note(reason: &str, ctx: &MarkerContext) -> String {
     }
 }
 
-/// Best non-family candidate among a file's recognized occurrences:
-/// Level A is self-sufficient (90 with a marker, 75 bare/Unknown); Level B
-/// needs a marker (80); Level C never flags without a family (`None`).
+/// Best non-family candidate among a file's recognized occurrences.
+///
+/// Recalibrated after the 2026-07-16 screenshot report: the report showed
+/// that a language token in a *file name*, backed only by an asset-kind
+/// marker, is wrong far more often than right (`Sounds.nob`, `Dan.bank`,
+/// `victory_german.webm`, `M20_Russian_Standoff10.sub`, `9mm_czech.bnk`,
+/// `BKG_ItalianCoast.bank` — all game content, all had markers). What
+/// separates real localizations is *structural* context, so:
+///
+/// - A token directly paired with a generic loc word in the same name
+///   (`..._LOC_JPN.upk`) is self-sufficient (90).
+/// - A filename token otherwise needs a generic localization *folder*
+///   (`loc\`, `Localization\`, `LANGUAGE\`) on its path: A→90, B→80, C→70.
+///   Asset-kind markers (`sound`, `movies`, `fonts`) alone no longer
+///   qualify a filename token — those cases must earn a language family
+///   instead (see `family.rs`).
+/// - A directory segment that *is* the language token (`spanish\`, `pol\`)
+///   keeps close to the old scoring: A→90 with any marker / 75 bare,
+///   B→80 with any marker, C→75 with a generic localization folder.
+/// - A token embedded in a longer directory name (`french_colonization\`,
+///   `ItalianCypress\`) needs a generic localization folder as well.
 fn best_non_family_candidate(
     occs: &[Occurrence],
     ctx: &MarkerContext,
@@ -136,26 +194,74 @@ fn best_non_family_candidate(
         if keep.contains(occ.canonical) {
             continue;
         }
-        let score = match occ.level {
-            dict::Level::A if ctx.has_any() => Some(90),
-            dict::Level::A => Some(75),
-            dict::Level::B if ctx.has_any() => Some(80),
-            dict::Level::B => None,
-            dict::Level::C => None,
+        // The explicit loc-pair upgrade covers `_LOC_JPN`-style naming.
+        // For bare two-letter codes only a *generic* loc word qualifies
+        // (`lang_es-es_text.archive`); loc-specific vocabulary can
+        // neighbor ordinary words (`intro_no_subtitles.bik` — "no" is the
+        // English word, not Norwegian).
+        let loc_paired =
+            occ.loc_adjacent && (!matches!(occ.level, dict::Level::C) || occ.loc_adjacent_generic);
+        let score = if loc_paired {
+            Some(if matches!(occ.level, dict::Level::C) {
+                75
+            } else {
+                90
+            })
+        } else if occ.is_filename {
+            match occ.level {
+                // Region-qualified and Steam-style aliases
+                // (`Spanish(Spain)`, `pt-br`, `schinese`) are
+                // localization-industry vocabulary — trustworthy in a
+                // filename even without a loc folder, unlike plain full
+                // names. See `dict::is_industry_alias`.
+                dict::Level::A if dict::is_industry_alias(&occ.matched) && ctx.has_any() => {
+                    Some(90)
+                }
+                dict::Level::A if dict::is_industry_alias(&occ.matched) => Some(75),
+                dict::Level::A if ctx.generic_loc_in_folder => Some(90),
+                dict::Level::B if ctx.generic_loc_in_folder => Some(80),
+                // An explicit "<asset-word>_<lang>" pairing in the stem:
+                // `sounds_spa.pck`, `boot_sound_ita_patch_01.forge`,
+                // `VO_Cutscenes_FR.bank`.
+                dict::Level::A if occ.asset_adjacent => Some(90),
+                dict::Level::B if occ.asset_adjacent => Some(80),
+                dict::Level::C if occ.asset_adjacent => Some(70),
+                // A file whose entire stem IS a bare code, inside a
+                // localization folder: `webview2\Locales\fi.pak`. Embedded
+                // codes (`locale\...\id_xpbls.xnb`) stay family-gated.
+                dict::Level::C if occ.whole_stem && ctx.generic_loc_in_folder => Some(70),
+                // Level C filename tokens stay family-gated even inside a
+                // loc folder: `locale\creatures\pl_f\id_xpbls.xnb` — "id"
+                // is an id, not Indonesian (corpus calibration).
+                _ => None,
+            }
+        } else if occ.whole_segment {
+            match occ.level {
+                dict::Level::A if ctx.has_any() => Some(90),
+                dict::Level::A => Some(75),
+                dict::Level::B if ctx.has_any() => Some(80),
+                dict::Level::C if ctx.generic_loc_in_folder => Some(75),
+                _ => None,
+            }
+        } else {
+            match occ.level {
+                dict::Level::A if ctx.generic_loc_in_folder => Some(90),
+                dict::Level::B if ctx.generic_loc_in_folder => Some(80),
+                _ => None,
+            }
         };
         let Some(score) = score else { continue };
 
-        let reason = if ctx.has_any() {
+        let reason = if loc_paired {
+            format!("токен '{}' у явній loc-парі", occ.matched)
+        } else if ctx.has_any() {
             let word = ctx
                 .closest_any_hit()
                 .map(|h| h.word.as_str())
                 .unwrap_or_default();
             format!("токен '{}' + маркер '{}'", occ.matched, word)
         } else {
-            format!(
-                "токен '{}' (мовна ознака без явного контексту)",
-                occ.matched
-            )
+            format!("токен '{}' (мовна тека без явного контексту)", occ.matched)
         };
 
         let is_better = match &best {

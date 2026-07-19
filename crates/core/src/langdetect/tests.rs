@@ -25,12 +25,23 @@ fn find_for(paths: &[&str]) -> Vec<(usize, LangFinding)> {
 
 #[test]
 fn audio_localization_flagged_with_high_confidence() {
-    let findings = analyze_one("base\\sound\\soundbanks\\hhpc\\Spanish(Spain)_patch_1.snd");
-    assert_eq!(findings.len(), 1, "{findings:?}");
-    let (_, f) = &findings[0];
-    assert_eq!(f.lang_tag, "es");
-    assert_eq!(f.kind, LangKind::Audio);
-    assert!(f.confidence >= 90, "confidence was {}", f.confidence);
+    // Recalibrated after the 2026-07-16 screenshot report: a lone full
+    // language name in a filename is no longer trusted on an asset-kind
+    // marker alone (`victory_german.webm`, `russian.spk` and dozens more
+    // were game content) — real per-language audio sets are recognized by
+    // their sibling family instead.
+    let findings = find_for(&[
+        "base\\sound\\soundbanks\\hhpc\\Spanish(Spain)_patch_1.snd",
+        "base\\sound\\soundbanks\\hhpc\\French(France)_patch_1.snd",
+        "base\\sound\\soundbanks\\hhpc\\German_patch_1.snd",
+    ]);
+    let es = findings
+        .iter()
+        .map(|(_, f)| f)
+        .find(|f| f.lang_tag == "es")
+        .expect("spanish sibling should be flagged");
+    assert_eq!(es.kind, LangKind::Audio);
+    assert!(es.confidence >= 90, "confidence was {}", es.confidence);
 }
 
 #[test]

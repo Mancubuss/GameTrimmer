@@ -188,6 +188,12 @@ fn main_check() -> Stats {
 
             if !is_flagged {
                 stats.false_negative += 1;
+                if stats.false_negative <= 80 {
+                    eprintln!(
+                        "FN [{}] {} (expected {})",
+                        game_key, row.rel_path, row.expected
+                    );
+                }
                 continue;
             }
 
