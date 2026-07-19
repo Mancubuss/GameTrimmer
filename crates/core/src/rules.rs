@@ -15,6 +15,13 @@ use crate::error::{CoreError, Result};
 /// inside asset or engine trees such as `Launcher\QtQuick\Extras`).
 const MAX_SHALLOW_DEPTH: usize = 2;
 
+/// The repo's rules.json embedded at build time - the seed for the external
+/// file the app materializes next to the executable on first use, so users
+/// always have the full effective rule set on disk to audit and edit. The
+/// scanner never reads this constant directly once the file exists.
+pub const BUILTIN_RULES_JSON: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../rules.json"));
+
 /// Category of a non-essential file/folder. Serialized snake_case in rules.json
 /// and in the `findings.category` DB column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -66,8 +73,10 @@ impl Category {
     }
 }
 
-/// One rule from rules.json.
-#[derive(Debug, Clone, Deserialize)]
+/// One rule from rules.json. `Serialize` keeps the round trip lossless for
+/// the "Експортувати правила"/"Імпортувати правила" flow (see
+/// `crate::packs`), which rewrites the merged list back to disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
     pub category: Category,
     /// Case-insensitive regex. Folder rules match one path segment,
@@ -83,7 +92,7 @@ pub struct Rule {
     /// nested vendor folders like `Support\Software\VCRedist\` without
     /// loosening the shallow default that keeps generic patterns away from
     /// deep asset trees.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<usize>,
     /// Optional whitelist of file extensions (lowercase, without the dot).
     /// When set, the rule only matches files whose extension is listed -
@@ -91,8 +100,15 @@ pub struct Rule {
     /// to demand content-type evidence (artbooks, music, video) instead of
     /// trusting the folder name alone: `Extras\artbook.pdf` is bonus
     /// material, `QtQuick\Extras\Extras.qml` is program code.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
+}
+
+/// Parses the raw rule list of a rules.json without compiling the regexes -
+/// the parse used by the import merge (`crate::packs`), where validation
+/// happens separately through [`RuleEngine::from_json`].
+pub fn parse_rule_list(json: &str) -> Result<Vec<Rule>> {
+    serde_json::from_str(json).map_err(CoreError::from)
 }
 
 /// A classification produced by the engine for one file.
@@ -126,7 +142,7 @@ pub struct RuleEngine {
 impl RuleEngine {
     /// Builds the engine from rules.json text.
     pub fn from_json(json: &str) -> Result<Self> {
-        let raw_rules: Vec<Rule> = serde_json::from_str(json)?;
+        let raw_rules = parse_rule_list(json)?;
 
         let mut rules = Vec::with_capacity(raw_rules.len());
         for (index, rule) in raw_rules.into_iter().enumerate() {
@@ -429,6 +445,13 @@ mod tests {
             message.contains("Broken rule"),
             "error should include the rule's desc: {message}"
         );
+    }
+
+    #[test]
+    fn builtin_rules_json_parses_and_compiles() {
+        let engine = RuleEngine::from_json(BUILTIN_RULES_JSON)
+            .expect("embedded builtin rules must always compile");
+        assert!(!engine.rules.is_empty());
     }
 
     #[test]

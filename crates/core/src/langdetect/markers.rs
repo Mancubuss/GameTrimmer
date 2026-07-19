@@ -8,6 +8,7 @@
 //! segment) — except for "closest wins" when several marker categories are
 //! present, which picks the category found in the segment nearest the file.
 
+use crate::langdetect::data::LangData;
 use crate::langdetect::tokens::Segment;
 
 pub const NEGATIVE: &[&str] = &[
@@ -288,13 +289,10 @@ impl MarkerContext {
     }
 
     /// True only if every negative marker seen is an overridable one
-    /// (i.e. no stricter negative marker is present).
+    /// (i.e. no stricter negative marker is present — `blocked` is set
+    /// the moment a non-overridable one appears).
     pub fn only_overridable_negative(&self) -> bool {
-        !self.negative_words.is_empty()
-            && self
-                .negative_words
-                .iter()
-                .all(|w| OVERRIDABLE_NEGATIVE.contains(&w.as_str()))
+        !self.negative_words.is_empty() && !self.blocked
     }
 }
 
@@ -302,6 +300,7 @@ impl MarkerContext {
 /// reinforcement for video/font when the file name itself carries a
 /// recognized language token (`has_filename_lang_token`).
 pub fn scan_markers(
+    data: &LangData,
     segments: &[Segment],
     has_filename_lang_token: bool,
     extension: Option<&str>,
@@ -311,31 +310,31 @@ pub fn scan_markers(
     for seg in segments {
         for atom in &seg.atoms {
             let word = atom.text.as_str();
-            if NEGATIVE.contains(&word) {
-                if !OVERRIDABLE_NEGATIVE.contains(&word) {
+            if data.negative.contains(word) {
+                if !data.overridable_negative.contains(word) {
                     ctx.blocked = true;
                 }
                 ctx.negative_words.push(word.to_string());
             }
-            if POSITIVE_AUDIO.contains(&word) {
+            if data.audio.contains(word) {
                 ctx.consider(MarkerKind::Audio, seg.index, word);
             }
-            if POSITIVE_TEXT.contains(&word) {
+            if data.text.contains(word) {
                 ctx.consider(MarkerKind::Text, seg.index, word);
             }
-            if POSITIVE_LOC_GENERIC.contains(&word) {
+            if data.loc_generic.contains(word) {
                 ctx.consider_generic(seg.index, word);
                 if !seg.is_filename {
                     ctx.generic_loc_in_folder = true;
                 }
             }
-            if LOC_SPECIFIC.contains(&word) && !seg.is_filename {
+            if data.loc_specific.contains(word) && !seg.is_filename {
                 ctx.generic_loc_in_folder = true;
             }
-            if POSITIVE_VIDEO.contains(&word) {
+            if data.video.contains(word) {
                 ctx.consider(MarkerKind::Video, seg.index, word);
             }
-            if POSITIVE_FONT.contains(&word) {
+            if data.font.contains(word) {
                 ctx.consider(MarkerKind::Font, seg.index, word);
             }
         }
@@ -344,13 +343,13 @@ pub fn scan_markers(
     if has_filename_lang_token {
         if let Some(last) = segments.last() {
             if let Some(ext) = extension {
-                if VIDEO_EXTENSIONS.contains(&ext) {
+                if data.video_extensions.contains(ext) {
                     ctx.consider(MarkerKind::Video, last.index, &format!(".{ext}"));
                 }
-                if FONT_EXTENSIONS.contains(&ext) {
+                if data.font_extensions.contains(ext) {
                     ctx.consider(MarkerKind::Font, last.index, &format!(".{ext}"));
                 }
-                if TEXT_EXTENSIONS.contains(&ext) {
+                if data.text_extensions.contains(ext) {
                     ctx.consider(MarkerKind::Text, last.index, &format!(".{ext}"));
                 }
             }
@@ -365,17 +364,21 @@ mod tests {
     use super::*;
     use crate::langdetect::tokens::tokenize_path;
 
+    fn data() -> std::sync::Arc<LangData> {
+        LangData::builtin()
+    }
+
     #[test]
     fn detects_negative_marker() {
         let segs = tokenize_path("Art\\Units\\King Spanish\\unit.flc");
-        let ctx = scan_markers(&segs, false, None);
+        let ctx = scan_markers(&data(), &segs, false, None);
         assert!(ctx.blocked);
     }
 
     #[test]
     fn textures_negative_is_overridable_only() {
         let segs = tokenize_path("textures\\ui\\de\\panel.dds");
-        let ctx = scan_markers(&segs, false, None);
+        let ctx = scan_markers(&data(), &segs, false, None);
         assert!(!ctx.blocked, "textures alone must not hard-block");
         assert!(ctx.only_overridable_negative());
     }
@@ -385,13 +388,13 @@ mod tests {
         // No word marker anywhere here — only the extension can supply one.
         let segs = tokenize_path("data\\intro_german.bik");
 
-        let with_token = scan_markers(&segs, true, Some("bik"));
+        let with_token = scan_markers(&data(), &segs, true, Some("bik"));
         assert!(
             with_token.video.is_some(),
             "extension + lang token in filename should reinforce"
         );
 
-        let without_token = scan_markers(&segs, false, Some("bik"));
+        let without_token = scan_markers(&data(), &segs, false, Some("bik"));
         assert!(
             without_token.video.is_none(),
             "extension alone (no lang token in filename) must not reinforce"
@@ -401,7 +404,7 @@ mod tests {
     #[test]
     fn closest_marker_wins() {
         let segs = tokenize_path("sound\\text\\voice_line.wav");
-        let ctx = scan_markers(&segs, false, None);
+        let ctx = scan_markers(&data(), &segs, false, None);
         assert_eq!(ctx.closest(), Some(MarkerKind::Audio));
     }
 }

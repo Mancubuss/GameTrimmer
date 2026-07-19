@@ -35,7 +35,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::langdetect::dict::{self, Level};
+use crate::langdetect::data::LangData;
+use crate::langdetect::dict::Level;
 use crate::langdetect::occurrences::Occurrence;
 use crate::langdetect::tokens::Segment;
 
@@ -143,6 +144,7 @@ fn shape_of(filename_lower: &str, start: usize, end: usize) -> String {
 /// Computes family-confirmed findings across every file of one game.
 /// `seg_lists`/`occ_lists` must be index-aligned with the game's file list.
 pub fn compute_family(
+    data: &LangData,
     seg_lists: &[Vec<Segment>],
     occ_lists: &[Vec<Occurrence>],
     keep: &HashSet<String>,
@@ -150,7 +152,7 @@ pub fn compute_family(
     let mut result = HashMap::new();
     compute_file_shape_family(seg_lists, occ_lists, keep, &mut result);
     compute_directory_occurrence_family(seg_lists, occ_lists, keep, &mut result);
-    compute_folder_family(seg_lists, keep, &mut result);
+    compute_folder_family(data, seg_lists, keep, &mut result);
     compute_prefixed_folder_family(seg_lists, occ_lists, keep, &mut result);
     result
 }
@@ -423,6 +425,7 @@ fn compute_directory_occurrence_family(
 /// Mechanism 2: sibling subdirectories whose entire name is a recognized
 /// language token (`en/ de/ fr/ es/`).
 fn compute_folder_family(
+    data: &LangData,
     seg_lists: &[Vec<Segment>],
     keep: &HashSet<String>,
     result: &mut HashMap<usize, FamilyHit>,
@@ -438,7 +441,7 @@ fn compute_folder_family(
         for j in 0..segs.len() - 1 {
             let parent_prefix = dir_key(segs, j);
             let child = &segs[j];
-            if let Some((canonical, level)) = dict::lookup(&child.lower) {
+            if let Some((canonical, level)) = data.lookup(&child.lower) {
                 folder_children
                     .entry(parent_prefix)
                     .or_default()
@@ -591,6 +594,10 @@ mod tests {
     use crate::langdetect::occurrences::collect_occurrences;
     use crate::langdetect::tokens::tokenize_path;
 
+    fn data() -> std::sync::Arc<LangData> {
+        LangData::builtin()
+    }
+
     fn keep_default() -> HashSet<String> {
         ["uk".to_string(), "en".to_string()].into_iter().collect()
     }
@@ -604,9 +611,12 @@ mod tests {
             "sound\\Voice_polish.pak",
         ];
         let seg_lists: Vec<_> = paths.iter().map(|p| tokenize_path(p)).collect();
-        let occ_lists: Vec<_> = seg_lists.iter().map(|s| collect_occurrences(s)).collect();
+        let occ_lists: Vec<_> = seg_lists
+            .iter()
+            .map(|s| collect_occurrences(&data(), s))
+            .collect();
 
-        let hits = compute_family(&seg_lists, &occ_lists, &keep_default());
+        let hits = compute_family(&data(), &seg_lists, &occ_lists, &keep_default());
 
         assert!(!hits.contains_key(&0), "english is kept");
         assert!(hits.contains_key(&1), "french should be flagged");
@@ -623,9 +633,12 @@ mod tests {
             "root\\es\\file4.txt",
         ];
         let seg_lists: Vec<_> = paths.iter().map(|p| tokenize_path(p)).collect();
-        let occ_lists: Vec<_> = seg_lists.iter().map(|s| collect_occurrences(s)).collect();
+        let occ_lists: Vec<_> = seg_lists
+            .iter()
+            .map(|s| collect_occurrences(&data(), s))
+            .collect();
 
-        let hits = compute_family(&seg_lists, &occ_lists, &keep_default());
+        let hits = compute_family(&data(), &seg_lists, &occ_lists, &keep_default());
 
         assert!(!hits.contains_key(&0), "en/ folder is kept");
         assert!(hits.contains_key(&1), "de/ folder should be flagged");
@@ -637,9 +650,12 @@ mod tests {
     fn no_family_below_threshold() {
         let paths = ["root\\en\\file1.txt", "root\\de\\file2.txt"];
         let seg_lists: Vec<_> = paths.iter().map(|p| tokenize_path(p)).collect();
-        let occ_lists: Vec<_> = seg_lists.iter().map(|s| collect_occurrences(s)).collect();
+        let occ_lists: Vec<_> = seg_lists
+            .iter()
+            .map(|s| collect_occurrences(&data(), s))
+            .collect();
 
-        let hits = compute_family(&seg_lists, &occ_lists, &keep_default());
+        let hits = compute_family(&data(), &seg_lists, &occ_lists, &keep_default());
         assert!(hits.is_empty(), "only 2 siblings must not confirm a family");
     }
 }

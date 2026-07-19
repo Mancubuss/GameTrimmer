@@ -9,6 +9,7 @@
 //! nearby, and only full names / Steam folder names / explicit locale tags
 //! are trusted alone — see `dict.rs` for the trust-level rationale.
 
+mod data;
 mod dict;
 mod family;
 mod markers;
@@ -19,10 +20,11 @@ mod tokens;
 mod tests;
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::scanner::FileEntry;
 
-use dict::normalize_lang_key;
+pub use data::{LangData, LangPack, LANG_PACK_VERSION};
 use family::FamilyHit;
 use markers::{scan_markers, MarkerContext, MarkerKind};
 use occurrences::{collect_occurrences, Occurrence};
@@ -56,23 +58,33 @@ pub struct LangFinding {
     pub reason: String,
 }
 
-/// The detection engine. Holds the language dictionary and the keep-list.
+/// The detection engine. Holds the data tables and the keep-list.
 pub struct LangDetector {
+    data: Arc<LangData>,
     keep: HashSet<String>,
 }
 
 impl LangDetector {
-    /// Detector with the default keep-list (Ukrainian and English — never flagged).
+    /// Detector with the built-in tables and their default keep-list
+    /// (Ukrainian and English — never flagged).
     pub fn new() -> Self {
-        let keep: Vec<String> = dict::KEEP_DEFAULT.iter().map(|s| s.to_string()).collect();
-        Self::with_keep_list(&keep)
+        let data = LangData::builtin();
+        let keep = data.keep_default().to_vec();
+        Self::with_data(data, &keep)
     }
 
-    /// Detector with a custom keep-list of normalized language keys
-    /// (e.g. ["uk", "en"]). Files of kept languages are never returned.
+    /// Detector with the built-in tables and a custom keep-list of
+    /// normalized language keys (e.g. ["uk", "en"]).
     pub fn with_keep_list(keep: &[String]) -> Self {
-        let keep = keep.iter().map(|s| normalize_lang_key(s)).collect();
-        Self { keep }
+        Self::with_data(LangData::builtin(), keep)
+    }
+
+    /// Detector with externally loaded data tables (a `l10n_rules.json`
+    /// community pack) and a keep-list. Files of kept languages are never
+    /// returned.
+    pub fn with_data(data: Arc<LangData>, keep: &[String]) -> Self {
+        let keep = keep.iter().map(|s| data.normalize_lang_key(s)).collect();
+        Self { data, keep }
     }
 
     /// Analyzes all files of ONE game together (sibling context is required
@@ -80,9 +92,11 @@ impl LangDetector {
     /// finding)` pairs for files identified as removable localizations.
     pub fn analyze_game(&self, files: &[FileEntry]) -> Vec<(usize, LangFinding)> {
         let seg_lists: Vec<_> = files.iter().map(|f| tokenize_path(&f.rel_path)).collect();
-        let occ_lists: Vec<Vec<Occurrence>> =
-            seg_lists.iter().map(|s| collect_occurrences(s)).collect();
-        let family_hits = family::compute_family(&seg_lists, &occ_lists, &self.keep);
+        let occ_lists: Vec<Vec<Occurrence>> = seg_lists
+            .iter()
+            .map(|s| collect_occurrences(&self.data, s))
+            .collect();
+        let family_hits = family::compute_family(&self.data, &seg_lists, &occ_lists, &self.keep);
 
         let mut out = Vec::with_capacity(files.len());
         for (i, (file, segs)) in files.iter().zip(seg_lists.iter()).enumerate() {
@@ -116,11 +130,15 @@ impl LangDetector {
             }
 
             let has_filename_lang_token = occ_lists[i].iter().any(|o| o.is_filename);
-            let ctx = scan_markers(segs, has_filename_lang_token, ext.as_deref());
+            let ctx = scan_markers(&self.data, segs, has_filename_lang_token, ext.as_deref());
 
-            if let Some(finding) =
-                decide_finding(&occ_lists[i], &ctx, family_hits.get(&i), &self.keep)
-            {
+            if let Some(finding) = decide_finding(
+                &self.data,
+                &occ_lists[i],
+                &ctx,
+                family_hits.get(&i),
+                &self.keep,
+            ) {
                 out.push((i, finding));
             }
         }
@@ -133,7 +151,7 @@ impl LangDetector {
     fn under_keep_language_folder(&self, segs: &[tokens::Segment]) -> bool {
         segs.iter()
             .filter(|seg| !seg.is_filename)
-            .any(|seg| match dict::lookup(&seg.lower) {
+            .any(|seg| match self.data.lookup(&seg.lower) {
                 Some((canonical, _)) => self.keep.contains(canonical),
                 None => false,
             })
@@ -184,6 +202,7 @@ fn append_marker_note(reason: &str, ctx: &MarkerContext) -> String {
 /// - A token embedded in a longer directory name (`french_colonization\`,
 ///   `ItalianCypress\`) needs a generic localization folder as well.
 fn best_non_family_candidate(
+    data: &LangData,
     occs: &[Occurrence],
     ctx: &MarkerContext,
     keep: &HashSet<String>,
@@ -214,10 +233,8 @@ fn best_non_family_candidate(
                 // localization-industry vocabulary — trustworthy in a
                 // filename even without a loc folder, unlike plain full
                 // names. See `dict::is_industry_alias`.
-                dict::Level::A if dict::is_industry_alias(&occ.matched) && ctx.has_any() => {
-                    Some(90)
-                }
-                dict::Level::A if dict::is_industry_alias(&occ.matched) => Some(75),
+                dict::Level::A if data.is_industry_alias(&occ.matched) && ctx.has_any() => Some(90),
+                dict::Level::A if data.is_industry_alias(&occ.matched) => Some(75),
                 dict::Level::A if ctx.generic_loc_in_folder => Some(90),
                 dict::Level::B if ctx.generic_loc_in_folder => Some(80),
                 // An explicit "<asset-word>_<lang>" pairing in the stem:
@@ -279,6 +296,7 @@ fn best_non_family_candidate(
 /// Combines marker context, plain-occurrence scoring, and family evidence
 /// into a final decision for one file.
 fn decide_finding(
+    data: &LangData,
     occs: &[Occurrence],
     ctx: &MarkerContext,
     family: Option<&FamilyHit>,
@@ -307,7 +325,7 @@ fn decide_finding(
         });
     }
 
-    let bare = best_non_family_candidate(occs, ctx, keep);
+    let bare = best_non_family_candidate(data, occs, ctx, keep);
 
     let (canonical, confidence, reason) = match (family, bare) {
         (Some(f), Some((b_canonical, b_score, b_reason))) => {

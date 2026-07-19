@@ -15,9 +15,6 @@
 //! "up-to" or "re-do" matching a loose 2-3+2 letter pattern) at a modest cost
 //! in recall for obscure locales.
 
-use std::collections::HashMap;
-use std::sync::LazyLock;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Level {
     A,
@@ -302,78 +299,9 @@ pub static LANGS: &[LangEntry] = &[
     },
 ];
 
-/// alias (lowercase) -> (canonical key, trust level)
-static ALIAS_MAP: LazyLock<HashMap<&'static str, (&'static str, Level)>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
-    for entry in LANGS {
-        // Every canonical key resolves to itself at Level A, so callers can
-        // pass either an alias or a bare canonical key (e.g. in a keep-list).
-        map.entry(entry.key).or_insert((entry.key, Level::A));
-        for alias in entry.level_a {
-            map.insert(alias, (entry.key, Level::A));
-        }
-        for alias in entry.level_b {
-            map.insert(alias, (entry.key, Level::B));
-        }
-        for alias in entry.level_c {
-            map.insert(alias, (entry.key, Level::C));
-        }
-    }
-    map
-});
-
-/// Looks up a lowercase token/segment-piece in the dictionary.
-pub fn lookup(text: &str) -> Option<(&'static str, Level)> {
-    ALIAS_MAP.get(text).copied()
-}
-
-/// Generic `<lang>[-_]<REGION>` locale-tag pattern (docs/04_implementation_plan.md
-/// §5.2: `[a-z]{2,3}[-_][a-z]{2}`), for locale tags not already covered by
-/// a curated literal alias (e.g. `es-mx` -> `es-419` and `pt-br` are
-/// curated Level A entries checked by `lookup` first; this only fires for
-/// combinations like `es_AR`, `fr_MG`, `ja_JP` that aren't individually
-/// enumerated). Accepted **only if the leading part is itself a
-/// dictionary-known language** — the same safety gate the corpus
-/// collection tool documents (see `tests/corpus/README.md`) to reject
-/// coincidental hyphenated/underscored words like `non-eu`, `read-me`, or
-/// `no-go` (whose second part isn't a real region code, or whose first
-/// part isn't a real language). The trust level returned is whatever
-/// level the *prefix* itself carries in the dictionary — almost always
-/// Level B or C — so a bare two-letter prefix like `es`/`fr` still
-/// requires family confirmation (or a Level B iso3 prefix still requires a
-/// marker) exactly as a standalone occurrence of that prefix would; this
-/// function only widens *which strings count as an occurrence at all*, it
-/// never grants extra trust.
-///
-/// The canonical returned is the prefix language's own canonical (region
-/// is informational only, e.g. `es_AR` -> `es`, not a distinct `es-ar`
-/// canonical) since we don't curate a canonical per region combination.
-pub fn lookup_locale_tag(text: &str) -> Option<(&'static str, Level)> {
-    let (prefix, rest) = text.split_once(['-', '_'])?;
-    if !(2..=3).contains(&prefix.len()) || !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
-        return None;
-    }
-    // Region: 2 ASCII letters (ISO 3166-1 alpha-2 shape). For a 2-letter
-    // language prefix a 3-letter region is also accepted (`zh-TWA` in
-    // ARK's localization folders) — but NOT for a 3-letter prefix, where
-    // 3+3 shapes are overwhelmingly non-locale compounds (`KOR_INT` is a
-    // KotOR mission folder, not Korean). A trailing third part
-    // (`ja_JP_TRADITIONAL`, `zh_Hant_TW`) is allowed and ignored — we only
-    // need to confirm the piece *starts* with a real `lang-REGION` shape,
-    // not validate every trailing segment.
-    let region = rest.split(['-', '_']).next().unwrap_or(rest);
-    let max_region_len = if prefix.len() == 2 { 3 } else { 2 };
-    if !(2..=max_region_len).contains(&region.len())
-        || !region.chars().all(|c| c.is_ascii_alphabetic())
-    {
-        return None;
-    }
-    lookup(prefix)
-}
-
 /// Steam-style single-word aliases that exist only as localization-industry
 /// vocabulary (see [`is_industry_alias`]).
-const INDUSTRY_WORDS: &[&str] = &[
+pub(super) const INDUSTRY_WORDS: &[&str] = &[
     "schinese",
     "tchinese",
     "koreana",
@@ -383,27 +311,3 @@ const INDUSTRY_WORDS: &[&str] = &[
     "chinesesimplified",
     "chinesetraditional",
 ];
-
-/// True if a matched Level A alias is *localization-industry vocabulary*
-/// rather than a plain natural-language word: region-qualified forms
-/// (`spanish(spain)`, `pt-br`, `en-us`) and Steam folder names
-/// (`schinese`, `koreana`, `latam`). Such tokens never double as ordinary
-/// game-content words, so a filename carrying one is trustworthy on its
-/// own — unlike plain full names (`german`, `russian`, `italian`), which
-/// the 2026-07-16 screenshot report showed naming factions, cars, weapons,
-/// and scenery far more often than localizations.
-pub fn is_industry_alias(matched: &str) -> bool {
-    matched.contains('(') || matched.contains('-') || INDUSTRY_WORDS.contains(&matched)
-}
-
-/// Normalizes an arbitrary user-supplied language key (e.g. from a keep-list)
-/// to its canonical form. Falls back to the lowercased input if unknown, so
-/// forward-compatible keys (not yet in the dictionary) still work as an
-/// exact-match keep entry.
-pub fn normalize_lang_key(input: &str) -> String {
-    let lower = input.trim().to_lowercase();
-    match lookup(&lower) {
-        Some((canonical, _)) => canonical.to_string(),
-        None => lower,
-    }
-}

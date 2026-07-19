@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use gametrimmer_core::db;
 use gametrimmer_core::error::{CoreError, Result as CoreResult};
-use gametrimmer_core::langdetect::{LangDetector, LangFinding};
+use gametrimmer_core::langdetect::{LangData, LangDetector, LangFinding};
 use gametrimmer_core::mftscan;
 use gametrimmer_core::providers::{self, DiscoveredLibrary};
 use gametrimmer_core::rules::{Finding, RuleEngine};
@@ -23,7 +23,7 @@ use rusqlite::{params, Connection};
 use crate::model::{source_key, FindingRow, FindingSource};
 
 use super::scan_route::{self, ScanRoute};
-use super::{manual, resolve_rules_path, WorkerMsg};
+use super::{manual, WorkerMsg};
 
 /// Worker threads used for scanning+classifying games in parallel. Chosen
 /// deliberately smaller than "one thread per game" and not tied to CPU count:
@@ -55,25 +55,59 @@ pub fn spawn_scan(
 
 fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevated: bool) {
     let started_at = Instant::now();
-    let Some(rules_path) = resolve_rules_path() else {
-        send_error(
-            tx,
-            "Не знайдено rules.json (ні поруч з програмою, ні в корені репозиторію).".to_string(),
-        );
-        return;
-    };
-
-    let engine = match RuleEngine::load(&rules_path) {
+    // Both rule files live next to the executable and are materialized from
+    // the embedded defaults on first use (see `super::ensure_rules_path`) -
+    // the scan reads them exclusively from disk, so what the user can audit
+    // in those files is exactly what runs. A file that cannot be created or
+    // parsed must not silently kill or degrade the scan: warn, fall back to
+    // the built-ins, keep going.
+    let engine = match super::ensure_rules_path()
+        .map_err(CoreError::from)
+        .and_then(|path| {
+            RuleEngine::load(&path)
+                .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
+        }) {
         Ok(engine) => engine,
         Err(err) => {
-            send_error(tx, format!("Помилка завантаження rules.json: {err}"));
-            return;
+            send_warning(
+                tx,
+                format!(
+                    "Помилка завантаження rules.json: {err} - використовую вбудовані правила категорій."
+                ),
+            );
+            match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON) {
+                Ok(engine) => engine,
+                Err(err) => {
+                    // The embedded defaults are validated by core tests, so
+                    // this is unreachable short of a broken build.
+                    send_error(tx, format!("Вбудовані правила пошкоджено: {err}"));
+                    return;
+                }
+            }
         }
     };
 
     // Keep-list is Ukrainian + English for now; a configurable keep-list is
     // a future phase (see docs/04_implementation_plan.md).
-    let lang_detector = LangDetector::new();
+    let lang_data = match super::ensure_l10n_rules_path()
+        .map_err(CoreError::from)
+        .and_then(|path| {
+            std::fs::read_to_string(&path)
+                .map_err(CoreError::from)
+                .and_then(|text| LangData::from_json(&text))
+                .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
+        }) {
+        Ok(data) => data,
+        Err(err) => {
+            send_warning(
+                tx,
+                format!("Помилка завантаження l10n_rules.json: {err} - використовую вбудовані мовні правила."),
+            );
+            LangData::builtin()
+        }
+    };
+    let keep = lang_data.keep_default().to_vec();
+    let lang_detector = LangDetector::with_data(lang_data, &keep);
 
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
