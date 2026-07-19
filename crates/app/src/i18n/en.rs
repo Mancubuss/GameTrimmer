@@ -51,6 +51,17 @@ pub(super) const STRINGS: Strings = Strings {
     keep_languages_hint: "Files identified as belonging to a checked language are never \
          proposed for deletion. At least one language must stay checked. \
          Changes take effect on the next scan.",
+    app_language_label: "App language:",
+    lang_name_en: "English",
+    lang_name_uk: "Ukrainian",
+    theme_label: "Theme:",
+    theme_system_label: "System (follow Windows)",
+    theme_light_label: "Light",
+    theme_dark_label: "Dark",
+    categories_label: "Scanned artifact categories:",
+    categories_hint: "Unchecked categories are skipped entirely during scanning - their files \
+         are never analyzed, listed, or saved. At least one category must stay \
+         checked. Changes take effect on the next scan.",
 
     libraries_header: "Libraries",
     btn_add_folder: "Add folder...",

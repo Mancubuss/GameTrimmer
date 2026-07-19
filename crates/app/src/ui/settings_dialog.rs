@@ -5,16 +5,17 @@
 //! Sections: deletion method, keep-list languages (never flagged by the
 //! localization detector - see `gametrimmer_core::settings::keep_languages`),
 //! database maintenance ("Стиснути базу даних"), analysis rule packs
-//! (export/import - see docs/05_rules_pack_plan.md).
-//! Planned (see BACKLOG.md): scanned artifact categories, app language, theme.
+//! (export/import - see docs/05_rules_pack_plan.md), app language, theme,
+//! and scanned artifact categories.
 
 use eframe::egui;
 
 use gametrimmer_core::langdetect::LangData;
-use gametrimmer_core::settings::DeleteMethod;
+use gametrimmer_core::settings::{DeleteMethod, Lang, Theme};
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
+use crate::model::{category_display, category_enabled, category_ui_key, CATEGORY_ORDER};
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     if !app.show_settings {
@@ -28,6 +29,15 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let mut import_rules_clicked = false;
     let mut picked_method = app.settings.delete_method;
     let mut picked_keep_languages = app.settings.keep_languages.clone();
+    let mut picked_lang = app.lang();
+    let mut picked_theme = app.settings.theme;
+    // Kept in the same "empty means every category enabled" representation
+    // used for storage (see `Settings::enabled_categories`) - the checkbox
+    // loop below reads/writes it through `category_enabled`, and the block
+    // is normalized back to empty once every category ends up checked, so
+    // the dialog never persists a functionally-identical-but-different
+    // value on every frame it happens to be open.
+    let mut picked_categories = app.settings.enabled_categories.clone();
 
     egui::Modal::new(egui::Id::new("gt_settings")).show(ui.ctx(), |ui| {
         ui.set_min_width(420.0);
@@ -57,6 +67,32 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             ui.indent("gt_settings_recycle_hint", |ui| {
                 ui.small(s.delete_method_recycle_hint);
             });
+        });
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.label(s.app_language_label);
+        ui.add_space(4.0);
+        // Persists immediately, same as the delete method above - a fresh
+        // DB connection write, so gated behind `!app.busy` for the same
+        // reason.
+        ui.add_enabled_ui(!app.busy, |ui| {
+            ui.radio_value(&mut picked_lang, Lang::En, s.lang_name_en);
+            ui.radio_value(&mut picked_lang, Lang::Uk, s.lang_name_uk);
+        });
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.label(s.theme_label);
+        ui.add_space(4.0);
+        ui.add_enabled_ui(!app.busy, |ui| {
+            ui.radio_value(&mut picked_theme, Theme::System, s.theme_system_label);
+            ui.radio_value(&mut picked_theme, Theme::Light, s.theme_light_label);
+            ui.radio_value(&mut picked_theme, Theme::Dark, s.theme_dark_label);
         });
 
         ui.add_space(12.0);
@@ -96,6 +132,55 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 });
         });
         ui.small(s.keep_languages_hint);
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.label(s.categories_label);
+        ui.add_space(4.0);
+        // Disabled while a worker is running: the same reasoning as the
+        // other persisted-immediately controls above.
+        ui.add_enabled_ui(!app.busy, |ui| {
+            for category in CATEGORY_ORDER {
+                let key = category_ui_key(category);
+                let mut checked = category_enabled(&picked_categories, category);
+                let label = category_display(app.lang(), category);
+                if ui.checkbox(&mut checked, label).changed() {
+                    if checked {
+                        if !picked_categories.iter().any(|id| id == key) {
+                            picked_categories.push(key.to_string());
+                        }
+                    } else if picked_categories.is_empty() {
+                        // Was "every category enabled" (the empty-list
+                        // convention) - unchecking one now means everything
+                        // *except* it, so materialize the rest explicitly.
+                        picked_categories = CATEGORY_ORDER
+                            .iter()
+                            .filter(|&&c| c != category)
+                            .map(|&c| category_ui_key(c).to_string())
+                            .collect();
+                    } else if picked_categories.len() > 1 {
+                        // At least one category must always stay checked -
+                        // an empty list would mean "every category enabled"
+                        // again, silently undoing every uncheck the user
+                        // just made. Unchecking the last one is simply
+                        // ignored (the checkbox snaps back on the next
+                        // frame), same pattern as the keep-languages list.
+                        picked_categories.retain(|id| id != key);
+                    }
+                }
+            }
+        });
+        // Once every category ends up checked again, collapse back to the
+        // canonical empty-list storage form instead of persisting an
+        // explicit list that happens to name every category - keeps
+        // `Settings::enabled_categories` stable and avoids re-saving on
+        // every frame the dialog is open.
+        if picked_categories.len() == CATEGORY_ORDER.len() {
+            picked_categories.clear();
+        }
+        ui.small(s.categories_hint);
 
         ui.add_space(12.0);
         ui.separator();
@@ -159,7 +244,10 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     });
 
     app.set_delete_method(picked_method);
+    app.set_language(picked_lang);
+    app.set_theme(picked_theme);
     app.set_keep_languages(picked_keep_languages);
+    app.set_enabled_categories(picked_categories);
     if compact_clicked {
         app.start_compact();
     }
