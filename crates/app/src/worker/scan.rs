@@ -402,9 +402,10 @@ fn run_mft_pass(
                 .checked_div(p.records_total)
                 .unwrap_or(0);
             let _ = tx.send(WorkerMsg::Progress {
+                verb: "Сканування",
                 current: p.records_done as usize,
                 total: p.records_total as usize,
-                game_name: format!("Читання файлової таблиці {}: — {pct}%", p.volume),
+                detail: format!("Читання файлової таблиці {}: — {pct}%", p.volume),
             });
         };
 
@@ -530,9 +531,10 @@ fn run_writer(
         match outcome {
             GameOutcome::Scanned(prepared) => {
                 let _ = tx.send(WorkerMsg::Progress {
+                    verb: "Сканування",
                     current: completed,
                     total,
-                    game_name: prepared.name.clone(),
+                    detail: prepared.name.clone(),
                 });
                 batch.push(prepared);
                 if batch.len() >= WRITE_BATCH_SIZE {
@@ -551,9 +553,10 @@ fn run_writer(
                     install_dir.display()
                 );
                 let _ = tx.send(WorkerMsg::Progress {
+                    verb: "Сканування",
                     current: completed,
                     total,
-                    game_name: name,
+                    detail: name,
                 });
             }
         }

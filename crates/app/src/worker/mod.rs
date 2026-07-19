@@ -23,11 +23,20 @@ pub enum WorkerMsg {
     /// Libraries discovered and persisted; scanning of individual games is
     /// about to start.
     LibrariesFound { libraries: usize, games: usize },
-    /// One game finished (or is about to start) being scanned.
+    /// Granular progress for a long-running operation (scanning games,
+    /// deleting files, compacting the database, ...). `verb` is the
+    /// Ukrainian operation name rendered before the `current/total` counter
+    /// (e.g. "Сканування", "Видалення", "Стискання бази даних"); `detail`
+    /// names the item currently being worked on (a game name for scanning, a
+    /// file name for deletion). Compaction has no per-item detail - it
+    /// leaves `detail` empty and reports an estimated `current`/100 percent
+    /// instead (see `gametrimmer_core::db::compact_observed`); `ui::top_bar`
+    /// renders that case as `"{verb} {percent}%"`.
     Progress {
+        verb: &'static str,
         current: usize,
         total: usize,
-        game_name: String,
+        detail: String,
     },
     /// The scan finished successfully with the given findings.
     Done {
@@ -39,6 +48,9 @@ pub enum WorkerMsg {
     },
     /// A delete operation finished (possibly with some per-file failures).
     RemoveDone { outcomes: Vec<RemoveOutcome> },
+    /// One file finished being removed successfully mid-batch, so the UI can
+    /// drop it from the tree immediately.
+    FileRemoved { file_id: i64 },
     /// The scan was cancelled by the user before completion.
     Cancelled,
     /// Something went wrong; `msg` is a user-facing Ukrainian description.
@@ -59,9 +71,10 @@ pub enum WorkerMsg {
     },
     /// The background "Стиснути базу даних" job finished.
     CompactDone {
-        before_bytes: u64,
-        after_bytes: u64,
         error: Option<String>,
+        /// The reclaimable share was below the worthwhile threshold, so
+        /// `VACUUM` was not run (a cheap WAL checkpoint still happened).
+        skipped: bool,
     },
 }
 
@@ -71,6 +84,10 @@ pub struct RemoveOutcome {
     pub file_id: i64,
     pub path: PathBuf,
     pub error: Option<String>,
+    /// True when the row was (or is about to be) purged from the DB even
+    /// though the removal attempt failed - the path is already gone from
+    /// disk, so the UI must treat it as removed.
+    pub purged: bool,
 }
 
 /// Resolves the database path: `gametrimmer.db` next to the executable.
