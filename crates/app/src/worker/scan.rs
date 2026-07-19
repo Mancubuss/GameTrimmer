@@ -22,7 +22,7 @@ use gametrimmer_core::settings::ScanRouting;
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang, Verb};
-use crate::model::{source_key, FindingRow, FindingSource};
+use crate::model::{category_enabled, display_category, source_key, FindingRow, FindingSource};
 
 use super::scan_route::{self, ScanRoute};
 use super::{manual, WorkerMsg};
@@ -42,34 +42,37 @@ const SCAN_THREADS: usize = 6;
 /// by up to one batch - 16-32 is the sweet spot named in the benchmark.
 const WRITE_BATCH_SIZE: usize = 24;
 
+/// The settings-derived knobs a scan runs under, captured once at spawn
+/// time: a scan keeps the options it started with even if the user changes
+/// settings mid-run (the next scan picks the changes up).
+pub struct ScanOptions {
+    /// UI language for the status/warning strings this worker produces.
+    pub lang: Lang,
+    /// The persisted `keep_languages` setting - languages the localization
+    /// detector never flags.
+    pub keep_languages: Vec<String>,
+    /// The persisted `scan_routing` setting (see
+    /// `gametrimmer_core::settings::ScanRouting`) - it only ever narrows or
+    /// widens which routing outcomes are considered, never bypasses a
+    /// correctness gate (see `scan_route::initial_route`).
+    pub scan_routing: ScanRouting,
+    /// The persisted `enabled_categories` setting - findings in unchecked
+    /// categories are dropped at classification time (empty = all enabled).
+    pub enabled_categories: Vec<String>,
+}
+
 /// Spawns the scan job on a new thread. `cancel` is polled between games so
 /// the user can abort a long scan early. `elevated` reflects whether this
 /// process holds Administrator rights right now (see `crate::elevation`) -
 /// it gates the MFT index scan path, which needs raw volume read access.
-/// `scan_routing` is the persisted `scan_routing` setting (see
-/// `gametrimmer_core::settings::ScanRouting`) - it only ever narrows or
-/// widens which routing outcomes are considered, never bypasses a
-/// correctness gate (see `scan_route::initial_route`).
 pub fn spawn_scan(
     db_path: PathBuf,
     cancel: Arc<AtomicBool>,
     tx: Sender<WorkerMsg>,
     elevated: bool,
-    lang: Lang,
-    keep_languages: Vec<String>,
-    scan_routing: ScanRouting,
+    options: ScanOptions,
 ) -> JoinHandle<()> {
-    std::thread::spawn(move || {
-        run_scan(
-            &db_path,
-            &cancel,
-            &tx,
-            elevated,
-            lang,
-            &keep_languages,
-            scan_routing,
-        )
-    })
+    std::thread::spawn(move || run_scan(&db_path, &cancel, &tx, elevated, &options))
 }
 
 fn run_scan(
@@ -77,10 +80,20 @@ fn run_scan(
     cancel: &AtomicBool,
     tx: &Sender<WorkerMsg>,
     elevated: bool,
-    lang: Lang,
-    keep_languages: &[String],
-    scan_routing: ScanRouting,
+    options: &ScanOptions,
 ) {
+    let ScanOptions {
+        lang,
+        keep_languages,
+        scan_routing,
+        enabled_categories,
+    } = options;
+    let (lang, keep_languages, scan_routing, enabled_categories) = (
+        *lang,
+        keep_languages.as_slice(),
+        *scan_routing,
+        enabled_categories.as_slice(),
+    );
     let started_at = Instant::now();
     // Both rule files live next to the executable and are materialized from
     // the embedded defaults on first use (see `super::ensure_rules_path`) -
@@ -224,6 +237,7 @@ fn run_scan(
             cancel,
             &result_tx,
             &mft_pass.entries,
+            enabled_categories,
         );
         // Dropping the last sender lets the writer's `for outcome in rx`
         // loop end once every dispatched scan has reported in.
@@ -294,6 +308,7 @@ fn dispatch_scans(
     cancel: &AtomicBool,
     result_tx: &Sender<GameOutcome>,
     mft_entries: &HashMap<i64, Vec<FileEntry>>,
+    enabled_categories: &[String],
 ) {
     let run_one = |game_id: i64, name: &str, install_dir: &Path, result_tx: Sender<GameOutcome>| {
         if cancel.load(Ordering::Relaxed) {
@@ -313,9 +328,17 @@ fn dispatch_scans(
                 name,
                 install_dir,
                 entries.clone(),
+                enabled_categories,
             )),
             None => {
-                match scan_and_prepare_game(engine, lang_detector, game_id, name, install_dir) {
+                match scan_and_prepare_game(
+                    engine,
+                    lang_detector,
+                    game_id,
+                    name,
+                    install_dir,
+                    enabled_categories,
+                ) {
                     Ok(prepared) => GameOutcome::Scanned(prepared),
                     Err(error) => GameOutcome::Failed {
                         name: name.to_string(),
@@ -798,6 +821,7 @@ fn scan_and_prepare_game(
     game_id: i64,
     name: &str,
     install_dir: &Path,
+    enabled_categories: &[String],
 ) -> CoreResult<PreparedGame> {
     let entries = scan_dir(install_dir)?;
     Ok(classify_game(
@@ -807,6 +831,7 @@ fn scan_and_prepare_game(
         name,
         install_dir,
         entries,
+        enabled_categories,
     ))
 }
 
@@ -816,6 +841,16 @@ fn scan_and_prepare_game(
 /// so this is what actually runs in parallel across scan worker threads
 /// regardless of which path supplied `entries`; only
 /// [`persist_prepared_game`] needs a `Connection`.
+///
+/// `enabled_categories` (the persisted `enabled_categories` setting - see
+/// `gametrimmer_core::settings`) is applied right here, before a finding
+/// even enters `combined_by_index`: a file whose category is disabled is
+/// treated exactly as if no rule/localization cue had matched it at all.
+/// This is the single choke point for the category filter - doing it this
+/// early (rather than at persistence or display) means a disabled
+/// category's files never affect folder-collapsing (`assign_group_dirs`)
+/// either, and the database ends up holding exactly what the setting says
+/// should be scanned, not a superset filtered later.
 fn classify_game(
     engine: &RuleEngine,
     lang_detector: &LangDetector,
@@ -823,6 +858,7 @@ fn classify_game(
     name: &str,
     install_dir: &Path,
     entries: Vec<FileEntry>,
+    enabled_categories: &[String],
 ) -> PreparedGame {
     // `analyze_game` needs sibling context (the language-family heuristic),
     // so it runs once over all of this game's files rather than per-file.
@@ -838,7 +874,9 @@ fn classify_game(
         let lang_finding = lang_findings.get(&index);
 
         if let Some(combined) = combine_finding(rule_finding, lang_finding) {
-            combined_by_index.push((index, combined));
+            if category_enabled(enabled_categories, display_category(combined.source)) {
+                combined_by_index.push((index, combined));
+            }
         }
     }
 
@@ -1024,7 +1062,9 @@ fn scan_and_classify_game(
     name: &str,
     install_dir: &Path,
 ) -> CoreResult<Vec<FindingRow>> {
-    let prepared = scan_and_prepare_game(engine, lang_detector, game_id, name, install_dir)?;
+    // Empty `enabled_categories` means "every category enabled" - the right
+    // default for tests that aren't specifically exercising the filter.
+    let prepared = scan_and_prepare_game(engine, lang_detector, game_id, name, install_dir, &[])?;
     let db_tx = conn.transaction()?;
     let findings = persist_prepared_game(&db_tx, &prepared)?;
     db_tx.commit()?;
@@ -1405,6 +1445,67 @@ mod tests {
             1,
             "the vanished library's game must still be present, untouched"
         );
+    }
+
+    /// `classify_game`'s `enabled_categories` filter is the single choke
+    /// point for the "scanned artifact categories" setting - a disabled
+    /// category's files must never reach `combined_by_index` at all, so
+    /// they neither show up in the returned findings nor influence
+    /// `assign_group_dirs` folder-collapsing.
+    #[test]
+    fn classify_game_drops_findings_whose_category_is_disabled() {
+        let engine = match_all_engine(); // every file classifies as docs_file
+        let lang_detector = LangDetector::new();
+        let entries = vec![entry("readme.txt"), entry("manual.pdf")];
+
+        let prepared_all_enabled = classify_game(
+            &engine,
+            &lang_detector,
+            1,
+            "Test Game",
+            Path::new("C:/Games/Test"),
+            entries.clone(),
+            &[], // empty = every category enabled
+        );
+        assert_eq!(
+            prepared_all_enabled.findings.len(),
+            2,
+            "with no categories disabled, both files should be classified"
+        );
+
+        let prepared_docs_disabled = classify_game(
+            &engine,
+            &lang_detector,
+            1,
+            "Test Game",
+            Path::new("C:/Games/Test"),
+            entries,
+            &["redist".to_string()], // "docs" is not in the enabled list
+        );
+        assert!(
+            prepared_docs_disabled.findings.is_empty(),
+            "disabling \"docs\" must drop every docs_file finding, not just filter it later"
+        );
+    }
+
+    /// Sibling case: when the finding's category *is* in the enabled list,
+    /// it must still come through unaffected.
+    #[test]
+    fn classify_game_keeps_findings_whose_category_is_enabled() {
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+        let entries = vec![entry("readme.txt")];
+
+        let prepared = classify_game(
+            &engine,
+            &lang_detector,
+            1,
+            "Test Game",
+            Path::new("C:/Games/Test"),
+            entries,
+            &["docs".to_string()],
+        );
+        assert_eq!(prepared.findings.len(), 1);
     }
 
     /// The `ntfs` crate has been observed to panic (rather than return

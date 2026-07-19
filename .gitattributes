@@ -1,0 +1,6 @@
+# Text files
+* text=auto
+
+# JSON rule packs are embedded via include_str! and compared byte-for-byte
+# against their canonical LF serialization in tests - never CRLF-convert them.
+*.json text eol=lf
