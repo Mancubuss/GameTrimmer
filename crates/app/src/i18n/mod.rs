@@ -62,6 +62,13 @@ pub struct Strings {
     pub running_ellipsis: &'static str,
     pub keep_languages_label: &'static str,
     pub keep_languages_hint: &'static str,
+    pub scan_routing_label: &'static str,
+    pub scan_routing_auto_label: &'static str,
+    pub scan_routing_auto_hint: &'static str,
+    pub scan_routing_force_mft_label: &'static str,
+    pub scan_routing_force_mft_hint: &'static str,
+    pub scan_routing_force_walkdir_label: &'static str,
+    pub scan_routing_force_walkdir_hint: &'static str,
 
     // -- libraries_panel --
     pub libraries_header: &'static str,
@@ -205,6 +212,25 @@ impl Strings {
             ("running_ellipsis", self.running_ellipsis),
             ("keep_languages_label", self.keep_languages_label),
             ("keep_languages_hint", self.keep_languages_hint),
+            ("scan_routing_label", self.scan_routing_label),
+            ("scan_routing_auto_label", self.scan_routing_auto_label),
+            ("scan_routing_auto_hint", self.scan_routing_auto_hint),
+            (
+                "scan_routing_force_mft_label",
+                self.scan_routing_force_mft_label,
+            ),
+            (
+                "scan_routing_force_mft_hint",
+                self.scan_routing_force_mft_hint,
+            ),
+            (
+                "scan_routing_force_walkdir_label",
+                self.scan_routing_force_walkdir_label,
+            ),
+            (
+                "scan_routing_force_walkdir_hint",
+                self.scan_routing_force_walkdir_hint,
+            ),
             ("libraries_header", self.libraries_header),
             ("btn_add_folder", self.btn_add_folder),
             ("picking_folder", self.picking_folder),

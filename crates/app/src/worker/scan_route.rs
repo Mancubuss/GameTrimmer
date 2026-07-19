@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gametrimmer_core::mftscan::MediaKind;
+use gametrimmer_core::settings::ScanRouting;
 
 /// One game root as input to the first routing pass, before any MFT scan
 /// has been attempted.
@@ -59,6 +60,10 @@ pub enum WalkdirReason {
     /// actually empty on disk - treated as a scan failure rather than a
     /// genuinely empty game folder.
     MftEmptyOnNonEmptyDisk,
+    /// `ScanRouting::ForceWalkdir` is in effect - the MFT path (and its
+    /// volume probing) is skipped entirely for every root, regardless of
+    /// elevation, volume letter, or media type.
+    ForcedBySetting,
 }
 
 /// Where a root ends up.
@@ -90,12 +95,25 @@ pub fn mft_worthwhile(media: MediaKind) -> bool {
 /// routed to walkdir without ever being probed for raw-open availability,
 /// so its absence from `volume_available` is expected and must not read as
 /// "unavailable".
+///
+/// `mode` (the persisted `scan_routing` setting) only ever narrows or widens
+/// which routes are *considered* - it never bypasses a correctness gate:
+/// - `ScanRouting::ForceWalkdir` short-circuits every root to
+///   [`WalkdirReason::ForcedBySetting`] before any other check runs - no
+///   elevation, volume-letter, or media-type check is even consulted.
+/// - `ScanRouting::ForceMft` skips only the [`WalkdirReason::SsdVolume`]
+///   speed heuristic; `NotElevated`, `NoVolumeLetter`, `CanonicalMismatch`,
+///   and `VolumeUnavailable` all still apply exactly as under `Auto`.
 pub fn initial_route(
     elevated: bool,
+    mode: ScanRouting,
     check: &RootCheck,
     volume_available: &HashMap<char, bool>,
     volume_ssd: &HashMap<char, bool>,
 ) -> ScanRoute {
+    if mode == ScanRouting::ForceWalkdir {
+        return ScanRoute::Walkdir(WalkdirReason::ForcedBySetting);
+    }
     if !elevated {
         return ScanRoute::Walkdir(WalkdirReason::NotElevated);
     }
@@ -105,7 +123,7 @@ pub fn initial_route(
     if check.canonical_mismatch {
         return ScanRoute::Walkdir(WalkdirReason::CanonicalMismatch);
     }
-    if volume_ssd.get(&letter).copied().unwrap_or(false) {
+    if mode != ScanRouting::ForceMft && volume_ssd.get(&letter).copied().unwrap_or(false) {
         return ScanRoute::Walkdir(WalkdirReason::SsdVolume);
     }
     if volume_available.get(&letter).copied().unwrap_or(false) {
@@ -121,8 +139,12 @@ pub fn initial_route(
 /// elevated, no drive letter, canonical mismatch) don't need their volume
 /// probed at all, so this can save an `is_available` call (itself a raw
 /// volume open) per volume that turns out not to matter.
-pub fn volumes_to_check(elevated: bool, checks: &[RootCheck]) -> Vec<char> {
-    if !elevated {
+///
+/// `ScanRouting::ForceWalkdir` always returns empty: every root is routed to
+/// walkdir by [`initial_route`] before volume type ever matters, so no
+/// volume needs probing at all under that mode.
+pub fn volumes_to_check(elevated: bool, mode: ScanRouting, checks: &[RootCheck]) -> Vec<char> {
+    if !elevated || mode == ScanRouting::ForceWalkdir {
         return Vec::new();
     }
     let mut letters: Vec<char> = checks
@@ -193,7 +215,7 @@ mod tests {
         available.insert('G', true);
 
         assert_eq!(
-            initial_route(false, &c, &available, &HashMap::new()),
+            initial_route(false, ScanRouting::Auto, &c, &available, &HashMap::new()),
             ScanRoute::Walkdir(WalkdirReason::NotElevated)
         );
     }
@@ -204,7 +226,7 @@ mod tests {
         let available = HashMap::new();
 
         assert_eq!(
-            initial_route(true, &c, &available, &HashMap::new()),
+            initial_route(true, ScanRouting::Auto, &c, &available, &HashMap::new()),
             ScanRoute::Walkdir(WalkdirReason::NoVolumeLetter)
         );
     }
@@ -216,7 +238,7 @@ mod tests {
         available.insert('G', true);
 
         assert_eq!(
-            initial_route(true, &c, &available, &HashMap::new()),
+            initial_route(true, ScanRouting::Auto, &c, &available, &HashMap::new()),
             ScanRoute::Walkdir(WalkdirReason::CanonicalMismatch)
         );
     }
@@ -228,7 +250,7 @@ mod tests {
         available.insert('G', false);
 
         assert_eq!(
-            initial_route(true, &c, &available, &HashMap::new()),
+            initial_route(true, ScanRouting::Auto, &c, &available, &HashMap::new()),
             ScanRoute::Walkdir(WalkdirReason::VolumeUnavailable)
         );
     }
@@ -239,7 +261,7 @@ mod tests {
         let available = HashMap::new(); // 'G' never queried/known
 
         assert_eq!(
-            initial_route(true, &c, &available, &HashMap::new()),
+            initial_route(true, ScanRouting::Auto, &c, &available, &HashMap::new()),
             ScanRoute::Walkdir(WalkdirReason::VolumeUnavailable)
         );
     }
@@ -251,7 +273,7 @@ mod tests {
         available.insert('G', true);
 
         assert_eq!(
-            initial_route(true, &c, &available, &HashMap::new()),
+            initial_route(true, ScanRouting::Auto, &c, &available, &HashMap::new()),
             ScanRoute::Mft
         );
     }
@@ -266,7 +288,7 @@ mod tests {
         ssd.insert('G', true);
 
         assert_eq!(
-            initial_route(true, &c, &available, &ssd),
+            initial_route(true, ScanRouting::Auto, &c, &available, &ssd),
             ScanRoute::Walkdir(WalkdirReason::SsdVolume)
         );
     }
@@ -279,7 +301,121 @@ mod tests {
         let mut ssd = HashMap::new();
         ssd.insert('G', false);
 
-        assert_eq!(initial_route(true, &c, &available, &ssd), ScanRoute::Mft);
+        assert_eq!(
+            initial_route(true, ScanRouting::Auto, &c, &available, &ssd),
+            ScanRoute::Mft
+        );
+    }
+
+    #[test]
+    fn force_walkdir_short_circuits_before_any_other_check() {
+        // Deliberately set up a root that would otherwise be a perfect MFT
+        // candidate (elevated, lettered, no mismatch, volume available, not
+        // SSD) - ForceWalkdir must still win.
+        let c = check(Some('G'), false);
+        let mut available = HashMap::new();
+        available.insert('G', true);
+        let mut ssd = HashMap::new();
+        ssd.insert('G', false);
+
+        assert_eq!(
+            initial_route(true, ScanRouting::ForceWalkdir, &c, &available, &ssd),
+            ScanRoute::Walkdir(WalkdirReason::ForcedBySetting)
+        );
+    }
+
+    #[test]
+    fn force_walkdir_wins_even_when_not_elevated() {
+        let c = check(Some('G'), false);
+        assert_eq!(
+            initial_route(
+                false,
+                ScanRouting::ForceWalkdir,
+                &c,
+                &HashMap::new(),
+                &HashMap::new()
+            ),
+            ScanRoute::Walkdir(WalkdirReason::ForcedBySetting)
+        );
+    }
+
+    #[test]
+    fn force_mft_ignores_ssd_volume_and_stays_on_mft() {
+        let c = check(Some('G'), false);
+        let mut available = HashMap::new();
+        available.insert('G', true);
+        let mut ssd = HashMap::new();
+        ssd.insert('G', true); // SSD - Auto would route this to walkdir
+
+        assert_eq!(
+            initial_route(true, ScanRouting::ForceMft, &c, &available, &ssd),
+            ScanRoute::Mft,
+            "ForceMft must bypass only the SSD speed heuristic"
+        );
+    }
+
+    #[test]
+    fn force_mft_still_respects_not_elevated() {
+        let c = check(Some('G'), false);
+        let mut available = HashMap::new();
+        available.insert('G', true);
+
+        assert_eq!(
+            initial_route(
+                false,
+                ScanRouting::ForceMft,
+                &c,
+                &available,
+                &HashMap::new()
+            ),
+            ScanRoute::Walkdir(WalkdirReason::NotElevated),
+            "ForceMft must not bypass the elevation correctness gate"
+        );
+    }
+
+    #[test]
+    fn force_mft_still_respects_no_volume_letter() {
+        let c = check(None, false);
+
+        assert_eq!(
+            initial_route(
+                true,
+                ScanRouting::ForceMft,
+                &c,
+                &HashMap::new(),
+                &HashMap::new()
+            ),
+            ScanRoute::Walkdir(WalkdirReason::NoVolumeLetter),
+            "ForceMft must not bypass the volume-letter correctness gate"
+        );
+    }
+
+    #[test]
+    fn force_mft_still_respects_canonical_mismatch() {
+        let c = check(Some('G'), true);
+        let mut available = HashMap::new();
+        available.insert('G', true);
+
+        assert_eq!(
+            initial_route(true, ScanRouting::ForceMft, &c, &available, &HashMap::new()),
+            ScanRoute::Walkdir(WalkdirReason::CanonicalMismatch),
+            "ForceMft must not bypass the canonical-mismatch correctness gate"
+        );
+    }
+
+    #[test]
+    fn force_mft_still_respects_volume_unavailable() {
+        let c = check(Some('G'), false);
+        let mut available = HashMap::new();
+        available.insert('G', false);
+        let mut ssd = HashMap::new();
+        ssd.insert('G', true);
+
+        assert_eq!(
+            initial_route(true, ScanRouting::ForceMft, &c, &available, &ssd),
+            ScanRoute::Walkdir(WalkdirReason::VolumeUnavailable),
+            "ForceMft must not bypass the volume-available correctness gate"
+        );
     }
 
     #[test]
@@ -292,7 +428,7 @@ mod tests {
     #[test]
     fn volumes_to_check_is_empty_when_not_elevated() {
         let checks = vec![check(Some('G'), false), check(Some('D'), false)];
-        assert!(volumes_to_check(false, &checks).is_empty());
+        assert!(volumes_to_check(false, ScanRouting::Auto, &checks).is_empty());
     }
 
     #[test]
@@ -302,7 +438,10 @@ mod tests {
             check(Some('D'), false),
             check(Some('G'), false),
         ];
-        assert_eq!(volumes_to_check(true, &checks), vec!['D', 'G']);
+        assert_eq!(
+            volumes_to_check(true, ScanRouting::Auto, &checks),
+            vec!['D', 'G']
+        );
     }
 
     #[test]
@@ -312,7 +451,28 @@ mod tests {
             check(Some('C'), true),  // canonical mismatch - skip
             check(Some('G'), false), // real candidate
         ];
-        assert_eq!(volumes_to_check(true, &checks), vec!['G']);
+        assert_eq!(
+            volumes_to_check(true, ScanRouting::Auto, &checks),
+            vec!['G']
+        );
+    }
+
+    #[test]
+    fn volumes_to_check_is_empty_for_force_walkdir_even_when_elevated_with_candidates() {
+        let checks = vec![check(Some('G'), false), check(Some('D'), false)];
+        assert!(
+            volumes_to_check(true, ScanRouting::ForceWalkdir, &checks).is_empty(),
+            "ForceWalkdir must never probe any volume"
+        );
+    }
+
+    #[test]
+    fn volumes_to_check_still_probes_for_force_mft() {
+        let checks = vec![check(Some('G'), false)];
+        assert_eq!(
+            volumes_to_check(true, ScanRouting::ForceMft, &checks),
+            vec!['G']
+        );
     }
 
     #[test]

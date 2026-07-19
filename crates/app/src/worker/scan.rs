@@ -18,6 +18,7 @@ use gametrimmer_core::mftscan;
 use gametrimmer_core::providers::{self, DiscoveredLibrary};
 use gametrimmer_core::rules::{Finding, RuleEngine};
 use gametrimmer_core::scanner::{scan_dir, store_files_no_tx, FileEntry};
+use gametrimmer_core::settings::ScanRouting;
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang, Verb};
@@ -45,6 +46,10 @@ const WRITE_BATCH_SIZE: usize = 24;
 /// the user can abort a long scan early. `elevated` reflects whether this
 /// process holds Administrator rights right now (see `crate::elevation`) -
 /// it gates the MFT index scan path, which needs raw volume read access.
+/// `scan_routing` is the persisted `scan_routing` setting (see
+/// `gametrimmer_core::settings::ScanRouting`) - it only ever narrows or
+/// widens which routing outcomes are considered, never bypasses a
+/// correctness gate (see `scan_route::initial_route`).
 pub fn spawn_scan(
     db_path: PathBuf,
     cancel: Arc<AtomicBool>,
@@ -52,8 +57,19 @@ pub fn spawn_scan(
     elevated: bool,
     lang: Lang,
     keep_languages: Vec<String>,
+    scan_routing: ScanRouting,
 ) -> JoinHandle<()> {
-    std::thread::spawn(move || run_scan(&db_path, &cancel, &tx, elevated, lang, &keep_languages))
+    std::thread::spawn(move || {
+        run_scan(
+            &db_path,
+            &cancel,
+            &tx,
+            elevated,
+            lang,
+            &keep_languages,
+            scan_routing,
+        )
+    })
 }
 
 fn run_scan(
@@ -63,6 +79,7 @@ fn run_scan(
     elevated: bool,
     lang: Lang,
     keep_languages: &[String],
+    scan_routing: ScanRouting,
 ) {
     let started_at = Instant::now();
     // Both rule files live next to the executable and are materialized from
@@ -181,7 +198,7 @@ fn run_scan(
     // simply have no entry in `mft_pass.entries` - `dispatch_scans` falls
     // back to a normal `scan_dir` walk for those, exactly as before this
     // path existed.
-    let mft_pass = run_mft_pass(elevated, &games, cancel, tx, lang);
+    let mft_pass = run_mft_pass(elevated, scan_routing, &games, cancel, tx, lang);
 
     if cancel.load(Ordering::Relaxed) {
         let _ = tx.send(WorkerMsg::Cancelled);
@@ -362,6 +379,7 @@ struct MftPassOutcome {
 /// stuck phase - see `mftscan::MftProgress`.
 fn run_mft_pass(
     elevated: bool,
+    scan_routing: ScanRouting,
     games: &[(i64, String, PathBuf)],
     cancel: &AtomicBool,
     tx: &Sender<WorkerMsg>,
@@ -393,10 +411,16 @@ fn run_mft_pass(
     // probing raw-open availability. HDDs (and unknown media) stay on the
     // MFT path - that is where it wins by orders of magnitude on a cold
     // cache. See scan_route::mft_worthwhile / WalkdirReason::SsdVolume.
+    // `ScanRouting::ForceMft` still needs `is_available` for every checked
+    // volume regardless of media kind - it only bypasses the SSD speed
+    // heuristic, never the volume-availability correctness gate - so the
+    // probe runs unconditionally in that mode even for SSD/NVMe volumes.
     let mut volume_available: HashMap<char, bool> = HashMap::new();
     let mut volume_ssd: HashMap<char, bool> = HashMap::new();
-    for letter in scan_route::volumes_to_check(elevated, &checks) {
-        if scan_route::mft_worthwhile(mftscan::media_kind(letter)) {
+    for letter in scan_route::volumes_to_check(elevated, scan_routing, &checks) {
+        if scan_routing == ScanRouting::ForceMft
+            || scan_route::mft_worthwhile(mftscan::media_kind(letter))
+        {
             volume_ssd.insert(letter, false);
             volume_available.insert(letter, mftscan::is_available(letter));
         } else {
@@ -410,8 +434,13 @@ fn run_mft_pass(
     // gets its own `mftscan::scan_roots` call.
     let mut candidates_by_volume: HashMap<char, Vec<(i64, PathBuf)>> = HashMap::new();
     for check in &checks {
-        if scan_route::initial_route(elevated, check, &volume_available, &volume_ssd)
-            != ScanRoute::Mft
+        if scan_route::initial_route(
+            elevated,
+            scan_routing,
+            check,
+            &volume_available,
+            &volume_ssd,
+        ) != ScanRoute::Mft
         {
             continue;
         }
@@ -1472,7 +1501,7 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let outcome = run_mft_pass(false, &games, &cancel, &tx, Lang::En);
+        let outcome = run_mft_pass(false, ScanRouting::Auto, &games, &cancel, &tx, Lang::En);
 
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
@@ -1491,11 +1520,39 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let outcome = run_mft_pass(true, &games, &cancel, &tx, Lang::En);
+        let outcome = run_mft_pass(true, ScanRouting::Auto, &games, &cancel, &tx, Lang::En);
 
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
         assert_eq!(outcome.walkdir_count, 1);
+    }
+
+    /// `ScanRouting::ForceWalkdir` must route every game to walkdir even
+    /// when elevated, lettered, and otherwise MFT-eligible - and must never
+    /// touch `mftscan::is_available`/`media_kind` (unreachable in a unit
+    /// test without real volumes, but the resulting counts are the
+    /// observable contract, matching `run_mft_pass_routes_everything_to_walkdir_when_not_elevated`).
+    #[test]
+    fn run_mft_pass_routes_everything_to_walkdir_when_force_walkdir() {
+        let games = vec![
+            (1i64, "Game A".to_string(), PathBuf::from(r"G:\Games\A")),
+            (2i64, "Game B".to_string(), PathBuf::from(r"D:\Games\B")),
+        ];
+
+        let cancel = AtomicBool::new(false);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let outcome = run_mft_pass(
+            true,
+            ScanRouting::ForceWalkdir,
+            &games,
+            &cancel,
+            &tx,
+            Lang::En,
+        );
+
+        assert!(outcome.entries.is_empty());
+        assert_eq!(outcome.mft_count, 0);
+        assert_eq!(outcome.walkdir_count, 2);
     }
 
     #[test]

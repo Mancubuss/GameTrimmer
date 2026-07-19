@@ -51,6 +51,19 @@ pub(super) const STRINGS: Strings = Strings {
     keep_languages_hint: "Files identified as belonging to a checked language are never \
          proposed for deletion. At least one language must stay checked. \
          Changes take effect on the next scan.",
+    scan_routing_label: "Scan file-enumeration method:",
+    scan_routing_auto_label: "Auto (recommended)",
+    scan_routing_auto_hint: "Uses the fast MFT index on hard drives and a regular folder walk \
+         on SSDs/NVMe, whichever is faster for that drive type.",
+    scan_routing_force_mft_label: "Always use the MFT index",
+    scan_routing_force_mft_hint: "Uses the MFT index even on SSDs/NVMe, where a folder walk is \
+         normally faster. Requires administrator rights; volumes that can't be read this way \
+         (not elevated, network drives, junctions/symlinks) still fall back to a folder walk. \
+         Takes effect on the next scan.",
+    scan_routing_force_walkdir_label: "Always walk folders",
+    scan_routing_force_walkdir_hint: "Skips the MFT index entirely and always scans by walking \
+         folders, even on hard drives where the MFT index is normally faster. Takes effect on \
+         the next scan.",
 
     libraries_header: "Libraries",
     btn_add_folder: "Add folder...",

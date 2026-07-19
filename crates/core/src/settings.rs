@@ -74,6 +74,48 @@ impl Lang {
     }
 }
 
+/// How game-library scanning chooses its file-enumeration path.
+///
+/// `Auto` is the default: HDD volumes use the NTFS MFT index, SSD volumes
+/// use a directory walk (measured ~40x faster on SSD). Forcing a mode only
+/// overrides that speed heuristic - the hard correctness gates (elevation,
+/// lettered local volume, no canonical mismatch, volume available) still
+/// apply to `ForceMft` exactly as they do to `Auto`; only `ForceWalkdir`
+/// skips the MFT path (and its volume probing) entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScanRouting {
+    /// Automatically choose between MFT index and directory walk based on
+    /// volume type.
+    #[default]
+    Auto,
+    /// Always use the MFT index where possible.
+    ForceMft,
+    /// Always use directory walking.
+    ForceWalkdir,
+}
+
+impl ScanRouting {
+    /// Stable string form persisted into the `settings` table.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScanRouting::Auto => "auto",
+            ScanRouting::ForceMft => "force_mft",
+            ScanRouting::ForceWalkdir => "force_walkdir",
+        }
+    }
+
+    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values (e.g.
+    /// written by a future version) - callers fall back to the default.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(ScanRouting::Auto),
+            "force_mft" => Some(ScanRouting::ForceMft),
+            "force_walkdir" => Some(ScanRouting::ForceWalkdir),
+            _ => None,
+        }
+    }
+}
+
 /// The keep-list used when the database has no stored value (or an empty
 /// one): the user's own language plus English are never flagged.
 pub fn default_keep_languages() -> Vec<String> {
@@ -119,6 +161,9 @@ pub struct Settings {
     /// the localization detector never flags for deletion. Always
     /// non-empty - see [`default_keep_languages`].
     pub keep_languages: Vec<String>,
+    /// How scanning chooses between the MFT index and a directory walk per
+    /// game root - see [`ScanRouting`].
+    pub scan_routing: ScanRouting,
 }
 
 impl Default for Settings {
@@ -127,6 +172,7 @@ impl Default for Settings {
             delete_method: DeleteMethod::default(),
             app_language: Lang::default(),
             keep_languages: default_keep_languages(),
+            scan_routing: ScanRouting::default(),
         }
     }
 }
@@ -134,6 +180,7 @@ impl Default for Settings {
 const DELETE_METHOD_KEY: &str = "delete_method";
 const APP_LANGUAGE_KEY: &str = "app_language";
 const KEEP_LANGUAGES_KEY: &str = "keep_languages";
+const SCAN_ROUTING_KEY: &str = "scan_routing";
 
 /// Reads one raw value from the `settings` table.
 fn read_value(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -167,10 +214,14 @@ pub fn load(conn: &Connection) -> Result<Settings> {
     let keep_languages = read_value(conn, KEEP_LANGUAGES_KEY)?
         .map(|value| parse_keep_languages(&value))
         .unwrap_or_else(default_keep_languages);
+    let scan_routing = read_value(conn, SCAN_ROUTING_KEY)?
+        .and_then(|value| ScanRouting::parse(&value))
+        .unwrap_or_default();
     Ok(Settings {
         delete_method,
         app_language,
         keep_languages,
+        scan_routing,
     })
 }
 
@@ -182,7 +233,8 @@ pub fn save(conn: &Connection, settings: &Settings) -> Result<()> {
         conn,
         KEEP_LANGUAGES_KEY,
         &serialize_keep_languages(&settings.keep_languages),
-    )
+    )?;
+    write_value(conn, SCAN_ROUTING_KEY, settings.scan_routing.as_str())
 }
 
 #[cfg(test)]
@@ -331,6 +383,59 @@ mod tests {
             settings.keep_languages,
             vec!["uk".to_string(), "en".to_string(), "fr".to_string()],
             "keep-languages should be deduplicated, trimmed, and lowercased"
+        );
+    }
+
+    #[test]
+    fn defaults_to_auto_scan_routing_on_empty_database() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        let settings = load(&conn).expect("load settings");
+        assert_eq!(settings.scan_routing, ScanRouting::Auto);
+    }
+
+    #[test]
+    fn scan_routing_round_trips_through_as_str_parse() {
+        for routing in [
+            ScanRouting::Auto,
+            ScanRouting::ForceMft,
+            ScanRouting::ForceWalkdir,
+        ] {
+            assert_eq!(ScanRouting::parse(routing.as_str()), Some(routing));
+        }
+        assert_eq!(ScanRouting::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn save_then_load_round_trips_every_scan_routing_variant() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        for routing in [
+            ScanRouting::Auto,
+            ScanRouting::ForceMft,
+            ScanRouting::ForceWalkdir,
+        ] {
+            let settings = Settings {
+                scan_routing: routing,
+                ..Settings::default()
+            };
+            save(&conn, &settings).expect("save settings");
+            let loaded = load(&conn).expect("load settings");
+            assert_eq!(loaded.scan_routing, routing);
+        }
+    }
+
+    #[test]
+    fn unknown_scan_routing_value_falls_back_to_auto() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('scan_routing', 'random')",
+            [],
+        )
+        .expect("insert unknown value");
+        let settings = load(&conn).expect("load settings");
+        assert_eq!(
+            settings.scan_routing,
+            ScanRouting::Auto,
+            "a value written by a future version must not break loading"
         );
     }
 }

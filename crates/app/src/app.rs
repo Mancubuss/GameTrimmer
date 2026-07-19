@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 
-use gametrimmer_core::settings::{DeleteMethod, Lang, Settings};
+use gametrimmer_core::settings::{DeleteMethod, Lang, ScanRouting, Settings};
 
 use crate::elevation;
 use crate::export;
@@ -463,6 +463,7 @@ impl GameTrimmerApp {
             self.elevated,
             self.lang(),
             self.settings.keep_languages.clone(),
+            self.settings.scan_routing,
         );
         self._worker = Some(handle);
     }
@@ -611,6 +612,20 @@ impl GameTrimmerApp {
         }
         self.settings = Settings {
             keep_languages,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Applies a new scan-routing mode and persists it immediately,
+    /// mirroring `set_delete_method`. Takes effect on the *next* scan - a
+    /// scan already in progress keeps using the mode it was spawned with.
+    pub fn set_scan_routing(&mut self, scan_routing: ScanRouting) {
+        if self.settings.scan_routing == scan_routing {
+            return;
+        }
+        self.settings = Settings {
+            scan_routing,
             ..self.settings.clone()
         };
         self.persist_settings();
