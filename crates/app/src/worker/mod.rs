@@ -154,3 +154,46 @@ pub fn ensure_l10n_rules_path() -> io::Result<PathBuf> {
         .map_err(io::Error::other)?;
     ensure_data_file_in(&exe_dir()?, L10N_RULES_FILE_NAME, &builtin)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `db_path()` (and, by the same `exe_dir()` construction, `ensure_rules_path()`/
+    /// `ensure_l10n_rules_path()`) must resolve identically no matter what the
+    /// process's current working directory happens to be at launch - this is
+    /// P0 item 1 of `docs/portability-audit.md`: double-clicking the exe from
+    /// Explorer and running it from `cmd.exe` in an unrelated folder must give
+    /// the same data paths.
+    ///
+    /// This changes the process-global CWD, which would be unsafe if any
+    /// other code path read it - the audit's grep sweep (finding #23)
+    /// confirmed nothing in the workspace calls `std::env::current_dir()`,
+    /// so no other test can observe or be perturbed by this change. The
+    /// original CWD is restored before returning either way.
+    #[test]
+    fn db_path_is_independent_of_current_working_directory() {
+        let original_cwd = std::env::current_dir().expect("read original cwd");
+        let path_before = db_path().expect("db_path with original cwd");
+
+        // `std::env::temp_dir()` is guaranteed to differ from the test
+        // binary's own directory (the only thing `exe_dir()` should track).
+        let alt_dir = std::env::temp_dir();
+        let cwd_change = std::env::set_current_dir(&alt_dir);
+
+        let result = cwd_change.map(|()| db_path());
+
+        // Always restore, even if the assertion below panics.
+        let restore = std::env::set_current_dir(&original_cwd);
+
+        let path_after = result
+            .expect("change cwd for test")
+            .expect("db_path with alternate cwd");
+        restore.expect("restore original cwd");
+
+        assert_eq!(
+            path_before, path_after,
+            "db_path() must not depend on the process's current working directory"
+        );
+    }
+}

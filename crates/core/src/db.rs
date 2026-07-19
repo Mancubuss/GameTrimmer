@@ -71,18 +71,49 @@ pub fn open_in_memory() -> Result<Connection> {
 }
 
 fn configure(conn: &Connection) -> Result<()> {
-    // `journal_mode` returns a row, so use `pragma_update` instead of `execute`.
-    conn.pragma_update(None, "journal_mode", "WAL")?;
+    configure_journal_mode(conn)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // With WAL, `synchronous=NORMAL` only fsyncs at checkpoints instead of on
     // every commit - safe here (a crash loses at most the last few WAL
     // frames, never corrupts the DB) and removes the dominant per-transaction
     // cost for a scan that commits once per game (or per batch of games).
+    // Still safe (if more conservative than necessary) if `journal_mode`
+    // fell back to `DELETE` below - `synchronous=NORMAL` with a rollback
+    // journal only risks losing the *last* transaction on power loss, never
+    // corruption.
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     // Bigger page cache (in KiB, negative = KiB rather than pages) so a full
     // rescan's repeated `files`/`findings` writes for the same game hit
     // cache instead of round-tripping to disk.
     conn.pragma_update(None, "cache_size", -20_000i64)?;
+    // Keep SQLite's own temp files (used by `VACUUM`, large sorts, and
+    // transient indices) in memory rather than the OS temp directory.
+    // Without this, `compact()`'s `VACUUM` can spill to `%TEMP%` - the one
+    // way the app's state could leak outside its own portable folder (see
+    // docs/portability-audit.md, finding #10). `MEMORY` is fine here: the
+    // database itself is already file-backed, so this only affects
+    // short-lived scratch space, not durability.
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    Ok(())
+}
+
+/// Requests WAL journal mode and reads back what SQLite actually applied.
+///
+/// SQLite does not error when it can't honor `journal_mode=WAL` (e.g. on a
+/// network share, or certain FAT32 removable media where memory-mapping the
+/// `-wal` file isn't supported) - it silently keeps the previous mode
+/// instead. Left unchecked, `pragma_update` (which ignores the returned
+/// value) would hide that: the app would believe it configured WAL while
+/// SQLite quietly stayed on its prior journal mode. This reads the mode
+/// back and, if it isn't `wal`, explicitly downgrades to `DELETE` - SQLite's
+/// original rollback-journal default, supported everywhere a file can be
+/// written at all - so the effective mode is always one this codebase
+/// actually intended, not whatever SQLite happened to leave in place.
+fn configure_journal_mode(conn: &Connection) -> Result<()> {
+    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        conn.pragma_update(None, "journal_mode", "DELETE")?;
+    }
     Ok(())
 }
 
@@ -321,6 +352,58 @@ mod tests {
             .expect("data written before compaction must survive");
         assert_eq!(vendor, "steam");
         assert_eq!(path, "D:/SteamLibrary");
+    }
+
+    /// `temp_store=MEMORY` must be in effect after `open` - this is the
+    /// portability guarantee from finding #10 in `docs/portability-audit.md`:
+    /// `VACUUM`/large sorts must not spill temp files into `%TEMP%`.
+    #[test]
+    fn open_sets_temp_store_to_memory() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("gametrimmer.db");
+        let conn = open(&db_path).expect("open file-backed db");
+
+        let temp_store: i64 = conn
+            .query_row("PRAGMA temp_store", [], |row| row.get(0))
+            .expect("read temp_store");
+        // SQLite reports `temp_store` numerically: 0=default, 1=file, 2=memory.
+        assert_eq!(temp_store, 2, "temp_store must be MEMORY (2)");
+    }
+
+    /// On an ordinary local filesystem (the common case, and what CI runs
+    /// on), WAL must actually take - this pins the happy path so a
+    /// regression in `configure_journal_mode` that always fell back to
+    /// `DELETE` would be caught.
+    #[test]
+    fn open_uses_wal_journal_mode_on_ordinary_filesystem() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("gametrimmer.db");
+        let conn = open(&db_path).expect("open file-backed db");
+
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("read journal_mode");
+        assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    /// SQLite cannot use WAL for `:memory:` databases - it silently keeps
+    /// `journal_mode=memory` no matter what is requested. This exercises the
+    /// fallback branch of `configure_journal_mode` (the "WAL didn't take"
+    /// path) without needing a real network share or FAT32 volume: `open`
+    /// must still succeed rather than propagating an error, exactly as it
+    /// should on the exotic media described in finding #11.
+    #[test]
+    fn configure_does_not_fail_when_wal_is_unavailable() {
+        let conn = open_in_memory().expect("in-memory db should open despite no WAL support");
+
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("read journal_mode");
+        assert_ne!(
+            mode.to_lowercase(),
+            "wal",
+            "sanity check: :memory: databases are not expected to support WAL"
+        );
     }
 
     /// A fresh database has (essentially) no free pages to reclaim.

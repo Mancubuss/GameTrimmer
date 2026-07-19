@@ -112,7 +112,13 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
-            send_error(tx, format!("Помилка відкриття бази даних: {err}"));
+            send_error(
+                tx,
+                format!(
+                    "Помилка відкриття бази даних: {err}. Перемістіть програму в теку з \
+                     правами на запис (не Program Files без прав адміністратора)."
+                ),
+            );
             return;
         }
     };
