@@ -40,7 +40,10 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             setup_fonts(&cc.egui_ctx);
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            // No forced `set_visuals` here: the persisted `theme` setting
+            // (default `System`, following the OS preference) governs the
+            // theme from the very first frame via `ctx.set_theme` in
+            // `GameTrimmerApp::ui` - see `app::theme_preference`.
             Ok(Box::new(GameTrimmerApp::new()))
         }),
     )

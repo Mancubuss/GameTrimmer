@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 
-use gametrimmer_core::settings::{DeleteMethod, Lang, ScanRouting, Settings};
+use gametrimmer_core::settings::{DeleteMethod, Lang, ScanRouting, Settings, Theme};
 
 use crate::elevation;
 use crate::export;
@@ -228,10 +228,9 @@ impl GameTrimmerApp {
     }
 
     /// Applies a new UI language and persists it immediately, mirroring
-    /// `set_delete_method`. Not called anywhere yet - the settings-dialog
-    /// language selector is a follow-up task; this method is the hook it
-    /// will call.
-    #[allow(dead_code)]
+    /// `set_delete_method`. Called from the settings dialog's language
+    /// selector; takes effect the same frame since every render call reads
+    /// `self.lang()` fresh rather than caching it.
     pub fn set_language(&mut self, lang: Lang) {
         if self.settings.app_language == lang {
             return;
@@ -461,9 +460,12 @@ impl GameTrimmerApp {
             Arc::clone(&self.cancel),
             self.tx.clone(),
             self.elevated,
-            self.lang(),
-            self.settings.keep_languages.clone(),
-            self.settings.scan_routing,
+            worker::scan::ScanOptions {
+                lang: self.lang(),
+                keep_languages: self.settings.keep_languages.clone(),
+                scan_routing: self.settings.scan_routing,
+                enabled_categories: self.settings.enabled_categories.clone(),
+            },
         );
         self._worker = Some(handle);
     }
@@ -626,6 +628,40 @@ impl GameTrimmerApp {
         }
         self.settings = Settings {
             scan_routing,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Applies a new theme and persists it immediately, mirroring
+    /// `set_delete_method`. Takes effect the same frame: `eframe::App::ui`
+    /// calls `ctx.set_theme` every frame from `self.settings.theme`, so
+    /// there is no separate "apply" step to forget.
+    pub fn set_theme(&mut self, theme: Theme) {
+        if self.settings.theme == theme {
+            return;
+        }
+        self.settings = Settings {
+            theme,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Applies a new set of enabled scan categories and persists it
+    /// immediately, mirroring `set_keep_languages`. Takes effect on the
+    /// *next* scan - the currently displayed findings (if any) are left
+    /// untouched. Callers (the settings dialog) are responsible for never
+    /// letting the *last* checked category be unchecked - see
+    /// `ui::settings_dialog`. An empty list is otherwise a perfectly valid
+    /// value here (it means "every category enabled" - see
+    /// `gametrimmer_core::settings::Settings::enabled_categories`).
+    pub fn set_enabled_categories(&mut self, enabled_categories: Vec<String>) {
+        if self.settings.enabled_categories == enabled_categories {
+            return;
+        }
+        self.settings = Settings {
+            enabled_categories,
             ..self.settings.clone()
         };
         self.persist_settings();
@@ -882,9 +918,29 @@ impl GameTrimmerApp {
     }
 }
 
+/// Converts the persisted theme setting into the egui type that actually
+/// drives rendering. `System` maps to egui's own `ThemePreference::System`,
+/// which resolves against the OS preference itself (via the raw system
+/// theme reported by the windowing backend) - this app never needs to poll
+/// the OS directly for that.
+fn theme_preference(theme: Theme) -> egui::ThemePreference {
+    match theme {
+        Theme::System => egui::ThemePreference::System,
+        Theme::Light => egui::ThemePreference::Light,
+        Theme::Dark => egui::ThemePreference::Dark,
+    }
+}
+
 impl eframe::App for GameTrimmerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // eframe's built-in persistence is deliberately disabled (see
+        // docs/portability-audit.md) so this app owns "did the theme
+        // change" itself: applying the current setting every frame is
+        // cheap (it just writes an enum into egui's in-memory options) and
+        // means a change from the settings dialog takes effect the same
+        // frame with no separate "apply" step to forget.
+        ctx.set_theme(theme_preference(self.settings.theme));
         self.drain_messages(&ctx);
 
         ui::top_bar::show(self, ui);

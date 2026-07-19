@@ -25,3 +25,4 @@ desktop.ini
 *.exe
 *.dll
 *.pdb
+.claude/
