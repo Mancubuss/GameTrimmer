@@ -1,6 +1,7 @@
 //! Regex rule engine for non-essential file categories (redist, docs, bonus, ...).
 //! Rules are loaded from an external `rules.json` next to the executable.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use regex::{Regex, RegexBuilder};
@@ -8,10 +9,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
 
-/// Redist rules only apply when the match occurs within this many path
-/// segments from the game root (redist installers live at the root or in a
-/// first/second-level folder, not deep inside asset trees).
-const MAX_REDIST_DEPTH: usize = 2;
+/// Redist and bonus rules only apply when the match occurs within this many
+/// path segments from the game root (redist installers and bonus-material
+/// folders live at the root or in a first/second-level folder, not deep
+/// inside asset or engine trees such as `Launcher\QtQuick\Extras`).
+const MAX_SHALLOW_DEPTH: usize = 2;
 
 /// Category of a non-essential file/folder. Serialized snake_case in rules.json
 /// and in the `findings.category` DB column.
@@ -37,9 +39,30 @@ impl Category {
     }
 
     /// Whether rules of this category are restricted to shallow matches
-    /// (see [`MAX_REDIST_DEPTH`]).
+    /// (see [`MAX_SHALLOW_DEPTH`]).
     fn is_depth_limited(self) -> bool {
-        matches!(self, Category::RedistFolder | Category::RedistFile)
+        matches!(
+            self,
+            Category::RedistFolder | Category::RedistFile | Category::Bonus
+        )
+    }
+
+    /// Precedence when several rules match one file: the lowest rank wins
+    /// regardless of confidence, and confidence only breaks ties within one
+    /// rank. Ordered by how reliably the category is identified: redists are
+    /// exact installer/folder names, dev leftovers are exact file names,
+    /// bonus rules need both a telling folder name and a media-typed file
+    /// (an artbook PDF inside `Extras\` is bonus material, not standalone
+    /// documentation), and docs rules are the most generic (any PDF/RTF
+    /// anywhere). Localization is checked after all rule categories - see
+    /// `combine_finding` in the app's scan worker.
+    fn priority_rank(self) -> u8 {
+        match self {
+            Category::RedistFolder | Category::RedistFile => 0,
+            Category::DevLeftovers => 1,
+            Category::Bonus => 2,
+            Category::DocsFolder | Category::DocsFile => 3,
+        }
     }
 }
 
@@ -55,13 +78,21 @@ pub struct Rule {
     /// 0-100.
     pub confidence: u8,
     /// Optional per-rule override of the category's default depth limit
-    /// ([`MAX_REDIST_DEPTH`] for redist rules, unlimited otherwise). Lets a
-    /// highly specific pattern (e.g. `vc_redist.*.exe`) match inside nested
-    /// vendor folders like `Support\Software\VCRedist\` without loosening
-    /// the shallow default that keeps generic patterns away from deep asset
-    /// trees.
+    /// ([`MAX_SHALLOW_DEPTH`] for redist/bonus rules, unlimited otherwise).
+    /// Lets a highly specific pattern (e.g. `vc_redist.*.exe`) match inside
+    /// nested vendor folders like `Support\Software\VCRedist\` without
+    /// loosening the shallow default that keeps generic patterns away from
+    /// deep asset trees.
     #[serde(default)]
     pub max_depth: Option<usize>,
+    /// Optional whitelist of file extensions (lowercase, without the dot).
+    /// When set, the rule only matches files whose extension is listed -
+    /// used by generic folder-name rules (e.g. the bonus "extras" pattern)
+    /// to demand content-type evidence (artbooks, music, video) instead of
+    /// trusting the folder name alone: `Extras\artbook.pdf` is bonus
+    /// material, `QtQuick\Extras\Extras.qml` is program code.
+    #[serde(default)]
+    pub extensions: Option<Vec<String>>,
 }
 
 /// A classification produced by the engine for one file.
@@ -82,6 +113,9 @@ struct CompiledRule {
     /// The effective depth limit for this rule: the rule's own `max_depth`
     /// if given, otherwise the category default (see [`Rule::max_depth`]).
     max_depth: usize,
+    /// Lowercased extension whitelist, if the rule declares one
+    /// (see [`Rule::extensions`]).
+    extensions: Option<HashSet<String>>,
 }
 
 #[derive(Debug)]
@@ -107,7 +141,7 @@ impl RuleEngine {
                 })?;
 
             let default_depth = if rule.category.is_depth_limited() {
-                MAX_REDIST_DEPTH
+                MAX_SHALLOW_DEPTH
             } else {
                 usize::MAX
             };
@@ -117,6 +151,11 @@ impl RuleEngine {
                 desc: rule.desc,
                 confidence: rule.confidence,
                 max_depth: rule.max_depth.unwrap_or(default_depth),
+                extensions: rule.extensions.map(|list| {
+                    list.into_iter()
+                        .map(|ext| ext.to_ascii_lowercase())
+                        .collect()
+                }),
             });
         }
 
@@ -130,9 +169,11 @@ impl RuleEngine {
     }
 
     /// Classifies one file by its path relative to the game root
-    /// (`\`-separated, as produced by the scanner). Returns the
-    /// highest-confidence finding, if any rule matches the file name or
-    /// any directory segment of the path.
+    /// (`\`-separated, as produced by the scanner). When several rules
+    /// match the file name or a directory segment, the winner is the one
+    /// whose category has the highest precedence (see
+    /// [`Category::priority_rank`]); confidence breaks ties within one
+    /// category rank.
     pub fn classify(&self, rel_path: &str) -> Option<Finding> {
         let segments: Vec<&str> = rel_path
             .split(['\\', '/'])
@@ -143,10 +184,20 @@ impl RuleEngine {
             Some((file_name, folders)) => (*file_name, folders),
             None => return None,
         };
+        let file_ext = file_name
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase());
 
         let mut best: Option<Finding> = None;
 
         for rule in &self.rules {
+            if let Some(allowed) = &rule.extensions {
+                let ext_listed = file_ext.as_deref().is_some_and(|ext| allowed.contains(ext));
+                if !ext_listed {
+                    continue;
+                }
+            }
+
             let is_match = if rule.category.matches_folder_segments() {
                 folder_segments.iter().enumerate().any(|(i, segment)| {
                     let depth = i + 1;
@@ -162,7 +213,12 @@ impl RuleEngine {
             }
 
             let is_better = match &best {
-                Some(current) => rule.confidence > current.confidence,
+                Some(current) => {
+                    let current_rank = current.category.priority_rank();
+                    let rank = rule.category.priority_rank();
+                    rank < current_rank
+                        || (rank == current_rank && rule.confidence > current.confidence)
+                }
                 None => true,
             };
             if is_better {
@@ -218,7 +274,9 @@ mod tests {
             .classify("manual\\game_manual.pdf")
             .expect("manual folder + pdf file should be classified as docs");
 
-        assert_eq!(finding.confidence, 85);
+        // The dedicated readme/eula/manual rule (88) outranks the generic
+        // PDF/RTF rule (85) within the same docs category.
+        assert_eq!(finding.confidence, 88);
         assert!(matches!(
             finding.category,
             Category::DocsFolder | Category::DocsFile
@@ -268,17 +326,90 @@ mod tests {
     }
 
     #[test]
-    fn repo_rules_classify_nested_vc_redist_as_redist_not_bonus() {
+    fn repo_rules_classify_nested_vc_redist_as_redist_not_docs() {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
         // Real-world layout (Assassin's Creed Mirage): the redist installer
         // lives 3 folders deep under "Support", which alone matches a
-        // low-confidence bonus rule - the specific redist file rule must win.
+        // low-confidence support/docs folder rule - the specific redist
+        // file rule must win by category precedence.
         let finding = engine
             .classify(r"Support\Software\VCRedist\vc_redist.x64.exe")
             .expect("vc_redist installer should be classified");
 
         assert_eq!(finding.category, Category::RedistFile);
+    }
+
+    #[test]
+    fn classify_prefers_higher_priority_category_over_higher_confidence() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        // The docs rule for *.pdf (85) is more confident than the bonus
+        // folder rule (80), but an artbook inside an extras folder is bonus
+        // material - category precedence must beat raw confidence.
+        let finding = engine
+            .classify(r"Extras\artbook.pdf")
+            .expect("an artbook inside Extras should be classified");
+
+        assert_eq!(finding.category, Category::Bonus);
+    }
+
+    #[test]
+    fn classify_puts_support_folder_content_into_docs_not_bonus() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        // Support/help folders are reference material, so they belong to
+        // the docs category ("Документація і довідкові матеріали" in the
+        // UI), not to bonus - and the folder claims its content wholesale,
+        // whatever the file type or per-language subfolder split inside.
+        let finding = engine
+            .classify(r"Support\ru\voices.pak")
+            .expect("support folder content should be classified");
+
+        assert_eq!(finding.category, Category::DocsFolder);
+    }
+
+    #[test]
+    fn classify_ignores_bonus_folder_deep_inside_program_trees() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        // Real-world layout (XCOM 2 launcher): `Extras` here is a Qt QML
+        // module three segments deep, not a bonus-content folder. The
+        // shallow depth limit must keep the bonus rule away from it even
+        // for media-typed files.
+        assert_eq!(engine.classify(r"Launcher\QtQuick\Extras\poster.png"), None);
+    }
+
+    #[test]
+    fn classify_bonus_folder_requires_media_or_document_content() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        let media = engine
+            .classify(r"Extras\track01.mp3")
+            .expect("music inside Extras should be bonus material");
+        assert_eq!(media.category, Category::Bonus);
+
+        assert_eq!(
+            engine.classify(r"Extras\plugin.dll"),
+            None,
+            "a program file is not bonus material even inside an extras folder"
+        );
+    }
+
+    #[test]
+    fn from_json_parses_extension_whitelist_case_insensitively() {
+        let json = r#"[
+            {"category": "bonus", "pattern": "^extras$", "desc": "Bonus", "confidence": 80, "extensions": ["PDF"]}
+        ]"#;
+        let engine = RuleEngine::from_json(json).unwrap();
+
+        assert!(engine.classify(r"Extras\Artbook.PDF").is_some());
+        assert_eq!(engine.classify(r"Extras\readme.txt"), None);
+        assert_eq!(
+            engine.classify(r"Extras\noextension"),
+            None,
+            "a file without an extension never passes a whitelist"
+        );
     }
 
     #[test]

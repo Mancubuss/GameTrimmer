@@ -977,18 +977,15 @@ struct CombinedFinding {
 }
 
 /// Merges a rules-engine finding with a localization finding for the same
-/// file. A file can match both (e.g. a "bonus" folder that also contains
-/// Spanish voice-over); only the higher-confidence finding is kept. Ties are
-/// resolved in favor of the rules engine, since a specific category match is
-/// more informative than a bare language cue at equal confidence.
+/// file. Categories are checked in a fixed precedence order (redist → dev
+/// leftovers → bonus → docs → localization; see `Category::priority_rank`),
+/// so a rule finding always beats a localization cue regardless of
+/// confidence: a localized readme (`ReadMe_DE.rtf`) is documentation, and a
+/// per-language file inside `Support\` is support material (also the docs
+/// category) - the language split inside such folders does not change what
+/// the folder is. Localization applies only to files no rule claimed.
 fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<CombinedFinding> {
     match (rule, lang) {
-        (Some(r), Some(l)) if l.confidence > r.confidence => Some(CombinedFinding {
-            source: FindingSource::Loc(l.kind),
-            rule_id: l.reason.clone(),
-            confidence: l.confidence,
-            lang_tag: Some(l.lang_tag.clone()),
-        }),
         (Some(r), _) => Some(CombinedFinding {
             source: FindingSource::Rule(r.category),
             rule_id: r.rule_desc,
@@ -1009,10 +1006,51 @@ fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<
 mod tests {
     use super::*;
     use gametrimmer_core::db;
-    use gametrimmer_core::langdetect::LangDetector;
+    use gametrimmer_core::langdetect::{LangDetector, LangKind};
     use gametrimmer_core::providers::GameInstall;
-    use gametrimmer_core::rules::RuleEngine;
+    use gametrimmer_core::rules::{Category, RuleEngine};
     use std::fs;
+
+    fn lang_finding_de() -> LangFinding {
+        LangFinding {
+            lang_tag: "de".to_string(),
+            kind: LangKind::Text,
+            confidence: 90,
+            reason: "мовна сім'я ReadMe_*".to_string(),
+        }
+    }
+
+    #[test]
+    fn combine_finding_prefers_any_rule_category_over_localization() {
+        // The localization cue is MORE confident (90 vs 85), but category
+        // precedence is fixed: a localized readme is documentation first.
+        let rule = Finding {
+            category: Category::DocsFile,
+            rule_desc: "Файл документації (PDF/RTF)".to_string(),
+            confidence: 85,
+        };
+
+        let combined = combine_finding(Some(rule), Some(&lang_finding_de()))
+            .expect("a rule match must produce a finding");
+
+        assert!(matches!(
+            combined.source,
+            FindingSource::Rule(Category::DocsFile)
+        ));
+        assert_eq!(combined.lang_tag, None);
+    }
+
+    #[test]
+    fn combine_finding_uses_localization_only_when_no_rule_matches() {
+        let combined = combine_finding(None, Some(&lang_finding_de()))
+            .expect("a localization finding alone must survive");
+
+        assert!(matches!(
+            combined.source,
+            FindingSource::Loc(LangKind::Text)
+        ));
+        assert_eq!(combined.lang_tag.as_deref(), Some("de"));
+    }
 
     /// A rule that matches every file name, so `scan_and_classify_game`
     /// always inserts a `findings` row per file - needed to exercise the
