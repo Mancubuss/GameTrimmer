@@ -44,18 +44,44 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             ui.colored_label(ui.visuals().error_fg_color, db_error);
         }
 
-        if let Some((current, total, game_name)) = app.progress.clone() {
-            let fraction = if total == 0 {
+        if let Some(progress) = app.progress.clone() {
+            let fraction = if progress.total == 0 {
                 0.0
             } else {
-                current as f32 / total as f32
+                progress.current as f32 / progress.total as f32
             };
-            ui.add(
-                egui::ProgressBar::new(fraction)
-                    .text(format!("Сканування {current}/{total}: {game_name}")),
-            );
+            // Compaction has no per-item "current of total" to show (it
+            // reports an estimated percentage instead, with an empty
+            // `detail`) - render "{verb} {percent}%" for that case; scan and
+            // delete keep the granular "{verb} {current}/{total}: {detail}".
+            let text = if progress.detail.is_empty() {
+                let percent = if progress.total == 100 {
+                    progress.current
+                } else {
+                    (100 * progress.current)
+                        .checked_div(progress.total)
+                        .unwrap_or(0)
+                };
+                format!("{} {}%", progress.verb, percent)
+            } else {
+                format!(
+                    "{} {}/{}: {}",
+                    progress.verb, progress.current, progress.total, progress.detail
+                )
+            };
+            ui.add(egui::ProgressBar::new(fraction).text(text));
         } else if !app.status_message.is_empty() {
-            ui.label(&app.status_message);
+            if app.busy {
+                // Background jobs without granular progress (delete,
+                // compaction) must not look like a frozen app - a spinner
+                // gives visible activity even without a progress fraction.
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(&app.status_message);
+                });
+            } else {
+                ui.label(&app.status_message);
+            }
         }
 
         if !app.warnings.is_empty() {

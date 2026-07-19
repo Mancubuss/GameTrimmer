@@ -1,7 +1,12 @@
-//! The "Стиснути базу даних" job: runs `gametrimmer_core::db::compact`
-//! (WAL checkpoint + `VACUUM`) on a background thread and reports the
-//! on-disk size before and after, so the settings dialog can show the user
-//! how much space was reclaimed.
+//! The "Стиснути базу даних" job: cheaply folds the WAL back into the main
+//! file, then estimates the reclaimable share via
+//! `gametrimmer_core::db::free_page_fraction`. `VACUUM` (via
+//! `gametrimmer_core::db::compact_observed`) only runs when that share
+//! clears `MIN_FREE_FRACTION` - otherwise it is skipped since rewriting the
+//! whole file to reclaim a sliver of space costs more time than it's worth.
+//! While `VACUUM` runs, progress is reported back to the UI as a
+//! `WorkerMsg::Progress` percentage (see `gametrimmer_core::db::compact_observed`
+//! for how that percentage is estimated).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -11,56 +16,58 @@ use gametrimmer_core::db;
 
 use super::WorkerMsg;
 
+/// Minimum reclaimable share (free pages / total pages) required before a
+/// full `VACUUM` runs. `VACUUM` rewrites the whole file - a full read+write
+/// of the database - so small reclaims cost more time than the space is
+/// worth; the user-visible rule is "compact only when at least a quarter
+/// comes back".
+const MIN_FREE_FRACTION: f64 = 0.25;
+
+/// Ukrainian verb shown in the progress bar while `VACUUM` runs.
+const COMPACT_VERB: &str = "Стискання бази даних";
+
 /// Spawns the compact job on a new thread.
 pub fn spawn_compact(db_path: PathBuf, tx: Sender<WorkerMsg>) -> JoinHandle<()> {
     std::thread::spawn(move || run_compact(&db_path, &tx))
 }
 
 fn run_compact(db_path: &Path, tx: &Sender<WorkerMsg>) {
-    let before_bytes = total_db_size(db_path);
-
-    let result = (|| -> gametrimmer_core::error::Result<()> {
+    let result = (|| -> gametrimmer_core::error::Result<bool> {
         let conn = db::open(db_path)?;
-        db::compact(&conn)?;
-        // WAL truncation is only fully visible on disk once the connection
-        // (and its WAL/SHM handles) are closed - drop it explicitly before
-        // measuring the "after" size rather than relying on scope exit.
-        drop(conn);
-        Ok(())
+        // Cheap regardless of whether VACUUM ends up running: folds the WAL
+        // back into the main file so `free_page_fraction` sees an accurate
+        // freelist.
+        db::checkpoint_truncate(&conn)?;
+        let fraction = db::free_page_fraction(&conn)?;
+        let skipped = fraction < MIN_FREE_FRACTION;
+        if !skipped {
+            let progress_tx = tx.clone();
+            db::compact_observed(&conn, move |fraction| {
+                let percent = (fraction * 100.0) as usize;
+                let _ = progress_tx.send(WorkerMsg::Progress {
+                    verb: COMPACT_VERB,
+                    current: percent,
+                    total: 100,
+                    detail: String::new(),
+                });
+            })?;
+        }
+        Ok(skipped)
     })();
 
-    if let Err(err) = result {
-        let _ = tx.send(WorkerMsg::CompactDone {
-            before_bytes,
-            after_bytes: before_bytes,
-            error: Some(format!("Не вдалося стиснути базу даних: {err}")),
-        });
-        return;
-    }
+    let skipped = match result {
+        Ok(skipped) => skipped,
+        Err(err) => {
+            let _ = tx.send(WorkerMsg::CompactDone {
+                error: Some(format!("Не вдалося стиснути базу даних: {err}")),
+                skipped: false,
+            });
+            return;
+        }
+    };
 
-    let after_bytes = total_db_size(db_path);
     let _ = tx.send(WorkerMsg::CompactDone {
-        before_bytes,
-        after_bytes,
         error: None,
+        skipped,
     });
-}
-
-/// Total on-disk size of the database file plus its WAL/SHM sidecar files.
-/// A missing sidecar (already checkpointed away, say) counts as 0 rather
-/// than failing the measurement.
-fn total_db_size(db_path: &Path) -> u64 {
-    file_size(db_path)
-        + file_size(&sidecar_path(db_path, "-wal"))
-        + file_size(&sidecar_path(db_path, "-shm"))
-}
-
-fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
-    let mut file_name = db_path.file_name().unwrap_or_default().to_os_string();
-    file_name.push(suffix);
-    db_path.with_file_name(file_name)
-}
-
-fn file_size(path: &Path) -> u64 {
-    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }

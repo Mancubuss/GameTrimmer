@@ -28,6 +28,19 @@ pub struct RemoveSummary {
     pub failed: Vec<(PathBuf, String)>,
 }
 
+/// Progress of the currently running background operation (scan, delete, or
+/// compaction), rendered by `ui::top_bar` as `"{verb} {current}/{total}:
+/// {detail}"` for scan/delete, or `"{verb} {percent}%"` when `detail` is
+/// empty (compaction, which has no per-item detail to show). See
+/// `WorkerMsg::Progress` for the field meanings.
+#[derive(Clone)]
+pub struct ProgressState {
+    pub verb: &'static str,
+    pub current: usize,
+    pub total: usize,
+    pub detail: String,
+}
+
 pub struct GameTrimmerApp {
     db_path: Option<PathBuf>,
     /// Set only when the database could not be located or opened at startup;
@@ -49,7 +62,7 @@ pub struct GameTrimmerApp {
     _worker: Option<JoinHandle<()>>,
 
     pub busy: bool,
-    pub progress: Option<(usize, usize, String)>,
+    pub progress: Option<ProgressState>,
     pub status_message: String,
     /// Non-fatal issues surfaced during the last scan (a provider failed, a
     /// manual library's folder is currently missing, ...). Cleared at the
@@ -58,6 +71,11 @@ pub struct GameTrimmerApp {
 
     pub findings: Vec<FindingItem>,
     pub tree: Vec<DiskGroup>,
+    /// Set by mid-batch `FileRemoved` messages during a delete. The tree is
+    /// rebuilt at most once per frame in `drain_messages`, not once per
+    /// message - running `build_tree` over thousands of findings for every
+    /// single removed file would burn CPU for nothing.
+    tree_dirty: bool,
     /// Explicit user expand/collapse choices for the virtualized tree view,
     /// keyed by a stable node key (see `ui::tree_view`). Absent key = the
     /// node's default (disks open, games/folders closed, categories open).
@@ -92,6 +110,13 @@ pub struct GameTrimmerApp {
     /// delete modal.
     pub confirm_delete: Option<Vec<usize>>,
     pub remove_summary: Option<RemoveSummary>,
+    /// Set when the compaction job about to run was chained automatically
+    /// after a delete (see `RemoveDone`), rather than triggered manually via
+    /// the settings dialog (`start_compact`). Read (and reset) by the
+    /// `CompactDone` arm to decide whether its status message should be
+    /// prefixed with a "Видалення завершено." note - a manual compaction
+    /// never gets that prefix.
+    compact_after_delete: bool,
 
     /// Whether this process currently holds Administrator rights - gates
     /// the MFT index scan path (see `crate::elevation`, `worker::scan_route`).
@@ -146,6 +171,7 @@ impl GameTrimmerApp {
             warnings: Vec::new(),
             findings: Vec::new(),
             tree: Vec::new(),
+            tree_dirty: false,
             tree_toggles: std::collections::HashMap::new(),
             tree_cursor: None,
             tree_scroll_offset: 0.0,
@@ -155,6 +181,7 @@ impl GameTrimmerApp {
             export_active: false,
             confirm_delete: None,
             remove_summary: None,
+            compact_after_delete: false,
             elevated,
             show_elevation_prompt: !elevated,
         };
@@ -436,9 +463,16 @@ impl GameTrimmerApp {
             self.status_message = "Немає шляху до бази даних.".to_string();
             return;
         };
+        self.spawn_compact_job(db_path, "Стискання бази даних...".to_string());
+    }
 
+    /// Shared by `start_compact` (user-triggered) and the automatic
+    /// post-delete chain in `apply_message`. Does not check `self.busy` -
+    /// callers are responsible for that; the post-delete chain deliberately
+    /// keeps `busy` set from the delete job straight through to compaction.
+    fn spawn_compact_job(&mut self, db_path: PathBuf, status_message: String) {
         self.busy = true;
-        self.status_message = "Стискання бази даних...".to_string();
+        self.status_message = status_message;
         let handle = worker::compact::spawn_compact(db_path, self.tx.clone());
         self._worker = Some(handle);
     }
@@ -482,6 +516,11 @@ impl GameTrimmerApp {
             self.apply_message(msg);
         }
 
+        if self.tree_dirty {
+            self.tree = model::build_tree(&self.findings);
+            self.tree_dirty = false;
+        }
+
         if received_any || self.busy {
             ctx.request_repaint();
         }
@@ -494,11 +533,17 @@ impl GameTrimmerApp {
                     format!("Знайдено бібліотек: {libraries}, ігор: {games}. Сканування файлів...");
             }
             WorkerMsg::Progress {
+                verb,
                 current,
                 total,
-                game_name,
+                detail,
             } => {
-                self.progress = Some((current, total, game_name));
+                self.progress = Some(ProgressState {
+                    verb,
+                    current,
+                    total,
+                    detail,
+                });
             }
             WorkerMsg::Done {
                 findings,
@@ -529,34 +574,82 @@ impl GameTrimmerApp {
                 self.status_message =
                     format!("{scan_summary} Знайдено {count} файл(ів) для перевірки.");
             }
+            WorkerMsg::FileRemoved { file_id } => {
+                if let Some(item) = self
+                    .findings
+                    .iter_mut()
+                    .find(|item| item.row.file_id == file_id)
+                {
+                    item.removed = true;
+                    self.tree_dirty = true;
+                }
+            }
             WorkerMsg::RemoveDone { outcomes } => {
-                self.busy = false;
                 self._worker = None;
+                // A finished delete must not leave the last file's progress
+                // bar stuck on screen while the auto-compaction below runs
+                // (which reports its own status via `busy` + a spinner, not
+                // `progress`) - mirrors the scan `Done` arm.
+                self.progress = None;
 
                 let mut succeeded = 0usize;
                 let mut failed = Vec::new();
                 for outcome in outcomes {
-                    if let Some(item) = self
-                        .findings
-                        .iter_mut()
-                        .find(|item| item.row.file_id == outcome.file_id)
-                    {
-                        match outcome.error {
-                            None => {
-                                item.removed = true;
-                                succeeded += 1;
-                            }
-                            Some(err) => failed.push((outcome.path, err)),
+                    // Summary counts stay keyed off `error` alone - a purged-
+                    // but-failed file (path already gone from disk) still
+                    // counts as a failure in the report - but it's still
+                    // marked `removed` below so it disappears from the tree
+                    // like any other successfully-handled file.
+                    let succeeded_this_file = outcome.error.is_none();
+                    if succeeded_this_file {
+                        succeeded += 1;
+                    }
+
+                    if succeeded_this_file || outcome.purged {
+                        if let Some(item) = self
+                            .findings
+                            .iter_mut()
+                            .find(|item| item.row.file_id == outcome.file_id)
+                        {
+                            item.removed = true;
                         }
+                    }
+
+                    if !succeeded_this_file {
+                        failed.push((outcome.path, outcome.error.unwrap()));
                     }
                 }
 
+                // This arm always rebuilds the full tree unconditionally, so
+                // any pending mid-batch `FileRemoved` dirtiness is already
+                // subsumed - clear it to avoid a redundant rebuild next frame.
                 self.tree = model::build_tree(&self.findings);
+                self.tree_dirty = false;
                 self.status_message = format!(
                     "Видалення завершено: успішно {succeeded}, помилок {}.",
                     failed.len()
                 );
                 self.remove_summary = Some(RemoveSummary { succeeded, failed });
+
+                // Rows deleted from `files`/`findings` leave free pages behind
+                // in the database file; chain straight into compaction after a
+                // successful delete rather than leaving that space stranded
+                // until the user remembers to run it manually. `busy` stays
+                // true across the chain (not routed through `start_compact`,
+                // whose `busy` guard would otherwise block it here).
+                if succeeded > 0 {
+                    if let Some(db_path) = self.db_path.clone() {
+                        self.compact_after_delete = true;
+                        self.spawn_compact_job(
+                            db_path,
+                            "Видалення завершено. Стискання бази даних...".to_string(),
+                        );
+                    } else {
+                        self.busy = false;
+                    }
+                } else {
+                    self.busy = false;
+                }
             }
             WorkerMsg::Cancelled => {
                 self.busy = false;
@@ -590,21 +683,35 @@ impl GameTrimmerApp {
                 // `path` and `error` both `None` means the user cancelled
                 // the save dialog - nothing to report.
             }
-            WorkerMsg::CompactDone {
-                before_bytes,
-                after_bytes,
-                error,
-            } => {
+            WorkerMsg::CompactDone { error, skipped } => {
                 self.busy = false;
                 self._worker = None;
+                // Compaction now drives the progress bar (see
+                // `worker::compact`) - it must not linger once the job is
+                // done, whether it ran, was skipped, or failed.
+                self.progress = None;
+                // Only ever set by the RemoveDone arm right before chaining
+                // into this compaction job - reset here unconditionally so it
+                // can never leak into a later, manually-triggered compaction.
+                let after_delete = std::mem::take(&mut self.compact_after_delete);
                 match error {
                     Some(err) => self.status_message = err,
+                    None if skipped && after_delete => {
+                        self.status_message = "Видалення завершено.".to_string();
+                    }
+                    // Manually-triggered compaction with nothing worth doing:
+                    // the hint under the settings button already explains the
+                    // 25% rule, so no status message is needed here.
+                    None if skipped => {
+                        self.status_message.clear();
+                    }
                     None => {
-                        self.status_message = format!(
-                            "Базу даних стиснуто: {} → {}.",
-                            model::format_size(before_bytes),
-                            model::format_size(after_bytes)
-                        );
+                        let prefix = if after_delete {
+                            "Видалення завершено. "
+                        } else {
+                            ""
+                        };
+                        self.status_message = format!("{prefix}Базу даних стиснуто.");
                     }
                 }
             }
