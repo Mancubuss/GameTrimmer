@@ -31,12 +31,36 @@ pub const NEGATIVE: &[&str] = &[
     "music",
     "shaders",
     "animations",
+    // 2026-07-16 screenshot report additions: 2D-asset and geometry trees
+    // where short language-code lookalikes are endemic (`gfx\anemone-bg.png`,
+    // `sprites\...\DoodleKor.png`, `icons\tr\...`, GTA4 `data\fragments\
+    // cj_ind_*.tune`, ZA4 `navmesh\...`).
+    "gfx",
+    "gui",
+    "sprites",
+    "sprite",
+    "icons",
+    "icon",
+    "fragments",
+    "navmesh",
+    "particles",
+    // Country flags are game content about countries, not localization
+    // (ETS2 `dlc_flags_de.scs`, CoH2 `flag_german.webm`, Brawlhalla flag
+    // sprites).
+    "flag",
+    "flags",
+    // Engine-internal ICU locale data (Unreal `Engine\Content\
+    // Internationalization\icudt53l\bg.res`) is required by the engine
+    // itself, not a removable game localization.
+    "internationalization",
 ];
 
-/// The one negative marker that a confirmed language family is allowed to
-/// override (localized texture packs are a real, if rare, case). All other
-/// negative markers block flagging unconditionally.
-pub const OVERRIDABLE_NEGATIVE: &str = "textures";
+/// Negative markers that a confirmed language family is allowed to
+/// override: localized texture packs (`textures`) and per-language UI
+/// packs inside a confirmed language folder (`sds_latam\gui\`) are real,
+/// if rare, cases. All other negative markers block flagging
+/// unconditionally.
+pub const OVERRIDABLE_NEGATIVE: &[&str] = &["textures", "gui"];
 
 pub const POSITIVE_AUDIO: &[&str] = &[
     "sound",
@@ -85,11 +109,34 @@ pub const POSITIVE_LOC_GENERIC: &[&str] = &[
     "localization",
     "localized",
     "locale",
+    "locales",
     "lang",
     "language",
     "languages",
     "l10n",
     "i18n",
+];
+
+/// Words that, while describing an asset kind (they stay in
+/// `POSITIVE_TEXT`/`POSITIVE_AUDIO` for the `LangKind` decision), are
+/// *localization-specific* vocabulary rather than generic asset words:
+/// a `closecaption_*` file or a `subtitles\` folder is about translated
+/// content by definition, unlike `sound\` or `movies\` which mostly hold
+/// ordinary game assets. These count as strong localization context —
+/// both for the `loc_adjacent` pairing check and for
+/// `generic_loc_in_folder` — where `sound`/`movies`/`textures` do not
+/// (2026-07-16 report: `victory_german.webm` under `Movies\`,
+/// `Dan.bank` under `FmodBanks\` were false positives; nothing named
+/// `closecaption_*`/`subtitles\*` was).
+pub const LOC_SPECIFIC: &[&str] = &[
+    "closecaption",
+    "subtitles",
+    "subs",
+    "caption",
+    "captions",
+    "translations",
+    "dub",
+    "dubbing",
 ];
 
 pub const POSITIVE_VIDEO: &[&str] = &[
@@ -148,6 +195,14 @@ pub struct MarkerContext {
     /// Contributes to `has_any()`/scoring but only decides `kind` as a
     /// last-resort fallback — see `closest()`.
     pub generic_loc: Option<MarkerHit>,
+    /// A generic localization marker found in a *directory* segment (not
+    /// the file name). This is the strong form of context: a `loc\`/
+    /// `Localization\`/`LANGUAGE\` folder describes everything inside it,
+    /// while the same word inside one file's name (`..._LOC_INT.upk`) only
+    /// describes that file. Filename language tokens are trusted against
+    /// folder-level localization context only — see
+    /// `best_non_family_candidate` in `mod.rs`.
+    pub generic_loc_in_folder: bool,
 }
 
 impl MarkerContext {
@@ -232,14 +287,14 @@ impl MarkerContext {
             || self.generic_loc.is_some()
     }
 
-    /// True only if the sole negative marker seen is the overridable
-    /// "textures" one (i.e. no other, stricter negative marker is present).
+    /// True only if every negative marker seen is an overridable one
+    /// (i.e. no stricter negative marker is present).
     pub fn only_overridable_negative(&self) -> bool {
         !self.negative_words.is_empty()
             && self
                 .negative_words
                 .iter()
-                .all(|w| w == OVERRIDABLE_NEGATIVE)
+                .all(|w| OVERRIDABLE_NEGATIVE.contains(&w.as_str()))
     }
 }
 
@@ -257,7 +312,7 @@ pub fn scan_markers(
         for atom in &seg.atoms {
             let word = atom.text.as_str();
             if NEGATIVE.contains(&word) {
-                if word != OVERRIDABLE_NEGATIVE {
+                if !OVERRIDABLE_NEGATIVE.contains(&word) {
                     ctx.blocked = true;
                 }
                 ctx.negative_words.push(word.to_string());
@@ -270,6 +325,12 @@ pub fn scan_markers(
             }
             if POSITIVE_LOC_GENERIC.contains(&word) {
                 ctx.consider_generic(seg.index, word);
+                if !seg.is_filename {
+                    ctx.generic_loc_in_folder = true;
+                }
+            }
+            if LOC_SPECIFIC.contains(&word) && !seg.is_filename {
+                ctx.generic_loc_in_folder = true;
             }
             if POSITIVE_VIDEO.contains(&word) {
                 ctx.consider(MarkerKind::Video, seg.index, word);
