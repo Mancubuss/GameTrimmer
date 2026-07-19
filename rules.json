@@ -127,7 +127,14 @@
     "category": "docs_folder",
     "pattern": "^(docs|documents|manuals?)$",
     "desc": "Тека документації",
-    "confidence": 85
+    "confidence": 85,
+    "extensions": ["pdf", "rtf", "txt", "doc", "docx", "htm", "html", "chm", "epub"]
+  },
+  {
+    "category": "docs_folder",
+    "pattern": "^tutorials?$",
+    "desc": "Тека навчальних матеріалів (tutorial)",
+    "confidence": 80
   },
   {
     "category": "docs_file",
@@ -136,22 +143,54 @@
     "confidence": 85
   },
   {
+    "category": "docs_file",
+    "pattern": "^.*(read\\s?_?me|eula|licen[cs]es?|manual|tutorial).*\\.(pdf|rtf|txt|docx?|html?|chm)$",
+    "desc": "Readme/EULA/ліцензія/посібник (у т.ч. локалізовані)",
+    "confidence": 88
+  },
+  {
+    "category": "redist_file",
+    "pattern": "^d3d11install.*\\.exe$",
+    "desc": "Інсталятор MS D3D11 runtime",
+    "confidence": 90
+  },
+  {
+    "category": "bonus",
+    "pattern": "^(digital\\s?rewards|rewards|goodies)$",
+    "desc": "Бонусні матеріали передзамовлення/видання (rewards)",
+    "confidence": 80,
+    "extensions": [
+      "pdf", "rtf", "txt", "epub", "cbr", "cbz",
+      "jpg", "jpeg", "png", "bmp", "gif", "webp", "tif", "tiff",
+      "mp3", "ogg", "flac", "wav", "m4a", "aac", "wma",
+      "mp4", "m4v", "mkv", "avi", "webm", "wmv", "mov", "bik"
+    ]
+  },
+  {
     "category": "bonus",
     "pattern": "^(bonus|artbook|soundtrack|extras)$",
     "desc": "Бонусні матеріали (артбук, саундтрек тощо)",
-    "confidence": 80
+    "confidence": 80,
+    "extensions": [
+      "pdf", "rtf", "txt", "epub", "cbr", "cbz",
+      "jpg", "jpeg", "png", "bmp", "gif", "webp", "tif", "tiff",
+      "mp3", "ogg", "flac", "wav", "m4a", "aac", "wma",
+      "mp4", "m4v", "mkv", "avi", "webm", "wmv", "mov", "bik"
+    ]
   },
   {
-    "category": "bonus",
+    "category": "docs_folder",
     "pattern": "^(support|help)$",
     "desc": "Тека підтримки/довідки (може містити редистрибутиви або довідкові файли)",
-    "confidence": 70
+    "confidence": 70,
+    "max_depth": 2
   },
   {
-    "category": "bonus",
+    "category": "docs_folder",
     "pattern": "^ea\\s?help$",
     "desc": "Файли довідки EA Help",
-    "confidence": 65
+    "confidence": 65,
+    "max_depth": 2
   },
   {
     "category": "dev_leftovers",
