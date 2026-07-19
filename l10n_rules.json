@@ -1,0 +1,692 @@
+{
+  "version": 1,
+  "languages": [
+    {
+      "key": "en",
+      "level_a": [
+        "english",
+        "en-us",
+        "en-gb",
+        "en-uk",
+        "en-au",
+        "en-ca",
+        "en-ie",
+        "en-nz",
+        "en-za"
+      ],
+      "level_b": [
+        "eng",
+        "int"
+      ],
+      "level_c": [
+        "en"
+      ]
+    },
+    {
+      "key": "uk",
+      "level_a": [
+        "ukrainian",
+        "ukrainska",
+        "українська",
+        "uk-ua",
+        "ua"
+      ],
+      "level_b": [
+        "ukr"
+      ],
+      "level_c": [
+        "uk"
+      ]
+    },
+    {
+      "key": "fr",
+      "level_a": [
+        "french",
+        "francais",
+        "français",
+        "french(france)",
+        "fr-fr",
+        "fr-be",
+        "fr-ch"
+      ],
+      "level_b": [
+        "fra",
+        "fre"
+      ],
+      "level_c": [
+        "fr"
+      ]
+    },
+    {
+      "key": "de",
+      "level_a": [
+        "german",
+        "deutsch",
+        "de-de",
+        "de-at",
+        "de-ch"
+      ],
+      "level_b": [
+        "deu",
+        "ger"
+      ],
+      "level_c": [
+        "de",
+        "ge"
+      ]
+    },
+    {
+      "key": "es",
+      "level_a": [
+        "spanish",
+        "espanol",
+        "español",
+        "spanish(spain)",
+        "es-es"
+      ],
+      "level_b": [
+        "spa"
+      ],
+      "level_c": [
+        "es",
+        "sp"
+      ]
+    },
+    {
+      "key": "es-419",
+      "level_a": [
+        "latam",
+        "spanish(latinamerica)",
+        "spanish(mexico)",
+        "es-mx",
+        "es-419",
+        "es-ar",
+        "es-co",
+        "es-cl"
+      ],
+      "level_b": [],
+      "level_c": []
+    },
+    {
+      "key": "pt",
+      "level_a": [
+        "portuguese",
+        "portugues",
+        "português",
+        "pt-pt"
+      ],
+      "level_b": [
+        "por"
+      ],
+      "level_c": [
+        "pt"
+      ]
+    },
+    {
+      "key": "pt-br",
+      "level_a": [
+        "brazilian",
+        "portuguese(brazil)",
+        "pt-br"
+      ],
+      "level_b": [
+        "bra"
+      ],
+      "level_c": [
+        "br"
+      ]
+    },
+    {
+      "key": "it",
+      "level_a": [
+        "italian",
+        "italiano",
+        "it-it"
+      ],
+      "level_b": [
+        "ita"
+      ],
+      "level_c": [
+        "it"
+      ]
+    },
+    {
+      "key": "ru",
+      "level_a": [
+        "russian",
+        "russkiy",
+        "русский",
+        "ru-ru"
+      ],
+      "level_b": [
+        "rus"
+      ],
+      "level_c": [
+        "ru"
+      ]
+    },
+    {
+      "key": "pl",
+      "level_a": [
+        "polish",
+        "polski",
+        "pl-pl"
+      ],
+      "level_b": [
+        "pol"
+      ],
+      "level_c": [
+        "pl"
+      ]
+    },
+    {
+      "key": "cs",
+      "level_a": [
+        "czech",
+        "cestina",
+        "čeština",
+        "cs-cz"
+      ],
+      "level_b": [
+        "ces",
+        "cze",
+        "czch"
+      ],
+      "level_c": [
+        "cs",
+        "cz"
+      ]
+    },
+    {
+      "key": "ja",
+      "level_a": [
+        "japanese",
+        "nihongo",
+        "ja-jp"
+      ],
+      "level_b": [
+        "jpn"
+      ],
+      "level_c": [
+        "ja",
+        "jp"
+      ]
+    },
+    {
+      "key": "ko",
+      "level_a": [
+        "korean",
+        "koreana",
+        "hangugeo",
+        "ko-kr"
+      ],
+      "level_b": [
+        "kor"
+      ],
+      "level_c": [
+        "ko",
+        "kr"
+      ]
+    },
+    {
+      "key": "zh-hans",
+      "level_a": [
+        "chinese",
+        "schinese",
+        "simplifiedchinese",
+        "chinesesimplified",
+        "zh-cn",
+        "zh-hans",
+        "zh-sg"
+      ],
+      "level_b": [
+        "chn"
+      ],
+      "level_c": [
+        "zh"
+      ]
+    },
+    {
+      "key": "zh-hant",
+      "level_a": [
+        "tchinese",
+        "traditionalchinese",
+        "chinesetraditional",
+        "zh-tw",
+        "zh-hant",
+        "zh-hk",
+        "zh-mo"
+      ],
+      "level_b": [],
+      "level_c": []
+    },
+    {
+      "key": "tr",
+      "level_a": [
+        "turkish",
+        "turkce",
+        "türkçe",
+        "tr-tr"
+      ],
+      "level_b": [
+        "tur"
+      ],
+      "level_c": [
+        "tr"
+      ]
+    },
+    {
+      "key": "ar",
+      "level_a": [
+        "arabic",
+        "alarabiya",
+        "ar-sa",
+        "ar-eg",
+        "ar-ae"
+      ],
+      "level_b": [
+        "ara"
+      ],
+      "level_c": [
+        "ar"
+      ]
+    },
+    {
+      "key": "th",
+      "level_a": [
+        "thai",
+        "phasathai",
+        "th-th"
+      ],
+      "level_b": [
+        "tha"
+      ],
+      "level_c": [
+        "th"
+      ]
+    },
+    {
+      "key": "vi",
+      "level_a": [
+        "vietnamese",
+        "tiengviet",
+        "vi-vn"
+      ],
+      "level_b": [
+        "vie"
+      ],
+      "level_c": [
+        "vi"
+      ]
+    },
+    {
+      "key": "hu",
+      "level_a": [
+        "hungarian",
+        "magyar",
+        "hu-hu"
+      ],
+      "level_b": [
+        "hun"
+      ],
+      "level_c": [
+        "hu"
+      ]
+    },
+    {
+      "key": "nl",
+      "level_a": [
+        "dutch",
+        "nederlands",
+        "nl-nl",
+        "nl-be"
+      ],
+      "level_b": [
+        "nld",
+        "dut"
+      ],
+      "level_c": [
+        "nl",
+        "du"
+      ]
+    },
+    {
+      "key": "da",
+      "level_a": [
+        "danish",
+        "dansk",
+        "da-dk"
+      ],
+      "level_b": [
+        "dan"
+      ],
+      "level_c": [
+        "da"
+      ]
+    },
+    {
+      "key": "no",
+      "level_a": [
+        "norwegian",
+        "norsk",
+        "nb-no",
+        "nn-no",
+        "no-no"
+      ],
+      "level_b": [
+        "nor",
+        "nob",
+        "nno"
+      ],
+      "level_c": [
+        "no"
+      ]
+    },
+    {
+      "key": "sv",
+      "level_a": [
+        "swedish",
+        "svenska",
+        "sv-se"
+      ],
+      "level_b": [
+        "swe"
+      ],
+      "level_c": [
+        "sv"
+      ]
+    },
+    {
+      "key": "fi",
+      "level_a": [
+        "finnish",
+        "suomi",
+        "fi-fi"
+      ],
+      "level_b": [
+        "fin"
+      ],
+      "level_c": [
+        "fi"
+      ]
+    },
+    {
+      "key": "el",
+      "level_a": [
+        "greek",
+        "ellinika",
+        "el-gr"
+      ],
+      "level_b": [
+        "ell",
+        "gre"
+      ],
+      "level_c": [
+        "el"
+      ]
+    },
+    {
+      "key": "ro",
+      "level_a": [
+        "romanian",
+        "romana",
+        "română",
+        "ro-ro"
+      ],
+      "level_b": [
+        "ron",
+        "rum"
+      ],
+      "level_c": [
+        "ro"
+      ]
+    },
+    {
+      "key": "bg",
+      "level_a": [
+        "bulgarian",
+        "balgarski",
+        "bg-bg"
+      ],
+      "level_b": [
+        "bul"
+      ],
+      "level_c": [
+        "bg"
+      ]
+    },
+    {
+      "key": "hr",
+      "level_a": [
+        "croatian",
+        "hrvatski",
+        "hr-hr"
+      ],
+      "level_b": [
+        "hrv"
+      ],
+      "level_c": [
+        "hr"
+      ]
+    },
+    {
+      "key": "sr",
+      "level_a": [
+        "serbian",
+        "srpski",
+        "sr-rs"
+      ],
+      "level_b": [
+        "srp"
+      ],
+      "level_c": [
+        "sr"
+      ]
+    },
+    {
+      "key": "sk",
+      "level_a": [
+        "slovak",
+        "slovencina",
+        "slovenčina",
+        "sk-sk"
+      ],
+      "level_b": [
+        "slk",
+        "slo"
+      ],
+      "level_c": [
+        "sk"
+      ]
+    },
+    {
+      "key": "sl",
+      "level_a": [
+        "slovenian",
+        "slovenscina",
+        "slovenščina",
+        "sl-si"
+      ],
+      "level_b": [
+        "slv"
+      ],
+      "level_c": [
+        "sl"
+      ]
+    },
+    {
+      "key": "id",
+      "level_a": [
+        "indonesian",
+        "bahasaindonesia",
+        "id-id"
+      ],
+      "level_b": [
+        "ind"
+      ],
+      "level_c": [
+        "id"
+      ]
+    },
+    {
+      "key": "hi",
+      "level_a": [
+        "hindi",
+        "hi-in"
+      ],
+      "level_b": [
+        "hin"
+      ],
+      "level_c": [
+        "hi"
+      ]
+    },
+    {
+      "key": "he",
+      "level_a": [
+        "hebrew",
+        "ivrit",
+        "he-il"
+      ],
+      "level_b": [
+        "heb"
+      ],
+      "level_c": [
+        "he",
+        "iw"
+      ]
+    }
+  ],
+  "industry_words": [
+    "schinese",
+    "tchinese",
+    "koreana",
+    "latam",
+    "simplifiedchinese",
+    "traditionalchinese",
+    "chinesesimplified",
+    "chinesetraditional"
+  ],
+  "keep_default": [
+    "uk",
+    "en"
+  ],
+  "markers": {
+    "negative": [
+      "art",
+      "arts",
+      "models",
+      "meshes",
+      "textures",
+      "materials",
+      "units",
+      "structures",
+      "buildings",
+      "history",
+      "decisions",
+      "events",
+      "missions",
+      "campaigns",
+      "maps",
+      "terrain",
+      "scripts",
+      "music",
+      "shaders",
+      "animations",
+      "gfx",
+      "gui",
+      "sprites",
+      "sprite",
+      "icons",
+      "icon",
+      "fragments",
+      "navmesh",
+      "particles",
+      "flag",
+      "flags",
+      "internationalization"
+    ],
+    "overridable_negative": [
+      "textures",
+      "gui"
+    ],
+    "audio": [
+      "sound",
+      "sounds",
+      "soundbanks",
+      "audio",
+      "voice",
+      "voices",
+      "vo",
+      "speech",
+      "dub",
+      "dubbing",
+      "wwise",
+      "fmod"
+    ],
+    "text": [
+      "text",
+      "texts",
+      "strings",
+      "subtitles",
+      "subs",
+      "caption",
+      "captions",
+      "closecaption",
+      "translations",
+      "fonts"
+    ],
+    "video": [
+      "movies",
+      "movie",
+      "videos",
+      "video",
+      "cinematics",
+      "cutscenes",
+      "fmv"
+    ],
+    "font": [
+      "font",
+      "fonts"
+    ],
+    "loc_generic": [
+      "loc",
+      "localization",
+      "localized",
+      "locale",
+      "locales",
+      "lang",
+      "language",
+      "languages",
+      "l10n",
+      "i18n"
+    ],
+    "loc_specific": [
+      "closecaption",
+      "subtitles",
+      "subs",
+      "caption",
+      "captions",
+      "translations",
+      "dub",
+      "dubbing"
+    ],
+    "video_extensions": [
+      "bik",
+      "bk2",
+      "usm",
+      "wmv",
+      "webm",
+      "ogv"
+    ],
+    "font_extensions": [
+      "ttf",
+      "otf",
+      "fnt"
+    ],
+    "text_extensions": [
+      "srt",
+      "vtt"
+    ]
+  }
+}
