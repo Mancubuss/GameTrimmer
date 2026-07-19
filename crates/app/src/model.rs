@@ -170,6 +170,17 @@ pub fn category_ui_key(category: DisplayCategory) -> &'static str {
     }
 }
 
+/// Whether `category` should be kept by the scan, given the persisted
+/// `enabled_categories` setting (see `gametrimmer_core::settings::Settings`).
+/// An empty `enabled_categories` list means every category is enabled - see
+/// that field's doc comment for why an empty list isn't "nothing enabled".
+pub fn category_enabled(enabled_categories: &[String], category: DisplayCategory) -> bool {
+    enabled_categories.is_empty()
+        || enabled_categories
+            .iter()
+            .any(|id| id == category_ui_key(category))
+}
+
 /// Default selection policy (docs/04 §5.5): auto-select only high-confidence
 /// findings; lower-confidence ones are shown but left for the user to opt in.
 pub const AUTO_SELECT_CONFIDENCE_THRESHOLD: u8 = 85;
@@ -1380,6 +1391,23 @@ mod tests {
             category_display(Lang::En, DisplayCategory::Redist),
             "Redistributables"
         );
+    }
+
+    #[test]
+    fn category_enabled_treats_empty_list_as_all_enabled() {
+        for category in CATEGORY_ORDER {
+            assert!(category_enabled(&[], category));
+        }
+    }
+
+    #[test]
+    fn category_enabled_checks_membership_by_ui_key_when_list_is_non_empty() {
+        let enabled = vec!["redist".to_string(), "docs".to_string()];
+        assert!(category_enabled(&enabled, DisplayCategory::Redist));
+        assert!(category_enabled(&enabled, DisplayCategory::Docs));
+        assert!(!category_enabled(&enabled, DisplayCategory::Bonus));
+        assert!(!category_enabled(&enabled, DisplayCategory::Loc));
+        assert!(!category_enabled(&enabled, DisplayCategory::Other));
     }
 
     /// The scan worker dedups a file with both a rules-engine finding and a
