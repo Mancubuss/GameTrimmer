@@ -151,7 +151,10 @@ impl GameTrimmerApp {
                     (None, settings)
                 }
                 Err(err) => (
-                    Some(format!("Помилка відкриття бази даних: {err}")),
+                    Some(format!(
+                        "Помилка відкриття бази даних: {err}. Перемістіть програму в теку з \
+                         правами на запис (не Program Files без прав адміністратора)."
+                    )),
                     Settings::default(),
                 ),
             },
