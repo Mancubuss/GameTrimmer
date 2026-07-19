@@ -13,6 +13,7 @@ pub(crate) mod scan_route;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::i18n::Verb;
 use crate::model::FindingRow;
 
 const DB_FILE_NAME: &str = "gametrimmer.db";
@@ -27,16 +28,18 @@ pub enum WorkerMsg {
     /// about to start.
     LibrariesFound { libraries: usize, games: usize },
     /// Granular progress for a long-running operation (scanning games,
-    /// deleting files, compacting the database, ...). `verb` is the
-    /// Ukrainian operation name rendered before the `current/total` counter
-    /// (e.g. "Сканування", "Видалення", "Стискання бази даних"); `detail`
-    /// names the item currently being worked on (a game name for scanning, a
-    /// file name for deletion). Compaction has no per-item detail - it
-    /// leaves `detail` empty and reports an estimated `current`/100 percent
-    /// instead (see `gametrimmer_core::db::compact_observed`); `ui::top_bar`
-    /// renders that case as `"{verb} {percent}%"`.
+    /// deleting files, compacting the database, ...). `verb` names the
+    /// operation, rendered before the `current/total` counter via
+    /// `i18n::verb_label` (kept as an enum rather than a pre-localized
+    /// `&'static str` so the label always reflects the *current* UI
+    /// language); `detail` names the item currently being worked on (a game
+    /// name for scanning, a file name for deletion). Compaction has no
+    /// per-item detail - it leaves `detail` empty and reports an estimated
+    /// `current`/100 percent instead (see
+    /// `gametrimmer_core::db::compact_observed`); `ui::top_bar` renders that
+    /// case as `"{verb} {percent}%"`.
     Progress {
-        verb: &'static str,
+        verb: Verb,
         current: usize,
         total: usize,
         detail: String,
@@ -44,9 +47,9 @@ pub enum WorkerMsg {
     /// The scan finished successfully with the given findings.
     Done {
         findings: Vec<FindingRow>,
-        /// Human-readable Ukrainian summary of how the scan was carried out
-        /// (MFT index vs. walkdir counts, elapsed time) - see
-        /// `worker::scan_route::format_scan_summary`.
+        /// Human-readable summary (in the language active when the scan was
+        /// started) of how the scan was carried out (MFT index vs. walkdir
+        /// counts, elapsed time) - see `worker::scan_route::format_scan_summary`.
         scan_summary: String,
     },
     /// A delete operation finished (possibly with some per-file failures).
@@ -56,7 +59,8 @@ pub enum WorkerMsg {
     FileRemoved { file_id: i64 },
     /// The scan was cancelled by the user before completion.
     Cancelled,
-    /// Something went wrong; `msg` is a user-facing Ukrainian description.
+    /// Something went wrong; `msg` is an already-localized user-facing
+    /// description.
     Error { msg: String },
     /// A non-fatal issue during scanning (one provider failed, or a manual
     /// library's folder is currently missing) - the scan continues.

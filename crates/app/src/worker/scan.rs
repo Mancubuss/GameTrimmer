@@ -20,6 +20,7 @@ use gametrimmer_core::rules::{Finding, RuleEngine};
 use gametrimmer_core::scanner::{scan_dir, store_files_no_tx, FileEntry};
 use rusqlite::{params, Connection};
 
+use crate::i18n::{self, Lang, Verb};
 use crate::model::{source_key, FindingRow, FindingSource};
 
 use super::scan_route::{self, ScanRoute};
@@ -49,11 +50,20 @@ pub fn spawn_scan(
     cancel: Arc<AtomicBool>,
     tx: Sender<WorkerMsg>,
     elevated: bool,
+    lang: Lang,
+    keep_languages: Vec<String>,
 ) -> JoinHandle<()> {
-    std::thread::spawn(move || run_scan(&db_path, &cancel, &tx, elevated))
+    std::thread::spawn(move || run_scan(&db_path, &cancel, &tx, elevated, lang, &keep_languages))
 }
 
-fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevated: bool) {
+fn run_scan(
+    db_path: &Path,
+    cancel: &AtomicBool,
+    tx: &Sender<WorkerMsg>,
+    elevated: bool,
+    lang: Lang,
+    keep_languages: &[String],
+) {
     let started_at = Instant::now();
     // Both rule files live next to the executable and are materialized from
     // the embedded defaults on first use (see `super::ensure_rules_path`) -
@@ -69,26 +79,22 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
         }) {
         Ok(engine) => engine,
         Err(err) => {
-            send_warning(
-                tx,
-                format!(
-                    "Помилка завантаження rules.json: {err} - використовую вбудовані правила категорій."
-                ),
-            );
+            send_warning(tx, i18n::rules_json_load_failed(lang, err));
             match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON) {
                 Ok(engine) => engine,
                 Err(err) => {
                     // The embedded defaults are validated by core tests, so
                     // this is unreachable short of a broken build.
-                    send_error(tx, format!("Вбудовані правила пошкоджено: {err}"));
+                    send_error(tx, i18n::builtin_rules_corrupted(lang, err));
                     return;
                 }
             }
         }
     };
 
-    // Keep-list is Ukrainian + English for now; a configurable keep-list is
-    // a future phase (see docs/04_implementation_plan.md).
+    // Keep-list comes from the persisted `keep_languages` setting (see
+    // `gametrimmer_core::settings`), configurable in the settings dialog -
+    // defaults to Ukrainian + English.
     let lang_data = match super::ensure_l10n_rules_path()
         .map_err(CoreError::from)
         .and_then(|path| {
@@ -99,26 +105,16 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
         }) {
         Ok(data) => data,
         Err(err) => {
-            send_warning(
-                tx,
-                format!("Помилка завантаження l10n_rules.json: {err} - використовую вбудовані мовні правила."),
-            );
+            send_warning(tx, i18n::l10n_rules_load_failed(lang, err));
             LangData::builtin()
         }
     };
-    let keep = lang_data.keep_default().to_vec();
-    let lang_detector = LangDetector::with_data(lang_data, &keep);
+    let lang_detector = LangDetector::with_data(lang_data, keep_languages);
 
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
-            send_error(
-                tx,
-                format!(
-                    "Помилка відкриття бази даних: {err}. Перемістіть програму в теку з \
-                     правами на запис (не Program Files без прав адміністратора)."
-                ),
-            );
+            send_error(tx, i18n::db_open_error_long(lang, err));
             return;
         }
     };
@@ -130,11 +126,11 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
     for provider in providers::all() {
         match provider.discover() {
             Ok(mut discovered) => libraries.append(&mut discovered),
-            Err(err) => send_warning(tx, format!("Провайдер \"{}\": {err}", provider.name())),
+            Err(err) => send_warning(tx, i18n::provider_failed(lang, provider.name(), err)),
         }
     }
 
-    match manual::discover_manual_libraries(&conn) {
+    match manual::discover_manual_libraries(&conn, lang) {
         Ok((manual_libraries, manual_warnings)) => {
             for warning in manual_warnings {
                 send_warning(tx, warning);
@@ -142,7 +138,7 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
             libraries.extend(manual_libraries);
         }
         Err(err) => {
-            send_error(tx, format!("Помилка читання ручних бібліотек: {err}"));
+            send_error(tx, i18n::manual_libraries_read_failed(lang, err));
             return;
         }
     }
@@ -153,14 +149,14 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
     let libraries = providers::merge_libraries_by_path(libraries);
 
     if libraries.is_empty() {
-        send_error(tx, "Бібліотек не знайдено.".to_string());
+        send_error(tx, i18n::no_libraries_found(lang));
         return;
     }
 
     let games = match persist_libraries(&mut conn, &libraries) {
         Ok(games) => games,
         Err(err) => {
-            send_error(tx, format!("Помилка запису бібліотек у базу даних: {err}"));
+            send_error(tx, i18n::libraries_write_failed(lang, err));
             return;
         }
     };
@@ -185,7 +181,7 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
     // simply have no entry in `mft_pass.entries` - `dispatch_scans` falls
     // back to a normal `scan_dir` walk for those, exactly as before this
     // path existed.
-    let mft_pass = run_mft_pass(elevated, &games, cancel, tx);
+    let mft_pass = run_mft_pass(elevated, &games, cancel, tx, lang);
 
     if cancel.load(Ordering::Relaxed) {
         let _ = tx.send(WorkerMsg::Cancelled);
@@ -222,10 +218,7 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
     let findings = match write_outcome {
         Ok(findings) => findings,
         Err(_) => {
-            send_error(
-                tx,
-                "Потік запису результатів сканування завершився аварійно.".to_string(),
-            );
+            send_error(tx, i18n::write_thread_crashed(lang));
             return;
         }
     };
@@ -236,6 +229,7 @@ fn run_scan(db_path: &Path, cancel: &AtomicBool, tx: &Sender<WorkerMsg>, elevate
     }
 
     let scan_summary = scan_route::format_scan_summary(
+        lang,
         total,
         mft_pass.mft_count,
         mft_pass.walkdir_count,
@@ -371,6 +365,7 @@ fn run_mft_pass(
     games: &[(i64, String, PathBuf)],
     cancel: &AtomicBool,
     tx: &Sender<WorkerMsg>,
+    lang: Lang,
 ) -> MftPassOutcome {
     let total = games.len();
 
@@ -442,10 +437,10 @@ fn run_mft_pass(
                 .checked_div(p.records_total)
                 .unwrap_or(0);
             let _ = tx.send(WorkerMsg::Progress {
-                verb: "Сканування",
+                verb: Verb::Scan,
                 current: p.records_done as usize,
                 total: p.records_total as usize,
-                detail: format!("Читання файлової таблиці {}: — {pct}%", p.volume),
+                detail: i18n::reading_mft_detail(lang, p.volume, pct),
             });
         };
 
@@ -571,7 +566,7 @@ fn run_writer(
         match outcome {
             GameOutcome::Scanned(prepared) => {
                 let _ = tx.send(WorkerMsg::Progress {
-                    verb: "Сканування",
+                    verb: Verb::Scan,
                     current: completed,
                     total,
                     detail: prepared.name.clone(),
@@ -593,7 +588,7 @@ fn run_writer(
                     install_dir.display()
                 );
                 let _ = tx.send(WorkerMsg::Progress {
-                    verb: "Сканування",
+                    verb: Verb::Scan,
                     current: completed,
                     total,
                     detail: name,
@@ -1477,7 +1472,7 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let outcome = run_mft_pass(false, &games, &cancel, &tx);
+        let outcome = run_mft_pass(false, &games, &cancel, &tx, Lang::En);
 
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
@@ -1496,7 +1491,7 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let outcome = run_mft_pass(true, &games, &cancel, &tx);
+        let outcome = run_mft_pass(true, &games, &cancel, &tx, Lang::En);
 
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);

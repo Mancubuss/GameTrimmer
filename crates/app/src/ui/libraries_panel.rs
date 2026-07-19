@@ -5,29 +5,31 @@
 use eframe::egui;
 
 use crate::app::GameTrimmerApp;
+use crate::i18n;
 use crate::worker::manual::MANUAL_VENDOR;
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
-    egui::CollapsingHeader::new("Бібліотеки")
+    let s = i18n::strings(app.lang());
+    egui::CollapsingHeader::new(s.libraries_header)
         .default_open(false)
         .show(ui, |ui| {
             let add_clicked = ui
                 .add_enabled(
                     !app.busy && !app.folder_picker_active,
-                    egui::Button::new("Додати теку..."),
+                    egui::Button::new(s.btn_add_folder),
                 )
                 .clicked();
             if add_clicked {
                 app.start_add_library();
             }
             if app.folder_picker_active {
-                ui.label("Вибір теки...");
+                ui.label(s.picking_folder);
             }
 
             ui.add_space(4.0);
 
             if app.libraries.is_empty() {
-                ui.label("Бібліотек ще не зареєстровано.");
+                ui.label(s.no_libraries_registered);
                 return;
             }
 
@@ -38,7 +40,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                     ui.label(library.path.display().to_string());
                     if library.vendor == MANUAL_VENDOR
                         && ui
-                            .add_enabled(!app.busy, egui::Button::new("Прибрати"))
+                            .add_enabled(!app.busy, egui::Button::new(s.btn_remove))
                             .clicked()
                     {
                         to_remove = Some(library.id);

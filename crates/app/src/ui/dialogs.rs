@@ -7,6 +7,7 @@ use eframe::egui;
 use gametrimmer_core::settings::DeleteMethod;
 
 use crate::app::GameTrimmerApp;
+use crate::i18n;
 use crate::model::{format_size, group_size_bytes};
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
@@ -23,27 +24,21 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         return;
     }
 
+    let s = i18n::strings(app.lang());
     let mut relaunch = false;
     let mut cont = false;
 
     egui::Modal::new(egui::Id::new("gt_elevation_prompt")).show(ui.ctx(), |ui| {
         ui.set_min_width(380.0);
-        ui.heading("Пришвидшити сканування?");
+        ui.heading(s.elevation_heading);
         ui.add_space(8.0);
-        ui.label(
-            "Швидке сканування читає файлову таблицю NTFS ($MFT) напряму, як інструмент \
-             Everything, і для цього потрібні права адміністратора. Без них сканування \
-             працюватиме повільніше (звичайний обхід тек).",
-        );
+        ui.label(s.elevation_body);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button("Продовжити без прискорення").clicked() {
+            if ui.button(s.btn_continue_without_elevation).clicked() {
                 cont = true;
             }
-            if ui
-                .button("Перезапустити від імені адміністратора")
-                .clicked()
-            {
+            if ui.button(s.btn_relaunch_elevated).clicked() {
                 relaunch = true;
             }
         });
@@ -61,24 +56,19 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         return;
     };
 
+    let lang = app.lang();
+    let s = i18n::strings(lang);
     let count = indices.len();
     let bytes = group_size_bytes(&app.findings, &indices);
 
     let (question, confirm_label) = match app.settings.delete_method {
         DeleteMethod::Permanent => (
-            format!(
-                "Безповоротно видалити {count} файл(ів) ({})? Відновлення буде \
-                 неможливе (гру можна перевстановити з магазину).",
-                format_size(bytes)
-            ),
-            "Видалити безповоротно",
+            i18n::confirm_permanent_question(lang, count, &format_size(lang, bytes)),
+            s.confirm_label_permanent,
         ),
         DeleteMethod::RecycleBin => (
-            format!(
-                "Перемістити {count} файл(ів) ({}) у Кошик?",
-                format_size(bytes)
-            ),
-            "Перемістити в Кошик",
+            i18n::confirm_recycle_question(lang, count, &format_size(lang, bytes)),
+            s.confirm_label_recycle,
         ),
     };
 
@@ -87,12 +77,12 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     egui::Modal::new(egui::Id::new("gt_confirm_delete")).show(ui.ctx(), |ui| {
         ui.set_min_width(320.0);
-        ui.heading("Підтвердження видалення");
+        ui.heading(s.confirm_delete_heading);
         ui.add_space(8.0);
         ui.label(question);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button("Скасувати").clicked() {
+            if ui.button(s.btn_cancel).clicked() {
                 cancelled = true;
             }
             if ui.button(confirm_label).clicked() {
@@ -113,6 +103,8 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         return;
     };
 
+    let lang = app.lang();
+    let s = i18n::strings(lang);
     let succeeded = summary.succeeded;
     let failed_count = summary.failed.len();
     // Only the first few errors are shown so one bad batch doesn't flood the dialog.
@@ -127,14 +119,14 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     egui::Modal::new(egui::Id::new("gt_remove_summary")).show(ui.ctx(), |ui| {
         ui.set_min_width(360.0);
-        ui.heading("Результат видалення");
+        ui.heading(s.remove_summary_heading);
         ui.add_space(8.0);
         let success_line = match app.settings.delete_method {
-            DeleteMethod::Permanent => format!("Успішно видалено: {succeeded}"),
-            DeleteMethod::RecycleBin => format!("Успішно переміщено в Кошик: {succeeded}"),
+            DeleteMethod::Permanent => i18n::success_line_permanent(lang, succeeded),
+            DeleteMethod::RecycleBin => i18n::success_line_recycle(lang, succeeded),
         };
         ui.label(success_line);
-        ui.label(format!("Помилок: {failed_count}"));
+        ui.label(i18n::errors_count_line(lang, failed_count));
 
         if !failed_preview.is_empty() {
             ui.add_space(6.0);
@@ -142,15 +134,15 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 ui.label(line);
             }
             if failed_count > failed_preview.len() {
-                ui.label(format!(
-                    "... і ще {} помилка(ок)",
-                    failed_count - failed_preview.len()
+                ui.label(i18n::more_errors_line(
+                    lang,
+                    failed_count - failed_preview.len(),
                 ));
             }
         }
 
         ui.add_space(8.0);
-        if ui.button("Закрити").clicked() {
+        if ui.button(s.btn_close).clicked() {
             close = true;
         }
     });

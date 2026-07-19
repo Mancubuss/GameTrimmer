@@ -6,11 +6,10 @@
 use std::io::Write;
 use std::path::Path;
 
+use crate::i18n::{self, Lang};
 use crate::model::{
     category_display, format_size, source_key, DiskGroup, DisplayCategory, FindingItem, TreeNode,
 };
-
-const HEADER: &str = "Диск;Категорія;Гра;Тека групи;Шлях;Розмір (байт);Розмір;Впевненість;Джерело;Правило/причина;Мова;Вибрано";
 
 /// Builds the full CSV text (UTF-8 with a leading BOM, `;`-separated, CRLF
 /// line endings) for the current findings tree. One row per non-removed
@@ -20,9 +19,9 @@ const HEADER: &str = "Диск;Категорія;Гра;Тека групи;Ш�
 /// *node's* category, so the export mirrors the on-screen grouping even
 /// when a finding's own granular source maps to a different display
 /// category), then orphan file nodes.
-pub fn export_csv(findings: &[FindingItem], tree: &[DiskGroup]) -> String {
+pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[DiskGroup]) -> String {
     let mut out = String::from('\u{FEFF}');
-    out.push_str(HEADER);
+    out.push_str(i18n::csv_header(lang));
     out.push_str("\r\n");
 
     for disk_group in tree {
@@ -37,6 +36,7 @@ pub fn export_csv(findings: &[FindingItem], tree: &[DiskGroup]) -> String {
                         } => {
                             for &index in item_indices {
                                 push_row(
+                                    lang,
                                     &mut out,
                                     &disk_group.disk,
                                     category_node.category,
@@ -48,6 +48,7 @@ pub fn export_csv(findings: &[FindingItem], tree: &[DiskGroup]) -> String {
                         }
                         TreeNode::File { index } => {
                             push_row(
+                                lang,
                                 &mut out,
                                 &disk_group.disk,
                                 category_node.category,
@@ -66,7 +67,9 @@ pub fn export_csv(findings: &[FindingItem], tree: &[DiskGroup]) -> String {
 }
 
 /// Appends one CSV row (including its trailing CRLF) for a single finding.
+#[allow(clippy::too_many_arguments)]
 fn push_row(
+    lang: Lang,
     out: &mut String,
     disk: &str,
     category: DisplayCategory,
@@ -75,19 +78,20 @@ fn push_row(
     item: &FindingItem,
 ) {
     let row = &item.row;
+    let s = i18n::strings(lang);
     let fields = [
         disk.to_string(),
-        category_display(category).to_string(),
+        category_display(lang, category).to_string(),
         game_name.to_string(),
         group_dir.unwrap_or("").to_string(),
         row.rel_path.clone(),
         row.size.to_string(),
-        format_size(row.size),
+        format_size(lang, row.size),
         row.confidence.to_string(),
         source_key(row.source).to_string(),
         row.rule_desc.clone(),
         row.lang_tag.clone().unwrap_or_default(),
-        (if item.selected { "так" } else { "ні" }).to_string(),
+        (if item.selected { s.csv_yes } else { s.csv_no }).to_string(),
     ];
 
     for (index, field) in fields.iter().enumerate() {
@@ -154,7 +158,7 @@ mod tests {
         let items = vec![finding("Game A", "file.txt", None, 10, true)];
         let tree = build_tree(&items);
 
-        let csv = export_csv(&items, &tree);
+        let csv = export_csv(Lang::Uk, &items, &tree);
 
         assert!(csv.starts_with('\u{FEFF}'));
     }
@@ -164,10 +168,10 @@ mod tests {
         let items: Vec<FindingItem> = Vec::new();
         let tree = build_tree(&items);
 
-        let csv = export_csv(&items, &tree);
+        let csv = export_csv(Lang::Uk, &items, &tree);
         let header_line = csv.trim_start_matches('\u{FEFF}').lines().next().unwrap();
 
-        assert_eq!(header_line, HEADER);
+        assert_eq!(header_line, i18n::csv_header(Lang::Uk));
     }
 
     #[test]
@@ -176,7 +180,7 @@ mod tests {
         let items = vec![finding("Game A", "file.txt", None, 10, true)];
         let tree = build_tree(&items);
 
-        let csv = export_csv(&items, &tree);
+        let csv = export_csv(Lang::Uk, &items, &tree);
 
         assert!(
             csv.contains("\"test; rule\""),
@@ -193,7 +197,7 @@ mod tests {
         items[1].removed = true;
         let tree = build_tree(&items);
 
-        let csv = export_csv(&items, &tree);
+        let csv = export_csv(Lang::Uk, &items, &tree);
         let data_row_count = csv.lines().count() - 1; // minus the header
 
         assert_eq!(
@@ -214,7 +218,7 @@ mod tests {
         let items = vec![docs_finding, bonus_finding];
         let tree = build_tree(&items);
 
-        let csv = export_csv(&items, &tree);
+        let csv = export_csv(Lang::Uk, &items, &tree);
 
         for line in csv.lines().skip(1) {
             if line.is_empty() {

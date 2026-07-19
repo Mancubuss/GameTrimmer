@@ -1,0 +1,103 @@
+//! English strings - the default UI language. Translated from the Ukrainian
+//! originals in [`super::uk`] (drafted with a local Ollama model, reviewed
+//! and finalized by hand for natural, concise UI tone).
+
+use super::Strings;
+
+pub(super) const STRINGS: Strings = Strings {
+    btn_scan_libraries: "Scan libraries",
+    btn_cancel: "Cancel",
+    btn_export: "Export…",
+    btn_settings: "Settings…",
+
+    btn_select_all: "Select all",
+    btn_deselect_all: "Deselect all",
+    btn_delete_selected: "Delete selected",
+
+    elevation_heading: "Speed up scanning?",
+    elevation_body: "Fast scanning reads the NTFS file table ($MFT) directly, like the Everything \
+         tool, which requires administrator rights. Without them, scanning will \
+         be slower (a regular folder walk).",
+    btn_continue_without_elevation: "Continue without acceleration",
+    btn_relaunch_elevated: "Restart as administrator",
+    confirm_delete_heading: "Confirm deletion",
+    confirm_label_permanent: "Delete permanently",
+    confirm_label_recycle: "Move to Recycle Bin",
+    remove_summary_heading: "Deletion result",
+    btn_close: "Close",
+
+    settings_heading: "Settings",
+    delete_method_label: "File deletion method:",
+    delete_method_permanent_label: "Permanent deletion (fastest)",
+    delete_method_permanent_hint:
+        "Files are deleted permanently. If something needed gets deleted, \
+         the game can always be reinstalled from the store.",
+    delete_method_recycle_label: "To the Windows Recycle Bin (slower)",
+    delete_method_recycle_hint: "Files can be restored from the Recycle Bin until it's emptied.",
+    database_label: "Database:",
+    btn_compact_database: "Compact database",
+    compact_hint: "Frees space the database no longer uses after deletions. Only runs if \
+         at least 25% of the space would be reclaimed.",
+    rules_label: "Analysis rules:",
+    btn_export_rules: "Export rules",
+    btn_import_rules: "Import rules",
+    rules_hint: "Export saves rules.json and l10n_rules.json to a chosen folder - a basis \
+         for your own or community rules. Import merges the selected files into the \
+         current rules (new entries are added, matches are updated) and saves them \
+         next to the program; the previous files remain as *.bak. Changes take \
+         effect from the next scan.",
+    running_ellipsis: "Running...",
+    keep_languages_label: "Languages never flagged:",
+    keep_languages_hint: "Files identified as belonging to a checked language are never \
+         proposed for deletion. At least one language must stay checked. \
+         Changes take effect on the next scan.",
+
+    libraries_header: "Libraries",
+    btn_add_folder: "Add folder...",
+    picking_folder: "Selecting folder...",
+    no_libraries_registered: "No libraries registered yet.",
+    btn_remove: "Remove",
+
+    scanning_in_progress: "Scanning...",
+    no_findings_hint: "No findings. Click \u{201c}Scan libraries\u{201d} to begin.",
+    col_language: "Language",
+    col_files: "Files",
+    col_size: "Size",
+    col_confidence: "Confidence",
+    col_name: "Name",
+
+    add_library_dialog_title: "Choose a library folder",
+    export_dialog_title: "Export analysis results",
+    text_file_filter_label: "Text file",
+    rules_export_dialog_title: "Choose a folder to export rules into",
+    rules_import_dialog_title: "Choose rule files to import",
+    rules_import_filter_label: "GameTrimmer rules (JSON)",
+
+    no_db_path: "No database path.",
+    db_path_error: "Failed to determine the database path.",
+    loading_previous_scan: "Loading previous scan results...",
+    deleting_selected_files: "Deleting selected files...",
+    compacting_database: "Compacting the database...",
+    scan_cancelled: "Scan cancelled.",
+    deletion_completed: "Deletion completed.",
+    database_compacted: "Database compacted.",
+    settings_not_saved_no_db: "Settings not saved: no database path.",
+
+    verb_scan: "Scanning",
+    verb_delete: "Deleting",
+    verb_compact: "Compacting database",
+
+    category_redist: "Redistributables",
+    category_docs: "Documentation and reference material",
+    category_bonus: "Bonus content",
+    category_loc: "Localization files",
+    category_other: "Other",
+
+    unit_gb: "GB",
+    unit_mb: "MB",
+    unit_kb: "KB",
+    unit_b: "B",
+
+    csv_yes: "yes",
+    csv_no: "no",
+};

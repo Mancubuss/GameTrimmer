@@ -40,6 +40,7 @@ use std::collections::HashMap;
 use eframe::egui;
 
 use crate::app::GameTrimmerApp;
+use crate::i18n::{self, Lang};
 use crate::model::{
     category_display, category_ui_key, format_size, group_min_confidence, group_selection_state,
     set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem, TreeNode,
@@ -91,18 +92,20 @@ enum Row {
 }
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
+    let lang = app.lang();
     egui::CentralPanel::default().show(ui, |ui| {
         if app.tree.is_empty() {
+            let s = i18n::strings(lang);
             ui.add_space(16.0);
             ui.label(if app.busy {
-                "Сканування триває..."
+                s.scanning_in_progress
             } else {
-                "Немає знахідок. Натисніть \u{ab}Сканувати бібліотеки\u{bb}, щоб почати."
+                s.no_findings_hint
             });
             return;
         }
 
-        show_column_headers(ui);
+        show_column_headers(ui, lang);
         ui.separator();
 
         let row_height = ui.spacing().interact_size.y;
@@ -152,6 +155,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                     cursor,
                     rows[row_index],
                     row_index,
+                    lang,
                 );
             }
         });
@@ -165,16 +169,17 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
 /// The header row naming the fixed columns, laid out with the same widths
 /// as every data row so the columns visually line up.
-fn show_column_headers(ui: &mut egui::Ui) {
+fn show_column_headers(ui: &mut egui::Ui, lang: Lang) {
+    let s = i18n::strings(lang);
     row_columns(
         ui,
-        egui::RichText::new("Мова").strong(),
-        egui::RichText::new("Файлів").strong(),
-        egui::RichText::new("Розмір").strong(),
-        egui::RichText::new("Довіра").strong(),
+        egui::RichText::new(s.col_language).strong(),
+        egui::RichText::new(s.col_files).strong(),
+        egui::RichText::new(s.col_size).strong(),
+        egui::RichText::new(s.col_confidence).strong(),
         |ui| {
             ui.add_space(4.0);
-            ui.strong("Назва");
+            ui.strong(s.col_name);
         },
     );
 }
@@ -578,6 +583,7 @@ fn show_row(
     cursor: &mut Option<usize>,
     row: Row,
     row_index: usize,
+    lang: Lang,
 ) {
     // Highlight the keyboard-cursor row behind its widgets.
     if *cursor == Some(row_index) {
@@ -593,20 +599,23 @@ fn show_row(
     }
 
     match row {
-        Row::Disk { d } => show_disk_row(ui, tree, findings, toggles, cursor, d, row_index),
-        Row::Game { d, g } => show_game_row(ui, tree, findings, toggles, cursor, d, g, row_index),
-        Row::Category { d, g, c } => {
-            show_category_row(ui, tree, findings, toggles, cursor, d, g, c, row_index)
+        Row::Disk { d } => show_disk_row(ui, tree, findings, toggles, cursor, d, row_index, lang),
+        Row::Game { d, g } => {
+            show_game_row(ui, tree, findings, toggles, cursor, d, g, row_index, lang)
         }
-        Row::Folder { d, g, c, n } => {
-            show_folder_row(ui, tree, findings, toggles, cursor, d, g, c, n, row_index)
-        }
-        Row::File { d, g, c, n, member } => {
-            show_file_row(ui, tree, findings, cursor, d, g, c, n, member, row_index)
-        }
+        Row::Category { d, g, c } => show_category_row(
+            ui, tree, findings, toggles, cursor, d, g, c, row_index, lang,
+        ),
+        Row::Folder { d, g, c, n } => show_folder_row(
+            ui, tree, findings, toggles, cursor, d, g, c, n, row_index, lang,
+        ),
+        Row::File { d, g, c, n, member } => show_file_row(
+            ui, tree, findings, cursor, d, g, c, n, member, row_index, lang,
+        ),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_disk_row(
     ui: &mut egui::Ui,
     tree: &[DiskGroup],
@@ -615,10 +624,11 @@ fn show_disk_row(
     cursor: &mut Option<usize>,
     d: usize,
     row_index: usize,
+    lang: Lang,
 ) {
     let disk_group = &tree[d];
     let key = disk_key(&disk_group.disk);
-    let name = egui::RichText::new(format!("Диск {}", disk_group.disk)).strong();
+    let name = egui::RichText::new(i18n::disk_label(lang, &disk_group.disk)).strong();
     let response = show_header_row(
         ui,
         findings,
@@ -631,17 +641,18 @@ fn show_disk_row(
         &disk_group.all_indices,
         disk_group.total_bytes,
         name,
+        lang,
     );
     response.context_menu(|ui| {
         if ui
-            .button(format!("Вибрати все на диску {}", disk_group.disk))
+            .button(i18n::select_all_on_disk(lang, &disk_group.disk))
             .clicked()
         {
             set_group_selection(findings, &disk_group.all_indices, true);
             ui.close();
         }
         if ui
-            .button(format!("Зняти вибір на диску {}", disk_group.disk))
+            .button(i18n::deselect_all_on_disk(lang, &disk_group.disk))
             .clicked()
         {
             set_group_selection(findings, &disk_group.all_indices, false);
@@ -660,11 +671,12 @@ fn show_game_row(
     d: usize,
     g: usize,
     row_index: usize,
+    lang: Lang,
 ) {
     let disk_group = &tree[d];
     let game = &disk_group.games[g];
     let key = game_key(&disk_group.disk, game.game_id);
-    let name = egui::RichText::new(format!("\u{ab}{}\u{bb}", game.game_name)).strong();
+    let name = egui::RichText::new(i18n::quoted(lang, &game.game_name)).strong();
     let response = show_header_row(
         ui,
         findings,
@@ -677,17 +689,18 @@ fn show_game_row(
         &game.all_indices,
         game.total_bytes,
         name,
+        lang,
     );
     response.context_menu(|ui| {
         if ui
-            .button(format!("Вибрати все у \u{ab}{}\u{bb}", game.game_name))
+            .button(i18n::select_all_in_game(lang, &game.game_name))
             .clicked()
         {
             set_group_selection(findings, &game.all_indices, true);
             ui.close();
         }
         if ui
-            .button(format!("Зняти вибір у \u{ab}{}\u{bb}", game.game_name))
+            .button(i18n::deselect_all_in_game(lang, &game.game_name))
             .clicked()
         {
             set_group_selection(findings, &game.all_indices, false);
@@ -697,7 +710,7 @@ fn show_game_row(
 }
 
 /// Every finding of `category` across all games of one disk - the target of
-/// the "вибрати категорію на всьому диску" bulk action.
+/// the "select category across the whole disk" bulk action.
 fn category_indices_on_disk(disk_group: &DiskGroup, category: DisplayCategory) -> Vec<usize> {
     disk_group
         .games
@@ -722,12 +735,13 @@ fn show_category_row(
     g: usize,
     c: usize,
     row_index: usize,
+    lang: Lang,
 ) {
     let disk_group = &tree[d];
     let game = &disk_group.games[g];
     let category_node = &game.categories[c];
     let key = category_key(&disk_group.disk, game.game_id, category_node.category);
-    let name = egui::RichText::new(category_display(category_node.category));
+    let name = egui::RichText::new(category_display(lang, category_node.category));
     let response = show_header_row(
         ui,
         findings,
@@ -740,14 +754,12 @@ fn show_category_row(
         &category_node.all_indices,
         category_node.total_bytes,
         name,
+        lang,
     );
     response.context_menu(|ui| {
-        let label = category_display(category_node.category);
+        let label = category_display(lang, category_node.category);
         if ui
-            .button(format!(
-                "Вибрати \u{ab}{label}\u{bb} на всьому диску {}",
-                disk_group.disk
-            ))
+            .button(i18n::select_category_on_disk(lang, label, &disk_group.disk))
             .clicked()
         {
             let indices = category_indices_on_disk(disk_group, category_node.category);
@@ -755,9 +767,10 @@ fn show_category_row(
             ui.close();
         }
         if ui
-            .button(format!(
-                "Зняти вибір \u{ab}{label}\u{bb} на всьому диску {}",
-                disk_group.disk
+            .button(i18n::deselect_category_on_disk(
+                lang,
+                label,
+                &disk_group.disk,
             ))
             .clicked()
         {
@@ -780,6 +793,7 @@ fn show_folder_row(
     c: usize,
     n: usize,
     row_index: usize,
+    lang: Lang,
 ) {
     let disk_group = &tree[d];
     let game = &disk_group.games[g];
@@ -811,6 +825,7 @@ fn show_folder_row(
         item_indices,
         *total_bytes,
         name,
+        lang,
     );
 }
 
@@ -832,6 +847,7 @@ fn show_header_row(
     indices: &[usize],
     total_bytes: u64,
     name: egui::RichText,
+    lang: Lang,
 ) -> egui::Response {
     let confidence = group_confidence_text(ui, findings, indices);
     let mut name_response = None;
@@ -840,7 +856,7 @@ fn show_header_row(
         ui,
         egui::RichText::new(""),
         egui::RichText::new(indices.len().to_string()),
-        egui::RichText::new(format_size(total_bytes)),
+        egui::RichText::new(format_size(lang, total_bytes)),
         confidence,
         |ui| {
             ui.add_space(INDENT_PX * level as f32);
@@ -893,6 +909,7 @@ fn show_file_row(
     n: usize,
     member: Option<usize>,
     row_index: usize,
+    lang: Lang,
 ) {
     let node = &tree[d].games[g].categories[c].nodes[n];
     let (index, level, display_name) = match (node, member) {
@@ -920,8 +937,8 @@ fn show_file_row(
 
     let item = &mut findings[index];
 
-    let lang = match &item.row.lang_tag {
-        Some(lang) => egui::RichText::new(format!("[{lang}]")),
+    let lang_col = match &item.row.lang_tag {
+        Some(lang_tag) => egui::RichText::new(format!("[{lang_tag}]")),
         None => egui::RichText::new(""),
     };
     let confidence = if item.row.confidence < AUTO_SELECT_CONFIDENCE_THRESHOLD {
@@ -931,19 +948,21 @@ fn show_file_row(
         egui::RichText::new(format!("{}%", item.row.confidence))
     };
 
-    let mut hover = format!(
-        "{}\nПричина: {} (упевненість {}%)",
-        item.row.rel_path, item.row.rule_desc, item.row.confidence
+    let mut hover = i18n::hover_reason(
+        lang,
+        &item.row.rel_path,
+        &item.row.rule_desc,
+        item.row.confidence,
     );
     if let Some(lang_tag) = &item.row.lang_tag {
-        hover.push_str(&format!("\nМова: {lang_tag}"));
+        hover.push_str(&i18n::hover_lang_suffix(lang, lang_tag));
     }
 
     row_columns(
         ui,
-        lang,
+        lang_col,
         egui::RichText::new(""),
-        egui::RichText::new(format_size(item.row.size)),
+        egui::RichText::new(format_size(lang, item.row.size)),
         confidence,
         |ui| {
             ui.add_space(INDENT_PX * level as f32);

@@ -9,6 +9,8 @@ use gametrimmer_core::error::Result as CoreResult;
 use gametrimmer_core::providers::{DiscoveredLibrary, GameInstall};
 use rusqlite::{params, Connection};
 
+use crate::i18n::{self, Lang};
+
 /// Vendor tag used for libraries the user added by hand through the UI.
 pub const MANUAL_VENDOR: &str = "manual";
 
@@ -87,6 +89,7 @@ pub fn remove_library(conn: &mut Connection, library_id: i64) -> CoreResult<()> 
 /// left untouched, since the disk may only be temporarily unavailable.
 pub fn discover_manual_libraries(
     conn: &Connection,
+    lang: Lang,
 ) -> CoreResult<(Vec<DiscoveredLibrary>, Vec<String>)> {
     let mut stmt = conn.prepare("SELECT path FROM game_libraries WHERE vendor = ?1")?;
     let paths: Vec<PathBuf> = stmt
@@ -100,10 +103,7 @@ pub fn discover_manual_libraries(
 
     for path in paths {
         if !path.is_dir() {
-            warnings.push(format!(
-                "Ручна бібліотека \"{}\" недоступна (диск від'єднано або теку переміщено).",
-                path.display()
-            ));
+            warnings.push(i18n::manual_library_unavailable(lang, path.display()));
             continue;
         }
 
@@ -163,7 +163,7 @@ mod tests {
         add_manual_library(&conn, dir.path()).expect("register manual library");
 
         let (libraries, warnings) =
-            discover_manual_libraries(&conn).expect("discover should succeed");
+            discover_manual_libraries(&conn, Lang::En).expect("discover should succeed");
 
         assert!(
             warnings.is_empty(),
@@ -195,8 +195,8 @@ mod tests {
 
         add_manual_library(&conn, &missing_path).expect("register manual library");
 
-        let (libraries, warnings) =
-            discover_manual_libraries(&conn).expect("discover must not error on a missing folder");
+        let (libraries, warnings) = discover_manual_libraries(&conn, Lang::En)
+            .expect("discover must not error on a missing folder");
 
         assert!(
             libraries.is_empty(),
