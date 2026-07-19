@@ -10,6 +10,8 @@ use gametrimmer_core::db;
 use gametrimmer_core::ops::{remove_with_log_observed, PermanentDelete, RecycleBin, Remover};
 use gametrimmer_core::settings::DeleteMethod;
 
+use crate::i18n::{self, Lang, Verb};
+
 use super::{RemoveOutcome, WorkerMsg};
 
 /// One file queued for removal: its `files.id` (to match the outcome back
@@ -24,8 +26,9 @@ pub fn spawn_delete(
     items: Vec<DeleteItem>,
     method: DeleteMethod,
     tx: Sender<WorkerMsg>,
+    lang: Lang,
 ) -> JoinHandle<()> {
-    std::thread::spawn(move || run_delete(&db_path, items, method, &tx))
+    std::thread::spawn(move || run_delete(&db_path, items, method, &tx, lang))
 }
 
 fn run_delete(
@@ -33,12 +36,13 @@ fn run_delete(
     items: Vec<DeleteItem>,
     method: DeleteMethod,
     tx: &Sender<WorkerMsg>,
+    lang: Lang,
 ) {
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
             let _ = tx.send(WorkerMsg::Error {
-                msg: format!("Помилка відкриття бази даних: {err}"),
+                msg: i18n::db_open_error_short(lang, err),
             });
             return;
         }
@@ -65,7 +69,7 @@ fn run_delete(
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string());
             let _ = tx.send(WorkerMsg::Progress {
-                verb: "Видалення",
+                verb: Verb::Delete,
                 current,
                 total,
                 detail,
@@ -86,7 +90,7 @@ fn run_delete(
         Ok(outcomes) => outcomes,
         Err(err) => {
             let _ = tx.send(WorkerMsg::Error {
-                msg: format!("Помилка видалення: {err}"),
+                msg: i18n::delete_failed(lang, err),
             });
             return;
         }
@@ -131,7 +135,7 @@ fn run_delete(
         // saved results would show stale rows until the next successful
         // purge or rescan.
         let _ = tx.send(WorkerMsg::Warning {
-            msg: format!("Не вдалося оновити базу даних після видалення: {err}"),
+            msg: i18n::db_update_after_delete_failed(lang, err),
         });
     }
 

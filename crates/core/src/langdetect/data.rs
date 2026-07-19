@@ -33,8 +33,10 @@ pub const LANG_PACK_VERSION: u32 = 1;
 /// broken file here is a broken build, not a runtime surprise (see
 /// [`LangPack::builtin`]). `tests::embedded_file_matches_canonical_serialization`
 /// guards against the file drifting out of sync with its own serde shape.
-const EMBEDDED_L10N_RULES_JSON: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../l10n_rules.json"));
+const EMBEDDED_L10N_RULES_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../l10n_rules.json"
+));
 
 /// Canonical language keys must be `&'static str` throughout the engine
 /// (`Occurrence`, `FamilyHit`, keep-lists compare against them). Every key —
@@ -235,6 +237,9 @@ fn union(base: Vec<String>, incoming: Vec<String>) -> Vec<String> {
 pub struct LangData {
     /// alias (lowercase) -> (canonical key, trust level).
     alias_map: HashMap<String, (&'static str, Level)>,
+    /// Every canonical language key the pack defines, sorted for a stable
+    /// UI listing order (see [`LangData::language_keys`]).
+    language_keys: Vec<&'static str>,
     industry_words: HashSet<String>,
     keep_default: Vec<String>,
     pub negative: HashSet<String>,
@@ -262,8 +267,10 @@ impl LangData {
     /// Compiles a pack into lookup-ready form.
     pub fn compile(pack: &LangPack) -> LangData {
         let mut alias_map: HashMap<String, (&'static str, Level)> = HashMap::new();
+        let mut language_keys: Vec<&'static str> = Vec::with_capacity(pack.languages.len());
         for entry in &pack.languages {
             let canonical = intern_key(&entry.key.to_lowercase());
+            language_keys.push(canonical);
             // Every canonical key resolves to itself at Level A, so callers
             // can pass either an alias or a bare canonical key.
             alias_map
@@ -284,8 +291,11 @@ impl LangData {
                 .map(|s| s.to_lowercase())
                 .collect::<HashSet<_>>()
         };
+        language_keys.sort_unstable();
+        language_keys.dedup();
         LangData {
             alias_map,
+            language_keys,
             industry_words: to_set(&pack.industry_words),
             keep_default: pack.keep_default.iter().map(|s| s.to_lowercase()).collect(),
             negative: to_set(&pack.markers.negative),
@@ -310,6 +320,14 @@ impl LangData {
     /// The pack's default keep-list (normalized).
     pub fn keep_default(&self) -> &[String] {
         &self.keep_default
+    }
+
+    /// Every canonical language key the pack defines (e.g. `["de", "en",
+    /// "es", "fr", "uk", ...]`), sorted for a stable listing order. Used by
+    /// the settings UI to enumerate the keep-list checkboxes - see
+    /// `crates/app/src/ui/settings_dialog.rs`.
+    pub fn language_keys(&self) -> &[&'static str] {
+        &self.language_keys
     }
 
     /// Looks up a lowercase token/segment-piece in the dictionary.
@@ -405,6 +423,23 @@ mod tests {
         assert_eq!(data.normalize_lang_key("Deutsch"), "de");
         assert!(data.negative.contains("gfx"));
         assert!(data.loc_generic.contains("localization"));
+    }
+
+    #[test]
+    fn language_keys_lists_every_canonical_key_sorted_and_deduplicated() {
+        let data = LangData::builtin();
+        let keys = data.language_keys();
+        assert!(keys.contains(&"en"));
+        assert!(keys.contains(&"uk"));
+        assert!(keys.contains(&"fr"));
+        let mut sorted = keys.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            keys,
+            sorted.as_slice(),
+            "must already be sorted and deduplicated"
+        );
     }
 
     #[test]

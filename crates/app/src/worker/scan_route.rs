@@ -159,10 +159,18 @@ pub fn paths_case_insensitively_equal(a: &Path, b: &Path) -> bool {
     a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
 }
 
-/// Builds the "(MFT: X, обхід тек: Y)" scan-method breakdown shown in the
-/// final status line after a scan completes.
-pub fn format_scan_summary(total: usize, mft: usize, walkdir: usize, elapsed_secs: f64) -> String {
-    format!("Проскановано {total} ігор (MFT: {mft}, обхід тек: {walkdir}) за {elapsed_secs:.1} с.")
+/// Builds the "(MFT: X, walkdir: Y)" scan-method breakdown shown in the
+/// final status line after a scan completes. A thin re-export of
+/// `i18n::format_scan_summary` kept under this name since callers reach for
+/// it alongside the rest of the scan-routing logic.
+pub fn format_scan_summary(
+    lang: crate::i18n::Lang,
+    total: usize,
+    mft: usize,
+    walkdir: usize,
+    elapsed_secs: f64,
+) -> String {
+    crate::i18n::format_scan_summary(lang, total, mft, walkdir, elapsed_secs)
 }
 
 #[cfg(test)]
@@ -358,16 +366,22 @@ mod tests {
 
     #[test]
     fn format_scan_summary_matches_expected_shape() {
+        use crate::i18n::Lang;
         assert_eq!(
-            format_scan_summary(10, 7, 3, 2.5),
+            format_scan_summary(Lang::Uk, 10, 7, 3, 2.5),
             "Проскановано 10 ігор (MFT: 7, обхід тек: 3) за 2.5 с."
+        );
+        assert_eq!(
+            format_scan_summary(Lang::En, 10, 7, 3, 2.5),
+            "Scanned 10 game(s) (MFT: 7, walkdir: 3) in 2.5 sec."
         );
     }
 
     #[test]
     fn format_scan_summary_rounds_elapsed_to_one_decimal() {
+        use crate::i18n::Lang;
         assert_eq!(
-            format_scan_summary(1, 0, 1, 0.04),
+            format_scan_summary(Lang::Uk, 1, 0, 1, 0.04),
             "Проскановано 1 ігор (MFT: 0, обхід тек: 1) за 0.0 с."
         );
     }

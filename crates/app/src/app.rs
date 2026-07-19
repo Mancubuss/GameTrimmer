@@ -10,10 +10,11 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 
-use gametrimmer_core::settings::{DeleteMethod, Settings};
+use gametrimmer_core::settings::{DeleteMethod, Lang, Settings};
 
 use crate::elevation;
 use crate::export;
+use crate::i18n;
 use crate::model::{self, DiskGroup, FindingItem};
 use crate::ui;
 use crate::worker::delete::DeleteItem;
@@ -35,7 +36,7 @@ pub struct RemoveSummary {
 /// `WorkerMsg::Progress` for the field meanings.
 #[derive(Clone)]
 pub struct ProgressState {
-    pub verb: &'static str,
+    pub verb: i18n::Verb,
     pub current: usize,
     pub total: usize,
     pub detail: String,
@@ -142,6 +143,10 @@ pub struct GameTrimmerApp {
 impl GameTrimmerApp {
     pub fn new() -> Self {
         let db_path = worker::db_path().ok();
+        // Settings (and thus the UI language) aren't known until the
+        // database opens - startup errors before that point use the default
+        // language's text, same as any other place with no settings yet.
+        let startup_lang = Settings::default().app_language;
         let (db_error, settings) = match &db_path {
             Some(path) => match gametrimmer_core::db::open(path) {
                 Ok(conn) => {
@@ -151,15 +156,12 @@ impl GameTrimmerApp {
                     (None, settings)
                 }
                 Err(err) => (
-                    Some(format!(
-                        "Помилка відкриття бази даних: {err}. Перемістіть програму в теку з \
-                         правами на запис (не Program Files без прав адміністратора)."
-                    )),
+                    Some(i18n::db_open_error_long(startup_lang, err)),
                     Settings::default(),
                 ),
             },
             None => (
-                Some("Помилка визначення шляху до бази даних.".to_string()),
+                Some(i18n::strings(startup_lang).db_path_error.to_string()),
                 Settings::default(),
             ),
         };
@@ -210,13 +212,35 @@ impl GameTrimmerApp {
         if has_saved_findings {
             if let Some(db_path) = db_path {
                 app.busy = true;
-                app.status_message =
-                    "Завантаження результатів попереднього сканування...".to_string();
-                app._worker = Some(worker::load::spawn_load(db_path, tx));
+                app.status_message = i18n::strings(app.lang()).loading_previous_scan.to_string();
+                app._worker = Some(worker::load::spawn_load(db_path, tx, app.lang()));
             }
         }
 
         app
+    }
+
+    /// The active UI language, read from persisted settings. Render code and
+    /// worker spawns call this each frame/action rather than caching it, so
+    /// a language switch (see `set_language`) takes effect immediately.
+    pub fn lang(&self) -> Lang {
+        self.settings.app_language
+    }
+
+    /// Applies a new UI language and persists it immediately, mirroring
+    /// `set_delete_method`. Not called anywhere yet - the settings-dialog
+    /// language selector is a follow-up task; this method is the hook it
+    /// will call.
+    #[allow(dead_code)]
+    pub fn set_language(&mut self, lang: Lang) {
+        if self.settings.app_language == lang {
+            return;
+        }
+        self.settings = Settings {
+            app_language: lang,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
     }
 
     /// Reads every `game_libraries` row for the library management list.
@@ -264,11 +288,10 @@ impl GameTrimmerApp {
         }
         self.folder_picker_active = true;
 
+        let title = i18n::strings(self.lang()).add_library_dialog_title;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let path = rfd::FileDialog::new()
-                .set_title("Виберіть теку бібліотеки")
-                .pick_folder();
+            let path = rfd::FileDialog::new().set_title(title).pick_folder();
             let _ = tx.send(WorkerMsg::FolderPicked { path });
         });
     }
@@ -277,8 +300,10 @@ impl GameTrimmerApp {
     /// library list. Errors are surfaced as a warning rather than a full
     /// scan-blocking error, since the folder picker can run at any time.
     fn add_manual_library(&mut self, path: PathBuf) {
+        let lang = self.lang();
         let Some(db_path) = self.db_path.clone() else {
-            self.warnings.push("Немає шляху до бази даних.".to_string());
+            self.warnings
+                .push(i18n::strings(lang).no_db_path.to_string());
             return;
         };
 
@@ -286,37 +311,34 @@ impl GameTrimmerApp {
             Ok(conn) => {
                 if let Err(err) = manual::add_manual_library(&conn, &path) {
                     self.warnings
-                        .push(format!("Не вдалося додати теку {}: {err}", path.display()));
+                        .push(i18n::add_library_failed(lang, path.display(), err));
                     return;
                 }
                 self.refresh_libraries();
             }
-            Err(err) => self
-                .warnings
-                .push(format!("Помилка відкриття бази даних: {err}")),
+            Err(err) => self.warnings.push(i18n::db_open_error_short(lang, err)),
         }
     }
 
     /// Removes a manual library (and, cascading, its games/files/findings)
     /// and refreshes the library list.
     pub fn remove_manual_library(&mut self, library_id: i64) {
+        let lang = self.lang();
         let Some(db_path) = self.db_path.clone() else {
-            self.warnings.push("Немає шляху до бази даних.".to_string());
+            self.warnings
+                .push(i18n::strings(lang).no_db_path.to_string());
             return;
         };
 
         match gametrimmer_core::db::open(&db_path) {
             Ok(mut conn) => {
                 if let Err(err) = manual::remove_library(&mut conn, library_id) {
-                    self.warnings
-                        .push(format!("Не вдалося прибрати бібліотеку: {err}"));
+                    self.warnings.push(i18n::remove_library_failed(lang, err));
                     return;
                 }
                 self.refresh_libraries();
             }
-            Err(err) => self
-                .warnings
-                .push(format!("Помилка відкриття бази даних: {err}")),
+            Err(err) => self.warnings.push(i18n::db_open_error_short(lang, err)),
         }
     }
 
@@ -332,14 +354,17 @@ impl GameTrimmerApp {
         }
         self.export_active = true;
 
-        let csv = export::export_csv(&self.findings, &self.tree);
+        let lang = self.lang();
+        let s = i18n::strings(lang);
+        let csv = export::export_csv(lang, &self.findings, &self.tree);
+        let (title, text_filter_label) = (s.export_dialog_title, s.text_file_filter_label);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let picked = rfd::FileDialog::new()
-                .set_title("Експорт результатів аналізу")
+                .set_title(title)
                 .set_file_name("gametrimmer_analysis.csv")
                 .add_filter("CSV", &["csv"])
-                .add_filter("Текстовий файл", &["txt"])
+                .add_filter(text_filter_label, &["txt"])
                 .save_file();
 
             let (path, error) = match picked {
@@ -353,7 +378,7 @@ impl GameTrimmerApp {
         });
     }
 
-    /// Spawns the «Експортувати правила» flow: a blocking folder picker on
+    /// Spawns the «Export rules» flow: a blocking folder picker on
     /// a background thread, then writing both pack files there (see
     /// `worker::rules_io::export_packs_to`). Result comes back as
     /// [`WorkerMsg::RulesExportDone`].
@@ -364,14 +389,14 @@ impl GameTrimmerApp {
         self.rules_io_active = true;
         self.rules_io_result = None;
 
+        let lang = self.lang();
+        let title = i18n::strings(lang).rules_export_dialog_title;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let picked = rfd::FileDialog::new()
-                .set_title("Виберіть теку для експорту правил")
-                .pick_folder();
+            let picked = rfd::FileDialog::new().set_title(title).pick_folder();
 
             let (path, error) = match picked {
-                Some(dir) => match worker::rules_io::export_packs_to(&dir) {
+                Some(dir) => match worker::rules_io::export_packs_to(lang, &dir) {
                     Ok(()) => (Some(dir), None),
                     Err(err) => (None, Some(err)),
                 },
@@ -381,7 +406,7 @@ impl GameTrimmerApp {
         });
     }
 
-    /// Spawns the «Імпортувати правила» flow: a blocking multi-file picker
+    /// Spawns the «Import rules» flow: a blocking multi-file picker
     /// on a background thread, then merging each picked pack into the
     /// current files (see `worker::rules_io::import_pack_files`). Result
     /// comes back as [`WorkerMsg::RulesImportDone`]. The settings dialog
@@ -394,15 +419,18 @@ impl GameTrimmerApp {
         self.rules_io_active = true;
         self.rules_io_result = None;
 
+        let lang = self.lang();
+        let s = i18n::strings(lang);
+        let (title, filter_label) = (s.rules_import_dialog_title, s.rules_import_filter_label);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let picked = rfd::FileDialog::new()
-                .set_title("Виберіть файли правил для імпорту")
-                .add_filter("Правила GameTrimmer (JSON)", &["json"])
+                .set_title(title)
+                .add_filter(filter_label, &["json"])
                 .pick_files();
 
             let (summary, error) = match picked {
-                Some(files) => match worker::rules_io::import_pack_files(&files) {
+                Some(files) => match worker::rules_io::import_pack_files(lang, &files) {
                     Ok(summary) => (Some(summary), None),
                     Err(err) => (None, Some(err)),
                 },
@@ -417,7 +445,7 @@ impl GameTrimmerApp {
             return;
         }
         let Some(db_path) = self.db_path.clone() else {
-            self.status_message = "Немає шляху до бази даних.".to_string();
+            self.status_message = i18n::strings(self.lang()).no_db_path.to_string();
             return;
         };
 
@@ -433,6 +461,8 @@ impl GameTrimmerApp {
             Arc::clone(&self.cancel),
             self.tx.clone(),
             self.elevated,
+            self.lang(),
+            self.settings.keep_languages.clone(),
         );
         self._worker = Some(handle);
     }
@@ -501,7 +531,7 @@ impl GameTrimmerApp {
             return;
         };
         let Some(db_path) = self.db_path.clone() else {
-            self.status_message = "Немає шляху до бази даних.".to_string();
+            self.status_message = i18n::strings(self.lang()).no_db_path.to_string();
             return;
         };
 
@@ -517,27 +547,31 @@ impl GameTrimmerApp {
             .collect();
 
         self.busy = true;
-        self.status_message = "Видалення вибраних файлів...".to_string();
+        self.status_message = i18n::strings(self.lang())
+            .deleting_selected_files
+            .to_string();
         let handle = worker::delete::spawn_delete(
             db_path,
             items,
             self.settings.delete_method,
             self.tx.clone(),
+            self.lang(),
         );
         self._worker = Some(handle);
     }
 
-    /// Spawns the "Стиснути базу даних" job (WAL checkpoint + `VACUUM`).
+    /// Spawns the "Compact database" job (WAL checkpoint + `VACUUM`).
     /// No-op while another job is running.
     pub fn start_compact(&mut self) {
         if self.busy {
             return;
         }
         let Some(db_path) = self.db_path.clone() else {
-            self.status_message = "Немає шляху до бази даних.".to_string();
+            self.status_message = i18n::strings(self.lang()).no_db_path.to_string();
             return;
         };
-        self.spawn_compact_job(db_path, "Стискання бази даних...".to_string());
+        let status = i18n::strings(self.lang()).compacting_database.to_string();
+        self.spawn_compact_job(db_path, status);
     }
 
     /// Shared by `start_compact` (user-triggered) and the automatic
@@ -547,7 +581,7 @@ impl GameTrimmerApp {
     fn spawn_compact_job(&mut self, db_path: PathBuf, status_message: String) {
         self.busy = true;
         self.status_message = status_message;
-        let handle = worker::compact::spawn_compact(db_path, self.tx.clone());
+        let handle = worker::compact::spawn_compact(db_path, self.tx.clone(), self.lang());
         self._worker = Some(handle);
     }
 
@@ -561,21 +595,38 @@ impl GameTrimmerApp {
         }
         self.settings = Settings {
             delete_method: method,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Applies a new keep-list and persists it immediately, mirroring
+    /// `set_delete_method`. Takes effect on the *next* scan - the currently
+    /// displayed findings (if any) are left untouched. Callers (the settings
+    /// dialog) are responsible for never producing an empty list - see
+    /// `ui::settings_dialog`'s "at least one language stays checked" rule.
+    pub fn set_keep_languages(&mut self, keep_languages: Vec<String>) {
+        if self.settings.keep_languages == keep_languages {
+            return;
+        }
+        self.settings = Settings {
+            keep_languages,
+            ..self.settings.clone()
         };
         self.persist_settings();
     }
 
     fn persist_settings(&mut self) {
+        let lang = self.lang();
         let Some(db_path) = self.db_path.clone() else {
             self.warnings
-                .push("Налаштування не збережено: немає шляху до бази даних.".to_string());
+                .push(i18n::strings(lang).settings_not_saved_no_db.to_string());
             return;
         };
         let result = gametrimmer_core::db::open(&db_path)
             .and_then(|conn| gametrimmer_core::settings::save(&conn, &self.settings));
         if let Err(err) = result {
-            self.warnings
-                .push(format!("Не вдалося зберегти налаштування: {err}"));
+            self.warnings.push(i18n::settings_save_failed(lang, err));
         }
     }
 
@@ -605,10 +656,10 @@ impl GameTrimmerApp {
     }
 
     fn apply_message(&mut self, msg: WorkerMsg) {
+        let lang = self.lang();
         match msg {
             WorkerMsg::LibrariesFound { libraries, games } => {
-                self.status_message =
-                    format!("Знайдено бібліотек: {libraries}, ігор: {games}. Сканування файлів...");
+                self.status_message = i18n::libraries_found(lang, libraries, games);
             }
             WorkerMsg::Progress {
                 verb,
@@ -649,8 +700,7 @@ impl GameTrimmerApp {
                 // cursor's row index no longer points at the same row.
                 self.tree_toggles.clear();
                 self.tree_cursor = None;
-                self.status_message =
-                    format!("{scan_summary} Знайдено {count} файл(ів) для перевірки.");
+                self.status_message = i18n::scan_done_status(lang, &scan_summary, count);
             }
             WorkerMsg::FileRemoved { file_id } => {
                 if let Some(item) = self
@@ -703,10 +753,7 @@ impl GameTrimmerApp {
                 // subsumed - clear it to avoid a redundant rebuild next frame.
                 self.tree = model::build_tree(&self.findings);
                 self.tree_dirty = false;
-                self.status_message = format!(
-                    "Видалення завершено: успішно {succeeded}, помилок {}.",
-                    failed.len()
-                );
+                self.status_message = i18n::remove_done_status(lang, succeeded, failed.len());
                 self.remove_summary = Some(RemoveSummary { succeeded, failed });
 
                 // Rows deleted from `files`/`findings` leave free pages behind
@@ -718,10 +765,9 @@ impl GameTrimmerApp {
                 if succeeded > 0 {
                     if let Some(db_path) = self.db_path.clone() {
                         self.compact_after_delete = true;
-                        self.spawn_compact_job(
-                            db_path,
-                            "Видалення завершено. Стискання бази даних...".to_string(),
-                        );
+                        let s = i18n::strings(lang);
+                        let status = format!("{} {}", s.deletion_completed, s.compacting_database);
+                        self.spawn_compact_job(db_path, status);
                     } else {
                         self.busy = false;
                     }
@@ -733,13 +779,13 @@ impl GameTrimmerApp {
                 self.busy = false;
                 self.progress = None;
                 self._worker = None;
-                self.status_message = "Сканування скасовано.".to_string();
+                self.status_message = i18n::strings(lang).scan_cancelled.to_string();
             }
             WorkerMsg::Error { msg } => {
                 self.busy = false;
                 self.progress = None;
                 self._worker = None;
-                self.status_message = format!("Помилка: {msg}");
+                self.status_message = i18n::error_prefixed(lang, msg);
             }
             WorkerMsg::Warning { msg } => {
                 self.warnings.push(msg);
@@ -753,10 +799,9 @@ impl GameTrimmerApp {
             WorkerMsg::ExportDone { path, error } => {
                 self.export_active = false;
                 if let Some(error) = error {
-                    self.warnings
-                        .push(format!("Не вдалося зберегти експорт: {error}"));
+                    self.warnings.push(i18n::export_save_failed(lang, error));
                 } else if let Some(path) = path {
-                    self.status_message = format!("Експортовано: {}", path.display());
+                    self.status_message = i18n::exported_to(lang, path.display());
                 }
                 // `path` and `error` both `None` means the user cancelled
                 // the save dialog - nothing to report.
@@ -764,11 +809,11 @@ impl GameTrimmerApp {
             WorkerMsg::RulesExportDone { path, error } => {
                 self.rules_io_active = false;
                 if let Some(error) = error {
-                    let msg = format!("Не вдалося експортувати правила: {error}");
+                    let msg = i18n::rules_export_failed(lang, error);
                     self.rules_io_result = Some(Err(msg.clone()));
                     self.warnings.push(msg);
                 } else if let Some(path) = path {
-                    let msg = format!("Правила експортовано до {}", path.display());
+                    let msg = i18n::rules_exported_to(lang, path.display());
                     self.rules_io_result = Some(Ok(msg.clone()));
                     self.status_message = msg;
                 }
@@ -777,7 +822,7 @@ impl GameTrimmerApp {
             WorkerMsg::RulesImportDone { summary, error } => {
                 self.rules_io_active = false;
                 if let Some(error) = error {
-                    let msg = format!("Не вдалося імпортувати правила: {error}");
+                    let msg = i18n::rules_import_failed(lang, error);
                     self.rules_io_result = Some(Err(msg.clone()));
                     self.warnings.push(msg);
                 } else if let Some(summary) = summary {
@@ -797,10 +842,11 @@ impl GameTrimmerApp {
                 // into this compaction job - reset here unconditionally so it
                 // can never leak into a later, manually-triggered compaction.
                 let after_delete = std::mem::take(&mut self.compact_after_delete);
+                let s = i18n::strings(lang);
                 match error {
                     Some(err) => self.status_message = err,
                     None if skipped && after_delete => {
-                        self.status_message = "Видалення завершено.".to_string();
+                        self.status_message = s.deletion_completed.to_string();
                     }
                     // Manually-triggered compaction with nothing worth doing:
                     // the hint under the settings button already explains the
@@ -809,12 +855,11 @@ impl GameTrimmerApp {
                         self.status_message.clear();
                     }
                     None => {
-                        let prefix = if after_delete {
-                            "Видалення завершено. "
+                        self.status_message = if after_delete {
+                            format!("{} {}", s.deletion_completed, s.database_compacted)
                         } else {
-                            ""
+                            s.database_compacted.to_string()
                         };
-                        self.status_message = format!("{prefix}Базу даних стиснуто.");
                     }
                 }
             }

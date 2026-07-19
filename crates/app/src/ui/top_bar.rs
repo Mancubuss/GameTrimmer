@@ -3,8 +3,11 @@
 use eframe::egui;
 
 use crate::app::{GameTrimmerApp, APP_TITLE};
+use crate::i18n;
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
+    let lang = app.lang();
+    let s = i18n::strings(lang);
     egui::Panel::top("top_panel").show(ui, |ui| {
         ui.add_space(4.0);
         ui.heading(APP_TITLE);
@@ -12,20 +15,20 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
         ui.horizontal(|ui| {
             let scan_clicked = ui
-                .add_enabled(!app.busy, egui::Button::new("Сканувати бібліотеки"))
+                .add_enabled(!app.busy, egui::Button::new(s.btn_scan_libraries))
                 .clicked();
             if scan_clicked {
                 app.start_scan();
             }
 
-            if app.busy && ui.button("Скасувати").clicked() {
+            if app.busy && ui.button(s.btn_cancel).clicked() {
                 app.cancel_scan();
             }
 
             let export_clicked = ui
                 .add_enabled(
                     !app.busy && !app.export_active && !app.findings.is_empty(),
-                    egui::Button::new("Експортувати…"),
+                    egui::Button::new(s.btn_export),
                 )
                 .clicked();
             if export_clicked {
@@ -33,7 +36,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             }
 
             ui.separator();
-            if ui.button("Налаштування…").clicked() {
+            if ui.button(s.btn_settings).clicked() {
                 app.show_settings = true;
             }
         });
@@ -62,11 +65,14 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                         .checked_div(progress.total)
                         .unwrap_or(0)
                 };
-                format!("{} {}%", progress.verb, percent)
+                format!("{} {}%", i18n::verb_label(lang, progress.verb), percent)
             } else {
                 format!(
                     "{} {}/{}: {}",
-                    progress.verb, progress.current, progress.total, progress.detail
+                    i18n::verb_label(lang, progress.verb),
+                    progress.current,
+                    progress.total,
+                    progress.detail
                 )
             };
             ui.add(egui::ProgressBar::new(fraction).text(text));
@@ -86,7 +92,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
         if !app.warnings.is_empty() {
             let count = app.warnings.len();
-            egui::CollapsingHeader::new(format!("Попередження ({count})"))
+            egui::CollapsingHeader::new(i18n::warnings_header(lang, count))
                 .default_open(false)
                 .show(ui, |ui| {
                     for warning in app.warnings.clone() {

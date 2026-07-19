@@ -15,22 +15,23 @@ use gametrimmer_core::error::Result as CoreResult;
 use gametrimmer_core::scanner::FileEntry;
 use rusqlite::{params, Connection};
 
+use crate::i18n::{self, Lang};
 use crate::model::{parse_source_key, FindingRow};
 
 use super::scan::assign_group_dirs;
 use super::WorkerMsg;
 
 /// Spawns the load job on a new thread.
-pub fn spawn_load(db_path: PathBuf, tx: Sender<WorkerMsg>) -> JoinHandle<()> {
-    std::thread::spawn(move || run_load(&db_path, &tx))
+pub fn spawn_load(db_path: PathBuf, tx: Sender<WorkerMsg>, lang: Lang) -> JoinHandle<()> {
+    std::thread::spawn(move || run_load(&db_path, &tx, lang))
 }
 
-fn run_load(db_path: &Path, tx: &Sender<WorkerMsg>) {
+fn run_load(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
     let conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
             let _ = tx.send(WorkerMsg::Error {
-                msg: format!("Помилка відкриття бази даних: {err}"),
+                msg: i18n::db_open_error_short(lang, err),
             });
             return;
         }
@@ -40,12 +41,12 @@ fn run_load(db_path: &Path, tx: &Sender<WorkerMsg>) {
         Ok(findings) => {
             let _ = tx.send(WorkerMsg::Done {
                 findings,
-                scan_summary: "Показано збережені результати попереднього сканування.".to_string(),
+                scan_summary: i18n::loaded_saved_results(lang),
             });
         }
         Err(err) => {
             let _ = tx.send(WorkerMsg::Error {
-                msg: format!("Помилка завантаження результатів попереднього сканування: {err}"),
+                msg: i18n::load_previous_results_failed(lang, err),
             });
         }
     }

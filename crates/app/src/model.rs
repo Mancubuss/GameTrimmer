@@ -101,14 +101,15 @@ pub fn display_category(source: FindingSource) -> DisplayCategory {
     }
 }
 
-/// Human-readable Ukrainian label for a category header.
-pub fn category_display(category: DisplayCategory) -> &'static str {
+/// Human-readable, localized label for a category header.
+pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &'static str {
+    let s = crate::i18n::strings(lang);
     match category {
-        DisplayCategory::Redist => "Дистрибутиви",
-        DisplayCategory::Docs => "Документація і довідкові матеріали",
-        DisplayCategory::Bonus => "Бонусні матеріали",
-        DisplayCategory::Loc => "Файли локалізацій",
-        DisplayCategory::Other => "Інше",
+        DisplayCategory::Redist => s.category_redist,
+        DisplayCategory::Docs => s.category_docs,
+        DisplayCategory::Bonus => s.category_bonus,
+        DisplayCategory::Loc => s.category_loc,
+        DisplayCategory::Other => s.category_other,
     }
 }
 
@@ -516,22 +517,23 @@ pub fn group_size_bytes(items: &[FindingItem], indices: &[usize]) -> u64 {
     indices.iter().map(|&i| items[i].row.size).sum()
 }
 
-/// Formats a byte count as a human-readable Ukrainian size string
+/// Formats a byte count as a human-readable, localized size string
 /// (binary units: 1024-based).
-pub fn format_size(bytes: u64) -> String {
+pub fn format_size(lang: crate::i18n::Lang, bytes: u64) -> String {
+    let s = crate::i18n::strings(lang);
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
 
     let value = bytes as f64;
     if value >= GB {
-        format!("{:.2} ГБ", value / GB)
+        format!("{:.2} {}", value / GB, s.unit_gb)
     } else if value >= MB {
-        format!("{:.2} МБ", value / MB)
+        format!("{:.2} {}", value / MB, s.unit_mb)
     } else if value >= KB {
-        format!("{:.2} КБ", value / KB)
+        format!("{:.2} {}", value / KB, s.unit_kb)
     } else {
-        format!("{bytes} Б")
+        format!("{bytes} {}", s.unit_b)
     }
 }
 
@@ -1345,25 +1347,39 @@ mod tests {
 
     #[test]
     fn format_size_picks_appropriate_unit() {
-        assert_eq!(format_size(512), "512 Б");
-        assert_eq!(format_size(2048), "2.00 КБ");
-        assert_eq!(format_size(5 * 1024 * 1024), "5.00 МБ");
-        assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3.00 ГБ");
+        use crate::i18n::Lang;
+        assert_eq!(format_size(Lang::Uk, 512), "512 Б");
+        assert_eq!(format_size(Lang::Uk, 2048), "2.00 КБ");
+        assert_eq!(format_size(Lang::Uk, 5 * 1024 * 1024), "5.00 МБ");
+        assert_eq!(format_size(Lang::Uk, 3 * 1024 * 1024 * 1024), "3.00 ГБ");
+        assert_eq!(format_size(Lang::En, 512), "512 B");
+        assert_eq!(format_size(Lang::En, 2048), "2.00 KB");
     }
 
     #[test]
     fn category_display_covers_all_five_categories() {
-        assert_eq!(category_display(DisplayCategory::Redist), "Дистрибутиви");
+        use crate::i18n::Lang;
         assert_eq!(
-            category_display(DisplayCategory::Docs),
+            category_display(Lang::Uk, DisplayCategory::Redist),
+            "Дистрибутиви"
+        );
+        assert_eq!(
+            category_display(Lang::Uk, DisplayCategory::Docs),
             "Документація і довідкові матеріали"
         );
         assert_eq!(
-            category_display(DisplayCategory::Bonus),
+            category_display(Lang::Uk, DisplayCategory::Bonus),
             "Бонусні матеріали"
         );
-        assert_eq!(category_display(DisplayCategory::Loc), "Файли локалізацій");
-        assert_eq!(category_display(DisplayCategory::Other), "Інше");
+        assert_eq!(
+            category_display(Lang::Uk, DisplayCategory::Loc),
+            "Файли локалізацій"
+        );
+        assert_eq!(category_display(Lang::Uk, DisplayCategory::Other), "Інше");
+        assert_eq!(
+            category_display(Lang::En, DisplayCategory::Redist),
+            "Redistributables"
+        );
     }
 
     /// The scan worker dedups a file with both a rules-engine finding and a

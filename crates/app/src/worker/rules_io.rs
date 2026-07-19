@@ -1,13 +1,15 @@
 //! File-level export/import of the two rule packs (`rules.json`,
-//! `l10n_rules.json`) behind the settings dialog's «Експортувати правила» /
-//! «Імпортувати правила» buttons. The merge semantics live in
+//! `l10n_rules.json`) behind the settings dialog's «Export rules» /
+//! «Import rules» buttons. The merge semantics live in
 //! `gametrimmer_core::packs`; this module only decides which files to read
-//! and write. Errors are user-facing Ukrainian strings - they end up
-//! directly in the warnings list.
+//! and write. Errors are user-facing, already-localized strings - they end
+//! up directly in the warnings list.
 
 use std::path::{Path, PathBuf};
 
 use gametrimmer_core::packs::{self, MergeStats, PackKind};
+
+use crate::i18n::{self, Lang};
 
 use super::{ensure_l10n_rules_path, ensure_rules_path, L10N_RULES_FILE_NAME, RULES_FILE_NAME};
 
@@ -15,35 +17,34 @@ use super::{ensure_l10n_rules_path, ensure_rules_path, L10N_RULES_FILE_NAME, RUL
 /// they are read - `ensure_*` materializes the embedded defaults next to
 /// the executable on first use - so the export is always a verbatim copy of
 /// exactly what the scanner runs with.
-pub fn export_packs_to(dir: &Path) -> Result<(), String> {
-    let rules_text = read_ensured(ensure_rules_path())?;
-    let l10n_text = read_ensured(ensure_l10n_rules_path())?;
+pub fn export_packs_to(lang: Lang, dir: &Path) -> Result<(), String> {
+    let rules_text = read_ensured(lang, ensure_rules_path())?;
+    let l10n_text = read_ensured(lang, ensure_l10n_rules_path())?;
 
-    write_text(&dir.join(RULES_FILE_NAME), &rules_text)?;
-    write_text(&dir.join(L10N_RULES_FILE_NAME), &l10n_text)
+    write_text(lang, &dir.join(RULES_FILE_NAME), &rules_text)?;
+    write_text(lang, &dir.join(L10N_RULES_FILE_NAME), &l10n_text)
 }
 
 /// Unwraps an `ensure_*` result and reads the materialized file.
-fn read_ensured(ensured: std::io::Result<PathBuf>) -> Result<String, String> {
-    let path = ensured.map_err(|err| format!("не вдалося підготувати файл правил: {err}"))?;
-    std::fs::read_to_string(&path)
-        .map_err(|err| format!("не вдалося прочитати {}: {err}", path.display()))
+fn read_ensured(lang: Lang, ensured: std::io::Result<PathBuf>) -> Result<String, String> {
+    let path = ensured.map_err(|err| i18n::prepare_rules_file_failed(lang, err))?;
+    std::fs::read_to_string(&path).map_err(|err| i18n::read_file_failed(lang, path.display(), err))
 }
 
 /// Imports every picked pack file: detects its kind, merges it into the
 /// current effective pack of that kind, backs the previous file up as
 /// `*.bak` and writes the merged result where the scanner will load it
-/// from. Returns the ready-to-show Ukrainian summary. Stops at the first
-/// broken file - files before it are already merged and stay merged, which
-/// the error message says explicitly.
-pub fn import_pack_files(files: &[PathBuf]) -> Result<String, String> {
+/// from. Returns the ready-to-show, already-localized summary. Stops at the
+/// first broken file - files before it are already merged and stay merged,
+/// which the error message says explicitly.
+pub fn import_pack_files(lang: Lang, files: &[PathBuf]) -> Result<String, String> {
     let mut rules_stats: Option<MergeStats> = None;
     let mut lang_stats: Option<MergeStats> = None;
 
     for (index, file) in files.iter().enumerate() {
-        let (kind, stats) = import_one_file(file).map_err(|err| {
+        let (kind, stats) = import_one_file(lang, file).map_err(|err| {
             let done_note = if index > 0 {
-                format!(" (попередні {index} файл(и) вже імпортовано)")
+                i18n::previous_files_already_imported(lang, index)
             } else {
                 String::new()
             };
@@ -55,18 +56,18 @@ pub fn import_pack_files(files: &[PathBuf]) -> Result<String, String> {
         }
     }
 
-    Ok(build_summary(rules_stats, lang_stats))
+    Ok(build_summary(lang, rules_stats, lang_stats))
 }
 
 /// Reads one picked file, detects which pack it is and merges it into the
 /// matching current pack on disk.
-fn import_one_file(file: &Path) -> Result<(PackKind, MergeStats), String> {
+fn import_one_file(lang: Lang, file: &Path) -> Result<(PackKind, MergeStats), String> {
     let text =
-        std::fs::read_to_string(file).map_err(|err| format!("не вдалося прочитати файл: {err}"))?;
+        std::fs::read_to_string(file).map_err(|err| i18n::read_picked_file_failed(lang, err))?;
     let kind = packs::detect_pack_kind(&text).map_err(|err| err.to_string())?;
     let stats = match kind {
-        PackKind::CategoryRules => import_category_rules(&text)?,
-        PackKind::LangPack => import_lang_pack(&text)?,
+        PackKind::CategoryRules => import_category_rules(lang, &text)?,
+        PackKind::LangPack => import_lang_pack(lang, &text)?,
     };
     Ok((kind, stats))
 }
@@ -74,16 +75,15 @@ fn import_one_file(file: &Path) -> Result<(PackKind, MergeStats), String> {
 /// Merges an incoming rules.json into the current effective one next to the
 /// executable (materialized from the embedded defaults if this is the first
 /// touch) and writes the merged result back.
-fn import_category_rules(incoming: &str) -> Result<MergeStats, String> {
-    let target =
-        ensure_rules_path().map_err(|err| format!("не вдалося підготувати rules.json: {err}"))?;
+fn import_category_rules(lang: Lang, incoming: &str) -> Result<MergeStats, String> {
+    let target = ensure_rules_path().map_err(|err| i18n::prepare_rules_json_failed(lang, err))?;
     let base = std::fs::read_to_string(&target)
-        .map_err(|err| format!("не вдалося прочитати {}: {err}", target.display()))?;
+        .map_err(|err| i18n::read_file_failed(lang, target.display(), err))?;
 
     let (merged, stats) =
         packs::merge_category_rules(&base, incoming).map_err(|err| err.to_string())?;
-    backup(&target)?;
-    write_text(&target, &merged)?;
+    backup(lang, &target)?;
+    write_text(lang, &target, &merged)?;
     Ok(stats)
 }
 
@@ -91,23 +91,23 @@ fn import_category_rules(incoming: &str) -> Result<MergeStats, String> {
 /// to the executable - same materialize-first contract as
 /// [`import_category_rules`], so the first-ever import starts from exactly
 /// what the scanner uses today.
-fn import_lang_pack(incoming: &str) -> Result<MergeStats, String> {
-    let target = ensure_l10n_rules_path()
-        .map_err(|err| format!("не вдалося підготувати l10n_rules.json: {err}"))?;
+fn import_lang_pack(lang: Lang, incoming: &str) -> Result<MergeStats, String> {
+    let target =
+        ensure_l10n_rules_path().map_err(|err| i18n::prepare_l10n_rules_failed(lang, err))?;
     let base = std::fs::read_to_string(&target)
-        .map_err(|err| format!("не вдалося прочитати {}: {err}", target.display()))?;
+        .map_err(|err| i18n::read_file_failed(lang, target.display(), err))?;
 
     let (merged, stats) =
         packs::merge_lang_packs(&base, incoming).map_err(|err| err.to_string())?;
-    backup(&target)?;
-    write_text(&target, &merged)?;
+    backup(lang, &target)?;
+    write_text(lang, &target, &merged)?;
     Ok(stats)
 }
 
 /// Copies an existing `target` aside as `<name>.bak` before it gets
-/// overwritten by a merge, so one step of "відкотити імпорт" is always a
-/// manual rename away. A `target` that does not exist yet needs no backup.
-fn backup(target: &Path) -> Result<(), String> {
+/// overwritten by a merge, so one step of rolling back the import is always
+/// a manual rename away. A `target` that does not exist yet needs no backup.
+fn backup(lang: Lang, target: &Path) -> Result<(), String> {
     if !target.is_file() {
         return Ok(());
     }
@@ -117,17 +117,13 @@ fn backup(target: &Path) -> Result<(), String> {
         .unwrap_or_default();
     name.push(".bak");
     let bak = target.with_file_name(name);
-    std::fs::copy(target, &bak).map(|_| ()).map_err(|err| {
-        format!(
-            "не вдалося створити резервну копію {}: {err}",
-            bak.display()
-        )
-    })
+    std::fs::copy(target, &bak)
+        .map(|_| ())
+        .map_err(|err| i18n::backup_failed(lang, bak.display(), err))
 }
 
-fn write_text(path: &Path, text: &str) -> Result<(), String> {
-    std::fs::write(path, text)
-        .map_err(|err| format!("не вдалося записати {}: {err}", path.display()))
+fn write_text(lang: Lang, path: &Path, text: &str) -> Result<(), String> {
+    std::fs::write(path, text).map_err(|err| i18n::write_failed(lang, path.display(), err))
 }
 
 fn accumulate(current: Option<MergeStats>, stats: MergeStats) -> MergeStats {
@@ -141,26 +137,21 @@ fn accumulate(current: Option<MergeStats>, stats: MergeStats) -> MergeStats {
 }
 
 /// One status line covering whichever pack kinds the import touched, e.g.
-/// "Правила імпортовано: категорії — нових 2, оновлено 1; локалізація —
-/// нових мов 1, нових слів 12. Зміни діятимуть з наступного сканування."
-fn build_summary(rules: Option<MergeStats>, lang: Option<MergeStats>) -> String {
+/// "Rules imported: categories - 2 new, 1 updated; localization - 1 new
+/// language, 12 new words. Changes take effect from the next scan."
+fn build_summary(lang: Lang, rules: Option<MergeStats>, lang_stats: Option<MergeStats>) -> String {
     let mut parts = Vec::new();
     if let Some(stats) = rules {
-        parts.push(format!(
-            "категорії — нових {}, оновлено {}",
-            stats.added, stats.updated
+        parts.push(i18n::summary_categories_part(
+            lang,
+            stats.added,
+            stats.updated,
         ));
     }
-    if let Some(stats) = lang {
-        parts.push(format!(
-            "локалізація — нових мов {}, нових слів {}",
-            stats.added, stats.updated
-        ));
+    if let Some(stats) = lang_stats {
+        parts.push(i18n::summary_lang_part(lang, stats.added, stats.updated));
     }
-    format!(
-        "Правила імпортовано: {}. Зміни діятимуть з наступного сканування.",
-        parts.join("; ")
-    )
+    i18n::summary_final(lang, &parts.join("; "))
 }
 
 #[cfg(test)]
@@ -170,6 +161,7 @@ mod tests {
     #[test]
     fn summary_mentions_only_the_imported_kinds() {
         let rules_only = build_summary(
+            Lang::Uk,
             Some(MergeStats {
                 added: 2,
                 updated: 1,
@@ -180,6 +172,7 @@ mod tests {
         assert!(!rules_only.contains("локалізація"));
 
         let both = build_summary(
+            Lang::Uk,
             Some(MergeStats {
                 added: 1,
                 updated: 0,
@@ -194,15 +187,29 @@ mod tests {
     }
 
     #[test]
+    fn summary_mentions_only_the_imported_kinds_english() {
+        let rules_only = build_summary(
+            Lang::En,
+            Some(MergeStats {
+                added: 2,
+                updated: 1,
+            }),
+            None,
+        );
+        assert!(rules_only.contains("categories - 2 new, 1 updated"));
+        assert!(!rules_only.contains("localization"));
+    }
+
+    #[test]
     fn backup_copies_an_existing_file_and_skips_a_missing_one() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("rules.json");
 
-        backup(&target).expect("missing target needs no backup");
+        backup(Lang::En, &target).expect("missing target needs no backup");
         assert!(!dir.path().join("rules.json.bak").exists());
 
         std::fs::write(&target, "[]").unwrap();
-        backup(&target).expect("existing target is backed up");
+        backup(Lang::En, &target).expect("existing target is backed up");
         let bak = dir.path().join("rules.json.bak");
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), "[]");
     }
@@ -214,7 +221,8 @@ mod tests {
         // something real to copy.
         let dir = tempfile::tempdir().unwrap();
 
-        export_packs_to(dir.path()).expect("export succeeds from the materialized defaults");
+        export_packs_to(Lang::En, dir.path())
+            .expect("export succeeds from the materialized defaults");
 
         let rules = std::fs::read_to_string(dir.path().join(RULES_FILE_NAME)).unwrap();
         gametrimmer_core::rules::RuleEngine::from_json(&rules)
