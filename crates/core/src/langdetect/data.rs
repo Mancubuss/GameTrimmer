@@ -2,10 +2,16 @@
 //!
 //! The detection *algorithms* (families, positional analysis, scoring) live
 //! in code; every word list they consult — the language dictionary, marker
-//! words, veto lists — lives here as a [`LangData`] value. The built-in
-//! tables (`dict.rs`, `markers.rs`) are the defaults; a `l10n_rules.json`
-//! file next to the executable overrides them, which is what makes
-//! community rule packs possible (docs/05_rules_pack_plan.md).
+//! words, veto lists — lives here as a [`LangData`] value. There is exactly
+//! one source of truth for those word lists: `l10n_rules.json` at the repo
+//! root, embedded into the binary via `include_str!` (mirroring how
+//! `rules.json` seeds `gametrimmer_core::rules::BUILTIN_RULES_JSON`). A
+//! `l10n_rules.json` file next to the *executable* overrides the embedded
+//! copy at runtime, which is what makes community rule packs possible
+//! (docs/05_rules_pack_plan.md). `dict.rs` and `markers.rs` now hold only
+//! the algorithm-facing types (`Level`, `MarkerKind`, ...) and the design
+//! rationale behind the word lists — the words themselves live in the JSON
+//! file so editing them never means touching Rust source.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -14,26 +20,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
 
-use super::dict::{Level, INDUSTRY_WORDS, KEEP_DEFAULT, LANGS};
-use super::markers as builtin_markers;
+use super::dict::Level;
 
 /// Supported major version of `l10n_rules.json`. A file with a greater
 /// version was produced by a newer GameTrimmer — refuse it rather than
 /// silently misread it.
 pub const LANG_PACK_VERSION: u32 = 1;
 
+/// The canonical `l10n_rules.json`, embedded at build time from the repo
+/// root — same layout as `gametrimmer_core::rules::BUILTIN_RULES_JSON`.
+/// This is the single source of truth for the detector's word lists; a
+/// broken file here is a broken build, not a runtime surprise (see
+/// [`LangPack::builtin`]). `tests::embedded_file_matches_canonical_serialization`
+/// guards against the file drifting out of sync with its own serde shape.
+const EMBEDDED_L10N_RULES_JSON: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../l10n_rules.json"));
+
 /// Canonical language keys must be `&'static str` throughout the engine
-/// (`Occurrence`, `FamilyHit`, keep-lists compare against them). Built-in
-/// keys already are; keys introduced by a loaded pack are interned here —
-/// each unique string is leaked exactly once for the process lifetime,
-/// which for a handful of language keys is a few bytes.
+/// (`Occurrence`, `FamilyHit`, keep-lists compare against them). Every key —
+/// built-in or introduced by a loaded community pack — is interned here on
+/// first sight; each unique string is leaked exactly once for the process
+/// lifetime, which for the built-in dictionary is a few dozen short strings.
 static INTERNED_KEYS: LazyLock<Mutex<HashSet<&'static str>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 fn intern_key(key: &str) -> &'static str {
-    if let Some(entry) = LANGS.iter().find(|entry| entry.key == key) {
-        return entry.key;
-    }
     let mut interned = INTERNED_KEYS.lock().expect("interner poisoned");
     if let Some(existing) = interned.get(key) {
         return existing;
@@ -88,36 +99,14 @@ pub struct LangPack {
 }
 
 impl LangPack {
-    /// The built-in tables in exportable form.
+    /// The built-in tables, parsed from the JSON embedded at build time
+    /// ([`EMBEDDED_L10N_RULES_JSON`]). `l10n_rules.json` at the repo root is
+    /// part of the build the same way `rules.json` is — a file that fails to
+    /// parse or carries a version this binary does not support is a build
+    /// defect, not something to recover from at runtime, hence the `expect`.
     pub fn builtin() -> Self {
-        let to_vec = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        Self {
-            version: LANG_PACK_VERSION,
-            languages: LANGS
-                .iter()
-                .map(|entry| LangPackEntry {
-                    key: entry.key.to_string(),
-                    level_a: to_vec(entry.level_a),
-                    level_b: to_vec(entry.level_b),
-                    level_c: to_vec(entry.level_c),
-                })
-                .collect(),
-            industry_words: to_vec(INDUSTRY_WORDS),
-            keep_default: to_vec(KEEP_DEFAULT),
-            markers: MarkerTables {
-                negative: to_vec(builtin_markers::NEGATIVE),
-                overridable_negative: to_vec(builtin_markers::OVERRIDABLE_NEGATIVE),
-                audio: to_vec(builtin_markers::POSITIVE_AUDIO),
-                text: to_vec(builtin_markers::POSITIVE_TEXT),
-                video: to_vec(builtin_markers::POSITIVE_VIDEO),
-                font: to_vec(builtin_markers::POSITIVE_FONT),
-                loc_generic: to_vec(builtin_markers::POSITIVE_LOC_GENERIC),
-                loc_specific: to_vec(builtin_markers::LOC_SPECIFIC),
-                video_extensions: to_vec(builtin_markers::VIDEO_EXTENSIONS),
-                font_extensions: to_vec(builtin_markers::FONT_EXTENSIONS),
-                text_extensions: to_vec(builtin_markers::TEXT_EXTENSIONS),
-            },
-        }
+        Self::from_json(EMBEDDED_L10N_RULES_JSON)
+            .expect("l10n_rules.json is embedded at build time from the repo root and must always parse as a valid, supported-version LangPack — see crates/core/src/langdetect/data.rs")
     }
 
     pub fn from_json(json: &str) -> Result<Self> {
@@ -382,6 +371,26 @@ mod tests {
         assert_eq!(reparsed.version, LANG_PACK_VERSION);
         assert_eq!(reparsed.languages.len(), pack.languages.len());
         assert_eq!(reparsed.markers.negative, pack.markers.negative);
+    }
+
+    /// `l10n_rules.json` at the repo root is the canonical file people
+    /// download from GitHub and the file `LangPack::builtin()` is embedded
+    /// from; this test guards against the two ever silently diverging. If a
+    /// future edit hand-formats the file differently (different key order,
+    /// stray whitespace, ...) this fails and says exactly how to fix it:
+    /// regenerate the file from `LangPack::builtin().to_json_pretty()`.
+    #[test]
+    fn embedded_file_matches_canonical_serialization() {
+        let regenerated = LangPack::builtin()
+            .to_json_pretty()
+            .expect("builtin serializes");
+        assert_eq!(
+            regenerated.trim_end(),
+            EMBEDDED_L10N_RULES_JSON.trim_end(),
+            "l10n_rules.json at the repo root has drifted from LangPack's canonical \
+             pretty-printed form — regenerate it with `LangPack::builtin().to_json_pretty()` \
+             (or `serde_json::to_string_pretty`) after editing it by hand"
+        );
     }
 
     #[test]

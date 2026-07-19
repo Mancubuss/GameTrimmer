@@ -7,163 +7,57 @@
 //! anywhere along the path affects the whole file (not just the adjacent
 //! segment) — except for "closest wins" when several marker categories are
 //! present, which picks the category found in the segment nearest the file.
+//!
+//! The marker *word lists* themselves (`markers.negative`, `markers.audio`,
+//! ...) live in `l10n_rules.json` at the repo root, not here — this module
+//! only holds the scanning logic that consults them via [`LangData`]. Design
+//! notes worth knowing before editing that file:
+//! - `negative` includes asset-tree words such as `gfx`, `sprites`, `icons`,
+//!   `fragments`, `navmesh`, `particles`, `flag(s)` — 2D-asset and geometry
+//!   trees where short language-code lookalikes are endemic
+//!   (`gfx\anemone-bg.png`, `sprites\...\DoodleKor.png`, `icons\tr\...`) —
+//!   plus `internationalization`, since engine-internal ICU locale data
+//!   (Unreal `Engine\Content\Internationalization\icudt53l\bg.res`) is
+//!   required by the engine itself, not a removable game localization.
+//! - `overridable_negative` (`textures`, `gui`) lists negative markers a
+//!   confirmed language family is allowed to override: localized texture
+//!   packs and per-language UI packs inside a confirmed language folder
+//!   (`sds_latam\gui\`) are real, if rare, cases. Every other negative
+//!   marker blocks flagging unconditionally.
+//! - `loc_generic` (`loc`, `localization`, `lang`, `l10n`, ...) confirms a
+//!   positive marker is present (same scoring boost as `text`) but, unlike
+//!   `sound`/`voice`/`subtitles`/`video`/`font`, does not itself describe
+//!   the asset's *kind* — a folder named `Localization` says nothing about
+//!   whether the files inside are audio, text, or video. Keeping it
+//!   separate from `text` fixes a real bug found via the corpus regression
+//!   (`tests/corpus/corpus.rs`): `...\Localization\DEU\dialog_deu.upk`
+//!   inside an `Audio\` tree was mis-typed `Text` (from the closer
+//!   "localization" word) instead of `Audio`. A generic marker only decides
+//!   `kind` when no content-type-specific marker exists anywhere on the
+//!   path — see [`MarkerContext::closest`].
+//! - `loc_specific` (`closecaption`, `subtitles`, `dub`, ...) are words
+//!   that, while describing an asset kind (they also appear in `text`/
+//!   `audio`), are *localization-specific* vocabulary rather than generic
+//!   asset words: a `subtitles\` folder is about translated content by
+//!   definition, unlike `sound\` or `movies\` which mostly hold ordinary
+//!   game assets. These count as strong localization context for the
+//!   `loc_adjacent` pairing check and `generic_loc_in_folder` where
+//!   `sound`/`movies`/`textures` do not (2026-07-16 report:
+//!   `victory_german.webm` under `Movies\` was a false positive; nothing
+//!   named `subtitles\*` was).
+//! - `font` deliberately also lists `"fonts"`, already present in `text` (a
+//!   `fonts/` folder is a legitimate text-localization signal on its own);
+//!   `font` additionally covers the singular `"font"` token so
+//!   `font_schinese.ttf` matches.
+//! - `text_extensions` (`srt`, `vtt`) are subtitle extensions that stay text
+//!   even inside a `Movies`/`Cutscenes` folder — found via the corpus
+//!   regression: `rerelease\baseq2\video\eou6__ru.srt` has no "subtitles"/
+//!   "loc" word anywhere on its path, only the enclosing `video` folder
+//!   marker, so without this extension reinforcement it resolves to
+//!   `Video` even though a `.srt` file plainly cannot contain video.
 
 use crate::langdetect::data::LangData;
 use crate::langdetect::tokens::Segment;
-
-pub const NEGATIVE: &[&str] = &[
-    "art",
-    "arts",
-    "models",
-    "meshes",
-    "textures",
-    "materials",
-    "units",
-    "structures",
-    "buildings",
-    "history",
-    "decisions",
-    "events",
-    "missions",
-    "campaigns",
-    "maps",
-    "terrain",
-    "scripts",
-    "music",
-    "shaders",
-    "animations",
-    // 2026-07-16 screenshot report additions: 2D-asset and geometry trees
-    // where short language-code lookalikes are endemic (`gfx\anemone-bg.png`,
-    // `sprites\...\DoodleKor.png`, `icons\tr\...`, GTA4 `data\fragments\
-    // cj_ind_*.tune`, ZA4 `navmesh\...`).
-    "gfx",
-    "gui",
-    "sprites",
-    "sprite",
-    "icons",
-    "icon",
-    "fragments",
-    "navmesh",
-    "particles",
-    // Country flags are game content about countries, not localization
-    // (ETS2 `dlc_flags_de.scs`, CoH2 `flag_german.webm`, Brawlhalla flag
-    // sprites).
-    "flag",
-    "flags",
-    // Engine-internal ICU locale data (Unreal `Engine\Content\
-    // Internationalization\icudt53l\bg.res`) is required by the engine
-    // itself, not a removable game localization.
-    "internationalization",
-];
-
-/// Negative markers that a confirmed language family is allowed to
-/// override: localized texture packs (`textures`) and per-language UI
-/// packs inside a confirmed language folder (`sds_latam\gui\`) are real,
-/// if rare, cases. All other negative markers block flagging
-/// unconditionally.
-pub const OVERRIDABLE_NEGATIVE: &[&str] = &["textures", "gui"];
-
-pub const POSITIVE_AUDIO: &[&str] = &[
-    "sound",
-    "sounds",
-    "soundbanks",
-    "audio",
-    "voice",
-    "voices",
-    "vo",
-    "speech",
-    "dub",
-    "dubbing",
-    "wwise",
-    "fmod",
-];
-
-pub const POSITIVE_TEXT: &[&str] = &[
-    "text",
-    "texts",
-    "strings",
-    "subtitles",
-    "subs",
-    "caption",
-    "captions",
-    "closecaption",
-    "translations",
-    "fonts",
-];
-
-/// Generic "this is localized" indicators: they confirm a positive marker
-/// is present (same scoring boost as `POSITIVE_TEXT`) but, unlike
-/// `sound`/`voice`/`subtitles`/`video`/`font`, they do not themselves
-/// describe the asset's *kind* — a folder named `Localization` or
-/// `Languages` says nothing about whether the files inside are audio,
-/// text, or video. Keeping these separate from `POSITIVE_TEXT` fixes a
-/// real bug found via the corpus regression (`tests/corpus/corpus.rs`):
-/// a file such as `...\Localization\DEU\dialog_deu.upk` inside an `Audio\`
-/// tree was mis-typed `Text` (from the closer "localization" word) instead
-/// of `Audio`, and `lang_fr_voice.archive` was mis-typed `Text` (from
-/// "lang") instead of `Audio` (from "voice") when both markers landed in
-/// the same path segment. A generic marker only decides `kind` when NO
-/// content-type-specific marker (audio/text/video/font) exists anywhere
-/// on the path — see `MarkerContext::closest()`.
-pub const POSITIVE_LOC_GENERIC: &[&str] = &[
-    "loc",
-    "localization",
-    "localized",
-    "locale",
-    "locales",
-    "lang",
-    "language",
-    "languages",
-    "l10n",
-    "i18n",
-];
-
-/// Words that, while describing an asset kind (they stay in
-/// `POSITIVE_TEXT`/`POSITIVE_AUDIO` for the `LangKind` decision), are
-/// *localization-specific* vocabulary rather than generic asset words:
-/// a `closecaption_*` file or a `subtitles\` folder is about translated
-/// content by definition, unlike `sound\` or `movies\` which mostly hold
-/// ordinary game assets. These count as strong localization context —
-/// both for the `loc_adjacent` pairing check and for
-/// `generic_loc_in_folder` — where `sound`/`movies`/`textures` do not
-/// (2026-07-16 report: `victory_german.webm` under `Movies\`,
-/// `Dan.bank` under `FmodBanks\` were false positives; nothing named
-/// `closecaption_*`/`subtitles\*` was).
-pub const LOC_SPECIFIC: &[&str] = &[
-    "closecaption",
-    "subtitles",
-    "subs",
-    "caption",
-    "captions",
-    "translations",
-    "dub",
-    "dubbing",
-];
-
-pub const POSITIVE_VIDEO: &[&str] = &[
-    "movies",
-    "movie",
-    "videos",
-    "video",
-    "cinematics",
-    "cutscenes",
-    "fmv",
-];
-
-// Note: "fonts" is deliberately in POSITIVE_TEXT too (a `fonts/` folder is a
-// legitimate text-localization signal on its own); POSITIVE_FONT additionally
-// covers the singular "font" token so `font_schinese.ttf` matches.
-pub const POSITIVE_FONT: &[&str] = &["font", "fonts"];
-
-pub const VIDEO_EXTENSIONS: &[&str] = &["bik", "bk2", "usm", "wmv", "webm", "ogv"];
-pub const FONT_EXTENSIONS: &[&str] = &["ttf", "otf", "fnt"];
-/// Subtitle-file extensions: unambiguously text even when they sit inside a
-/// `Movies`/`Cutscenes` folder — found via the corpus regression
-/// (`tests/corpus/corpus.rs`): `rerelease\baseq2\video\eou6__ru.srt` has no
-/// "subtitles"/"loc" word anywhere on its path, only the enclosing `video`
-/// folder marker, so without this extension reinforcement it resolves to
-/// `Video` even though a `.srt` file plainly cannot contain video.
-pub const TEXT_EXTENSIONS: &[&str] = &["srt", "vtt"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkerKind {
