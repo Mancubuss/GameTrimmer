@@ -24,6 +24,12 @@ pub(super) const STRINGS: Strings = Strings {
     confirm_label_recycle: "Перемістити в Кошик",
     remove_summary_heading: "Результат видалення",
     btn_close: "Закрити",
+    confirm_clear_heading: "Очистити базу даних?",
+    confirm_clear_body: "Усі результати сканування та журнал операцій буде безповоротно \
+         вилучено з бази даних. Файли на диску не зачіпаються, бібліотеки та налаштування \
+         зберігаються. Це неможливо скасувати — щоб знову побачити результати, потрібно \
+         повторно просканувати бібліотеки.",
+    btn_confirm_clear: "Очистити базу даних",
 
     settings_heading: "Налаштування",
     delete_method_label: "Спосіб видалення файлів:",
@@ -37,6 +43,9 @@ pub(super) const STRINGS: Strings = Strings {
     btn_compact_database: "Стиснути базу даних",
     compact_hint: "Звільняє місце, яке база даних більше не використовує після видалень. \
          Виконується, лише якщо звільниться щонайменше 25% обсягу.",
+    btn_clear_database: "Очистити базу даних",
+    clear_hint: "Безповоротно вилучає з бази даних усі результати сканування та журнал \
+         операцій. Файли на диску не зачіпаються; бібліотеки та налаштування зберігаються.",
     rules_label: "Правила аналізу:",
     btn_export_rules: "Експортувати правила",
     btn_import_rules: "Імпортувати правила",
@@ -98,17 +107,23 @@ pub(super) const STRINGS: Strings = Strings {
 
     no_db_path: "Немає шляху до бази даних.",
     db_path_error: "Помилка визначення шляху до бази даних.",
+    detecting_libraries: "Виявлення ігрових бібліотек...",
+    preparing_database: "Підготовка бази даних...",
     loading_previous_scan: "Завантаження результатів попереднього сканування...",
     deleting_selected_files: "Видалення вибраних файлів...",
     compacting_database: "Стискання бази даних...",
+    clearing_database: "Очищення бази даних...",
     scan_cancelled: "Сканування скасовано.",
     deletion_completed: "Видалення завершено.",
     database_compacted: "Базу даних стиснуто.",
+    database_cleared: "Базу даних очищено.",
     settings_not_saved_no_db: "Налаштування не збережено: немає шляху до бази даних.",
 
     verb_scan: "Сканування",
+    verb_analyze: "Аналіз",
     verb_delete: "Видалення",
     verb_compact: "Стискання бази даних",
+    verb_clear: "Очищення бази даних",
 
     category_redist: "Дистрибутиви",
     category_docs: "Документація і довідкові матеріали",

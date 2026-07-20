@@ -2,6 +2,7 @@
 //! filesystem runs on a spawned `std::thread`, communicating back to the
 //! UI thread through an `mpsc` channel of [`WorkerMsg`].
 
+pub mod clear;
 pub mod compact;
 pub mod delete;
 pub mod load;
@@ -24,6 +25,12 @@ pub const L10N_RULES_FILE_NAME: &str = "l10n_rules.json";
 /// Messages sent from a worker thread back to the UI thread.
 #[derive(Debug)]
 pub enum WorkerMsg {
+    /// A plain, already-localized status line for a phase that has no
+    /// granular `current/total` progress yet (e.g. the scan's library-
+    /// discovery and database-preparation phases, which run before the first
+    /// per-game `Progress`). Setting it clears any active progress bar, so
+    /// the UI shows the spinner + this text rather than a frozen-looking gap.
+    Status { text: String },
     /// Libraries discovered and persisted; scanning of individual games is
     /// about to start.
     LibrariesFound { libraries: usize, games: usize },
@@ -97,6 +104,10 @@ pub enum WorkerMsg {
         /// `VACUUM` was not run (a cheap WAL checkpoint still happened).
         skipped: bool,
     },
+    /// The background "Clear database" job finished (see `worker::clear`).
+    /// `error` is `None` on success, in which case the UI resets to the
+    /// empty startup state (no findings, nothing scanned yet).
+    ClearDone { error: Option<String> },
 }
 
 /// Outcome of removing one file, matched back to its `files.id` row.

@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 
+use gametrimmer_core::mftscan;
 use gametrimmer_core::settings::{DeleteMethod, Lang, ScanRouting, Settings, Theme};
 
 use crate::elevation;
@@ -19,6 +20,7 @@ use crate::model::{self, DiskGroup, FindingItem};
 use crate::ui;
 use crate::worker::delete::DeleteItem;
 use crate::worker::manual::{self, LibraryRow};
+use crate::worker::scan_route;
 use crate::worker::{self, WorkerMsg};
 
 pub const APP_TITLE: &str = "GameTrimmer";
@@ -65,6 +67,14 @@ pub struct GameTrimmerApp {
     pub busy: bool,
     pub progress: Option<ProgressState>,
     pub status_message: String,
+    /// UI-only animation state for the progress line: the `progress.detail`
+    /// shown last frame and the animation-clock time (`egui`'s input `time`)
+    /// at which it last changed. `ui::top_bar` uses these to tell when a
+    /// single item (a large game being analyzed) has held the line unchanged
+    /// long enough to look frozen, and animate a running-dots suffix after
+    /// its name so the app clearly still looks alive.
+    pub last_progress_detail: String,
+    pub last_progress_detail_at: f64,
     /// Non-fatal issues surfaced during the last scan (a provider failed, a
     /// manual library's folder is currently missing, ...). Cleared at the
     /// start of every scan.
@@ -116,11 +126,29 @@ pub struct GameTrimmerApp {
     /// the success summary, `Err` the failure text. Cleared when a new
     /// rules operation starts and when the dialog closes.
     pub rules_io_result: Option<Result<String, String>>,
+    /// True while a user-triggered database maintenance job (compact or
+    /// clear, started from the settings dialog) runs. Distinct from `busy`
+    /// (which every job sets) so the dialog can show a spinner only for its
+    /// own jobs, never for an unrelated scan the user left running. The
+    /// automatic post-delete compaction deliberately does not set it - the
+    /// dialog isn't open then and never needs to reflect it.
+    pub db_maint_active: bool,
+    /// Outcome of the last database maintenance job, shown inside the
+    /// settings dialog next to its buttons for the same reason as
+    /// [`Self::rules_io_result`] (the top-bar status is hidden behind the
+    /// modal): `Ok` carries the success line, `Err` the failure text.
+    pub db_maint_result: Option<Result<String, String>>,
 
     /// Indices into `findings` awaiting the user's confirmation in the
     /// delete modal.
     pub confirm_delete: Option<Vec<usize>>,
     pub remove_summary: Option<RemoveSummary>,
+    /// Whether the "Clear database" confirmation modal (see `ui::dialogs`)
+    /// is currently shown. Set by the settings dialog's "Clear database"
+    /// button; the wipe itself only starts once the user confirms - this is
+    /// a destructive, unconfirmed-click-proof action, mirroring
+    /// `confirm_delete` above.
+    pub confirm_clear_database: bool,
     /// Set when the compaction job about to run was chained automatically
     /// after a delete (see `RemoveDone`), rather than triggered manually via
     /// the settings dialog (`start_compact`). Read (and reset) by the
@@ -136,7 +164,12 @@ pub struct GameTrimmerApp {
     pub elevated: bool,
     /// Whether the startup modal offering a UAC relaunch (for faster MFT
     /// scanning) is currently shown. Only ever `true` at startup, and only
-    /// when `!elevated`.
+    /// when `!elevated` *and* elevating would actually help: under
+    /// `ScanRouting::ForceWalkdir` the MFT path is never used at all; under
+    /// `ScanRouting::Auto`, only if at least one game library's volume is
+    /// not a confirmed SSD (see `scan_route::should_offer_elevation` for the
+    /// full decision table, and `compute_show_elevation_prompt` for how the
+    /// per-volume media probe feeding it is gathered).
     pub show_elevation_prompt: bool,
 }
 
@@ -168,6 +201,11 @@ impl GameTrimmerApp {
         let libraries = Self::load_libraries(db_path.as_deref());
         let has_saved_findings = Self::has_saved_findings(db_path.as_deref());
         let elevated = elevation::is_elevated();
+        // Only worth computing when not already elevated - the modal is
+        // never shown otherwise, so there is nothing this decision could
+        // change.
+        let show_elevation_prompt =
+            !elevated && compute_show_elevation_prompt(settings.scan_routing, &libraries);
 
         let (tx, rx) = mpsc::channel();
 
@@ -183,6 +221,8 @@ impl GameTrimmerApp {
             busy: false,
             progress: None,
             status_message: String::new(),
+            last_progress_detail: String::new(),
+            last_progress_detail_at: 0.0,
             warnings: Vec::new(),
             findings: Vec::new(),
             tree: Vec::new(),
@@ -196,11 +236,14 @@ impl GameTrimmerApp {
             export_active: false,
             rules_io_active: false,
             rules_io_result: None,
+            db_maint_active: false,
+            db_maint_result: None,
             confirm_delete: None,
             remove_summary: None,
+            confirm_clear_database: false,
             compact_after_delete: false,
             elevated,
-            show_elevation_prompt: !elevated,
+            show_elevation_prompt,
         };
 
         // Show the previous scan's results immediately rather than an empty
@@ -573,6 +616,12 @@ impl GameTrimmerApp {
             self.status_message = i18n::strings(self.lang()).no_db_path.to_string();
             return;
         };
+        // User-triggered from the settings dialog, so it drives the dialog's
+        // own spinner/result (see `db_maint_active`). The automatic
+        // post-delete compaction goes straight through `spawn_compact_job`
+        // and deliberately leaves these untouched.
+        self.db_maint_active = true;
+        self.db_maint_result = None;
         let status = i18n::strings(self.lang()).compacting_database.to_string();
         self.spawn_compact_job(db_path, status);
     }
@@ -585,6 +634,43 @@ impl GameTrimmerApp {
         self.busy = true;
         self.status_message = status_message;
         let handle = worker::compact::spawn_compact(db_path, self.tx.clone(), self.lang());
+        self._worker = Some(handle);
+    }
+
+    /// Opens the "Clear database" confirmation modal (see
+    /// `ui::dialogs::show_confirm_clear_database`). No-op while another job
+    /// is running - the settings-dialog button is already disabled in that
+    /// case, this is just the defensive mirror of `start_compact`.
+    pub fn request_clear_database_confirmation(&mut self) {
+        if self.busy {
+            return;
+        }
+        self.confirm_clear_database = true;
+    }
+
+    pub fn cancel_clear_database_confirmation(&mut self) {
+        self.confirm_clear_database = false;
+    }
+
+    /// Runs after the user confirms the "Clear database" modal: spawns the
+    /// background wipe (see `worker::clear`). Destructive, hence the
+    /// confirmation gate - unlike `start_compact`, this is never reachable
+    /// without going through the modal first.
+    pub fn confirm_clear_database_now(&mut self) {
+        self.confirm_clear_database = false;
+        if self.busy {
+            return;
+        }
+        let Some(db_path) = self.db_path.clone() else {
+            self.status_message = i18n::strings(self.lang()).no_db_path.to_string();
+            return;
+        };
+        self.busy = true;
+        self.progress = None;
+        self.db_maint_active = true;
+        self.db_maint_result = None;
+        self.status_message = i18n::strings(self.lang()).clearing_database.to_string();
+        let handle = worker::clear::spawn_clear(db_path, self.tx.clone(), self.lang());
         self._worker = Some(handle);
     }
 
@@ -701,7 +787,7 @@ impl GameTrimmerApp {
         // runs behind its native file dialog, so the result label appears
         // the moment the background thread reports back - not on the next
         // mouse move.
-        if received_any || self.busy || self.rules_io_active {
+        if received_any || self.busy || self.rules_io_active || self.db_maint_active {
             ctx.request_repaint();
         }
     }
@@ -709,8 +795,23 @@ impl GameTrimmerApp {
     fn apply_message(&mut self, msg: WorkerMsg) {
         let lang = self.lang();
         match msg {
+            WorkerMsg::Status { text } => {
+                // A phase without granular progress: drop any stale bar so the
+                // spinner + this text is what shows.
+                self.progress = None;
+                self.status_message = text;
+            }
             WorkerMsg::LibrariesFound { libraries, games } => {
                 self.status_message = i18n::libraries_found(lang, libraries, games);
+                // The scan has just committed the discovered libraries to
+                // `game_libraries` (this message is sent right after
+                // `persist_libraries`). Reload the in-memory list the panel
+                // renders from, so newly found libraries appear immediately
+                // rather than only after the next app restart. Safe to read
+                // here while the scan's writer thread runs: under WAL a reader
+                // takes the last committed snapshot without blocking the
+                // writer.
+                self.refresh_libraries();
             }
             WorkerMsg::Progress {
                 verb,
@@ -894,6 +995,17 @@ impl GameTrimmerApp {
                 // can never leak into a later, manually-triggered compaction.
                 let after_delete = std::mem::take(&mut self.compact_after_delete);
                 let s = i18n::strings(lang);
+                // Mirror the outcome into the settings dialog when the user
+                // started this compaction there (the top-bar status is hidden
+                // behind the modal). A skipped compaction still counts as a
+                // successful "done, nothing worth reclaiming".
+                if self.db_maint_active {
+                    self.db_maint_active = false;
+                    self.db_maint_result = Some(match &error {
+                        Some(err) => Err(err.clone()),
+                        None => Ok(s.database_compacted.to_string()),
+                    });
+                }
                 match error {
                     Some(err) => self.status_message = err,
                     None if skipped && after_delete => {
@@ -914,8 +1026,75 @@ impl GameTrimmerApp {
                     }
                 }
             }
+            WorkerMsg::ClearDone { error } => {
+                self.busy = false;
+                self._worker = None;
+                self.progress = None;
+                // Show the outcome inside the settings dialog (where the
+                // "Clear database" button lives and the top-bar status is
+                // hidden) - without this the wipe finishes invisibly and the
+                // user, seeing nothing, clicks the button again.
+                if self.db_maint_active {
+                    self.db_maint_active = false;
+                    self.db_maint_result = Some(match &error {
+                        Some(err) => Err(err.clone()),
+                        None => Ok(i18n::strings(lang).database_cleared.to_string()),
+                    });
+                }
+                match error {
+                    Some(err) => self.status_message = err,
+                    None => {
+                        // Reset to the same empty state a fresh install
+                        // shows before the first scan - the database no
+                        // longer has any findings to display, so neither
+                        // should the UI.
+                        self.findings = Vec::new();
+                        self.tree = Vec::new();
+                        self.tree_dirty = false;
+                        self.tree_toggles.clear();
+                        self.tree_cursor = None;
+                        self.remove_summary = None;
+                        self.status_message = i18n::strings(lang).database_cleared.to_string();
+                    }
+                }
+            }
         }
     }
+}
+
+/// Gathers the per-volume media-kind data `scan_route::should_offer_elevation`
+/// needs, then asks it whether the startup UAC-relaunch modal is worth
+/// showing. The impure half of that decision: resolving each library's drive
+/// letter and probing it with `mftscan::media_kind` costs one
+/// `DeviceIoControl` call per *distinct* volume - cheap, and (unlike the raw
+/// MFT read the elevated scan itself performs) requires no Administrator
+/// rights, so this can run synchronously in `new()` for every startup that
+/// isn't already elevated.
+///
+/// Only called when `!elevated` - an elevated startup never shows the modal
+/// at all (see `show_elevation_prompt`'s doc comment), so there is nothing to
+/// compute in that case.
+fn compute_show_elevation_prompt(scan_routing: ScanRouting, libraries: &[LibraryRow]) -> bool {
+    // `ForceWalkdir` never shows the prompt regardless of media kind (see
+    // `should_offer_elevation`) - skip probing entirely rather than paying
+    // for `DeviceIoControl` calls whose result can never change the answer.
+    if scan_routing == ScanRouting::ForceWalkdir {
+        return false;
+    }
+
+    let mut letters: Vec<char> = libraries
+        .iter()
+        .filter_map(|library| mftscan::volume_letter(&library.path))
+        .collect();
+    letters.sort_unstable();
+    letters.dedup();
+
+    let volume_media: Vec<(char, mftscan::MediaKind)> = letters
+        .into_iter()
+        .map(|letter| (letter, mftscan::media_kind(letter)))
+        .collect();
+
+    scan_route::should_offer_elevation(scan_routing, &volume_media)
 }
 
 /// Converts the persisted theme setting into the egui type that actually

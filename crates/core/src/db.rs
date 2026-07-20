@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS findings (
     category   TEXT NOT NULL,
     rule_id    TEXT,
     confidence INTEGER NOT NULL,
-    lang_tag   TEXT
+    lang_tag   TEXT,
+    group_dir  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS operations (
@@ -59,6 +60,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     configure(&conn)?;
     apply_schema(&conn)?;
+    migrate(&conn)?;
     Ok(conn)
 }
 
@@ -67,6 +69,7 @@ pub fn open_in_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
     configure(&conn)?;
     apply_schema(&conn)?;
+    migrate(&conn)?;
     Ok(conn)
 }
 
@@ -120,6 +123,76 @@ fn configure_journal_mode(conn: &Connection) -> Result<()> {
 fn apply_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
     Ok(())
+}
+
+/// Brings an already-existing database file up to the current schema.
+///
+/// `apply_schema`'s `CREATE TABLE IF NOT EXISTS` is a no-op for a table that
+/// already exists, so a column added to the schema after a user's database
+/// was first created never appears through that path alone - it needs an
+/// explicit `ALTER TABLE`. `findings.group_dir` (the persisted UI folder-
+/// grouping key, added so startup load no longer has to recompute it from the
+/// full file list) is such a column: a fresh database gets it from `SCHEMA`,
+/// while a database from an earlier build gets it here. The added column is
+/// `NULL` for every pre-existing finding, which is exactly "no group" - the
+/// next scan repopulates real values, and load treats `NULL` as an
+/// ungrouped (orphan) finding in the meantime.
+fn migrate(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "findings", "group_dir")? {
+        conn.execute("ALTER TABLE findings ADD COLUMN group_dir TEXT", [])?;
+    }
+    Ok(())
+}
+
+/// Whether `table` has a column named `column`, via `PRAGMA table_info`. The
+/// table name is a hardcoded literal at every call site (never user input),
+/// so interpolating it into the pragma text - which cannot take a bound
+/// parameter for the table name - is safe here.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    // `table_info` column 1 is the column name.
+    let mut found = false;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            found = true;
+            break;
+        }
+    }
+    Ok(found)
+}
+
+/// Runs `f` with SQLite foreign-key enforcement disabled on `conn`, then
+/// restores it afterward - always, even if `f` returns `Err`.
+///
+/// This exists for bulk wipes. With `PRAGMA foreign_keys = ON` (the app's
+/// default - see [`configure`]), deleting a parent row makes SQLite verify no
+/// child row still references it, one index probe per deleted row, and a
+/// `DELETE FROM t` with no `WHERE` can no longer use its whole-table
+/// "truncate" fast path at all. Turning enforcement off for the duration of a
+/// controlled, whole-subtree delete (where the caller already deletes
+/// child-before-parent, so integrity holds without the checks) turns an
+/// O(rows) row-by-row wipe into a near-constant-time one.
+///
+/// The `foreign_keys` pragma is a silent no-op while a transaction is open,
+/// so it must be toggled with no `BEGIN`/`SAVEPOINT` active: `f` is expected
+/// to open (and commit) its own transaction strictly between the two toggles,
+/// never to leave one pending. A failure to *restore* enforcement is only
+/// surfaced when `f` itself succeeded, so it can't mask `f`'s own error.
+pub fn with_foreign_keys_off<T>(
+    conn: &Connection,
+    f: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<T> {
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    let result = f(conn);
+    let restore = conn.pragma_update(None, "foreign_keys", "ON");
+    match result {
+        // `restore` is a `rusqlite::Result`; `?` converts its error into
+        // `CoreError` when `f` itself succeeded (a restore failure is only
+        // surfaced here, never masking `f`'s own error on the `Err` arm).
+        Ok(value) => Ok(restore.map(|()| value)?),
+        Err(err) => Err(err),
+    }
 }
 
 /// Folds the WAL back into the main database file and shrinks the WAL file
@@ -211,6 +284,36 @@ pub fn compact_observed(
     let _ = conn.progress_handler(0, None::<fn() -> bool>);
 
     result
+}
+
+/// Deletes all scan results - `findings`, `files`, `games` - plus the
+/// `operations` journal, in one transaction, while leaving `game_libraries`
+/// and `settings` untouched.
+///
+/// This backs the "Clear database" action: unlike a single deleted game's
+/// files (handled row-by-row elsewhere), the user wants to throw away
+/// *everything* a scan ever found and start clean, without losing the
+/// libraries they registered or the preferences they configured.
+///
+/// The wipe runs inside [`with_foreign_keys_off`], which is what makes it
+/// fast: with enforcement on, each of these `DELETE FROM t` statements would
+/// have to walk and integrity-check every row (millions, on a real library),
+/// but with it off a `WHERE`-less delete drops the whole table b-tree in one
+/// step. Integrity is preserved by clearing children before parents
+/// (`findings` -> `files` -> `games`) regardless. The delete is one
+/// transaction so a mid-wipe failure can't leave the tables partially
+/// cleared. The freed pages are reclaimed separately by the caller's
+/// checkpoint + `VACUUM` (see `worker::clear`).
+pub fn clear_scan_data(conn: &Connection) -> Result<()> {
+    with_foreign_keys_off(conn, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM findings", [])?;
+        tx.execute("DELETE FROM files", [])?;
+        tx.execute("DELETE FROM games", [])?;
+        tx.execute("DELETE FROM operations", [])?;
+        tx.commit()?;
+        Ok(())
+    })
 }
 
 /// Fraction of the main database file occupied by free (reclaimable)
@@ -472,6 +575,160 @@ mod tests {
         assert!(
             fraction < 0.01,
             "compacted db should have ~0 free fraction, got {fraction}"
+        );
+    }
+
+    /// `clear_scan_data` must wipe every scan-produced table (`findings`,
+    /// `files`, `games`, `operations`) while leaving `game_libraries` (what
+    /// the user registered) and `settings` (their preferences) exactly as
+    /// they were - the whole point of "Clear database" is to reset scan
+    /// state without forcing the user to re-add libraries or reconfigure.
+    #[test]
+    fn clear_scan_data_wipes_scan_tables_but_keeps_libraries_and_settings() {
+        let conn = open_in_memory().expect("in-memory db should open");
+
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES (?1, ?2)",
+            ("steam", "D:/SteamLibrary"),
+        )
+        .expect("insert library");
+        conn.execute(
+            "INSERT INTO games (library_id, name, install_dir, app_id) VALUES (1, ?1, ?2, ?3)",
+            ("Some Game", "D:/SteamLibrary/Some Game", "12345"),
+        )
+        .expect("insert game");
+        conn.execute(
+            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (1, ?1, ?2, ?3)",
+            ("redist/setup.exe", 1024i64, 0i64),
+        )
+        .expect("insert file");
+        conn.execute(
+            "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag) \
+             VALUES (1, ?1, ?2, ?3, ?4)",
+            ("redist", "rule_1", 90i64, Option::<&str>::None),
+        )
+        .expect("insert finding");
+        conn.execute(
+            "INSERT INTO operations (ts, action, src_path, dst_path, status) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                0i64,
+                "delete",
+                "D:/SteamLibrary/Some Game/redist/setup.exe",
+                Option::<&str>::None,
+                "ok",
+            ),
+        )
+        .expect("insert operation");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+            ("app_language", "en"),
+        )
+        .expect("insert setting");
+
+        clear_scan_data(&conn).expect("clear_scan_data should succeed");
+
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count rows")
+        };
+
+        assert_eq!(count("findings"), 0, "findings must be wiped");
+        assert_eq!(count("files"), 0, "files must be wiped");
+        assert_eq!(count("games"), 0, "games must be wiped");
+        assert_eq!(count("operations"), 0, "operations must be wiped");
+        assert_eq!(
+            count("game_libraries"),
+            1,
+            "game_libraries must survive clear_scan_data"
+        );
+        assert_eq!(
+            count("settings"),
+            1,
+            "settings must survive clear_scan_data"
+        );
+    }
+
+    /// `migrate` must add `findings.group_dir` to a database created before
+    /// that column existed, and be idempotent (safe to run on an already-
+    /// migrated database without erroring on a duplicate column).
+    #[test]
+    fn migrate_adds_group_dir_to_a_legacy_findings_table_and_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open bare in-memory db");
+        // The pre-`group_dir` schema.
+        conn.execute_batch(
+            "CREATE TABLE findings (
+                file_id    INTEGER NOT NULL,
+                category   TEXT NOT NULL,
+                rule_id    TEXT,
+                confidence INTEGER NOT NULL,
+                lang_tag   TEXT
+            );",
+        )
+        .expect("create legacy findings table");
+        assert!(
+            !column_exists(&conn, "findings", "group_dir").expect("probe legacy column"),
+            "precondition: the legacy table must not have group_dir"
+        );
+
+        migrate(&conn).expect("first migrate should add the column");
+        assert!(
+            column_exists(&conn, "findings", "group_dir").expect("probe migrated column"),
+            "group_dir must exist after migrate"
+        );
+
+        migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
+    }
+
+    /// `clear_scan_data`'s fast path disables foreign-key enforcement only for
+    /// the duration of the wipe - it must be back ON when the call returns,
+    /// and really enforcing again.
+    #[test]
+    fn clear_scan_data_restores_foreign_key_enforcement() {
+        let conn = open_in_memory().expect("in-memory db should open");
+
+        clear_scan_data(&conn).expect("clear should succeed");
+
+        let fk_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read foreign_keys pragma");
+        assert_eq!(
+            fk_on, 1,
+            "foreign_keys must be back ON after clear_scan_data"
+        );
+
+        // Enforcement must actually bite: a finding referencing a file id that
+        // doesn't exist must be rejected.
+        let orphan = conn.execute(
+            "INSERT INTO findings (file_id, category, confidence) VALUES (999999, 'redist', 90)",
+            [],
+        );
+        assert!(
+            orphan.is_err(),
+            "FK enforcement must be active again: an orphaned finding insert must fail"
+        );
+    }
+
+    /// `with_foreign_keys_off` must restore enforcement even when the closure
+    /// returns `Err`, so a failed wipe can't silently leave the connection
+    /// running without foreign-key checks.
+    #[test]
+    fn with_foreign_keys_off_restores_enforcement_even_when_closure_errors() {
+        let conn = open_in_memory().expect("in-memory db should open");
+
+        let result: Result<()> = with_foreign_keys_off(&conn, |_| {
+            Err(crate::error::CoreError::Other("boom".into()))
+        });
+        assert!(result.is_err(), "the closure's error must propagate");
+
+        let fk_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read foreign_keys pragma");
+        assert_eq!(
+            fk_on, 1,
+            "foreign_keys must be restored to ON even after the closure failed"
         );
     }
 

@@ -250,6 +250,15 @@ pub fn compact_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     }
 }
 
+// -- worker::clear --
+
+pub fn clear_failed(lang: Lang, err: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => format!("Failed to clear the database: {err}"),
+        Lang::Uk => format!("Не вдалося очистити базу даних: {err}"),
+    }
+}
+
 // -- worker::load --
 
 pub fn loaded_saved_results(lang: Lang) -> String {

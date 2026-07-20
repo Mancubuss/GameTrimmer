@@ -53,6 +53,22 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             } else {
                 progress.current as f32 / progress.total as f32
             };
+
+            // Track, on egui's animation clock, how long the progress line has
+            // shown the same item. When one item (a large game being analyzed)
+            // holds it unchanged past a short threshold, the app can look
+            // frozen even though work continues - so a running-dots suffix is
+            // appended after the item's name to signal it's still alive. During
+            // the bulk of a scan, sibling games finishing in parallel keep the
+            // line changing every fraction of a second, so this only kicks in
+            // at the tail, when a single big game is the last one analyzing.
+            let now = ui.input(|i| i.time);
+            if progress.detail != app.last_progress_detail {
+                app.last_progress_detail = progress.detail.clone();
+                app.last_progress_detail_at = now;
+            }
+            let stalled_for = now - app.last_progress_detail_at;
+
             // Compaction has no per-item "current of total" to show (it
             // reports an estimated percentage instead, with an empty
             // `detail`) - render "{verb} {percent}%" for that case; scan and
@@ -67,12 +83,22 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 };
                 format!("{} {}%", i18n::verb_label(lang, progress.verb), percent)
             } else {
+                // Threshold ~= the point a still line starts reading as "stuck".
+                const DOTS_AFTER_SECS: f64 = 1.0;
+                let dots = if progress.verb == i18n::Verb::Analyze && stalled_for >= DOTS_AFTER_SECS
+                {
+                    // 1..=3 dots, cycling about twice a second.
+                    ".".repeat(((now * 2.0) as i64).rem_euclid(3) as usize + 1)
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{} {}/{}: {}",
+                    "{} {}/{}: {}{}",
                     i18n::verb_label(lang, progress.verb),
                     progress.current,
                     progress.total,
-                    progress.detail
+                    progress.detail,
+                    dots
                 )
             };
             ui.add(egui::ProgressBar::new(fraction).text(text));

@@ -55,6 +55,11 @@ pub struct Strings {
     pub database_label: &'static str,
     pub btn_compact_database: &'static str,
     pub compact_hint: &'static str,
+    pub btn_clear_database: &'static str,
+    pub clear_hint: &'static str,
+    pub confirm_clear_heading: &'static str,
+    pub confirm_clear_body: &'static str,
+    pub btn_confirm_clear: &'static str,
     pub rules_label: &'static str,
     pub btn_export_rules: &'static str,
     pub btn_import_rules: &'static str,
@@ -106,18 +111,24 @@ pub struct Strings {
     // -- app.rs: plain status/warning text --
     pub no_db_path: &'static str,
     pub db_path_error: &'static str,
+    pub detecting_libraries: &'static str,
+    pub preparing_database: &'static str,
     pub loading_previous_scan: &'static str,
     pub deleting_selected_files: &'static str,
     pub compacting_database: &'static str,
+    pub clearing_database: &'static str,
     pub scan_cancelled: &'static str,
     pub deletion_completed: &'static str,
     pub database_compacted: &'static str,
+    pub database_cleared: &'static str,
     pub settings_not_saved_no_db: &'static str,
 
     // -- worker progress verbs --
     pub verb_scan: &'static str,
+    pub verb_analyze: &'static str,
     pub verb_delete: &'static str,
     pub verb_compact: &'static str,
+    pub verb_clear: &'static str,
 
     // -- model.rs: category display names --
     pub category_redist: &'static str,
@@ -152,17 +163,25 @@ pub fn strings(lang: Lang) -> &'static Strings {
 /// the *current* UI language, even if it changes mid-operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
+    /// Reading a volume's file table (the MFT pre-pass) - the "disk" phase.
     Scan,
+    /// Classifying each game's files - the second, per-game phase. Labelled
+    /// distinctly from [`Verb::Scan`] so the user doesn't read the two scan
+    /// phases as "scanning twice"; see `worker::scan`.
+    Analyze,
     Delete,
     Compact,
+    Clear,
 }
 
 pub fn verb_label(lang: Lang, verb: Verb) -> &'static str {
     let s = strings(lang);
     match verb {
         Verb::Scan => s.verb_scan,
+        Verb::Analyze => s.verb_analyze,
         Verb::Delete => s.verb_delete,
         Verb::Compact => s.verb_compact,
+        Verb::Clear => s.verb_clear,
     }
 }
 
@@ -214,6 +233,11 @@ impl Strings {
             ("database_label", self.database_label),
             ("btn_compact_database", self.btn_compact_database),
             ("compact_hint", self.compact_hint),
+            ("btn_clear_database", self.btn_clear_database),
+            ("clear_hint", self.clear_hint),
+            ("confirm_clear_heading", self.confirm_clear_heading),
+            ("confirm_clear_body", self.confirm_clear_body),
+            ("btn_confirm_clear", self.btn_confirm_clear),
             ("rules_label", self.rules_label),
             ("btn_export_rules", self.btn_export_rules),
             ("btn_import_rules", self.btn_import_rules),
@@ -269,16 +293,22 @@ impl Strings {
             ("rules_import_filter_label", self.rules_import_filter_label),
             ("no_db_path", self.no_db_path),
             ("db_path_error", self.db_path_error),
+            ("detecting_libraries", self.detecting_libraries),
+            ("preparing_database", self.preparing_database),
             ("loading_previous_scan", self.loading_previous_scan),
             ("deleting_selected_files", self.deleting_selected_files),
             ("compacting_database", self.compacting_database),
+            ("clearing_database", self.clearing_database),
             ("scan_cancelled", self.scan_cancelled),
             ("deletion_completed", self.deletion_completed),
             ("database_compacted", self.database_compacted),
+            ("database_cleared", self.database_cleared),
             ("settings_not_saved_no_db", self.settings_not_saved_no_db),
             ("verb_scan", self.verb_scan),
+            ("verb_analyze", self.verb_analyze),
             ("verb_delete", self.verb_delete),
             ("verb_compact", self.verb_compact),
+            ("verb_clear", self.verb_clear),
             ("category_redist", self.category_redist),
             ("category_docs", self.category_docs),
             ("category_bonus", self.category_bonus),
@@ -310,7 +340,13 @@ mod tests {
     #[test]
     fn every_verb_has_a_label_in_both_languages() {
         for lang in [Lang::En, Lang::Uk] {
-            for verb in [Verb::Scan, Verb::Delete, Verb::Compact] {
+            for verb in [
+                Verb::Scan,
+                Verb::Analyze,
+                Verb::Delete,
+                Verb::Compact,
+                Verb::Clear,
+            ] {
                 assert!(!verb_label(lang, verb).is_empty());
             }
         }
