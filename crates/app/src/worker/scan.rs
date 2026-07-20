@@ -17,7 +17,7 @@ use gametrimmer_core::langdetect::{LangData, LangDetector, LangFinding};
 use gametrimmer_core::mftscan;
 use gametrimmer_core::providers::{self, DiscoveredLibrary};
 use gametrimmer_core::rules::{Finding, RuleEngine};
-use gametrimmer_core::scanner::{scan_dir, store_files_no_tx, FileEntry};
+use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry};
 use gametrimmer_core::settings::ScanRouting;
 use rusqlite::{params, Connection};
 
@@ -316,16 +316,22 @@ enum GameOutcome {
 /// `Sync`, so a clone-per-task is required rather than sharing one `&Sender`
 /// across the pool's worker threads.
 ///
-/// `cancel` is polled once per game, right before that game's work starts:
-/// once set, games not yet started are reported as cancelled immediately
-/// instead of being scanned, while games already running on a worker thread
-/// (up to `SCAN_THREADS` of them) still finish normally.
+/// `cancel` is polled once per game, right before that game's work starts -
+/// games not yet started are reported as cancelled immediately instead of
+/// being scanned. It is additionally threaded into the walkdir enumeration
+/// (`scan_and_prepare_game` -> `scan_dir_cancellable`), so a game already
+/// running on a worker thread through the walkdir path is interrupted
+/// promptly too, rather than finishing its whole directory walk first. A
+/// game taking the MFT-entries branch instead skips `scan_and_prepare_game`
+/// and only classifies its already-obtained file list (pure in-memory work),
+/// so once started it runs to completion.
 ///
 /// `mft_entries` holds the file lists the MFT pass already obtained for
 /// some games (see `run_mft_pass`) - a game present here skips `scan_dir`
 /// entirely and goes straight to classification; a game absent from it (the
 /// common case when not elevated, or whenever the MFT pass rejected that
-/// root) is scanned with `scan_dir` exactly as before this path existed.
+/// root) is scanned with `scan_dir_cancellable` exactly as before this path
+/// existed.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_scans(
     games: &[(i64, String, PathBuf)],
@@ -385,6 +391,7 @@ fn dispatch_scans(
                     name,
                     install_dir,
                     enabled_categories,
+                    cancel,
                 ) {
                     Ok(prepared) => GameOutcome::Scanned(prepared),
                     Err(error) => GameOutcome::Failed {
@@ -690,11 +697,17 @@ fn run_writer(
                 error,
             } => {
                 // A single game failing to scan (permissions, moved folder,
-                // cancellation, ...) must not abort the whole run.
-                eprintln!(
-                    "Помилка сканування \"{name}\" ({}): {error}",
-                    install_dir.display()
-                );
+                // ...) must not abort the whole run. Cancellation reports
+                // through this same Failed path with a "cancelled" sentinel
+                // (a game never started, or a walkdir aborted mid-way by
+                // Stop) - that is a normal user action, not a scan failure,
+                // so it is not logged as an error.
+                if error.to_string() != "cancelled" {
+                    eprintln!(
+                        "Помилка сканування \"{name}\" ({}): {error}",
+                        install_dir.display()
+                    );
+                }
                 let _ = tx.send(WorkerMsg::Progress {
                     verb: Verb::Analyze,
                     current: done,
@@ -887,6 +900,13 @@ struct PreparedGame {
 /// classifies the result via [`classify_game`]. This is the `walkdir` path;
 /// games the MFT pass already has entries for skip straight to
 /// `classify_game` instead (see `dispatch_scans`).
+///
+/// `cancel` is threaded down into `scan_dir_cancellable` so a Stop request
+/// during a single huge game's walk (hundreds of thousands of files) takes
+/// effect promptly instead of only being observed once the whole tree has
+/// been enumerated. It is checked once more right after the walk returns,
+/// before classification starts, so a game that finishes walking just as
+/// Stop is pressed doesn't still pay the cost of `classify_game`.
 fn scan_and_prepare_game(
     engine: &RuleEngine,
     lang_detector: &LangDetector,
@@ -894,8 +914,12 @@ fn scan_and_prepare_game(
     name: &str,
     install_dir: &Path,
     enabled_categories: &[String],
+    cancel: &AtomicBool,
 ) -> CoreResult<PreparedGame> {
-    let entries = scan_dir(install_dir)?;
+    let entries = scan_dir_cancellable(install_dir, cancel)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(CoreError::Other("cancelled".to_string()));
+    }
     Ok(classify_game(
         engine,
         lang_detector,
@@ -1138,7 +1162,19 @@ fn scan_and_classify_game(
 ) -> CoreResult<Vec<FindingRow>> {
     // Empty `enabled_categories` means "every category enabled" - the right
     // default for tests that aren't specifically exercising the filter.
-    let prepared = scan_and_prepare_game(engine, lang_detector, game_id, name, install_dir, &[])?;
+    // Never cancelled - this helper exists for tests exercising the rest of
+    // the scan+persist pipeline, not cancellation itself (see the dedicated
+    // `scan_and_prepare_game_returns_cancelled_when_flag_pre_set` test below).
+    let never_cancel = AtomicBool::new(false);
+    let prepared = scan_and_prepare_game(
+        engine,
+        lang_detector,
+        game_id,
+        name,
+        install_dir,
+        &[],
+        &never_cancel,
+    )?;
     let db_tx = conn.transaction()?;
     let findings = persist_prepared_game(&db_tx, &prepared)?;
     db_tx.commit()?;
@@ -1245,6 +1281,40 @@ mod tests {
             fs::create_dir_all(parent).expect("create parent dirs");
         }
         fs::write(path, contents).expect("write file");
+    }
+
+    /// A pre-set cancel flag must be honored even though the walk itself
+    /// (a couple of small files) finishes instantly - mirrors the check
+    /// `scan_and_prepare_game` runs right after `scan_dir_cancellable`
+    /// returns, before `classify_game` starts.
+    #[test]
+    fn scan_and_prepare_game_returns_cancelled_when_flag_pre_set() {
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("a.txt"), b"a");
+        write_file(&install_dir.path().join("b.txt"), b"b");
+
+        let cancel = AtomicBool::new(true);
+
+        let result = scan_and_prepare_game(
+            &engine,
+            &lang_detector,
+            1,
+            "Test Game",
+            install_dir.path(),
+            &[],
+            &cancel,
+        );
+
+        match result {
+            Ok(_) => panic!("a pre-cancelled scan must return Err"),
+            Err(err) => assert!(
+                err.to_string().contains("cancelled"),
+                "error message should mention cancellation, got: {err}"
+            ),
+        }
     }
 
     fn library_id_for(conn: &Connection, path: &str) -> i64 {
