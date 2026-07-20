@@ -15,8 +15,23 @@ use eframe::egui;
 use app::{GameTrimmerApp, APP_TITLE};
 
 const WINDOW_SIZE: [f32; 2] = [900.0, 600.0];
+
 const SYSTEM_FONT_PATH: &str = r"C:\Windows\Fonts\segoeui.ttf";
 const SYSTEM_FONT_NAME: &str = "segoe-ui";
+
+// Fallback fonts, tried in this order for any glyph Segoe UI does not cover.
+// Game titles pulled from storefronts can contain CJK ideographs, Hangul,
+// or symbol/dingbat characters that Segoe UI lacks, which otherwise render
+// as tofu squares (`□`).
+const SYMBOL_FONT_PATH: &str = r"C:\Windows\Fonts\seguisym.ttf";
+const SYMBOL_FONT_NAME: &str = "segoe-ui-symbol";
+/// `msyh.ttc` is a font *collection*; face `0` is the regular Microsoft
+/// YaHei face, which is what we want.
+const CJK_FONT_PATH: &str = r"C:\Windows\Fonts\msyh.ttc";
+const CJK_FONT_NAME: &str = "microsoft-yahei";
+const KOREAN_FONT_PATH: &str = r"C:\Windows\Fonts\malgun.ttf";
+const KOREAN_FONT_NAME: &str = "malgun-gothic";
+
 /// The 256x256 PNG frame of `assets/gametrimmer.ico`, used as the runtime
 /// window icon (the exe-resource icon embedded by `build.rs` covers
 /// Explorer/taskbar, but winit never reads it for the window itself).
@@ -69,30 +84,72 @@ fn window_icon() -> Option<egui::IconData> {
     }
 }
 
-/// Loads the system font (Segoe UI) at runtime so Cyrillic text renders
-/// correctly. Falls back to the default egui fonts if the file is unreadable.
+/// Sets up text rendering fonts: Segoe UI is the primary font (covers
+/// Latin/Cyrillic/Greek, i.e. the app's own UI text) and stays first in
+/// line, followed by a fallback chain for any glyph Segoe UI lacks -
+/// Segoe UI Symbol (symbols/arrows/dingbats), Microsoft YaHei (Simplified
+/// Chinese / CJK ideographs), then Malgun Gothic (Korean Hangul). Game
+/// titles imported from storefronts can contain any of these scripts, and
+/// egui otherwise renders unsupported glyphs as tofu squares (`□`).
+///
+/// Every font is read from `C:\Windows\Fonts` at runtime rather than
+/// embedded in the binary - this keeps the executable small and portable,
+/// relying on whatever font files the OS already ships. Each font is
+/// loaded independently and is entirely optional: a missing or unreadable
+/// file is logged and skipped without affecting the primary font or any
+/// other fallback. If even Segoe UI is unavailable, egui's own built-in
+/// default fonts are used instead.
 fn setup_fonts(ctx: &egui::Context) {
-    let font_bytes = match std::fs::read(SYSTEM_FONT_PATH) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("Не вдалося завантажити системний шрифт {SYSTEM_FONT_PATH}: {err}");
-            return;
-        }
-    };
-
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        SYSTEM_FONT_NAME.to_owned(),
-        Arc::new(egui::FontData::from_owned(font_bytes)),
-    );
 
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .insert(0, SYSTEM_FONT_NAME.to_owned());
+    // (font key, file path, ttc face index, prepend-to-front vs. append)
+    let entries: [(&str, &str, u32, bool); 4] = [
+        (SYSTEM_FONT_NAME, SYSTEM_FONT_PATH, 0, true),
+        (SYMBOL_FONT_NAME, SYMBOL_FONT_PATH, 0, false),
+        (CJK_FONT_NAME, CJK_FONT_PATH, 0, false),
+        (KOREAN_FONT_NAME, KOREAN_FONT_PATH, 0, false),
+    ];
+
+    for (name, path, face_index, is_primary) in entries {
+        if !add_font(&mut fonts, name, path, face_index) {
+            continue;
+        }
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let family_fonts = fonts.families.entry(family).or_default();
+            if is_primary {
+                family_fonts.insert(0, name.to_owned());
+            } else {
+                family_fonts.push(name.to_owned());
+            }
+        }
     }
 
     ctx.set_fonts(fonts);
+}
+
+/// Reads the font file at `path` and registers it in `fonts` under `name`
+/// at font-collection face `face_index` (`0` for a plain `.ttf`/`.otf`
+/// file, or the desired face for a `.ttc` collection). Returns `false`
+/// (after logging the error) if the file could not be read, leaving
+/// `fonts` untouched so the caller can skip inserting it into any family -
+/// this is how each font (primary or fallback) stays optional and
+/// non-fatal.
+fn add_font(fonts: &mut egui::FontDefinitions, name: &str, path: &str, face_index: u32) -> bool {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("Не вдалося завантажити шрифт {name} ({path}): {err}");
+            return false;
+        }
+    };
+
+    fonts.font_data.insert(
+        name.to_owned(),
+        Arc::new(egui::FontData {
+            font: bytes.into(),
+            index: face_index,
+            tweak: Default::default(),
+        }),
+    );
+    true
 }
