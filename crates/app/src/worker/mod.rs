@@ -58,9 +58,20 @@ pub enum WorkerMsg {
         /// started) of how the scan was carried out (MFT index vs. walkdir
         /// counts, elapsed time) - see `worker::scan_route::format_scan_summary`.
         scan_summary: String,
+        /// Live disk-usage snapshot (see `gametrimmer_core::db::occupied_by_library`),
+        /// aggregated straight from the `files` table rather than carried
+        /// over from `findings` - the flagged-only findings list can't
+        /// derive total occupied space on its own.
+        occupancy: crate::model::Occupancy,
     },
     /// A delete operation finished (possibly with some per-file failures).
-    RemoveDone { outcomes: Vec<RemoveOutcome> },
+    /// `occupancy` is recomputed after the deleted files' rows are purged
+    /// from the database, so the UI's occupied-space/percent readout reflects
+    /// the just-freed space instead of the pre-delete snapshot.
+    RemoveDone {
+        outcomes: Vec<RemoveOutcome>,
+        occupancy: crate::model::Occupancy,
+    },
     /// One file finished being removed successfully mid-batch, so the UI can
     /// drop it from the tree immediately.
     FileRemoved { file_id: i64 },
@@ -120,6 +131,23 @@ pub struct RemoveOutcome {
     /// though the removal attempt failed - the path is already gone from
     /// disk, so the UI must treat it as removed.
     pub purged: bool,
+}
+
+/// Computes the live disk-usage snapshot (see
+/// [`crate::model::Occupancy`]) from the `files` table, or an empty snapshot
+/// on any query error. The single place the three producers (scan, load,
+/// delete) build their `Done`/`RemoveDone` occupancy, so the non-fatal
+/// fallback and the log message stay identical across all of them. An
+/// aggregation failure must never hide otherwise-good results, so it degrades
+/// to "0 bytes / 0%" rather than propagating.
+pub(crate) fn occupancy_or_default(conn: &rusqlite::Connection) -> crate::model::Occupancy {
+    match gametrimmer_core::db::occupied_by_library(conn) {
+        Ok(by_library) => crate::model::Occupancy::from_by_library(by_library),
+        Err(err) => {
+            eprintln!("Не вдалося порахувати зайнятий обсяг за бібліотеками: {err}");
+            crate::model::Occupancy::default()
+        }
+    }
 }
 
 /// The directory every data file lives in: next to the executable.

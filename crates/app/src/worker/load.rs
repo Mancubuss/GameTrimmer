@@ -36,9 +36,13 @@ fn run_load(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
 
     match load_findings(&conn) {
         Ok(findings) => {
+            // Live occupied-space snapshot for the UI (see
+            // `occupancy_or_default`); degrades to 0 on aggregation failure.
+            let occupancy = super::occupancy_or_default(&conn);
             let _ = tx.send(WorkerMsg::Done {
                 findings,
                 scan_summary: i18n::loaded_saved_results(lang),
+                occupancy,
             });
         }
         Err(err) => {

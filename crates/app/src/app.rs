@@ -81,6 +81,10 @@ pub struct GameTrimmerApp {
     pub warnings: Vec<String>,
 
     pub findings: Vec<FindingItem>,
+    /// Live disk-usage snapshot (total + per-library), refreshed by every
+    /// `WorkerMsg::Done` (scan or load) - see
+    /// `gametrimmer_core::db::occupied_by_library`. Never persisted.
+    pub occupancy: model::Occupancy,
     pub tree: Vec<DiskGroup>,
     /// Set by mid-batch `FileRemoved` messages during a delete. The tree is
     /// rebuilt at most once per frame in `drain_messages`, not once per
@@ -225,6 +229,7 @@ impl GameTrimmerApp {
             last_progress_detail_at: 0.0,
             warnings: Vec::new(),
             findings: Vec::new(),
+            occupancy: model::Occupancy::default(),
             tree: Vec::new(),
             tree_dirty: false,
             tree_toggles: std::collections::HashMap::new(),
@@ -829,6 +834,7 @@ impl GameTrimmerApp {
             WorkerMsg::Done {
                 findings,
                 scan_summary,
+                occupancy,
             } => {
                 self.busy = false;
                 self.progress = None;
@@ -845,6 +851,7 @@ impl GameTrimmerApp {
                         }
                     })
                     .collect();
+                self.occupancy = occupancy;
                 self.tree = model::build_tree(&self.findings);
                 // A fresh scan means a fresh tree shape - stale toggle keys
                 // (folders/categories that no longer exist, or now mean
@@ -864,8 +871,14 @@ impl GameTrimmerApp {
                     self.tree_dirty = true;
                 }
             }
-            WorkerMsg::RemoveDone { outcomes } => {
+            WorkerMsg::RemoveDone {
+                outcomes,
+                occupancy,
+            } => {
                 self._worker = None;
+                // The deleted files' rows were purged, so the footprint
+                // shrank - adopt the freshly recomputed snapshot.
+                self.occupancy = occupancy;
                 // A finished delete must not leave the last file's progress
                 // bar stuck on screen while the auto-compaction below runs
                 // (which reports its own status via `busy` + a spinner, not
@@ -1049,6 +1062,7 @@ impl GameTrimmerApp {
                         // longer has any findings to display, so neither
                         // should the UI.
                         self.findings = Vec::new();
+                        self.occupancy = model::Occupancy::default();
                         self.tree = Vec::new();
                         self.tree_dirty = false;
                         self.tree_toggles.clear();

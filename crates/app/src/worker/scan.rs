@@ -292,9 +292,14 @@ fn run_scan(
         started_at.elapsed().as_secs_f64(),
     );
 
+    // Live occupied-space snapshot for the UI (see `occupancy_or_default`);
+    // an aggregation failure degrades to 0 rather than hiding the results.
+    let occupancy = super::occupancy_or_default(&conn);
+
     let _ = tx.send(WorkerMsg::Done {
         findings,
         scan_summary,
+        occupancy,
     });
 }
 

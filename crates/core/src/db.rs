@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -326,6 +327,28 @@ pub fn free_page_fraction(conn: &Connection) -> Result<f64> {
     }
     let freelist_count: i64 = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
     Ok(freelist_count as f64 / page_count as f64)
+}
+
+/// Total bytes occupied on disk by every scanned game, grouped by the
+/// library each game belongs to. Aggregated live from the `files` table (a
+/// single grouped SUM) rather than a persisted column, so nothing has to be
+/// kept in sync as files change - the next scan/load recomputes it.
+/// Libraries with no files (or no games) are simply absent from the map;
+/// callers treat an absent library as 0 bytes.
+pub fn occupied_by_library(conn: &Connection) -> Result<HashMap<i64, u64>> {
+    let mut stmt = conn.prepare(
+        "SELECT g.library_id, SUM(f.size) FROM files f \
+         JOIN games g ON g.id = f.game_id \
+         GROUP BY g.library_id",
+    )?;
+    let mut by_library = HashMap::new();
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let library_id: i64 = row.get(0)?;
+        let total: i64 = row.get(1)?;
+        by_library.insert(library_id, total as u64);
+    }
+    Ok(by_library)
 }
 
 #[cfg(test)]
@@ -837,5 +860,123 @@ mod tests {
                 "progress must be in [0.0, 1.0], got {fraction} in {values:?}"
             );
         }
+    }
+
+    /// Two libraries, each with several games and files, must each report
+    /// the correct summed byte total under their own `library_id`.
+    #[test]
+    fn occupied_by_library_sums_per_library() {
+        let conn = open_in_memory().expect("in-memory db should open");
+
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('steam', 'D:/SteamLibrary')",
+            [],
+        )
+        .expect("insert library 1");
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('gog', 'E:/GOG Games')",
+            [],
+        )
+        .expect("insert library 2");
+
+        conn.execute(
+            "INSERT INTO games (library_id, name, install_dir, app_id) \
+             VALUES (1, 'Game A', 'D:/SteamLibrary/A', NULL)",
+            [],
+        )
+        .expect("insert game A");
+        conn.execute(
+            "INSERT INTO games (library_id, name, install_dir, app_id) \
+             VALUES (1, 'Game B', 'D:/SteamLibrary/B', NULL)",
+            [],
+        )
+        .expect("insert game B");
+        conn.execute(
+            "INSERT INTO games (library_id, name, install_dir, app_id) \
+             VALUES (2, 'Game C', 'E:/GOG Games/C', NULL)",
+            [],
+        )
+        .expect("insert game C");
+
+        conn.execute(
+            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (1, 'a1.bin', 100, NULL)",
+            [],
+        )
+        .expect("insert file a1");
+        conn.execute(
+            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (2, 'b1.bin', 200, NULL)",
+            [],
+        )
+        .expect("insert file b1");
+        conn.execute(
+            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (3, 'c1.bin', 50, NULL)",
+            [],
+        )
+        .expect("insert file c1");
+
+        let by_library = occupied_by_library(&conn).expect("aggregate by library");
+
+        assert_eq!(
+            by_library.get(&1),
+            Some(&300u64),
+            "library 1 must sum both its games' files (100 + 200)"
+        );
+        assert_eq!(
+            by_library.get(&2),
+            Some(&50u64),
+            "library 2 must report its own game's files only"
+        );
+    }
+
+    /// A library with a game but no files, and a library with no games at
+    /// all, must both be absent from the map - callers treat an absent key
+    /// as 0 bytes, per the function's doc comment.
+    #[test]
+    fn occupied_by_library_omits_libraries_with_no_files_or_no_games() {
+        let conn = open_in_memory().expect("in-memory db should open");
+
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('steam', 'D:/SteamLibrary')",
+            [],
+        )
+        .expect("insert library with a fileless game");
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('gog', 'E:/GOG Games')",
+            [],
+        )
+        .expect("insert library with no games");
+        conn.execute(
+            "INSERT INTO games (library_id, name, install_dir, app_id) \
+             VALUES (1, 'Empty Game', 'D:/SteamLibrary/Empty', NULL)",
+            [],
+        )
+        .expect("insert fileless game");
+
+        let by_library = occupied_by_library(&conn).expect("aggregate by library");
+
+        assert_eq!(
+            by_library.get(&1),
+            None,
+            "a library whose only game has no files must be absent, not 0"
+        );
+        assert_eq!(
+            by_library.get(&2),
+            None,
+            "a library with no games at all must be absent"
+        );
+    }
+
+    /// An empty database (no libraries, games, or files) must yield an empty
+    /// map rather than erroring.
+    #[test]
+    fn occupied_by_library_is_empty_for_a_fresh_database() {
+        let conn = open_in_memory().expect("in-memory db should open");
+
+        let by_library = occupied_by_library(&conn).expect("aggregate by library");
+
+        assert!(
+            by_library.is_empty(),
+            "a fresh database must report no occupied libraries"
+        );
     }
 }

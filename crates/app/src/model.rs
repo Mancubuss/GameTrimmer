@@ -528,6 +528,46 @@ pub fn group_size_bytes(items: &[FindingItem], indices: &[usize]) -> u64 {
     indices.iter().map(|&i| items[i].row.size).sum()
 }
 
+/// Live disk-usage snapshot produced at scan/load time (see
+/// `gametrimmer_core::db::occupied_by_library`): total bytes occupied by all
+/// scanned games plus the per-library breakdown. Never persisted - it is
+/// recomputed from the `files` table on every scan, load, and delete (the
+/// delete worker refreshes it after purging the removed files' rows), so
+/// nothing here has to be kept in sync as files change and the readout never
+/// lags a completed delete.
+#[derive(Debug, Clone, Default)]
+pub struct Occupancy {
+    pub total: u64,
+    pub by_library: HashMap<i64, u64>,
+}
+
+impl Occupancy {
+    /// Builds an `Occupancy` from the per-library map returned by
+    /// `gametrimmer_core::db::occupied_by_library`, deriving `total` as the
+    /// sum of every library's bytes.
+    pub fn from_by_library(by_library: HashMap<i64, u64>) -> Self {
+        let total = by_library.values().sum();
+        Self { total, by_library }
+    }
+
+    /// Bytes occupied by `library_id`, or 0 if the library has no scanned
+    /// files (or doesn't appear in the map at all).
+    pub fn library_bytes(&self, library_id: i64) -> u64 {
+        self.by_library.get(&library_id).copied().unwrap_or(0)
+    }
+}
+
+/// Percentage (0.0..=100.0) of `total` occupied space that deleting
+/// `selected` bytes would free. Returns 0.0 when `total` is 0 (no games
+/// scanned yet), never divides by zero, and never exceeds 100.0 even if
+/// `selected` somehow exceeds `total`.
+pub fn freed_percent(selected: u64, total: u64) -> f64 {
+    if total == 0 {
+        return 0.0;
+    }
+    (selected as f64 / total as f64 * 100.0).min(100.0)
+}
+
 /// Formats a byte count as a human-readable, localized size string
 /// (binary units: 1024-based).
 pub fn format_size(lang: crate::i18n::Lang, bytes: u64) -> String {
@@ -1455,5 +1495,56 @@ mod tests {
             None => unreachable!("loc_item always sets lang_tag"),
         };
         assert_eq!(loc_label, "90% [es] \u{2014} маркер 'voices'");
+    }
+
+    #[test]
+    fn occupancy_from_by_library_sums_total_and_looks_up_per_library_bytes() {
+        let mut by_library = HashMap::new();
+        by_library.insert(1i64, 100u64);
+        by_library.insert(2i64, 250u64);
+
+        let occupancy = Occupancy::from_by_library(by_library);
+
+        assert_eq!(occupancy.total, 350);
+        assert_eq!(occupancy.library_bytes(1), 100);
+        assert_eq!(occupancy.library_bytes(2), 250);
+        assert_eq!(
+            occupancy.library_bytes(999),
+            0,
+            "an absent library id must report 0 bytes, not panic"
+        );
+    }
+
+    #[test]
+    fn occupancy_default_is_empty() {
+        let occupancy = Occupancy::default();
+        assert_eq!(occupancy.total, 0);
+        assert_eq!(occupancy.library_bytes(1), 0);
+    }
+
+    #[test]
+    fn freed_percent_handles_zero_total_without_dividing_by_zero() {
+        assert_eq!(
+            freed_percent(0, 0),
+            0.0,
+            "the 0-games edge case must report 0%, not NaN"
+        );
+        assert_eq!(freed_percent(100, 0), 0.0);
+    }
+
+    #[test]
+    fn freed_percent_computes_expected_fractions() {
+        assert_eq!(freed_percent(0, 1000), 0.0);
+        assert_eq!(freed_percent(500, 1000), 50.0);
+        assert_eq!(freed_percent(1000, 1000), 100.0);
+    }
+
+    #[test]
+    fn freed_percent_clamps_above_100_when_selected_exceeds_total() {
+        assert_eq!(
+            freed_percent(1500, 1000),
+            100.0,
+            "selected bytes should never be able to report more than 100%"
+        );
     }
 }
