@@ -284,6 +284,19 @@ fn run_scan(
         return;
     }
 
+    // Fold this connection's own WAL into the main file and truncate it
+    // before dropping the connection, rather than leaving a large,
+    // uncheckpointed `-wal` behind for whatever connection opens the
+    // database next (e.g. "Clear database"). This is what triggered the
+    // reported "database disk image is malformed" error: a big uncheckpointed
+    // WAL left after a completed scan put the next connection's WAL-recovery
+    // into an ambiguous state. Non-fatal by design - an otherwise-successful
+    // scan must not be reported as failed just because its final
+    // housekeeping checkpoint didn't take.
+    if let Err(err) = db::checkpoint_truncate(&conn) {
+        eprintln!("Не вдалося виконати checkpoint WAL після сканування: {err}");
+    }
+
     let scan_summary = scan_route::format_scan_summary(
         lang,
         total,
