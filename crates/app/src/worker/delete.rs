@@ -139,5 +139,15 @@ fn run_delete(
         });
     }
 
-    let _ = tx.send(WorkerMsg::RemoveDone { outcomes: mapped });
+    // Recompute the occupied-space snapshot now that the deleted files'
+    // rows have been purged, so the UI's occupied/percent readout reflects
+    // the just-freed space rather than the pre-delete total. A failed purge
+    // above only means this still shows the stale rows until the next
+    // scan/load - the same self-healing the purge warning already notes.
+    let occupancy = super::occupancy_or_default(&conn);
+
+    let _ = tx.send(WorkerMsg::RemoveDone {
+        outcomes: mapped,
+        occupancy,
+    });
 }

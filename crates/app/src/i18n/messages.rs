@@ -452,6 +452,17 @@ pub fn selected_summary(lang: Lang, count: usize, size: &str) -> String {
     }
 }
 
+/// Live disk-usage line: total bytes occupied by every scanned game, plus
+/// the percentage of that total the current selection would free (see
+/// `crate::model::freed_percent`). `total` is already formatted via
+/// `crate::model::format_size`.
+pub fn occupancy_summary(lang: Lang, total: &str, pct: f64) -> String {
+    match lang {
+        Lang::En => format!("Games occupy {total} \u{b7} selection frees {pct:.1}%"),
+        Lang::Uk => format!("Ігри займають {total} \u{b7} вибране звільнить {pct:.1}%"),
+    }
+}
+
 // -- ui::top_bar --
 
 pub fn warnings_header(lang: Lang, count: usize) -> String {

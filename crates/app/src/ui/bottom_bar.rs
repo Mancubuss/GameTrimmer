@@ -3,7 +3,7 @@
 
 use eframe::egui;
 
-use crate::model::{format_size, AUTO_SELECT_CONFIDENCE_THRESHOLD};
+use crate::model::{self, format_size, AUTO_SELECT_CONFIDENCE_THRESHOLD};
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
@@ -29,6 +29,15 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             ));
             ui.label("\u{2139}")
                 .on_hover_text(i18n::selection_hint(lang, AUTO_SELECT_CONFIDENCE_THRESHOLD));
+
+            ui.add_space(12.0);
+
+            let pct = model::freed_percent(selected_bytes, app.occupancy.total);
+            ui.label(i18n::occupancy_summary(
+                lang,
+                &format_size(lang, app.occupancy.total),
+                pct,
+            ));
 
             ui.add_space(12.0);
 

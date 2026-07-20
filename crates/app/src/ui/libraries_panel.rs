@@ -38,6 +38,10 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     ui.label(format!("[{}]", library.vendor));
                     ui.label(library.path.display().to_string());
+                    ui.label(crate::model::format_size(
+                        app.lang(),
+                        app.occupancy.library_bytes(library.id),
+                    ));
                     if library.vendor == MANUAL_VENDOR
                         && ui
                             .add_enabled(!app.busy, egui::Button::new(s.btn_remove))
