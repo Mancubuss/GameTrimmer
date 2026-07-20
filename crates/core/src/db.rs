@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
-use crate::error::Result;
+use crate::error::{CoreError, Result};
 
 /// SQL schema for the GameTrimmer database. Idempotent (`IF NOT EXISTS`).
 const SCHEMA: &str = "
@@ -349,6 +349,155 @@ pub fn occupied_by_library(conn: &Connection) -> Result<HashMap<i64, u64>> {
         by_library.insert(library_id, total as u64);
     }
     Ok(by_library)
+}
+
+/// Whether `err` is a genuine SQLite-reported corruption signal - "database
+/// disk image is malformed" (`SQLITE_CORRUPT`) or "file is not a database"
+/// (`SQLITE_NOTADB`, e.g. a zero-byte/truncated file, or a non-SQLite file at
+/// the path). This is the gate for [`rebuild_database`]: anything else
+/// (busy, locked, disk full, ...) is a transient or unrelated failure that
+/// destructive recovery must never be triggered for.
+pub fn is_corruption_error(err: &CoreError) -> bool {
+    match err {
+        CoreError::Db(rusqlite::Error::SqliteFailure(e, _)) => matches!(
+            e.code,
+            rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+        ),
+        _ => false,
+    }
+}
+
+/// Destructive recovery for a database file SQLite can no longer read (see
+/// [`is_corruption_error`]). This is the safety net behind "Clear database":
+/// if the clear operation itself fails because the file is unusable, there
+/// is no SQL fix for that - the file has to be replaced.
+///
+/// Recovery is deliberately narrow and best-effort:
+/// - `game_libraries` (the user's registered libraries) and `settings`
+///   (their preferences) are salvaged if at all readable.
+/// - Scan data (`games`, `files`, `findings`, `operations`) is intentionally
+///   NOT salvaged - it is exactly what "Clear database" throws away anyway,
+///   and may well be the corrupt part of the file in the first place.
+///
+/// Steps: best-effort salvage of the two tables above from the existing file
+/// (swallowing any error into "nothing salvaged"); build the replacement in a
+/// temporary sibling file first and only touch the original once it is fully
+/// populated - so a mid-rebuild failure (disk full, permission denied, ...)
+/// leaves the known-bad-but-present original in place rather than deleting it
+/// with no working replacement. Concretely: populate `db_path.rebuild-tmp`,
+/// checkpoint + drop it, then delete the original database file (and its
+/// `-wal`/`-shm`/`-journal` sidecars) and rename the temp file into place.
+pub fn rebuild_database(db_path: &Path) -> Result<Connection> {
+    let (libraries, settings) = salvage_libraries_and_settings(db_path);
+
+    // Build the replacement alongside the original, not over it. A leftover
+    // temp from a previously interrupted rebuild must not be reused, so its
+    // whole file set is cleared first.
+    let tmp_path = sidecar_path(db_path, ".rebuild-tmp");
+    delete_database_files(&tmp_path)?;
+
+    {
+        let conn = open(&tmp_path)?;
+        for (vendor, path) in &libraries {
+            conn.execute(
+                "INSERT OR IGNORE INTO game_libraries (vendor, path) VALUES (?1, ?2)",
+                params![vendor, path],
+            )?;
+        }
+        for (key, value) in &settings {
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )?;
+        }
+        // Fold the temp WAL back into the main temp file so it can be moved
+        // as a single file, then drop the connection to release its lock
+        // before the rename below.
+        checkpoint_truncate(&conn)?;
+    }
+    // Post-checkpoint the temp sidecars are empty/absent; make sure none tag
+    // along with the rename of the bare `.rebuild-tmp` file.
+    delete_if_exists(&sidecar_path(&tmp_path, "-wal"))?;
+    delete_if_exists(&sidecar_path(&tmp_path, "-shm"))?;
+
+    // The replacement is ready: only now is it safe to drop the original and
+    // move the fresh file into its place.
+    delete_database_files(db_path)?;
+    std::fs::rename(&tmp_path, db_path)?;
+
+    open(db_path)
+}
+
+/// Deletes a SQLite database file together with every sidecar it may have
+/// left behind - `-wal`/`-shm` (WAL mode) and `-journal` (the `DELETE`
+/// rollback-journal fallback, see [`configure_journal_mode`]). A missing file
+/// counts as success (see [`delete_if_exists`]).
+fn delete_database_files(db_path: &Path) -> Result<()> {
+    delete_if_exists(db_path)?;
+    delete_if_exists(&sidecar_path(db_path, "-wal"))?;
+    delete_if_exists(&sidecar_path(db_path, "-shm"))?;
+    delete_if_exists(&sidecar_path(db_path, "-journal"))?;
+    Ok(())
+}
+
+/// Rows salvaged from a two-text-column table (`(vendor, path)` for
+/// `game_libraries`, `(key, value)` for `settings`) - named so
+/// `salvage_libraries_and_settings`'s signature doesn't trip clippy's
+/// `type_complexity` lint on the nested tuple-of-`Vec`-of-tuples.
+type TextRows = Vec<(String, String)>;
+
+/// Best-effort read of `game_libraries` (vendor, path) and `settings` (key,
+/// value) from a database file that may be partially or fully unreadable.
+/// Opened and dropped in its own scope so the connection - and its file
+/// lock - does not outlive this function, since [`rebuild_database`] must
+/// delete the file right after this returns.
+fn salvage_libraries_and_settings(db_path: &Path) -> (TextRows, TextRows) {
+    let libraries;
+    let settings;
+    {
+        let conn = match open(db_path) {
+            Ok(conn) => conn,
+            Err(_) => return (Vec::new(), Vec::new()),
+        };
+        libraries = salvage_two_text_columns(&conn, "SELECT vendor, path FROM game_libraries");
+        settings = salvage_two_text_columns(&conn, "SELECT key, value FROM settings");
+    } // `conn` drops here, releasing its file handle before the file is deleted.
+    (libraries, settings)
+}
+
+/// Runs `sql` (expected to select exactly two text columns) and collects the
+/// rows, swallowing any error - including a mid-query corruption hit - into
+/// an empty result. Salvage is best-effort, never fatal.
+fn salvage_two_text_columns(conn: &Connection, sql: &str) -> TextRows {
+    (|| -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect()
+    })()
+    .unwrap_or_default()
+}
+
+/// Path to one of a SQLite database's WAL-mode sidecar files - the suffix is
+/// appended to the whole filename (not the extension), matching SQLite's own
+/// naming (`mydb.db` -> `mydb.db-wal` / `mydb.db-shm`).
+fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut name = db_path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Deletes `path` if it exists. A missing file counts as success - the
+/// `-wal`/`-shm` sidecars are routinely absent (e.g. right after a
+/// checkpoint) - but any other failure (e.g. still locked by another
+/// process) propagates.
+fn delete_if_exists(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 #[cfg(test)]
@@ -977,6 +1126,168 @@ mod tests {
         assert!(
             by_library.is_empty(),
             "a fresh database must report no occupied libraries"
+        );
+    }
+
+    /// `is_corruption_error` must recognize both SQLite codes that map to
+    /// "the file is unusable" (`SQLITE_CORRUPT`, `SQLITE_NOTADB`), and must
+    /// reject everything else - a non-corruption `SqliteFailure` (e.g.
+    /// `SQLITE_BUSY`, a transient lock) and a non-`Db` `CoreError` variant
+    /// alike - so `rebuild_database` is never triggered by an unrelated
+    /// failure.
+    #[test]
+    fn is_corruption_error_matches_only_corrupt_codes() {
+        let corrupt = CoreError::Db(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        ));
+        assert!(is_corruption_error(&corrupt), "SQLITE_CORRUPT must match");
+
+        let not_a_db = CoreError::Db(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+            None,
+        ));
+        assert!(is_corruption_error(&not_a_db), "SQLITE_NOTADB must match");
+
+        let busy = CoreError::Db(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ));
+        assert!(
+            !is_corruption_error(&busy),
+            "a non-corruption SqliteFailure (SQLITE_BUSY) must not match"
+        );
+
+        let other = CoreError::Other("boom".to_string());
+        assert!(
+            !is_corruption_error(&other),
+            "a non-Db CoreError variant must not match"
+        );
+    }
+
+    /// `rebuild_database` must preserve `game_libraries` and `settings` from
+    /// a (here: healthy) existing database file, while dropping every row of
+    /// scan data (`games`, `files`, `findings`) - the whole point being that
+    /// only what "Clear database" already preserves survives recovery too.
+    #[test]
+    fn rebuild_database_preserves_libraries_and_settings_and_drops_scan_data() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("gametrimmer.db");
+
+        {
+            let conn = open(&db_path).expect("open file-backed db");
+            conn.execute(
+                "INSERT INTO game_libraries (vendor, path) VALUES ('steam', 'D:/SteamLibrary')",
+                [],
+            )
+            .expect("insert library");
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('app_language', 'en')",
+                [],
+            )
+            .expect("insert setting");
+            conn.execute(
+                "INSERT INTO games (library_id, name, install_dir, app_id) \
+                 VALUES (1, 'Some Game', 'D:/SteamLibrary/Some Game', NULL)",
+                [],
+            )
+            .expect("insert game");
+            conn.execute(
+                "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (1, 'a.bin', 100, NULL)",
+                [],
+            )
+            .expect("insert file");
+            conn.execute(
+                "INSERT INTO findings (file_id, category, confidence) VALUES (1, 'redist', 90)",
+                [],
+            )
+            .expect("insert finding");
+        }
+
+        let conn = rebuild_database(&db_path).expect("rebuild_database should succeed");
+
+        let (vendor, path): (String, String) = conn
+            .query_row(
+                "SELECT vendor, path FROM game_libraries WHERE path = ?1",
+                ["D:/SteamLibrary"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("library must survive rebuild");
+        assert_eq!(vendor, "steam");
+        assert_eq!(path, "D:/SteamLibrary");
+
+        let value: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                ["app_language"],
+                |row| row.get(0),
+            )
+            .expect("setting must survive rebuild");
+        assert_eq!(value, "en");
+
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count rows")
+        };
+        assert_eq!(count("games"), 0, "scan data (games) must not be salvaged");
+        assert_eq!(count("files"), 0, "scan data (files) must not be salvaged");
+        assert_eq!(
+            count("findings"),
+            0,
+            "scan data (findings) must not be salvaged"
+        );
+    }
+
+    /// A path with no existing file at all (the file was already deleted, or
+    /// this is the very first run) must still yield a working, empty
+    /// database rather than erroring - `rebuild_database`'s delete step is a
+    /// no-op and `open` simply creates a fresh file.
+    #[test]
+    fn rebuild_database_on_a_fresh_path_creates_an_empty_valid_db() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("gametrimmer.db");
+
+        let conn = rebuild_database(&db_path)
+            .expect("rebuild_database on a nonexistent path should succeed");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM game_libraries", [], |row| row.get(0))
+            .expect("fresh db should be queryable");
+        assert_eq!(count, 0, "a fresh rebuild should have no libraries");
+    }
+
+    /// The real scenario `rebuild_database` exists for: the file on disk is
+    /// not a readable SQLite database at all. Recovery must still yield a
+    /// working, empty database, and must sweep away stale sidecars left next
+    /// to the bad file.
+    #[test]
+    fn rebuild_database_recovers_a_corrupt_file_and_clears_stale_sidecars() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("gametrimmer.db");
+
+        // Bytes that are not a SQLite database at all -> SQLITE_NOTADB on
+        // open, exactly what a truncated/overwritten file looks like. Salvage
+        // recovers nothing, so recovery falls back to a fresh empty database.
+        std::fs::write(&db_path, b"this is definitely not a sqlite database file")
+            .expect("write corrupt db");
+        // A stale `-journal` sidecar: a WAL database never recreates one, so
+        // its absence afterwards is a clean signal the cleanup ran.
+        let journal = sidecar_path(&db_path, "-journal");
+        std::fs::write(&journal, b"stale journal").expect("write stale journal");
+
+        let conn = rebuild_database(&db_path).expect("rebuild must recover a corrupt file");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM game_libraries", [], |row| row.get(0))
+            .expect("recovered db must be queryable");
+        assert_eq!(count, 0, "an unsalvageable corrupt db recovers to empty");
+
+        drop(conn);
+        assert!(
+            !journal.exists(),
+            "the stale -journal sidecar must be removed by the rebuild"
         );
     }
 }

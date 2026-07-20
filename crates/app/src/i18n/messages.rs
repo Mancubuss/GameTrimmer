@@ -259,6 +259,23 @@ pub fn clear_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     }
 }
 
+/// Shown when "Clear database" hit a genuine corruption error (see
+/// `gametrimmer_core::db::is_corruption_error`) and recovered by rebuilding
+/// the database file from scratch (see
+/// `gametrimmer_core::db::rebuild_database`). The user's registered
+/// libraries and settings survived, but the scan data the clear was going to
+/// discard anyway is gone along with the unusable file.
+pub fn clear_rebuilt_after_corruption(lang: Lang) -> String {
+    match lang {
+        Lang::En => "The database was corrupted and has been rebuilt (registered libraries and \
+             settings were kept)."
+            .to_string(),
+        Lang::Uk => "Базу було пошкоджено, її перебудовано (зареєстровані бібліотеки й \
+             налаштування збережено)."
+            .to_string(),
+    }
+}
+
 // -- worker::load --
 
 pub fn loaded_saved_results(lang: Lang) -> String {
