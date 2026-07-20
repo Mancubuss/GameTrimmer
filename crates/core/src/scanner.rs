@@ -26,13 +26,43 @@ pub struct ScanStats {
     pub bytes: u64,
 }
 
+/// How many items pass between polls of `cancel` inside
+/// [`collect_cancellable`]: frequent enough that a cancellation request
+/// lands within a small, bounded number of entries even on the largest game
+/// libraries (hundreds of thousands of files), while an atomic load only
+/// once per interval - rather than once per item - keeps the check's cost
+/// immaterial in the common, never-cancelled case.
+///
+/// `pub(crate)` alongside [`collect_cancellable`] so a future in-crate
+/// incremental-scan path (USN journal) can drive the same cancel cadence.
+pub(crate) const CANCEL_POLL_INTERVAL: usize = 1024;
+
 /// Recursively walks `dir` (not following symlinks/junctions) and returns all
 /// regular files, paths relative to `dir`.
 ///
 /// Individual entries that cannot be accessed (e.g. permission denied) are
 /// skipped rather than failing the whole scan. Only a problem with `dir`
 /// itself (e.g. it does not exist) results in an `Err`.
+///
+/// Never cancellable: a thin wrapper over [`scan_dir_cancellable`] with a
+/// flag that is never set. Callers that need to abort a running walk should
+/// call `scan_dir_cancellable` directly instead.
 pub fn scan_dir(dir: &Path) -> Result<Vec<FileEntry>> {
+    scan_dir_cancellable(dir, &AtomicBool::new(false))
+}
+
+/// Recursively walks `dir`, exactly like [`scan_dir`], but polls `cancel`
+/// every [`CANCEL_POLL_INTERVAL`] entries and returns promptly with
+/// `Err(CoreError::Other("cancelled"))` once it is observed set, instead of
+/// always enumerating the whole tree to completion.
+///
+/// This is the strategy-agnostic enumeration+cancel point: the cancellable
+/// collection step ([`collect_cancellable`]) is written against a plain
+/// `&AtomicBool` and a generic `Iterator<Item = FileEntry>`, with no
+/// `walkdir`-specific logic of its own, specifically so the future
+/// USN-journal incremental-scan path can reuse the exact same
+/// enumeration+cancel mechanism over its own entry stream instead of `walkdir`.
+pub fn scan_dir_cancellable(dir: &Path, cancel: &AtomicBool) -> Result<Vec<FileEntry>> {
     let metadata = std::fs::metadata(dir)?;
     if !metadata.is_dir() {
         return Err(CoreError::Other(format!(
@@ -45,34 +75,69 @@ pub fn scan_dir(dir: &Path) -> Result<Vec<FileEntry>> {
         .follow_links(false)
         .into_iter()
         .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .filter_map(|entry| {
-            let rel_path = entry
-                .path()
-                .strip_prefix(dir)
-                .ok()?
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join("\\");
+        .filter_map(|entry| map_walkdir_entry(dir, entry));
 
-            let meta = entry.metadata().ok()?;
-            let size = meta.len();
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64);
+    collect_cancellable(entries, cancel)
+}
 
-            Some(FileEntry {
-                rel_path,
-                size,
-                mtime,
-            })
-        })
-        .collect();
+/// Maps one `walkdir::DirEntry` into a `FileEntry` relative to `dir`,
+/// applying the same filtering `scan_dir` has always applied: only regular
+/// files are kept, and any entry whose relative path or metadata cannot be
+/// read is skipped rather than failing the whole scan.
+fn map_walkdir_entry(dir: &Path, entry: walkdir::DirEntry) -> Option<FileEntry> {
+    if !entry.file_type().is_file() {
+        return None;
+    }
 
-    Ok(entries)
+    let rel_path = entry
+        .path()
+        .strip_prefix(dir)
+        .ok()?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\\");
+
+    let meta = entry.metadata().ok()?;
+    let size = meta.len();
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+
+    Some(FileEntry {
+        rel_path,
+        size,
+        mtime,
+    })
+}
+
+/// Consumes `iter`, collecting every item into a `Vec`, polling `cancel`
+/// every [`CANCEL_POLL_INTERVAL`] items (checked *before* pulling the next
+/// item, so a flag that is already set when this is called returns `Err`
+/// without consuming a single item from `iter`). Once `cancel` is observed
+/// set, this returns `Err(CoreError::Other("cancelled"))` immediately,
+/// without pulling any further items out of `iter`.
+///
+/// Generic over the item type `T` (not tied to [`FileEntry`]) and
+/// `pub(crate)` on purpose: this is the strategy-agnostic enumeration+cancel
+/// primitive the future USN-journal incremental-scan path is meant to reuse
+/// over its own change-record stream, without re-implementing the cadence.
+pub(crate) fn collect_cancellable<I, T>(mut iter: I, cancel: &AtomicBool) -> Result<Vec<T>>
+where
+    I: Iterator<Item = T>,
+{
+    let mut out = Vec::new();
+    loop {
+        if out.len() % CANCEL_POLL_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
+            return Err(CoreError::Other("cancelled".to_string()));
+        }
+        match iter.next() {
+            Some(item) => out.push(item),
+            None => return Ok(out),
+        }
+    }
 }
 
 /// Replaces the indexed files of `game_id` with `entries`, using whatever
@@ -219,6 +284,104 @@ mod tests {
 
         // mtime should be populated on a freshly written file.
         assert!(readme.mtime.is_some());
+    }
+
+    /// A synthetic `FileEntry` iterator that counts how many items it has
+    /// yielded, so tests can assert how far a cancelled `collect_cancellable`
+    /// run got without needing a real filesystem.
+    struct CountingEntries {
+        total: usize,
+        yielded: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Iterator for CountingEntries {
+        type Item = FileEntry;
+
+        fn next(&mut self) -> Option<FileEntry> {
+            let done = self.yielded.get();
+            if done >= self.total {
+                return None;
+            }
+            self.yielded.set(done + 1);
+            Some(FileEntry {
+                rel_path: format!("file{done}.txt"),
+                size: 1,
+                mtime: None,
+            })
+        }
+    }
+
+    #[test]
+    fn collect_cancellable_stops_promptly_when_flag_already_set() {
+        let yielded = std::rc::Rc::new(std::cell::Cell::new(0));
+        let iter = CountingEntries {
+            total: 10_000,
+            yielded: yielded.clone(),
+        };
+        let cancel = AtomicBool::new(true);
+
+        let result = collect_cancellable(iter, &cancel);
+
+        assert!(result.is_err(), "a pre-cancelled run must return Err");
+        assert_eq!(
+            yielded.get(),
+            0,
+            "no item should be pulled from the iterator once already cancelled"
+        );
+    }
+
+    #[test]
+    fn collect_cancellable_returns_all_when_not_cancelled() {
+        let yielded = std::rc::Rc::new(std::cell::Cell::new(0));
+        let iter = CountingEntries {
+            total: 50,
+            yielded: yielded.clone(),
+        };
+        let cancel = AtomicBool::new(false);
+
+        let result = collect_cancellable(iter, &cancel).expect("uncancelled run should succeed");
+
+        assert_eq!(result.len(), 50);
+        assert_eq!(yielded.get(), 50);
+    }
+
+    #[test]
+    fn scan_dir_cancellable_equivalent_to_scan_dir_when_not_cancelled() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+
+        write_file(&root.join("readme.txt"), b"hello");
+        write_file(&root.join("data").join("save1.sav"), b"save-data-1");
+
+        let cancel = AtomicBool::new(false);
+        let cancellable =
+            scan_dir_cancellable(root, &cancel).expect("cancellable scan should succeed");
+        let plain = scan_dir(root).expect("plain scan should succeed");
+
+        let mut cancellable_paths: Vec<&str> =
+            cancellable.iter().map(|e| e.rel_path.as_str()).collect();
+        let mut plain_paths: Vec<&str> = plain.iter().map(|e| e.rel_path.as_str()).collect();
+        cancellable_paths.sort_unstable();
+        plain_paths.sort_unstable();
+
+        assert_eq!(cancellable_paths, plain_paths);
+        assert_eq!(cancellable.len(), 2);
+    }
+
+    #[test]
+    fn scan_dir_cancellable_errors_when_pre_cancelled() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        write_file(&root.join("readme.txt"), b"hello");
+
+        let cancel = AtomicBool::new(true);
+        let result = scan_dir_cancellable(root, &cancel);
+
+        let err = result.expect_err("a pre-cancelled scan must return Err");
+        assert!(
+            err.to_string().contains("cancelled"),
+            "error message should mention cancellation, got: {err}"
+        );
     }
 
     #[test]
