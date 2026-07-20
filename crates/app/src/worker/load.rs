@@ -5,20 +5,17 @@
 //! thread exactly like [`super::scan`], communicating back through the same
 //! [`WorkerMsg::Done`] the scan worker uses.
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
 use gametrimmer_core::db;
 use gametrimmer_core::error::Result as CoreResult;
-use gametrimmer_core::scanner::FileEntry;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::i18n::{self, Lang};
 use crate::model::{parse_source_key, FindingRow};
 
-use super::scan::assign_group_dirs;
 use super::WorkerMsg;
 
 /// Spawns the load job on a new thread.
@@ -52,141 +49,64 @@ fn run_load(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
     }
 }
 
-/// One `findings` row as read straight out of the database, before its
-/// `category` has been reparsed into a [`crate::model::FindingSource`].
-struct RawFinding {
-    file_id: i64,
-    category: String,
-    rule_id: Option<String>,
-    confidence: u8,
-    lang_tag: Option<String>,
-}
-
-/// Rebuilds every persisted finding, game by game, from the database left
-/// behind by a previous scan. `group_dir` cannot simply be read back (it was
-/// never persisted - see [`FindingRow::group_dir`]), so it is recomputed
-/// per-game exactly the way the scan worker computes it originally: from the
-/// *full* file list (flagged and unflagged alike), via
-/// [`assign_group_dirs`]. This means a game whose file list changed on disk
-/// since the last scan (a file removed outside the app, say) still gets a
-/// self-consistent grouping - it just reflects what's in the database, not
-/// necessarily what's on disk right now (a fresh scan reconciles that).
+/// Rebuilds every persisted finding from the database left behind by a
+/// previous scan, as a single three-table join: `findings` inner-joined to
+/// its `files` row (for `rel_path`/`size`) and on to that file's `games` row
+/// (for the game name and install dir). Because a scan now persists each
+/// finding's `group_dir` (see [`crate::worker::scan`]), the value is read
+/// straight back from the column - no need to reload every game's *entire*
+/// file list and re-run `assign_group_dirs` over it, which at real-world
+/// scale (millions of `files` rows) was the load's dominant cost.
 ///
-/// A `findings.category` value this build's [`parse_source_key`] doesn't
-/// recognize (e.g. written by a different `rules.json` version) is logged
-/// and skipped rather than failing the whole load - one stale row must not
-/// hide every other game's results.
+/// Only rows that actually join survive: a game with no findings, and any
+/// `findings` row whose `file_id` no longer resolves (an orphan left by a
+/// deletion that didn't clean up its finding) both simply drop out of the
+/// `INNER JOIN`, so neither adds work or a bogus result. A
+/// `findings.category` value this build's [`parse_source_key`] doesn't
+/// recognize (e.g. written by a different `rules.json` version) is logged and
+/// skipped rather than failing the whole load - one stale row must not hide
+/// every other game's results.
+///
+/// A `group_dir` of `NULL` (either a genuinely ungrouped/orphan finding, or a
+/// finding written by a build from before the column existed - see
+/// `db::migrate`) comes back as `None`, exactly the "no grouping" the UI
+/// tree already handles; the next scan repopulates real values.
 pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
-    let mut games_stmt = conn.prepare("SELECT id, name, install_dir FROM games")?;
-    let games: Vec<(i64, String, String)> = games_stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(games_stmt);
+    let mut stmt = conn.prepare(
+        "SELECT g.id, g.name, g.install_dir, \
+                fi.file_id, f.rel_path, f.size, \
+                fi.category, fi.rule_id, fi.confidence, fi.lang_tag, fi.group_dir \
+         FROM findings fi \
+         JOIN files f ON f.id = fi.file_id \
+         JOIN games g ON g.id = f.game_id",
+    )?;
 
     let mut rows = Vec::new();
-
-    for (game_id, game_name, install_dir) in games {
-        let install_dir = PathBuf::from(install_dir);
-
-        let mut files_stmt =
-            conn.prepare("SELECT id, rel_path, size FROM files WHERE game_id = ?1")?;
-        let files: Vec<(i64, String, u64)> = files_stmt
-            .query_map(params![game_id], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)? as u64,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(files_stmt);
-
-        if files.is_empty() {
+    let mut result = stmt.query([])?;
+    while let Some(row) = result.next()? {
+        let category: String = row.get(6)?;
+        let file_id: i64 = row.get(3)?;
+        let Some(source) = parse_source_key(&category) else {
+            eprintln!(
+                "Пропущено findings-рядок з невідомою категорією \"{category}\" (file_id={file_id})"
+            );
             continue;
-        }
+        };
 
-        // `files.id` -> its index into `files`/`entries`, so findings rows
-        // (keyed by `file_id`) can be matched back to the right entry.
-        let index_by_file_id: HashMap<i64, usize> = files
-            .iter()
-            .enumerate()
-            .map(|(index, (file_id, _, _))| (*file_id, index))
-            .collect();
-
-        // The *full* file list - flagged and unflagged - is required by
-        // `assign_group_dirs`, which needs sibling context to decide whether
-        // a directory is wholly non-essential.
-        let entries: Vec<FileEntry> = files
-            .iter()
-            .map(|(_, rel_path, size)| FileEntry {
-                rel_path: rel_path.clone(),
-                size: *size,
-                mtime: None,
-            })
-            .collect();
-
-        let mut findings_stmt = conn.prepare(
-            "SELECT file_id, category, rule_id, confidence, lang_tag \
-             FROM findings WHERE file_id IN (SELECT id FROM files WHERE game_id = ?1)",
-        )?;
-        let raw_findings: Vec<RawFinding> = findings_stmt
-            .query_map(params![game_id], |row| {
-                Ok(RawFinding {
-                    file_id: row.get(0)?,
-                    category: row.get(1)?,
-                    rule_id: row.get(2)?,
-                    confidence: row.get::<_, i64>(3)? as u8,
-                    lang_tag: row.get(4)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(findings_stmt);
-
-        let mut flagged: HashSet<usize> = HashSet::new();
-        let mut parsed = Vec::with_capacity(raw_findings.len());
-        for finding in raw_findings {
-            let Some(&index) = index_by_file_id.get(&finding.file_id) else {
-                // Orphaned findings row (its file was deleted without the
-                // finding being cleaned up) - shouldn't happen given how
-                // `persist_prepared_game` maintains the two tables, but
-                // skipping it is safer than panicking on a stale database.
-                continue;
-            };
-            let Some(source) = parse_source_key(&finding.category) else {
-                eprintln!(
-                    "Пропущено findings-рядок з невідомою категорією \"{}\" (file_id={})",
-                    finding.category, finding.file_id
-                );
-                continue;
-            };
-            flagged.insert(index);
-            parsed.push((index, finding, source));
-        }
-
-        let group_dirs = assign_group_dirs(&entries, &flagged);
-
-        for (index, finding, source) in parsed {
-            let entry = &entries[index];
-            rows.push(FindingRow {
-                file_id: finding.file_id,
-                game_id,
-                game_name: game_name.clone(),
-                install_dir: install_dir.clone(),
-                rel_path: entry.rel_path.clone(),
-                size: entry.size,
-                source,
-                rule_desc: finding.rule_id.unwrap_or_default(),
-                confidence: finding.confidence,
-                lang_tag: finding.lang_tag,
-                group_dir: group_dirs.get(&index).cloned(),
-            });
-        }
+        let install_dir: String = row.get(2)?;
+        rows.push(FindingRow {
+            file_id,
+            game_id: row.get(0)?,
+            game_name: row.get(1)?,
+            install_dir: PathBuf::from(install_dir),
+            rel_path: row.get(4)?,
+            size: row.get::<_, i64>(5)? as u64,
+            source,
+            rule_desc: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+            confidence: row.get::<_, i64>(8)? as u8,
+            lang_tag: row.get(9)?,
+            group_dir: row.get(10)?,
+        });
     }
 
     Ok(rows)
@@ -197,6 +117,7 @@ mod tests {
     use super::*;
     use gametrimmer_core::langdetect::LangKind;
     use gametrimmer_core::rules::Category;
+    use rusqlite::params;
 
     use crate::model::FindingSource;
 
@@ -235,11 +156,12 @@ mod tests {
         rule_id: &str,
         confidence: i64,
         lang_tag: Option<&str>,
+        group_dir: Option<&str>,
     ) {
         conn.execute(
-            "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![file_id, category, rule_id, confidence, lang_tag],
+            "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag, group_dir) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![file_id, category, rule_id, confidence, lang_tag, group_dir],
         )
         .expect("insert finding");
     }
@@ -252,7 +174,15 @@ mod tests {
         let library_id = insert_library(&conn, "C:/Games");
         let game_id = insert_game(&conn, library_id, "Test Game", "C:\\Games\\Test");
         let file_id = insert_file(&conn, game_id, "setup.exe", 12345);
-        insert_finding(&conn, file_id, "redist_file", "installer pattern", 90, None);
+        insert_finding(
+            &conn,
+            file_id,
+            "redist_file",
+            "installer pattern",
+            90,
+            None,
+            None,
+        );
 
         let rows = load_findings(&conn).expect("load should succeed");
 
@@ -285,6 +215,7 @@ mod tests {
             "маркер 'voices'",
             88,
             Some("es"),
+            None,
         );
 
         let rows = load_findings(&conn).expect("load should succeed");
@@ -304,13 +235,14 @@ mod tests {
         let game_id = insert_game(&conn, library_id, "Weird Game", "C:\\Games\\Weird");
         let known_file = insert_file(&conn, game_id, "a.txt", 10);
         let unknown_file = insert_file(&conn, game_id, "b.txt", 20);
-        insert_finding(&conn, known_file, "bonus", "bonus rule", 80, None);
+        insert_finding(&conn, known_file, "bonus", "bonus rule", 80, None, None);
         insert_finding(
             &conn,
             unknown_file,
             "totally_unknown_category",
             "?",
             80,
+            None,
             None,
         );
 
@@ -324,18 +256,58 @@ mod tests {
         assert_eq!(rows[0].rel_path, "a.txt");
     }
 
-    /// `group_dir` is not persisted - it must be recomputed. A folder where
-    /// every file has a finding collapses into that folder's path, exactly
-    /// as `assign_group_dirs` does during a live scan.
+    /// A game with a large file list but zero findings must contribute
+    /// nothing to the result - this is the case the games-with-findings
+    /// filter (an `EXISTS` clause in the `games` query) is meant to skip
+    /// entirely without ever reading its files. A second, unrelated game
+    /// with an actual finding must still come back unaffected, proving the
+    /// filter selects the *right* games rather than just excluding
+    /// everything.
     #[test]
-    fn load_findings_recomputes_group_dir_for_a_fully_flagged_folder() {
+    fn load_findings_skips_a_clean_game_entirely_but_keeps_others_with_findings() {
+        let conn = db::open_in_memory().expect("open in-memory db");
+        let library_id = insert_library(&conn, "C:/Games");
+
+        let clean_game = insert_game(&conn, library_id, "Clean Game", "C:\\Games\\Clean");
+        for index in 0..50 {
+            insert_file(&conn, clean_game, &format!("file{index}.txt"), 10);
+        }
+
+        let flagged_game = insert_game(&conn, library_id, "Flagged Game", "C:\\Games\\Flagged");
+        let flagged_file = insert_file(&conn, flagged_game, "setup.exe", 12345);
+        insert_finding(
+            &conn,
+            flagged_file,
+            "redist_file",
+            "installer pattern",
+            90,
+            None,
+            None,
+        );
+
+        let rows = load_findings(&conn).expect("load should succeed");
+
+        assert_eq!(
+            rows.len(),
+            1,
+            "only the flagged game's finding should come back, the clean game must be skipped"
+        );
+        assert_eq!(rows[0].game_id, flagged_game);
+        assert_eq!(rows[0].rel_path, "setup.exe");
+    }
+
+    /// `group_dir` is now persisted at scan time, so load reads it straight
+    /// back from the column rather than recomputing it. A finding stored with
+    /// its collapsing folder must come back carrying that same folder.
+    #[test]
+    fn load_findings_reads_persisted_group_dir() {
         let conn = db::open_in_memory().expect("open in-memory db");
         let library_id = insert_library(&conn, "C:/Games");
         let game_id = insert_game(&conn, library_id, "Folder Game", "C:\\Games\\Folder");
         let file_a = insert_file(&conn, game_id, "junk\\a.txt", 10);
         let file_b = insert_file(&conn, game_id, "junk\\b.txt", 20);
-        insert_finding(&conn, file_a, "bonus", "bonus rule", 80, None);
-        insert_finding(&conn, file_b, "bonus", "bonus rule", 80, None);
+        insert_finding(&conn, file_a, "bonus", "bonus rule", 80, None, Some("junk"));
+        insert_finding(&conn, file_b, "bonus", "bonus rule", 80, None, Some("junk"));
 
         let rows = load_findings(&conn).expect("load should succeed");
 
@@ -343,27 +315,180 @@ mod tests {
         assert!(
             rows.iter()
                 .all(|row| row.group_dir.as_deref() == Some("junk")),
-            "both members of the fully-flagged folder must collapse into it"
+            "both findings must come back with the persisted group folder"
         );
     }
 
-    /// Sibling case: a folder with an unflagged file must not collapse -
-    /// `group_dir` stays `None` for its flagged member.
+    /// A finding persisted with a `NULL` `group_dir` (an ungrouped/orphan
+    /// finding, or one written before the column existed) must come back as
+    /// `None`, not error out.
     #[test]
-    fn load_findings_leaves_group_dir_none_when_a_sibling_file_is_unflagged() {
+    fn load_findings_reads_null_group_dir_as_none() {
         let conn = db::open_in_memory().expect("open in-memory db");
         let library_id = insert_library(&conn, "C:/Games");
         let game_id = insert_game(&conn, library_id, "Mixed Game", "C:\\Games\\Mixed");
         let flagged_file = insert_file(&conn, game_id, "mixed\\a.txt", 10);
-        let _unflagged_file = insert_file(&conn, game_id, "mixed\\b.txt", 20);
-        insert_finding(&conn, flagged_file, "bonus", "bonus rule", 80, None);
+        insert_finding(&conn, flagged_file, "bonus", "bonus rule", 80, None, None);
 
         let rows = load_findings(&conn).expect("load should succeed");
 
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].group_dir, None,
-            "the folder has an unflagged sibling, so it must not collapse"
+            "a NULL group_dir column must load as None"
         );
+    }
+
+    /// Not run in normal `cargo test` - this is the before/after measurement
+    /// harness used to size the `load_findings` optimization against the
+    /// reported real-world shape: ~1500 games, 300-500 files each (hundreds
+    /// of thousands of `files` rows), with only a handful of games actually
+    /// carrying findings - the common case, since most scanned games come
+    /// back clean.
+    ///
+    /// Run with:
+    /// `cargo test -p gametrimmer-app --lib worker::load::tests::load_findings_at_realistic_scale -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn load_findings_at_realistic_scale() {
+        const GAMES: i64 = 1500;
+        const FILES_PER_GAME_MIN: i64 = 300;
+        const FILES_PER_GAME_SPAN: i64 = 201; // 300..=500
+        const GAMES_WITH_FINDINGS: i64 = 30;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("gametrimmer.db");
+        let mut conn = db::open(&db_path).expect("open file-backed db");
+
+        let library_id = insert_library(&conn, "C:/Games");
+
+        {
+            // One transaction for the whole setup - this is test-fixture
+            // cost, not what's being measured, so it should not dominate the
+            // wall-clock time of the run.
+            let tx = conn.transaction().expect("begin setup transaction");
+            for game_index in 0..GAMES {
+                let files_count = FILES_PER_GAME_MIN + (game_index % FILES_PER_GAME_SPAN);
+                tx.execute(
+                    "INSERT INTO games (library_id, name, install_dir, app_id) \
+                     VALUES (?1, ?2, ?3, NULL)",
+                    params![
+                        library_id,
+                        format!("Game {game_index}"),
+                        format!("C:\\Games\\Game{game_index}")
+                    ],
+                )
+                .expect("insert game");
+                let game_id = tx.last_insert_rowid();
+
+                for file_index in 0..files_count {
+                    tx.execute(
+                        "INSERT INTO files (game_id, rel_path, size, mtime) \
+                         VALUES (?1, ?2, ?3, NULL)",
+                        params![
+                            game_id,
+                            format!("dir{}\\file{file_index}.txt", file_index % 10),
+                            1024
+                        ],
+                    )
+                    .expect("insert file");
+                    let file_id = tx.last_insert_rowid();
+
+                    // Only a small minority of games get any findings at
+                    // all - the dominant real-world shape this optimization
+                    // targets.
+                    if game_index < GAMES_WITH_FINDINGS && file_index % 5 == 0 {
+                        tx.execute(
+                            "INSERT INTO findings \
+                             (file_id, category, rule_id, confidence, lang_tag) \
+                             VALUES (?1, 'bonus', 'bonus rule', 80, NULL)",
+                            params![file_id],
+                        )
+                        .expect("insert finding");
+                    }
+                }
+            }
+            tx.commit().expect("commit setup transaction");
+        }
+
+        let started = std::time::Instant::now();
+        let rows = load_findings(&conn).expect("load should succeed");
+        let elapsed = started.elapsed();
+
+        println!(
+            "load_findings_at_realistic_scale: games={GAMES} \
+             games_with_findings={GAMES_WITH_FINDINGS} rows={} elapsed={elapsed:?}",
+            rows.len()
+        );
+    }
+
+    /// Manual benchmark against a copy of a real user database. Never run in
+    /// CI (`#[ignore]` + requires an env var); works on a scratch copy so the
+    /// original file is never opened, let alone written to. Run with:
+    /// `GT_REAL_DB=<path> cargo test -p gametrimmer --release real_db_benchmarks -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_db_benchmarks() {
+        use std::time::Instant;
+
+        let Ok(source) = std::env::var("GT_REAL_DB") else {
+            panic!("set GT_REAL_DB to the path of a real database copy");
+        };
+
+        let scratch = std::env::temp_dir().join("gt_real_db_bench.db");
+        let copy_started = Instant::now();
+        std::fs::copy(&source, &scratch).expect("copy real db to scratch");
+        println!(
+            "copied {source} -> {} in {:?}",
+            scratch.display(),
+            copy_started.elapsed()
+        );
+
+        let conn = db::open(&scratch).expect("open scratch db");
+
+        for table in ["game_libraries", "games", "files", "findings", "operations"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .expect("count");
+            println!("{table}: {count} rows");
+        }
+        let flagged_games: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT f.game_id) FROM findings fi \
+                 JOIN files f ON f.id = fi.file_id",
+                [],
+                |r| r.get(0),
+            )
+            .expect("flagged games");
+        println!("games with findings: {flagged_games}");
+
+        let started = Instant::now();
+        let rows = load_findings(&conn).expect("load should succeed");
+        println!(
+            "load_findings: rows={} elapsed={:?}",
+            rows.len(),
+            started.elapsed()
+        );
+
+        let started = Instant::now();
+        db::clear_scan_data(&conn).expect("clear");
+        println!("clear_scan_data: {:?}", started.elapsed());
+
+        let started = Instant::now();
+        db::checkpoint_truncate(&conn).expect("checkpoint");
+        println!("checkpoint_truncate: {:?}", started.elapsed());
+
+        let fraction = db::free_page_fraction(&conn).expect("free fraction");
+        let started = Instant::now();
+        db::compact(&conn).expect("vacuum");
+        println!(
+            "free_fraction={fraction:.2} vacuum: {:?}",
+            started.elapsed()
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_file(&scratch);
+        let _ = std::fs::remove_file(scratch.with_extension("db-wal"));
+        let _ = std::fs::remove_file(scratch.with_extension("db-shm"));
     }
 }

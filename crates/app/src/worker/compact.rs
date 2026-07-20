@@ -22,8 +22,9 @@ use super::WorkerMsg;
 /// full `VACUUM` runs. `VACUUM` rewrites the whole file - a full read+write
 /// of the database - so small reclaims cost more time than the space is
 /// worth; the user-visible rule is "compact only when at least a quarter
-/// comes back".
-const MIN_FREE_FRACTION: f64 = 0.25;
+/// comes back". `pub(super)` rather than private: `worker::clear` reuses it
+/// after a full wipe, where the same "is it worth a VACUUM" question applies.
+pub(super) const MIN_FREE_FRACTION: f64 = 0.25;
 
 /// Spawns the compact job on a new thread.
 pub fn spawn_compact(db_path: PathBuf, tx: Sender<WorkerMsg>, lang: Lang) -> JoinHandle<()> {

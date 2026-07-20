@@ -13,6 +13,7 @@ use crate::model::{format_size, group_size_bytes};
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     show_elevation_prompt(app, ui);
     show_confirm_delete(app, ui);
+    show_confirm_clear_database(app, ui);
     show_remove_summary(app, ui);
 }
 
@@ -95,6 +96,45 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         app.confirm_delete_now();
     } else if cancelled {
         app.cancel_delete_confirmation();
+    }
+}
+
+/// "Clear database" confirmation - a destructive action (permanently wipes
+/// all scan results and the operations journal), so it never runs directly
+/// off the settings-dialog button click. Opened by
+/// `GameTrimmerApp::request_clear_database_confirmation`; shown on top of
+/// the settings dialog it was triggered from, same stacking as any other
+/// modal opened while another is already up (see `egui::Modal`'s own
+/// "most recently shown wins" rule).
+fn show_confirm_clear_database(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
+    if !app.confirm_clear_database {
+        return;
+    }
+
+    let s = i18n::strings(app.lang());
+    let mut confirmed = false;
+    let mut cancelled = false;
+
+    egui::Modal::new(egui::Id::new("gt_confirm_clear_database")).show(ui.ctx(), |ui| {
+        ui.set_min_width(320.0);
+        ui.heading(s.confirm_clear_heading);
+        ui.add_space(8.0);
+        ui.label(s.confirm_clear_body);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button(s.btn_cancel).clicked() {
+                cancelled = true;
+            }
+            if ui.button(s.btn_confirm_clear).clicked() {
+                confirmed = true;
+            }
+        });
+    });
+
+    if confirmed {
+        app.confirm_clear_database_now();
+    } else if cancelled {
+        app.cancel_clear_database_confirmation();
     }
 }
 

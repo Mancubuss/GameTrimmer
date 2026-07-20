@@ -181,6 +181,44 @@ pub fn paths_case_insensitively_equal(a: &Path, b: &Path) -> bool {
     a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
 }
 
+/// Decides whether the startup modal offering a UAC relaunch is worth
+/// showing at all: only when elevating would actually change which scan path
+/// gets used for at least one game library. Pure - the caller (`app.rs`)
+/// gathers `volume_media` by resolving each library's drive letter and
+/// probing it with `mftscan::media_kind` (both cheap, unelevated-friendly
+/// operations - see that module's docs).
+///
+/// `volume_media` holds one entry per *distinct* drive letter among the
+/// user's game libraries (not one per library) - duplicates don't change the
+/// outcome, so the caller is free to dedup or not.
+///
+/// - [`ScanRouting::ForceWalkdir`]: never show the prompt - the MFT path is
+///   skipped entirely regardless of elevation (mirrors [`initial_route`]'s
+///   own short-circuit), so elevating would not help.
+/// - [`ScanRouting::ForceMft`]: show the prompt whenever at least one library
+///   has a drive letter at all - the user explicitly opted into MFT even on
+///   SSDs, so unlike `Auto`, media kind is irrelevant here.
+/// - [`ScanRouting::Auto`]: show the prompt only if at least one volume is
+///   not [`MediaKind::NoSeekPenalty`] - i.e. [`MediaKind::SeekPenalty`] or
+///   [`MediaKind::Unknown`] (a probe failure safely falls back to the old
+///   "always offer" behavior, mirroring [`mft_worthwhile`]). If every
+///   library volume is a confirmed SSD, elevating would only ever route to
+///   walkdir anyway (see [`WalkdirReason::SsdVolume`]), so the prompt would
+///   not help.
+///
+/// An empty `volume_media` (no libraries, or none on a lettered local drive)
+/// always answers `false` under every mode - there is nothing an MFT scan
+/// could speed up.
+pub fn should_offer_elevation(mode: ScanRouting, volume_media: &[(char, MediaKind)]) -> bool {
+    match mode {
+        ScanRouting::ForceWalkdir => false,
+        ScanRouting::ForceMft => !volume_media.is_empty(),
+        ScanRouting::Auto => volume_media
+            .iter()
+            .any(|(_, media)| !matches!(media, MediaKind::NoSeekPenalty)),
+    }
+}
+
 /// Builds the "(MFT: X, walkdir: Y)" scan-method breakdown shown in the
 /// final status line after a scan completes. A thin re-export of
 /// `i18n::format_scan_summary` kept under this name since callers reach for
@@ -535,6 +573,80 @@ mod tests {
             format_scan_summary(Lang::En, 10, 7, 3, 2.5),
             "Scanned 10 game(s) (MFT: 7, walkdir: 3) in 2.5 sec."
         );
+    }
+
+    #[test]
+    fn should_offer_elevation_never_shows_for_force_walkdir() {
+        // Deliberately include a HDD volume - ForceWalkdir must still say no,
+        // since the MFT path is skipped entirely regardless of media kind.
+        assert!(!should_offer_elevation(
+            ScanRouting::ForceWalkdir,
+            &[('G', MediaKind::SeekPenalty)]
+        ));
+    }
+
+    #[test]
+    fn should_offer_elevation_force_walkdir_ignores_empty_input_too() {
+        assert!(!should_offer_elevation(ScanRouting::ForceWalkdir, &[]));
+    }
+
+    #[test]
+    fn should_offer_elevation_force_mft_shows_for_any_lettered_volume_regardless_of_media() {
+        // SSD volume: Auto would say no, but ForceMft means the user opted
+        // into MFT even on SSDs, so media kind must not matter here.
+        assert!(should_offer_elevation(
+            ScanRouting::ForceMft,
+            &[('G', MediaKind::NoSeekPenalty)]
+        ));
+        assert!(should_offer_elevation(
+            ScanRouting::ForceMft,
+            &[('G', MediaKind::SeekPenalty)]
+        ));
+        assert!(should_offer_elevation(
+            ScanRouting::ForceMft,
+            &[('G', MediaKind::Unknown)]
+        ));
+    }
+
+    #[test]
+    fn should_offer_elevation_force_mft_hides_when_no_volumes_at_all() {
+        assert!(!should_offer_elevation(ScanRouting::ForceMft, &[]));
+    }
+
+    #[test]
+    fn should_offer_elevation_auto_hides_when_every_volume_is_ssd() {
+        assert!(!should_offer_elevation(
+            ScanRouting::Auto,
+            &[
+                ('G', MediaKind::NoSeekPenalty),
+                ('D', MediaKind::NoSeekPenalty),
+            ]
+        ));
+    }
+
+    #[test]
+    fn should_offer_elevation_auto_shows_when_any_volume_has_seek_penalty() {
+        assert!(should_offer_elevation(
+            ScanRouting::Auto,
+            &[
+                ('G', MediaKind::NoSeekPenalty),
+                ('D', MediaKind::SeekPenalty),
+            ]
+        ));
+    }
+
+    #[test]
+    fn should_offer_elevation_auto_shows_when_any_volume_is_unknown() {
+        // Probe failure falls back to the old "always offer" behavior.
+        assert!(should_offer_elevation(
+            ScanRouting::Auto,
+            &[('G', MediaKind::NoSeekPenalty), ('D', MediaKind::Unknown),]
+        ));
+    }
+
+    #[test]
+    fn should_offer_elevation_auto_hides_when_no_libraries_at_all() {
+        assert!(!should_offer_elevation(ScanRouting::Auto, &[]));
     }
 
     #[test]

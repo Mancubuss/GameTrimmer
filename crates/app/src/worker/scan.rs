@@ -149,6 +149,15 @@ fn run_scan(
         }
     };
 
+    // Discovery + persist below is the phase that used to show nothing at
+    // all for its whole (15-20s on a big library) duration - the UI cleared
+    // its status line on scan start and the first `Progress` only arrives
+    // once a game finishes scanning. A couple of coarse status updates give
+    // the spinner something to say so the app doesn't look frozen.
+    let _ = tx.send(WorkerMsg::Status {
+        text: i18n::strings(lang).detecting_libraries.to_string(),
+    });
+
     // Every vendor provider is tried; one provider failing (registry key
     // missing, launcher config unreadable, ...) must not abort the whole
     // scan - it is reported as a warning and the rest still run.
@@ -183,7 +192,11 @@ fn run_scan(
         return;
     }
 
-    let games = match persist_libraries(&mut conn, &libraries) {
+    let _ = tx.send(WorkerMsg::Status {
+        text: i18n::strings(lang).preparing_database.to_string(),
+    });
+
+    let games = match persist_libraries(&conn, &libraries) {
         Ok(games) => games,
         Err(err) => {
             send_error(tx, i18n::libraries_write_failed(lang, err));
@@ -227,8 +240,17 @@ fn run_scan(
     // motivated this over the previous fully-sequential loop.
     let (result_tx, result_rx) = std::sync::mpsc::channel::<GameOutcome>();
 
+    // Shared count of games the writer has finished persisting. The writer
+    // owns writing it; the scan workers only read it, to label the "started
+    // scanning <game>" progress they emit (see `dispatch_scans`) with a
+    // sensible `current/total`. Reads may lag the true count by a game or two
+    // under the race with in-flight completions, which is harmless for a
+    // progress label.
+    let completed = std::sync::atomic::AtomicUsize::new(0);
+
     let write_outcome = std::thread::scope(|scope| {
-        let writer = scope.spawn(|| run_writer(&mut conn, result_rx, tx, total, cancel));
+        let writer =
+            scope.spawn(|| run_writer(&mut conn, result_rx, tx, total, &completed, cancel));
 
         dispatch_scans(
             &games,
@@ -238,6 +260,9 @@ fn run_scan(
             &result_tx,
             &mft_pass.entries,
             enabled_categories,
+            tx,
+            &completed,
+            total,
         );
         // Dropping the last sender lets the writer's `for outcome in rx`
         // loop end once every dispatched scan has reported in.
@@ -301,6 +326,7 @@ enum GameOutcome {
 /// entirely and goes straight to classification; a game absent from it (the
 /// common case when not elevated, or whenever the MFT pass rejected that
 /// root) is scanned with `scan_dir` exactly as before this path existed.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_scans(
     games: &[(i64, String, PathBuf)],
     engine: &RuleEngine,
@@ -309,8 +335,15 @@ fn dispatch_scans(
     result_tx: &Sender<GameOutcome>,
     mft_entries: &HashMap<i64, Vec<FileEntry>>,
     enabled_categories: &[String],
+    tx: &Sender<WorkerMsg>,
+    completed: &std::sync::atomic::AtomicUsize,
+    total: usize,
 ) {
-    let run_one = |game_id: i64, name: &str, install_dir: &Path, result_tx: Sender<GameOutcome>| {
+    let run_one = |game_id: i64,
+                   name: &str,
+                   install_dir: &Path,
+                   result_tx: Sender<GameOutcome>,
+                   worker_tx: Sender<WorkerMsg>| {
         if cancel.load(Ordering::Relaxed) {
             let _ = result_tx.send(GameOutcome::Failed {
                 name: name.to_string(),
@@ -319,6 +352,20 @@ fn dispatch_scans(
             });
             return;
         }
+
+        // Report the game as it *starts*, not just when it finishes. The
+        // completed counter only advances when the writer persists a game,
+        // so at the tail of a scan - when every quick game is done and one
+        // huge game (e.g. ARK) is still being walked on a single worker
+        // thread - the bar would otherwise sit at "N-1/N: <some finished
+        // game>" with no hint of what it's waiting on. This makes the
+        // still-running game's name the visible detail instead.
+        let _ = worker_tx.send(WorkerMsg::Progress {
+            verb: Verb::Analyze,
+            current: completed.load(Ordering::Relaxed),
+            total,
+            detail: name.to_string(),
+        });
 
         let outcome = match mft_entries.get(&game_id) {
             Some(entries) => GameOutcome::Scanned(classify_game(
@@ -357,15 +404,19 @@ fn dispatch_scans(
     {
         Ok(pool) => pool.scope(|scope| {
             for (game_id, name, install_dir) in games {
+                // `mpsc::Sender` is `Send` but not `Sync`, so each task gets
+                // its own clone (made here on the dispatching thread) rather
+                // than sharing one `&Sender` across worker threads.
                 let result_tx = result_tx.clone();
-                scope.spawn(move |_| run_one(*game_id, name, install_dir, result_tx));
+                let worker_tx = tx.clone();
+                scope.spawn(move |_| run_one(*game_id, name, install_dir, result_tx, worker_tx));
             }
         }),
         // A pool failing to build (extremely unlikely) must not lose the
         // scan entirely - fall back to running everything on this thread.
         Err(_) => {
             for (game_id, name, install_dir) in games {
-                run_one(*game_id, name, install_dir, result_tx.clone());
+                run_one(*game_id, name, install_dir, result_tx.clone(), tx.clone());
             }
         }
     }
@@ -608,18 +659,23 @@ fn run_writer(
     result_rx: Receiver<GameOutcome>,
     tx: &Sender<WorkerMsg>,
     total: usize,
+    completed: &std::sync::atomic::AtomicUsize,
     cancel: &AtomicBool,
 ) -> Vec<FindingRow> {
     let mut findings = Vec::new();
     let mut batch: Vec<PreparedGame> = Vec::with_capacity(WRITE_BATCH_SIZE);
 
     for (index, outcome) in result_rx.iter().enumerate() {
-        let completed = index + 1;
+        let done = index + 1;
+        // Publish the completed count for the scan workers' "started" progress
+        // (see `dispatch_scans`). Only this thread writes it, so a plain store
+        // of the running total is enough.
+        completed.store(done, Ordering::Relaxed);
         match outcome {
             GameOutcome::Scanned(prepared) => {
                 let _ = tx.send(WorkerMsg::Progress {
-                    verb: Verb::Scan,
-                    current: completed,
+                    verb: Verb::Analyze,
+                    current: done,
                     total,
                     detail: prepared.name.clone(),
                 });
@@ -640,8 +696,8 @@ fn run_writer(
                     install_dir.display()
                 );
                 let _ = tx.send(WorkerMsg::Progress {
-                    verb: Verb::Scan,
-                    current: completed,
+                    verb: Verb::Analyze,
+                    current: done,
                     total,
                     detail: name,
                 });
@@ -724,62 +780,77 @@ fn send_warning(tx: &Sender<WorkerMsg>, msg: String) {
 /// return whatever row - in whatever table - was last inserted on this
 /// connection, not this library's id.
 fn persist_libraries(
-    conn: &mut Connection,
+    conn: &Connection,
     libraries: &[DiscoveredLibrary],
 ) -> CoreResult<Vec<(i64, String, PathBuf)>> {
-    let tx = conn.transaction()?;
-    let mut games = Vec::new();
+    // Foreign-key enforcement is disabled for the whole delete+reinsert.
+    // This is the silent 15-20s phase at the start of every scan on a large
+    // library: the three `DELETE ... WHERE library_id = ?` statements below
+    // otherwise pay a per-row child-existence check for every one of the
+    // (millions of) `files`/`findings` rows being replaced. Integrity is
+    // preserved regardless by deleting child-before-parent (findings ->
+    // files -> games); the checks it skips were only re-proving that
+    // ordering. `with_foreign_keys_off` restores enforcement before
+    // returning, so the per-game writes that follow (see `run_writer`) run
+    // with it back on. It also opens the transaction via
+    // `unchecked_transaction` (needing only `&Connection`), since the
+    // `foreign_keys` pragma may not be toggled inside an open transaction.
+    db::with_foreign_keys_off(conn, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        let mut games = Vec::new();
 
-    for library in libraries {
-        let path_str = library.path.to_string_lossy().to_string();
+        for library in libraries {
+            let path_str = library.path.to_string_lossy().to_string();
 
-        tx.execute(
-            "INSERT OR IGNORE INTO game_libraries (vendor, path) VALUES (?1, ?2)",
-            params![library.vendor, path_str],
-        )?;
-        let library_id: i64 = tx.query_row(
-            "SELECT id FROM game_libraries WHERE path = ?1",
-            params![path_str],
-            |row| row.get(0),
-        )?;
-
-        tx.execute(
-            "DELETE FROM findings WHERE file_id IN (
-                SELECT id FROM files WHERE game_id IN (
-                    SELECT id FROM games WHERE library_id = ?1
-                )
-            )",
-            params![library_id],
-        )?;
-        tx.execute(
-            "DELETE FROM files WHERE game_id IN (SELECT id FROM games WHERE library_id = ?1)",
-            params![library_id],
-        )?;
-        tx.execute(
-            "DELETE FROM games WHERE library_id = ?1",
-            params![library_id],
-        )?;
-
-        for game in &library.games {
             tx.execute(
-                "INSERT INTO games (library_id, name, install_dir, app_id) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    library_id,
-                    game.name,
-                    game.install_dir.to_string_lossy(),
-                    game.app_id
-                ],
+                "INSERT OR IGNORE INTO game_libraries (vendor, path) VALUES (?1, ?2)",
+                params![library.vendor, path_str],
             )?;
-            games.push((
-                tx.last_insert_rowid(),
-                game.name.clone(),
-                game.install_dir.clone(),
-            ));
-        }
-    }
+            let library_id: i64 = tx.query_row(
+                "SELECT id FROM game_libraries WHERE path = ?1",
+                params![path_str],
+                |row| row.get(0),
+            )?;
 
-    tx.commit()?;
-    Ok(games)
+            tx.execute(
+                "DELETE FROM findings WHERE file_id IN (
+                    SELECT id FROM files WHERE game_id IN (
+                        SELECT id FROM games WHERE library_id = ?1
+                    )
+                )",
+                params![library_id],
+            )?;
+            tx.execute(
+                "DELETE FROM files WHERE game_id IN (SELECT id FROM games WHERE library_id = ?1)",
+                params![library_id],
+            )?;
+            tx.execute(
+                "DELETE FROM games WHERE library_id = ?1",
+                params![library_id],
+            )?;
+
+            for game in &library.games {
+                tx.execute(
+                    "INSERT INTO games (library_id, name, install_dir, app_id) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        library_id,
+                        game.name,
+                        game.install_dir.to_string_lossy(),
+                        game.app_id
+                    ],
+                )?;
+                games.push((
+                    tx.last_insert_rowid(),
+                    game.name.clone(),
+                    game.install_dir.clone(),
+                ));
+            }
+        }
+
+        tx.commit()?;
+        Ok(games)
+    })
 }
 
 /// One file's finding, already resolved (rule engine vs. localization
@@ -795,9 +866,10 @@ struct PreparedFinding {
     rule_id: String,
     confidence: u8,
     lang_tag: Option<String>,
-    /// UI-only folder-grouping metadata; see [`assign_group_dirs`]. Not
-    /// persisted to the database - `persist_prepared_game` writes only the
-    /// columns backing `Finding`/`FindingRow`'s other fields.
+    /// Folder-grouping key for the UI tree; see [`assign_group_dirs`].
+    /// Persisted to `findings.group_dir` by `persist_prepared_game` so a
+    /// later startup load can read it straight back instead of recomputing
+    /// it from the whole file list (the dominant cost of the old load path).
     group_dir: Option<String>,
 }
 
@@ -1014,7 +1086,8 @@ fn persist_prepared_game(
 
     let mut rows = Vec::with_capacity(prepared.findings.len());
     let mut insert_finding = conn.prepare_cached(
-        "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag, group_dir) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
 
     for finding in &prepared.findings {
@@ -1028,6 +1101,7 @@ fn persist_prepared_game(
             finding.rule_id,
             finding.confidence,
             finding.lang_tag.as_deref(),
+            finding.group_dir.as_deref(),
         ])?;
 
         rows.push(FindingRow {
@@ -1202,6 +1276,51 @@ mod tests {
         Ok(games)
     }
 
+    /// End-to-end for `group_dir` persistence: a full scan cycle must write
+    /// each finding's collapsing folder into `findings.group_dir`, so a later
+    /// startup load reads it straight back instead of recomputing it. With
+    /// `match_all_engine` flagging every file, a folder whose files are all
+    /// flagged (`junk\`, two files) collapses to itself.
+    #[test]
+    fn scan_persists_group_dir_for_a_fully_flagged_folder() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("junk").join("a.txt"), b"a");
+        write_file(&install_dir.path().join("junk").join("b.txt"), b"b");
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: PathBuf::from("C:/Games"),
+            games: vec![GameInstall {
+                name: "Test Game".to_string(),
+                install_dir: install_dir.path().to_path_buf(),
+                app_id: None,
+            }],
+        };
+
+        run_one_cycle(&mut conn, &engine, &lang_detector, &library)
+            .expect("scan cycle should succeed");
+
+        let group_dirs: Vec<Option<String>> = {
+            let mut stmt = conn
+                .prepare("SELECT group_dir FROM findings")
+                .expect("prepare group_dir query");
+            stmt.query_map([], |row| row.get::<_, Option<String>>(0))
+                .expect("query group_dir")
+                .collect::<rusqlite::Result<_>>()
+                .expect("collect group_dir")
+        };
+
+        assert_eq!(group_dirs.len(), 2, "both junk files must be findings");
+        assert!(
+            group_dirs.iter().all(|dir| dir.as_deref() == Some("junk")),
+            "every finding must persist group_dir = junk, got {group_dirs:?}"
+        );
+    }
+
     /// Reproduces the reported bug: scanning a library a second time (data
     /// from the first scan already in the DB) used to fail with
     /// `FOREIGN KEY constraint failed`, because `persist_libraries` deleted
@@ -1281,7 +1400,7 @@ mod tests {
     /// `persist_libraries` calls for the very same library.
     #[test]
     fn library_id_is_looked_up_by_path_not_taken_from_stale_last_insert_rowid() {
-        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let conn = db::open_in_memory().expect("open in-memory db");
 
         let library = DiscoveredLibrary {
             vendor: "steam",
@@ -1289,7 +1408,7 @@ mod tests {
             games: vec![],
         };
 
-        persist_libraries(&mut conn, std::slice::from_ref(&library))
+        persist_libraries(&conn, std::slice::from_ref(&library))
             .expect("first persist should succeed");
         let original_library_id = library_id_for(&conn, "D:/SteamLibrary");
 
@@ -1303,7 +1422,7 @@ mod tests {
         )
         .expect("insert unrelated operations row");
 
-        let games = persist_libraries(&mut conn, std::slice::from_ref(&library))
+        let games = persist_libraries(&conn, std::slice::from_ref(&library))
             .expect("re-persisting the same library must not fail");
         assert!(games.is_empty(), "library has no games in this test");
 

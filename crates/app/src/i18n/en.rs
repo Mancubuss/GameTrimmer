@@ -25,6 +25,12 @@ pub(super) const STRINGS: Strings = Strings {
     confirm_label_recycle: "Move to Recycle Bin",
     remove_summary_heading: "Deletion result",
     btn_close: "Close",
+    confirm_clear_heading: "Clear database?",
+    confirm_clear_body: "All scan results and the operations journal will be permanently \
+         removed from the database. Files on disk are not touched, and your libraries and \
+         settings are kept. This cannot be undone - you will need to scan again to see \
+         results.",
+    btn_confirm_clear: "Clear database",
 
     settings_heading: "Settings",
     delete_method_label: "File deletion method:",
@@ -38,6 +44,9 @@ pub(super) const STRINGS: Strings = Strings {
     btn_compact_database: "Compact database",
     compact_hint: "Frees space the database no longer uses after deletions. Only runs if \
          at least 25% of the space would be reclaimed.",
+    btn_clear_database: "Clear database",
+    clear_hint: "Permanently removes all scan results and the operations journal from the \
+         database. Files on disk are not touched; libraries and settings are kept.",
     rules_label: "Analysis rules:",
     btn_export_rules: "Export rules",
     btn_import_rules: "Import rules",
@@ -99,17 +108,23 @@ pub(super) const STRINGS: Strings = Strings {
 
     no_db_path: "No database path.",
     db_path_error: "Failed to determine the database path.",
+    detecting_libraries: "Detecting game libraries...",
+    preparing_database: "Preparing the database...",
     loading_previous_scan: "Loading previous scan results...",
     deleting_selected_files: "Deleting selected files...",
     compacting_database: "Compacting the database...",
+    clearing_database: "Clearing the database...",
     scan_cancelled: "Scan cancelled.",
     deletion_completed: "Deletion completed.",
     database_compacted: "Database compacted.",
+    database_cleared: "Database cleared.",
     settings_not_saved_no_db: "Settings not saved: no database path.",
 
     verb_scan: "Scanning",
+    verb_analyze: "Analyzing",
     verb_delete: "Deleting",
     verb_compact: "Compacting database",
+    verb_clear: "Clearing database",
 
     category_redist: "Redistributables",
     category_docs: "Documentation and reference material",
