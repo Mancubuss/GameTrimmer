@@ -57,10 +57,19 @@ try {
     Copy-Item "$repoRoot\README.md" (Join-Path $stageDir "README.md")
     Copy-Item "$repoRoot\LICENSE" (Join-Path $stageDir "LICENSE")
 
-    # 5. Zip
+    # 5. Zip - через .NET ZipFile, а не Compress-Archive: командлет не дає
+    # рівня стиснення вище Optimal, тоді як SmallestSize (deflate з
+    # максимальним зусиллям, .NET 6+/PowerShell 7) помітно менший для
+    # великого exe. Останній аргумент $false - без кореневої теки в архіві
+    # (вміст лежить у корені zip, як і в Compress-Archive "$stageDir\*").
     $zipPath = Join-Path $distDir "GameTrimmer-$version-portable-win64.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-    Compress-Archive -Path "$stageDir\*" -DestinationPath $zipPath
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory(
+        $stageDir,
+        $zipPath,
+        [System.IO.Compression.CompressionLevel]::SmallestSize,
+        $false)
 
     $exeSizeMb = [Math]::Round((Get-Item $exePath).Length / 1MB, 2)
     $zipSizeMb = [Math]::Round((Get-Item $zipPath).Length / 1MB, 2)
