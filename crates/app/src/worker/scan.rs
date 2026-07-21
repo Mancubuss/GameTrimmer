@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+use eframe::egui;
 use gametrimmer_core::db;
 use gametrimmer_core::error::{CoreError, Result as CoreResult};
 use gametrimmer_core::langdetect::{LangData, LangDetector, LangFinding};
@@ -25,7 +26,7 @@ use crate::i18n::{self, Lang, Verb};
 use crate::model::{category_enabled, display_category, source_key, FindingRow, FindingSource};
 
 use super::scan_route::{self, ScanRoute};
-use super::{manual, WorkerMsg};
+use super::{manual, Notifier, WorkerMsg};
 
 /// Worker threads used for scanning+classifying games in parallel. Chosen
 /// deliberately smaller than "one thread per game" and not tied to CPU count:
@@ -73,20 +74,24 @@ pub struct ScanOptions {
 /// the user can abort a long scan early. `elevated` reflects whether this
 /// process holds Administrator rights right now (see `crate::elevation`) -
 /// it gates the MFT index scan path, which needs raw volume read access.
+/// `ctx` is the app's `egui::Context` (see `Notifier`) so scan progress keeps
+/// updating even while the main window is minimized.
 pub fn spawn_scan(
     db_path: PathBuf,
     cancel: Arc<AtomicBool>,
     tx: Sender<WorkerMsg>,
+    ctx: egui::Context,
     elevated: bool,
     options: ScanOptions,
 ) -> JoinHandle<()> {
-    std::thread::spawn(move || run_scan(&db_path, &cancel, &tx, elevated, &options))
+    let notifier = Notifier::new(tx, ctx);
+    std::thread::spawn(move || run_scan(&db_path, &cancel, &notifier, elevated, &options))
 }
 
 fn run_scan(
     db_path: &Path,
     cancel: &AtomicBool,
-    tx: &Sender<WorkerMsg>,
+    notifier: &Notifier,
     elevated: bool,
     options: &ScanOptions,
 ) {
@@ -117,13 +122,13 @@ fn run_scan(
         }) {
         Ok(engine) => engine,
         Err(err) => {
-            send_warning(tx, i18n::rules_json_load_failed(lang, err));
+            send_warning(notifier, i18n::rules_json_load_failed(lang, err));
             match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON) {
                 Ok(engine) => engine,
                 Err(err) => {
                     // The embedded defaults are validated by core tests, so
                     // this is unreachable short of a broken build.
-                    send_error(tx, i18n::builtin_rules_corrupted(lang, err));
+                    send_error(notifier, i18n::builtin_rules_corrupted(lang, err));
                     return;
                 }
             }
@@ -143,7 +148,7 @@ fn run_scan(
         }) {
         Ok(data) => data,
         Err(err) => {
-            send_warning(tx, i18n::l10n_rules_load_failed(lang, err));
+            send_warning(notifier, i18n::l10n_rules_load_failed(lang, err));
             LangData::builtin()
         }
     };
@@ -152,7 +157,7 @@ fn run_scan(
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
-            send_error(tx, i18n::db_open_error_long(lang, err));
+            send_error(notifier, i18n::db_open_error_long(lang, err));
             return;
         }
     };
@@ -162,7 +167,7 @@ fn run_scan(
     // its status line on scan start and the first `Progress` only arrives
     // once a game finishes scanning. A couple of coarse status updates give
     // the spinner something to say so the app doesn't look frozen.
-    let _ = tx.send(WorkerMsg::Status {
+    notifier.send(WorkerMsg::Status {
         text: i18n::strings(lang).detecting_libraries.to_string(),
     });
 
@@ -173,19 +178,19 @@ fn run_scan(
     for provider in providers::all() {
         match provider.discover() {
             Ok(mut discovered) => libraries.append(&mut discovered),
-            Err(err) => send_warning(tx, i18n::provider_failed(lang, provider.name(), err)),
+            Err(err) => send_warning(notifier, i18n::provider_failed(lang, provider.name(), err)),
         }
     }
 
     match manual::discover_manual_libraries(&conn, lang) {
         Ok((manual_libraries, manual_warnings)) => {
             for warning in manual_warnings {
-                send_warning(tx, warning);
+                send_warning(notifier, warning);
             }
             libraries.extend(manual_libraries);
         }
         Err(err) => {
-            send_error(tx, i18n::manual_libraries_read_failed(lang, err));
+            send_error(notifier, i18n::manual_libraries_read_failed(lang, err));
             return;
         }
     }
@@ -196,29 +201,29 @@ fn run_scan(
     let libraries = providers::merge_libraries_by_path(libraries);
 
     if libraries.is_empty() {
-        send_error(tx, i18n::no_libraries_found(lang));
+        send_error(notifier, i18n::no_libraries_found(lang));
         return;
     }
 
-    let _ = tx.send(WorkerMsg::Status {
+    notifier.send(WorkerMsg::Status {
         text: i18n::strings(lang).preparing_database.to_string(),
     });
 
     let games = match persist_libraries(&conn, &libraries) {
         Ok(games) => games,
         Err(err) => {
-            send_error(tx, i18n::libraries_write_failed(lang, err));
+            send_error(notifier, i18n::libraries_write_failed(lang, err));
             return;
         }
     };
 
-    let _ = tx.send(WorkerMsg::LibrariesFound {
+    notifier.send(WorkerMsg::LibrariesFound {
         libraries: libraries.len(),
         games: games.len(),
     });
 
     if cancel.load(Ordering::Relaxed) {
-        let _ = tx.send(WorkerMsg::Cancelled);
+        notifier.send(WorkerMsg::Cancelled);
         return;
     }
 
@@ -232,10 +237,10 @@ fn run_scan(
     // simply have no entry in `mft_pass.entries` - `dispatch_scans` falls
     // back to a normal `scan_dir` walk for those, exactly as before this
     // path existed.
-    let mft_pass = run_mft_pass(elevated, scan_routing, &games, cancel, tx, lang);
+    let mft_pass = run_mft_pass(elevated, scan_routing, &games, cancel, notifier, lang);
 
     if cancel.load(Ordering::Relaxed) {
-        let _ = tx.send(WorkerMsg::Cancelled);
+        notifier.send(WorkerMsg::Cancelled);
         return;
     }
 
@@ -258,7 +263,7 @@ fn run_scan(
 
     let write_outcome = std::thread::scope(|scope| {
         let writer =
-            scope.spawn(|| run_writer(&mut conn, result_rx, tx, total, &completed, cancel));
+            scope.spawn(|| run_writer(&mut conn, result_rx, notifier, total, &completed, cancel));
 
         dispatch_scans(
             &games,
@@ -268,7 +273,7 @@ fn run_scan(
             &result_tx,
             &mft_pass.entries,
             enabled_categories,
-            tx,
+            notifier,
             &completed,
             total,
         );
@@ -282,13 +287,13 @@ fn run_scan(
     let findings = match write_outcome {
         Ok(findings) => findings,
         Err(_) => {
-            send_error(tx, i18n::write_thread_crashed(lang));
+            send_error(notifier, i18n::write_thread_crashed(lang));
             return;
         }
     };
 
     if cancel.load(Ordering::Relaxed) {
-        let _ = tx.send(WorkerMsg::Cancelled);
+        notifier.send(WorkerMsg::Cancelled);
         return;
     }
 
@@ -317,7 +322,7 @@ fn run_scan(
     // an aggregation failure degrades to 0 rather than hiding the results.
     let occupancy = super::occupancy_or_default(&conn);
 
-    let _ = tx.send(WorkerMsg::Done {
+    notifier.send(WorkerMsg::Done {
         findings,
         scan_summary,
         occupancy,
@@ -369,7 +374,7 @@ fn dispatch_scans(
     result_tx: &Sender<GameOutcome>,
     mft_entries: &HashMap<i64, Vec<FileEntry>>,
     enabled_categories: &[String],
-    tx: &Sender<WorkerMsg>,
+    notifier: &Notifier,
     completed: &std::sync::atomic::AtomicUsize,
     total: usize,
 ) {
@@ -377,7 +382,7 @@ fn dispatch_scans(
                    name: &str,
                    install_dir: &Path,
                    result_tx: Sender<GameOutcome>,
-                   worker_tx: Sender<WorkerMsg>| {
+                   worker_notifier: Notifier| {
         if cancel.load(Ordering::Relaxed) {
             let _ = result_tx.send(GameOutcome::Failed {
                 name: name.to_string(),
@@ -394,7 +399,7 @@ fn dispatch_scans(
         // thread - the bar would otherwise sit at "N-1/N: <some finished
         // game>" with no hint of what it's waiting on. This makes the
         // still-running game's name the visible detail instead.
-        let _ = worker_tx.send(WorkerMsg::Progress {
+        worker_notifier.send(WorkerMsg::Progress {
             verb: Verb::Analyze,
             current: completed.load(Ordering::Relaxed),
             total,
@@ -445,19 +450,28 @@ fn dispatch_scans(
     {
         Ok(pool) => pool.scope(|scope| {
             for (game_id, name, install_dir) in games {
-                // `mpsc::Sender` is `Send` but not `Sync`, so each task gets
-                // its own clone (made here on the dispatching thread) rather
-                // than sharing one `&Sender` across worker threads.
+                // `mpsc::Sender` is `Send` but not `Sync` (and `Notifier`
+                // wraps one), so each task gets its own clone (made here on
+                // the dispatching thread) rather than sharing one
+                // `&Notifier` across worker threads.
                 let result_tx = result_tx.clone();
-                let worker_tx = tx.clone();
-                scope.spawn(move |_| run_one(*game_id, name, install_dir, result_tx, worker_tx));
+                let worker_notifier = notifier.clone();
+                scope.spawn(move |_| {
+                    run_one(*game_id, name, install_dir, result_tx, worker_notifier)
+                });
             }
         }),
         // A pool failing to build (extremely unlikely) must not lose the
         // scan entirely - fall back to running everything on this thread.
         Err(_) => {
             for (game_id, name, install_dir) in games {
-                run_one(*game_id, name, install_dir, result_tx.clone(), tx.clone());
+                run_one(
+                    *game_id,
+                    name,
+                    install_dir,
+                    result_tx.clone(),
+                    notifier.clone(),
+                );
             }
         }
     }
@@ -488,8 +502,8 @@ struct MftPassOutcome {
 ///
 /// `cancel` is threaded down into `mftscan::scan_roots` so a cancellation
 /// during this (otherwise non-cancellable) pass stops promptly instead of
-/// reading an entire large volume to completion first. `tx` receives one
-/// `WorkerMsg::Progress` per chunk of `$MFT` records read on each volume,
+/// reading an entire large volume to completion first. `notifier` receives
+/// one `WorkerMsg::Progress` per chunk of `$MFT` records read on each volume,
 /// so the UI shows something during what used to be a silent, seemingly
 /// stuck phase - see `mftscan::MftProgress`.
 fn run_mft_pass(
@@ -497,7 +511,7 @@ fn run_mft_pass(
     scan_routing: ScanRouting,
     games: &[(i64, String, PathBuf)],
     cancel: &AtomicBool,
-    tx: &Sender<WorkerMsg>,
+    notifier: &Notifier,
     lang: Lang,
 ) -> MftPassOutcome {
     let total = games.len();
@@ -580,7 +594,7 @@ fn run_mft_pass(
             let pct = (p.records_done * 100)
                 .checked_div(p.records_total)
                 .unwrap_or(0);
-            let _ = tx.send(WorkerMsg::Progress {
+            notifier.send(WorkerMsg::Progress {
                 verb: Verb::Scan,
                 current: p.records_done as usize,
                 total: p.records_total as usize,
@@ -698,7 +712,7 @@ fn volume_failure_results(
 fn run_writer(
     conn: &mut Connection,
     result_rx: Receiver<GameOutcome>,
-    tx: &Sender<WorkerMsg>,
+    notifier: &Notifier,
     total: usize,
     completed: &std::sync::atomic::AtomicUsize,
     cancel: &AtomicBool,
@@ -714,7 +728,7 @@ fn run_writer(
         completed.store(done, Ordering::Relaxed);
         match outcome {
             GameOutcome::Scanned(prepared) => {
-                let _ = tx.send(WorkerMsg::Progress {
+                notifier.send(WorkerMsg::Progress {
                     verb: Verb::Analyze,
                     current: done,
                     total,
@@ -742,7 +756,7 @@ fn run_writer(
                         install_dir.display()
                     );
                 }
-                let _ = tx.send(WorkerMsg::Progress {
+                notifier.send(WorkerMsg::Progress {
                     verb: Verb::Analyze,
                     current: done,
                     total,
@@ -798,12 +812,12 @@ fn flush_batch(
     }
 }
 
-fn send_error(tx: &Sender<WorkerMsg>, msg: String) {
-    let _ = tx.send(WorkerMsg::Error { msg });
+fn send_error(notifier: &Notifier, msg: String) {
+    notifier.send(WorkerMsg::Error { msg });
 }
 
-fn send_warning(tx: &Sender<WorkerMsg>, msg: String) {
-    let _ = tx.send(WorkerMsg::Warning { msg });
+fn send_warning(notifier: &Notifier, msg: String) {
+    notifier.send(WorkerMsg::Warning { msg });
 }
 
 /// Writes discovered libraries and their games into the database,
@@ -1900,7 +1914,15 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let outcome = run_mft_pass(false, ScanRouting::Auto, &games, &cancel, &tx, Lang::En);
+        let notifier = Notifier::new(tx, egui::Context::default());
+        let outcome = run_mft_pass(
+            false,
+            ScanRouting::Auto,
+            &games,
+            &cancel,
+            &notifier,
+            Lang::En,
+        );
 
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
@@ -1919,7 +1941,15 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let outcome = run_mft_pass(true, ScanRouting::Auto, &games, &cancel, &tx, Lang::En);
+        let notifier = Notifier::new(tx, egui::Context::default());
+        let outcome = run_mft_pass(
+            true,
+            ScanRouting::Auto,
+            &games,
+            &cancel,
+            &notifier,
+            Lang::En,
+        );
 
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
@@ -1940,12 +1970,13 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (tx, _rx) = std::sync::mpsc::channel();
+        let notifier = Notifier::new(tx, egui::Context::default());
         let outcome = run_mft_pass(
             true,
             ScanRouting::ForceWalkdir,
             &games,
             &cancel,
-            &tx,
+            &notifier,
             Lang::En,
         );
 
