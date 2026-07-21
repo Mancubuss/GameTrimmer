@@ -20,9 +20,11 @@ mod tokens;
 mod tests;
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::scanner::FileEntry;
+use crate::error::{CoreError, Result as CoreResult};
+use crate::scanner::{collect_cancellable, FileEntry, CANCEL_POLL_INTERVAL};
 
 pub use data::{LangData, LangPack, LANG_PACK_VERSION};
 use family::FamilyHit;
@@ -90,16 +92,44 @@ impl LangDetector {
     /// Analyzes all files of ONE game together (sibling context is required
     /// for the language-family heuristic). Returns `(index into files,
     /// finding)` pairs for files identified as removable localizations.
+    ///
+    /// Infallible convenience wrapper over [`analyze_game_cancellable`] with a
+    /// never-set cancel flag: with nothing to interrupt it, the only error
+    /// path (cancellation) can never fire — mirrors [`crate::scanner::scan_dir`]
+    /// wrapping [`crate::scanner::scan_dir_cancellable`].
     pub fn analyze_game(&self, files: &[FileEntry]) -> Vec<(usize, LangFinding)> {
-        let seg_lists: Vec<_> = files.iter().map(|f| tokenize_path(&f.rel_path)).collect();
-        let occ_lists: Vec<Vec<Occurrence>> = seg_lists
-            .iter()
-            .map(|s| collect_occurrences(&self.data, s))
-            .collect();
-        let family_hits = family::compute_family(&self.data, &seg_lists, &occ_lists, &self.keep);
+        self.analyze_game_cancellable(files, &AtomicBool::new(false))
+            .expect("analyze_game without a cancel flag cannot fail")
+    }
+
+    /// Like [`analyze_game`](Self::analyze_game), but polls `cancel` inside its
+    /// hot loops (tokenization, occurrence collection, the family heuristic,
+    /// and the per-file decision pass) and returns
+    /// `Err(CoreError::Other("cancelled"))` promptly once it is observed set,
+    /// instead of analyzing a possibly enormous game (ARK) to completion. The
+    /// token is strategy-agnostic — the same one the walkdir enumeration
+    /// (`scan_dir_cancellable`) and the future USN incremental path use — so a
+    /// single Stop request interrupts every phase of a scan uniformly. When
+    /// `cancel` is never set the output is exactly the non-cancellable result.
+    pub fn analyze_game_cancellable(
+        &self,
+        files: &[FileEntry],
+        cancel: &AtomicBool,
+    ) -> CoreResult<Vec<(usize, LangFinding)>> {
+        let seg_lists: Vec<_> =
+            collect_cancellable(files.iter().map(|f| tokenize_path(&f.rel_path)), cancel)?;
+        let occ_lists: Vec<Vec<Occurrence>> = collect_cancellable(
+            seg_lists.iter().map(|s| collect_occurrences(&self.data, s)),
+            cancel,
+        )?;
+        let family_hits =
+            family::compute_family(&self.data, &seg_lists, &occ_lists, &self.keep, cancel)?;
 
         let mut out = Vec::with_capacity(files.len());
         for (i, (file, segs)) in files.iter().zip(seg_lists.iter()).enumerate() {
+            if i % CANCEL_POLL_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
+                return Err(CoreError::Other("cancelled".to_string()));
+            }
             let ext = file_extension(&file.rel_path);
 
             // Executable code is never a removable localization, whatever
@@ -142,7 +172,7 @@ impl LangDetector {
                 out.push((i, finding));
             }
         }
-        out
+        Ok(out)
     }
 
     /// True if any directory segment of the path *is* (entirely) a

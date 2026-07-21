@@ -42,6 +42,14 @@ const SCAN_THREADS: usize = 6;
 /// by up to one batch - 16-32 is the sweet spot named in the benchmark.
 const WRITE_BATCH_SIZE: usize = 24;
 
+/// How many files pass between `cancel` polls inside [`classify_game`]'s
+/// rule-engine loop. Mirrors `gametrimmer_core::scanner::CANCEL_POLL_INTERVAL`
+/// (which is `pub(crate)` to the core crate and so not reachable here): the
+/// core localization pass already polls at that cadence internally, and this
+/// keeps the app-side rule pass equally responsive without an atomic load per
+/// file in the common, never-cancelled case.
+const CLASSIFY_CANCEL_POLL_INTERVAL: usize = 1024;
+
 /// The settings-derived knobs a scan runs under, captured once at spawn
 /// time: a scan keeps the options it started with even if the user changes
 /// settings mid-run (the next scan picks the changes up).
@@ -337,12 +345,14 @@ enum GameOutcome {
 /// `cancel` is polled once per game, right before that game's work starts -
 /// games not yet started are reported as cancelled immediately instead of
 /// being scanned. It is additionally threaded into the walkdir enumeration
-/// (`scan_and_prepare_game` -> `scan_dir_cancellable`), so a game already
-/// running on a worker thread through the walkdir path is interrupted
-/// promptly too, rather than finishing its whole directory walk first. A
-/// game taking the MFT-entries branch instead skips `scan_and_prepare_game`
-/// and only classifies its already-obtained file list (pure in-memory work),
-/// so once started it runs to completion.
+/// (`scan_and_prepare_game` -> `scan_dir_cancellable`) AND into classification
+/// (`classify_game` -> `analyze_game_cancellable` + the rule-engine pass), so
+/// a game already running on a worker thread is interrupted promptly through
+/// whichever phase it is in - directory walk or analysis - rather than
+/// finishing its whole tree or its whole file list first. This holds on the
+/// MFT-entries branch too: it skips the walk but its classification is just as
+/// cancellable, so a huge game (ARK) no longer runs analysis to completion
+/// after Stop is pressed.
 ///
 /// `mft_entries` holds the file lists the MFT pass already obtained for
 /// some games (see `run_mft_pass`) - a game present here skips `scan_dir`
@@ -391,8 +401,14 @@ fn dispatch_scans(
             detail: name.to_string(),
         });
 
-        let outcome = match mft_entries.get(&game_id) {
-            Some(entries) => GameOutcome::Scanned(classify_game(
+        // Both paths funnel a game through `classify_game`, which is now
+        // cancellable (its localization + rule passes poll `cancel`), so a
+        // Stop during classification interrupts the MFT branch too - not just
+        // the walkdir branch's directory enumeration. Either path reports a
+        // cancelled game through the same `Failed { .. "cancelled" .. }`
+        // channel `run_writer` already treats as a normal user action.
+        let result = match mft_entries.get(&game_id) {
+            Some(entries) => classify_game(
                 engine,
                 lang_detector,
                 game_id,
@@ -400,25 +416,25 @@ fn dispatch_scans(
                 install_dir,
                 entries.clone(),
                 enabled_categories,
-            )),
-            None => {
-                match scan_and_prepare_game(
-                    engine,
-                    lang_detector,
-                    game_id,
-                    name,
-                    install_dir,
-                    enabled_categories,
-                    cancel,
-                ) {
-                    Ok(prepared) => GameOutcome::Scanned(prepared),
-                    Err(error) => GameOutcome::Failed {
-                        name: name.to_string(),
-                        install_dir: install_dir.to_path_buf(),
-                        error,
-                    },
-                }
-            }
+                cancel,
+            ),
+            None => scan_and_prepare_game(
+                engine,
+                lang_detector,
+                game_id,
+                name,
+                install_dir,
+                enabled_categories,
+                cancel,
+            ),
+        };
+        let outcome = match result {
+            Ok(prepared) => GameOutcome::Scanned(prepared),
+            Err(error) => GameOutcome::Failed {
+                name: name.to_string(),
+                install_dir: install_dir.to_path_buf(),
+                error,
+            },
         };
         let _ = result_tx.send(outcome);
     };
@@ -938,7 +954,7 @@ fn scan_and_prepare_game(
     if cancel.load(Ordering::Relaxed) {
         return Err(CoreError::Other("cancelled".to_string()));
     }
-    Ok(classify_game(
+    classify_game(
         engine,
         lang_detector,
         game_id,
@@ -946,7 +962,8 @@ fn scan_and_prepare_game(
         install_dir,
         entries,
         enabled_categories,
-    ))
+        cancel,
+    )
 }
 
 /// Classifies an already-obtained file list - from either `scan_dir`
@@ -955,6 +972,13 @@ fn scan_and_prepare_game(
 /// so this is what actually runs in parallel across scan worker threads
 /// regardless of which path supplied `entries`; only
 /// [`persist_prepared_game`] needs a `Connection`.
+///
+/// `cancel` is polled inside both hot passes (the localization
+/// `analyze_game_cancellable` and the per-file rule-engine loop); once it is
+/// observed set this returns `Err(CoreError::Other("cancelled"))` promptly
+/// instead of classifying the whole (possibly enormous) file list, so a Stop
+/// during a big game's analysis is honored rather than swallowed. When
+/// `cancel` is never set the result is exactly the non-cancellable one.
 ///
 /// `enabled_categories` (the persisted `enabled_categories` setting - see
 /// `gametrimmer_core::settings`) is applied right here, before a finding
@@ -965,6 +989,11 @@ fn scan_and_prepare_game(
 /// category's files never affect folder-collapsing (`assign_group_dirs`)
 /// either, and the database ends up holding exactly what the setting says
 /// should be scanned, not a superset filtered later.
+// Eight parameters: the game identity (id/name/dir), the two classifiers
+// (rule engine + localization detector), the category filter, the file list,
+// and the cancel token - each is a distinct, unrelated input with no natural
+// grouping into a struct that would read more clearly than the flat list.
+#[allow(clippy::too_many_arguments)]
 fn classify_game(
     engine: &RuleEngine,
     lang_detector: &LangDetector,
@@ -973,17 +1002,28 @@ fn classify_game(
     install_dir: &Path,
     entries: Vec<FileEntry>,
     enabled_categories: &[String],
-) -> PreparedGame {
+    cancel: &AtomicBool,
+) -> CoreResult<PreparedGame> {
     // `analyze_game` needs sibling context (the language-family heuristic),
     // so it runs once over all of this game's files rather than per-file.
-    let lang_findings: HashMap<usize, LangFinding> =
-        lang_detector.analyze_game(&entries).into_iter().collect();
+    // The cancellable variant polls `cancel` inside its own hot loops, so a
+    // Stop request lands promptly even mid-analysis of a huge game.
+    let lang_findings: HashMap<usize, LangFinding> = lang_detector
+        .analyze_game_cancellable(&entries, cancel)?
+        .into_iter()
+        .collect();
 
     // First pass: combine each entry's rule/localization findings, keeping
     // the entry's index into `entries` so `assign_group_dirs` (which needs
     // the full file list, not just the flagged ones) can be run afterwards.
     let mut combined_by_index: Vec<(usize, CombinedFinding)> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
+        // The rule-engine pass is per-file regex work; on a game with
+        // hundreds of thousands of files it is long enough to be worth
+        // interrupting too (the same cadence the core cancel path uses).
+        if index % CLASSIFY_CANCEL_POLL_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
+            return Err(CoreError::Other("cancelled".to_string()));
+        }
         let rule_finding = engine.classify(&entry.rel_path);
         let lang_finding = lang_findings.get(&index);
 
@@ -1013,13 +1053,13 @@ fn classify_game(
         })
         .collect();
 
-    PreparedGame {
+    Ok(PreparedGame {
         game_id,
         name: name.to_string(),
         install_dir: install_dir.to_path_buf(),
         entries,
         findings,
-    }
+    })
 }
 
 /// Assigns each flagged file (identified by its index into `entries`) the
@@ -1328,6 +1368,50 @@ mod tests {
 
         match result {
             Ok(_) => panic!("a pre-cancelled scan must return Err"),
+            Err(err) => assert!(
+                err.to_string().contains("cancelled"),
+                "error message should mention cancellation, got: {err}"
+            ),
+        }
+    }
+
+    /// `classify_game` itself must honor a pre-set cancel flag - this is the
+    /// MFT branch's guarantee (it skips the walk and calls `classify_game`
+    /// directly), and the reason the "Аналіз" phase of a huge game (ARK) can
+    /// now be stopped. With the flag already set, the first `collect_cancellable`
+    /// checkpoint inside `analyze_game_cancellable` fires before any real work.
+    #[test]
+    fn classify_game_returns_cancelled_when_flag_pre_set() {
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let entries = vec![
+            FileEntry {
+                rel_path: "a.txt".into(),
+                size: 1,
+                mtime: None,
+            },
+            FileEntry {
+                rel_path: "b\\c.txt".into(),
+                size: 1,
+                mtime: None,
+            },
+        ];
+        let cancel = AtomicBool::new(true);
+
+        let result = classify_game(
+            &engine,
+            &lang_detector,
+            1,
+            "Test Game",
+            Path::new("C:/Games/Test"),
+            entries,
+            &[],
+            &cancel,
+        );
+
+        match result {
+            Ok(_) => panic!("a pre-cancelled classify_game must return Err"),
             Err(err) => assert!(
                 err.to_string().contains("cancelled"),
                 "error message should mention cancellation, got: {err}"
@@ -1665,6 +1749,7 @@ mod tests {
         let lang_detector = LangDetector::new();
         let entries = vec![entry("readme.txt"), entry("manual.pdf")];
 
+        let never_cancel = AtomicBool::new(false);
         let prepared_all_enabled = classify_game(
             &engine,
             &lang_detector,
@@ -1673,7 +1758,9 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries.clone(),
             &[], // empty = every category enabled
-        );
+            &never_cancel,
+        )
+        .expect("uncancelled classify_game should succeed");
         assert_eq!(
             prepared_all_enabled.findings.len(),
             2,
@@ -1688,7 +1775,9 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &["redist".to_string()], // "docs" is not in the enabled list
-        );
+            &never_cancel,
+        )
+        .expect("uncancelled classify_game should succeed");
         assert!(
             prepared_docs_disabled.findings.is_empty(),
             "disabling \"docs\" must drop every docs_file finding, not just filter it later"
@@ -1711,7 +1800,9 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &["docs".to_string()],
-        );
+            &AtomicBool::new(false),
+        )
+        .expect("uncancelled classify_game should succeed");
         assert_eq!(prepared.findings.len(), 1);
     }
 
