@@ -85,6 +85,12 @@ pub struct GameTrimmerApp {
     /// manual library's folder is currently missing, ...). Cleared at the
     /// start of every scan.
     pub warnings: Vec<String>,
+    /// How long the most recently completed scan's phases took (see
+    /// `model::ScanTiming`), shown persistently in the bottom bar until the
+    /// next scan starts. `None` before any scan has completed this session,
+    /// after "Clear database", or when the current results were loaded from
+    /// a previous scan rather than freshly produced (see `WorkerMsg::Done`).
+    pub last_scan_timing: Option<model::ScanTiming>,
 
     pub findings: Vec<FindingItem>,
     /// Live disk-usage snapshot (total + per-library), refreshed by every
@@ -237,6 +243,7 @@ impl GameTrimmerApp {
             last_progress_detail: String::new(),
             last_progress_detail_at: 0.0,
             warnings: Vec::new(),
+            last_scan_timing: None,
             findings: Vec::new(),
             occupancy: model::Occupancy::default(),
             tree: Vec::new(),
@@ -516,6 +523,7 @@ impl GameTrimmerApp {
         self.status_message.clear();
         self.warnings.clear();
         self.remove_summary = None;
+        self.last_scan_timing = None;
 
         let handle = worker::scan::spawn_scan(
             db_path,
@@ -861,10 +869,12 @@ impl GameTrimmerApp {
                 findings,
                 scan_summary,
                 occupancy,
+                timing,
             } => {
                 self.busy = false;
                 self.progress = None;
                 self._worker = None;
+                self.last_scan_timing = timing;
                 let count = findings.len();
                 self.findings = findings
                     .into_iter()
@@ -1094,6 +1104,7 @@ impl GameTrimmerApp {
                         self.tree_toggles.clear();
                         self.tree_cursor = None;
                         self.remove_summary = None;
+                        self.last_scan_timing = None;
                         self.status_message = i18n::strings(lang).database_cleared.to_string();
                     }
                 }

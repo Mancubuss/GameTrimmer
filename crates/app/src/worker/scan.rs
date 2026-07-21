@@ -239,6 +239,13 @@ fn run_scan(
     // path existed.
     let mft_pass = run_mft_pass(elevated, scan_routing, &games, cancel, notifier, lang);
 
+    // Marks the end of the "scan" phase (discovery + persist + the MFT
+    // pre-pass) and the start of "analyze" (per-game scan+classify+write) -
+    // see `crate::model::ScanTiming` for why this split matches what the
+    // progress bar's two verbs (`Verb::Scan`/`Verb::Analyze`) actually show
+    // the user.
+    let scan_phase_end = Instant::now();
+
     if cancel.load(Ordering::Relaxed) {
         notifier.send(WorkerMsg::Cancelled);
         return;
@@ -284,6 +291,13 @@ fn run_scan(
         writer.join()
     });
 
+    // Marks the end of the "analyze" phase (per-game scan+classify+write) -
+    // right after the writer thread join completes, before any of the
+    // post-scan housekeeping below (WAL checkpoint, summary/occupancy
+    // computation) that the user does not see as part of either progress
+    // verb. See `crate::model::ScanTiming`.
+    let analyze_phase_end = Instant::now();
+
     let findings = match write_outcome {
         Ok(findings) => findings,
         Err(_) => {
@@ -322,10 +336,23 @@ fn run_scan(
     // an aggregation failure degrades to 0 rather than hiding the results.
     let occupancy = super::occupancy_or_default(&conn);
 
+    // `scan` and `analyze` are each measured directly from their own Instant
+    // pair rather than derived by subtracting one from the other, so they
+    // stay internally consistent; their sum is slightly less than `total`
+    // by the untimed post-scan housekeeping (WAL checkpoint, this summary
+    // and occupancy computation) between `analyze_phase_end` and here - see
+    // `crate::model::ScanTiming`.
+    let timing = crate::model::ScanTiming {
+        scan: scan_phase_end.duration_since(started_at),
+        analyze: analyze_phase_end.duration_since(scan_phase_end),
+        total: started_at.elapsed(),
+    };
+
     notifier.send(WorkerMsg::Done {
         findings,
         scan_summary,
         occupancy,
+        timing: Some(timing),
     });
 }
 

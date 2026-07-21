@@ -480,6 +480,16 @@ pub fn occupancy_summary(lang: Lang, total: &str, pct: f64) -> String {
     }
 }
 
+/// Persistent scan-timing summary shown in the bottom bar after a scan
+/// completes (see `crate::model::ScanTiming`, `crate::app::GameTrimmerApp::last_scan_timing`).
+/// `scan`/`analyze`/`total` are already formatted via `crate::model::format_duration`.
+pub fn scan_timing_summary(lang: Lang, scan: &str, analyze: &str, total: &str) -> String {
+    match lang {
+        Lang::En => format!("Scan {scan} \u{b7} Analysis {analyze} \u{b7} Total {total}"),
+        Lang::Uk => format!("Сканування {scan} \u{b7} Аналіз {analyze} \u{b7} Разом {total}"),
+    }
+}
+
 // -- ui::top_bar --
 
 pub fn warnings_header(lang: Lang, count: usize) -> String {

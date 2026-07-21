@@ -568,6 +568,44 @@ pub fn freed_percent(selected: u64, total: u64) -> f64 {
     (selected as f64 / total as f64 * 100.0).min(100.0)
 }
 
+/// Wall-clock duration of the two phases of the most recently completed
+/// scan, plus their total - see `worker::scan::run_scan` for exactly where
+/// each `Instant` is captured. `None` on [`crate::app::GameTrimmerApp`] means
+/// no fresh scan has completed yet (either nothing has been scanned this
+/// session, or the current results were loaded from a previous scan rather
+/// than produced by one - see `WorkerMsg::Done`'s `timing` field).
+#[derive(Debug, Clone, Copy)]
+pub struct ScanTiming {
+    /// Discovery + persist + the MFT index pre-pass (`Verb::Scan` in the
+    /// progress bar). Naturally tiny on an SSD-only setup, where the MFT
+    /// pass is skipped entirely - that is the honest phase split, not a bug.
+    pub scan: std::time::Duration,
+    /// Per-game scan+classify+write (`Verb::Analyze` in the progress bar).
+    pub analyze: std::time::Duration,
+    /// The whole scan, start to finish - matches the elapsed time already
+    /// folded into `format_scan_summary`'s transient status line.
+    pub total: std::time::Duration,
+}
+
+/// Formats a duration compactly for display: `"Ns"` under a minute,
+/// `"M:SS"` from a minute up to an hour, `"H:MM:SS"` at an hour or beyond.
+/// Whole seconds only - this is a coarse, at-a-glance readout, not a
+/// stopwatch.
+pub fn format_duration(duration: std::time::Duration) -> String {
+    let total_secs = duration.as_secs();
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else if minutes > 0 {
+        format!("{minutes}:{seconds:02}")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 /// Formats a byte count as a human-readable, localized size string
 /// (binary units: 1024-based).
 pub fn format_size(lang: crate::i18n::Lang, bytes: u64) -> String {
@@ -1545,6 +1583,47 @@ mod tests {
             freed_percent(1500, 1000),
             100.0,
             "selected bytes should never be able to report more than 100%"
+        );
+    }
+
+    #[test]
+    fn format_duration_zero_is_zero_seconds() {
+        assert_eq!(format_duration(std::time::Duration::from_secs(0)), "0s");
+    }
+
+    #[test]
+    fn format_duration_sub_minute_shows_bare_seconds() {
+        assert_eq!(format_duration(std::time::Duration::from_secs(3)), "3s");
+        assert_eq!(format_duration(std::time::Duration::from_secs(59)), "59s");
+    }
+
+    #[test]
+    fn format_duration_exactly_sixty_seconds_rolls_over_to_minutes() {
+        assert_eq!(format_duration(std::time::Duration::from_secs(60)), "1:00");
+    }
+
+    #[test]
+    fn format_duration_minutes_and_seconds_are_zero_padded() {
+        assert_eq!(format_duration(std::time::Duration::from_secs(92)), "1:32");
+        assert_eq!(
+            format_duration(std::time::Duration::from_secs(605)),
+            "10:05"
+        );
+    }
+
+    #[test]
+    fn format_duration_hours_minutes_seconds() {
+        assert_eq!(
+            format_duration(std::time::Duration::from_secs(3800)),
+            "1:03:20"
+        );
+    }
+
+    #[test]
+    fn format_duration_ignores_sub_second_precision() {
+        assert_eq!(
+            format_duration(std::time::Duration::from_millis(3999)),
+            "3s"
         );
     }
 }

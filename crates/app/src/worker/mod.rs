@@ -66,6 +66,11 @@ pub enum WorkerMsg {
         /// over from `findings` - the flagged-only findings list can't
         /// derive total occupied space on its own.
         occupancy: crate::model::Occupancy,
+        /// How long the scan's phases took (see `crate::model::ScanTiming`
+        /// and `worker::scan::run_scan`). `Some` for a fresh scan; `None`
+        /// when these results were loaded from a previous scan instead (see
+        /// `worker::load`) - no scan happened, so there is nothing to time.
+        timing: Option<crate::model::ScanTiming>,
     },
     /// A delete operation finished (possibly with some per-file failures).
     /// `occupancy` is recomputed after the deleted files' rows are purged
