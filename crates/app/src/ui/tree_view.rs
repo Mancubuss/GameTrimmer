@@ -141,7 +141,11 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         let toggles = &mut app.tree_toggles;
         let cursor = &mut app.tree_cursor;
 
-        let mut scroll_area = egui::ScrollArea::vertical();
+        // Keep the scrollbar drawn even when the content happens to fit, so the
+        // list's right edge (and the width available to file rows) stays fixed
+        // instead of jumping as items are filtered/toggled in and out of view.
+        let mut scroll_area = egui::ScrollArea::vertical()
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
         if let Some(offset) = scroll_override {
             scroll_area = scroll_area.vertical_scroll_offset(offset.max(0.0));
         }
