@@ -12,11 +12,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
+use eframe::egui;
 use gametrimmer_core::db;
 
 use crate::i18n::{self, Lang, Verb};
 
-use super::WorkerMsg;
+use super::{Notifier, WorkerMsg};
 
 /// Minimum reclaimable share (free pages / total pages) required before a
 /// full `VACUUM` runs. `VACUUM` rewrites the whole file - a full read+write
@@ -26,12 +27,20 @@ use super::WorkerMsg;
 /// after a full wipe, where the same "is it worth a VACUUM" question applies.
 pub(super) const MIN_FREE_FRACTION: f64 = 0.25;
 
-/// Spawns the compact job on a new thread.
-pub fn spawn_compact(db_path: PathBuf, tx: Sender<WorkerMsg>, lang: Lang) -> JoinHandle<()> {
-    std::thread::spawn(move || run_compact(&db_path, &tx, lang))
+/// Spawns the compact job on a new thread. `ctx` is the app's `egui::Context`
+/// (see `Notifier`) so the progress percentage keeps updating even while the
+/// main window is minimized.
+pub fn spawn_compact(
+    db_path: PathBuf,
+    tx: Sender<WorkerMsg>,
+    lang: Lang,
+    ctx: egui::Context,
+) -> JoinHandle<()> {
+    let notifier = Notifier::new(tx, ctx);
+    std::thread::spawn(move || run_compact(&db_path, &notifier, lang))
 }
 
-fn run_compact(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
+fn run_compact(db_path: &Path, notifier: &Notifier, lang: Lang) {
     let result = (|| -> gametrimmer_core::error::Result<bool> {
         let conn = db::open(db_path)?;
         // Cheap regardless of whether VACUUM ends up running: folds the WAL
@@ -41,10 +50,10 @@ fn run_compact(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
         let fraction = db::free_page_fraction(&conn)?;
         let skipped = fraction < MIN_FREE_FRACTION;
         if !skipped {
-            let progress_tx = tx.clone();
+            let progress_notifier = notifier.clone();
             db::compact_observed(&conn, move |fraction| {
                 let percent = (fraction * 100.0) as usize;
-                let _ = progress_tx.send(WorkerMsg::Progress {
+                progress_notifier.send(WorkerMsg::Progress {
                     verb: Verb::Compact,
                     current: percent,
                     total: 100,
@@ -58,7 +67,7 @@ fn run_compact(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
     let skipped = match result {
         Ok(skipped) => skipped,
         Err(err) => {
-            let _ = tx.send(WorkerMsg::CompactDone {
+            notifier.send(WorkerMsg::CompactDone {
                 error: Some(i18n::compact_failed(lang, err)),
                 skipped: false,
             });
@@ -66,7 +75,7 @@ fn run_compact(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
         }
     };
 
-    let _ = tx.send(WorkerMsg::CompactDone {
+    notifier.send(WorkerMsg::CompactDone {
         error: None,
         skipped,
     });

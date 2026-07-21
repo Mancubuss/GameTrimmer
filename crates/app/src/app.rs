@@ -59,6 +59,12 @@ pub struct GameTrimmerApp {
 
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
+    /// Cloned into every worker spawn (see `worker::Notifier`) so a
+    /// background thread can call `request_repaint()` right after every
+    /// `WorkerMsg` send - this is what keeps progress moving while the main
+    /// window is minimized, when winit stops calling `eframe::App::ui()` (and
+    /// so `drain_messages()` never runs) on its own.
+    egui_ctx: egui::Context,
     cancel: Arc<AtomicBool>,
     /// Kept only so the thread is joined on drop rather than detached;
     /// never awaited from the UI thread.
@@ -178,7 +184,9 @@ pub struct GameTrimmerApp {
 }
 
 impl GameTrimmerApp {
-    pub fn new() -> Self {
+    /// `ctx` is `cc.egui_ctx` from `eframe::run_native`'s creation callback -
+    /// see `worker::Notifier` for why every background worker needs it.
+    pub fn new(ctx: egui::Context) -> Self {
         let db_path = worker::db_path().ok();
         // Settings (and thus the UI language) aren't known until the
         // database opens - startup errors before that point use the default
@@ -220,6 +228,7 @@ impl GameTrimmerApp {
             show_settings: false,
             tx: tx.clone(),
             rx,
+            egui_ctx: ctx,
             cancel: Arc::new(AtomicBool::new(false)),
             _worker: None,
             busy: false,
@@ -261,7 +270,12 @@ impl GameTrimmerApp {
             if let Some(db_path) = db_path {
                 app.busy = true;
                 app.status_message = i18n::strings(app.lang()).loading_previous_scan.to_string();
-                app._worker = Some(worker::load::spawn_load(db_path, tx, app.lang()));
+                app._worker = Some(worker::load::spawn_load(
+                    db_path,
+                    tx,
+                    app.lang(),
+                    app.egui_ctx.clone(),
+                ));
             }
         }
 
@@ -507,6 +521,7 @@ impl GameTrimmerApp {
             db_path,
             Arc::clone(&self.cancel),
             self.tx.clone(),
+            self.egui_ctx.clone(),
             self.elevated,
             worker::scan::ScanOptions {
                 lang: self.lang(),
@@ -607,6 +622,7 @@ impl GameTrimmerApp {
             self.settings.delete_method,
             self.tx.clone(),
             self.lang(),
+            self.egui_ctx.clone(),
         );
         self._worker = Some(handle);
     }
@@ -638,7 +654,12 @@ impl GameTrimmerApp {
     fn spawn_compact_job(&mut self, db_path: PathBuf, status_message: String) {
         self.busy = true;
         self.status_message = status_message;
-        let handle = worker::compact::spawn_compact(db_path, self.tx.clone(), self.lang());
+        let handle = worker::compact::spawn_compact(
+            db_path,
+            self.tx.clone(),
+            self.lang(),
+            self.egui_ctx.clone(),
+        );
         self._worker = Some(handle);
     }
 
@@ -675,7 +696,12 @@ impl GameTrimmerApp {
         self.db_maint_active = true;
         self.db_maint_result = None;
         self.status_message = i18n::strings(self.lang()).clearing_database.to_string();
-        let handle = worker::clear::spawn_clear(db_path, self.tx.clone(), self.lang());
+        let handle = worker::clear::spawn_clear(
+            db_path,
+            self.tx.clone(),
+            self.lang(),
+            self.egui_ctx.clone(),
+        );
         self._worker = Some(handle);
     }
 

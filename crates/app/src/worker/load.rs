@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
+use eframe::egui;
 use gametrimmer_core::db;
 use gametrimmer_core::error::Result as CoreResult;
 use rusqlite::Connection;
@@ -16,18 +17,26 @@ use rusqlite::Connection;
 use crate::i18n::{self, Lang};
 use crate::model::{parse_source_key, FindingRow};
 
-use super::WorkerMsg;
+use super::{Notifier, WorkerMsg};
 
-/// Spawns the load job on a new thread.
-pub fn spawn_load(db_path: PathBuf, tx: Sender<WorkerMsg>, lang: Lang) -> JoinHandle<()> {
-    std::thread::spawn(move || run_load(&db_path, &tx, lang))
+/// Spawns the load job on a new thread. `ctx` is the app's `egui::Context`
+/// (see `Notifier`) so the UI keeps repainting - and so draining the
+/// `WorkerMsg` channel - even while the main window is minimized.
+pub fn spawn_load(
+    db_path: PathBuf,
+    tx: Sender<WorkerMsg>,
+    lang: Lang,
+    ctx: egui::Context,
+) -> JoinHandle<()> {
+    let notifier = Notifier::new(tx, ctx);
+    std::thread::spawn(move || run_load(&db_path, &notifier, lang))
 }
 
-fn run_load(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
+fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
     let conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
-            let _ = tx.send(WorkerMsg::Error {
+            notifier.send(WorkerMsg::Error {
                 msg: i18n::db_open_error_short(lang, err),
             });
             return;
@@ -39,14 +48,14 @@ fn run_load(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
             // Live occupied-space snapshot for the UI (see
             // `occupancy_or_default`); degrades to 0 on aggregation failure.
             let occupancy = super::occupancy_or_default(&conn);
-            let _ = tx.send(WorkerMsg::Done {
+            notifier.send(WorkerMsg::Done {
                 findings,
                 scan_summary: i18n::loaded_saved_results(lang),
                 occupancy,
             });
         }
         Err(err) => {
-            let _ = tx.send(WorkerMsg::Error {
+            notifier.send(WorkerMsg::Error {
                 msg: i18n::load_previous_results_failed(lang, err),
             });
         }

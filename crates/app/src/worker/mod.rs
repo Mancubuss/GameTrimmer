@@ -13,6 +13,9 @@ pub(crate) mod scan_route;
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
+
+use eframe::egui;
 
 use crate::i18n::Verb;
 use crate::model::FindingRow;
@@ -131,6 +134,36 @@ pub struct RemoveOutcome {
     /// though the removal attempt failed - the path is already gone from
     /// disk, so the UI must treat it as removed.
     pub purged: bool,
+}
+
+/// Pairs a [`WorkerMsg`] sender with the app's `egui::Context` so every
+/// background-thread send can also wake the UI event loop via
+/// `Context::request_repaint()`. This is the fix for progress appearing to
+/// freeze while the main window is minimized: winit stops calling
+/// `eframe::App::ui()` (and so `drain_messages()` never runs to drain the
+/// channel) while minimized, but a repaint request forces a frame regardless
+/// of window visibility. `Clone` (both fields are `Clone`) so it can be
+/// handed to as many worker threads/closures as `Sender<WorkerMsg>` used to
+/// be, e.g. once per rayon task in `scan::dispatch_scans`.
+#[derive(Clone)]
+pub(crate) struct Notifier {
+    tx: Sender<WorkerMsg>,
+    ctx: egui::Context,
+}
+
+impl Notifier {
+    pub(crate) fn new(tx: Sender<WorkerMsg>, ctx: egui::Context) -> Self {
+        Self { tx, ctx }
+    }
+
+    /// Sends `msg` and immediately requests a repaint. A closed receiver (the
+    /// UI already dropped, e.g. during shutdown) is not an error the worker
+    /// thread can act on - same as the plain `Sender::send` calls this
+    /// replaces, the result is discarded.
+    pub(crate) fn send(&self, msg: WorkerMsg) {
+        let _ = self.tx.send(msg);
+        self.ctx.request_repaint();
+    }
 }
 
 /// Computes the live disk-usage snapshot (see

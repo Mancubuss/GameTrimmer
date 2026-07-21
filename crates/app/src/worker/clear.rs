@@ -22,19 +22,28 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
+use eframe::egui;
 use gametrimmer_core::db;
 
 use crate::i18n::{self, Lang, Verb};
 
 use super::compact::MIN_FREE_FRACTION;
-use super::WorkerMsg;
+use super::{Notifier, WorkerMsg};
 
-/// Spawns the clear job on a new thread.
-pub fn spawn_clear(db_path: PathBuf, tx: Sender<WorkerMsg>, lang: Lang) -> JoinHandle<()> {
-    std::thread::spawn(move || run_clear(&db_path, &tx, lang))
+/// Spawns the clear job on a new thread. `ctx` is the app's `egui::Context`
+/// (see `Notifier`) so the progress percentage keeps updating even while the
+/// main window is minimized.
+pub fn spawn_clear(
+    db_path: PathBuf,
+    tx: Sender<WorkerMsg>,
+    lang: Lang,
+    ctx: egui::Context,
+) -> JoinHandle<()> {
+    let notifier = Notifier::new(tx, ctx);
+    std::thread::spawn(move || run_clear(&db_path, &notifier, lang))
 }
 
-fn run_clear(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
+fn run_clear(db_path: &Path, notifier: &Notifier, lang: Lang) {
     let result = (|| -> gametrimmer_core::error::Result<()> {
         let conn = db::open(db_path)?;
         db::clear_scan_data(&conn)?;
@@ -46,10 +55,10 @@ fn run_clear(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
         db::checkpoint_truncate(&conn)?;
         let fraction = db::free_page_fraction(&conn)?;
         if fraction >= MIN_FREE_FRACTION {
-            let progress_tx = tx.clone();
+            let progress_notifier = notifier.clone();
             db::compact_observed(&conn, move |fraction| {
                 let percent = (fraction * 100.0) as usize;
-                let _ = progress_tx.send(WorkerMsg::Progress {
+                progress_notifier.send(WorkerMsg::Progress {
                     verb: Verb::Clear,
                     current: percent,
                     total: 100,
@@ -71,7 +80,7 @@ fn run_clear(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
         Ok(()) => None,
         Err(err) if db::is_corruption_error(&err) => match db::rebuild_database(db_path) {
             Ok(_conn) => {
-                let _ = tx.send(WorkerMsg::Warning {
+                notifier.send(WorkerMsg::Warning {
                     msg: i18n::clear_rebuilt_after_corruption(lang),
                 });
                 None
@@ -87,5 +96,5 @@ fn run_clear(db_path: &Path, tx: &Sender<WorkerMsg>, lang: Lang) {
         },
         Err(err) => Some(i18n::clear_failed(lang, err)),
     };
-    let _ = tx.send(WorkerMsg::ClearDone { error });
+    notifier.send(WorkerMsg::ClearDone { error });
 }

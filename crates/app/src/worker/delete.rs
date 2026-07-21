@@ -6,13 +6,14 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
+use eframe::egui;
 use gametrimmer_core::db;
 use gametrimmer_core::ops::{remove_with_log_observed, PermanentDelete, RecycleBin, Remover};
 use gametrimmer_core::settings::DeleteMethod;
 
 use crate::i18n::{self, Lang, Verb};
 
-use super::{RemoveOutcome, WorkerMsg};
+use super::{Notifier, RemoveOutcome, WorkerMsg};
 
 /// One file queued for removal: its `files.id` (to match the outcome back
 /// to a [`crate::model::FindingItem`]) and its full path on disk.
@@ -21,27 +22,31 @@ pub struct DeleteItem {
     pub full_path: PathBuf,
 }
 
+/// `ctx` is the app's `egui::Context` (see `Notifier`) so per-file delete
+/// progress keeps updating even while the main window is minimized.
 pub fn spawn_delete(
     db_path: PathBuf,
     items: Vec<DeleteItem>,
     method: DeleteMethod,
     tx: Sender<WorkerMsg>,
     lang: Lang,
+    ctx: egui::Context,
 ) -> JoinHandle<()> {
-    std::thread::spawn(move || run_delete(&db_path, items, method, &tx, lang))
+    let notifier = Notifier::new(tx, ctx);
+    std::thread::spawn(move || run_delete(&db_path, items, method, &notifier, lang))
 }
 
 fn run_delete(
     db_path: &Path,
     items: Vec<DeleteItem>,
     method: DeleteMethod,
-    tx: &Sender<WorkerMsg>,
+    notifier: &Notifier,
     lang: Lang,
 ) {
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
-            let _ = tx.send(WorkerMsg::Error {
+            notifier.send(WorkerMsg::Error {
                 msg: i18n::db_open_error_short(lang, err),
             });
             return;
@@ -68,7 +73,7 @@ fn run_delete(
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string());
-            let _ = tx.send(WorkerMsg::Progress {
+            notifier.send(WorkerMsg::Progress {
                 verb: Verb::Delete,
                 current,
                 total,
@@ -81,7 +86,7 @@ fn run_delete(
             // delete to finish - failures are only reported once at the end
             // (via `RemoveDone`) since they still need the summary dialog.
             if outcome.error.is_none() {
-                let _ = tx.send(WorkerMsg::FileRemoved {
+                notifier.send(WorkerMsg::FileRemoved {
                     file_id: items[index].file_id,
                 });
             }
@@ -89,7 +94,7 @@ fn run_delete(
     ) {
         Ok(outcomes) => outcomes,
         Err(err) => {
-            let _ = tx.send(WorkerMsg::Error {
+            notifier.send(WorkerMsg::Error {
                 msg: i18n::delete_failed(lang, err),
             });
             return;
@@ -134,7 +139,7 @@ fn run_delete(
         // session's in-memory state is still correct - only a later load of
         // saved results would show stale rows until the next successful
         // purge or rescan.
-        let _ = tx.send(WorkerMsg::Warning {
+        notifier.send(WorkerMsg::Warning {
             msg: i18n::db_update_after_delete_failed(lang, err),
         });
     }
@@ -146,7 +151,7 @@ fn run_delete(
     // scan/load - the same self-healing the purge warning already notes.
     let occupancy = super::occupancy_or_default(&conn);
 
-    let _ = tx.send(WorkerMsg::RemoveDone {
+    notifier.send(WorkerMsg::RemoveDone {
         outcomes: mapped,
         occupancy,
     });

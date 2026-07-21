@@ -59,7 +59,7 @@ fn main() -> eframe::Result {
             // (default `System`, following the OS preference) governs the
             // theme from the very first frame via `ctx.set_theme` in
             // `GameTrimmerApp::ui` - see `app::theme_preference`.
-            Ok(Box::new(GameTrimmerApp::new()))
+            Ok(Box::new(GameTrimmerApp::new(cc.egui_ctx.clone())))
         }),
     )
 }
