@@ -5,6 +5,20 @@ use eframe::egui;
 use crate::app::{GameTrimmerApp, APP_TITLE};
 use crate::i18n;
 
+/// One frame of a textual spinner for the given animation-clock time (seconds),
+/// cycling through `| / - \` at a fixed 8 frames per second.
+///
+/// Kept ASCII on purpose: braille/box spinner glyphs are not guaranteed to be
+/// present in the bundled UI font (only the CJK/symbol fallbacks added for game
+/// names cover exotic ranges), so an ASCII frame is the safe choice that always
+/// renders. Pure and side-effect free so it can be unit-tested.
+fn spinner_frame(time: f64) -> char {
+    const FRAMES: [char; 4] = ['|', '/', '-', '\\'];
+    const SPINNER_FPS: f64 = 8.0;
+    let idx = (time * SPINNER_FPS) as i64;
+    FRAMES[idx.rem_euclid(FRAMES.len() as i64) as usize]
+}
+
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
     let s = i18n::strings(lang);
@@ -84,21 +98,22 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 format!("{} {}%", i18n::verb_label(lang, progress.verb), percent)
             } else {
                 // Threshold ~= the point a still line starts reading as "stuck".
-                const DOTS_AFTER_SECS: f64 = 1.0;
-                let dots = if progress.verb == i18n::Verb::Analyze && stalled_for >= DOTS_AFTER_SECS
-                {
-                    // 1..=3 dots, cycling about twice a second.
-                    ".".repeat(((now * 2.0) as i64).rem_euclid(3) as usize + 1)
-                } else {
-                    String::new()
-                };
+                const SPINNER_AFTER_SECS: f64 = 1.0;
+                let spinner =
+                    if progress.verb == i18n::Verb::Analyze && stalled_for >= SPINNER_AFTER_SECS {
+                        // A single glyph spinning in place - fixed width, reads as
+                        // motion, rather than a line that keeps growing dots.
+                        format!(" {}", spinner_frame(now))
+                    } else {
+                        String::new()
+                    };
                 format!(
                     "{} {}/{}: {}{}",
                     i18n::verb_label(lang, progress.verb),
                     progress.current,
                     progress.total,
                     progress.detail,
-                    dots
+                    spinner
                 )
             };
             ui.add(egui::ProgressBar::new(fraction).text(text));
@@ -131,4 +146,36 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         crate::ui::libraries_panel::show(app, ui);
         ui.add_space(4.0);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spinner_frame;
+
+    // At 8 fps each frame lasts 0.125s; sample the middle of each slot.
+    fn frame_at_slot(slot: i64) -> char {
+        spinner_frame(slot as f64 * 0.125 + 0.06)
+    }
+
+    #[test]
+    fn spinner_cycles_through_all_four_frames_in_order() {
+        let seq: Vec<char> = (0..4).map(frame_at_slot).collect();
+        assert_eq!(seq, vec!['|', '/', '-', '\\']);
+    }
+
+    #[test]
+    fn spinner_wraps_around_after_four_frames() {
+        // The fifth slot must land back on the first frame (cycle length 4).
+        assert_eq!(frame_at_slot(4), frame_at_slot(0));
+        assert_eq!(frame_at_slot(5), frame_at_slot(1));
+    }
+
+    #[test]
+    fn spinner_frames_are_always_ascii() {
+        // Non-ASCII glyphs risk rendering as tofu in the bundled font; guard it.
+        for i in 0..64 {
+            let c = spinner_frame(i as f64 * 0.037);
+            assert!(c.is_ascii(), "frame {c:?} at step {i} is not ASCII");
+        }
+    }
 }
