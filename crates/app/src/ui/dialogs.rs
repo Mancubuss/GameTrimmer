@@ -29,7 +29,7 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let mut relaunch = false;
     let mut cont = false;
 
-    egui::Modal::new(egui::Id::new("gt_elevation_prompt")).show(ui.ctx(), |ui| {
+    let modal = egui::Modal::new(egui::Id::new("gt_elevation_prompt")).show(ui.ctx(), |ui| {
         ui.set_min_width(380.0);
         ui.heading(s.elevation_heading);
         ui.add_space(8.0);
@@ -44,6 +44,14 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             }
         });
     });
+
+    // Esc / backdrop click dismisses without relaunching - the elevation is a
+    // one-time offer, so dismissal maps to the non-destructive "continue
+    // without elevation" path (never a relaunch), same intent as clicking that
+    // button. `should_close` consumes the Escape press so it doesn't leak.
+    if modal.should_close() {
+        cont = true;
+    }
 
     if relaunch {
         app.relaunch_elevated();
@@ -76,7 +84,7 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let mut confirmed = false;
     let mut cancelled = false;
 
-    egui::Modal::new(egui::Id::new("gt_confirm_delete")).show(ui.ctx(), |ui| {
+    let modal = egui::Modal::new(egui::Id::new("gt_confirm_delete")).show(ui.ctx(), |ui| {
         ui.set_min_width(320.0);
         ui.heading(s.confirm_delete_heading);
         ui.add_space(8.0);
@@ -91,6 +99,13 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             }
         });
     });
+
+    // Esc / backdrop click dismisses this destructive confirmation as a
+    // *cancel*, never a delete - dismissing a "are you sure?" prompt must
+    // always map to the safe path. `should_close` consumes the Escape press.
+    if modal.should_close() {
+        cancelled = true;
+    }
 
     if confirmed {
         app.confirm_delete_now();
@@ -115,7 +130,7 @@ fn show_confirm_clear_database(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let mut confirmed = false;
     let mut cancelled = false;
 
-    egui::Modal::new(egui::Id::new("gt_confirm_clear_database")).show(ui.ctx(), |ui| {
+    let modal = egui::Modal::new(egui::Id::new("gt_confirm_clear_database")).show(ui.ctx(), |ui| {
         ui.set_min_width(320.0);
         ui.heading(s.confirm_clear_heading);
         ui.add_space(8.0);
@@ -130,6 +145,13 @@ fn show_confirm_clear_database(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             }
         });
     });
+
+    // Esc / backdrop click dismisses this destructive confirmation as a
+    // *cancel*, never a wipe - dismissing a "are you sure?" prompt must always
+    // map to the safe path. `should_close` consumes the Escape press.
+    if modal.should_close() {
+        cancelled = true;
+    }
 
     if confirmed {
         app.confirm_clear_database_now();
@@ -157,7 +179,7 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     let mut close = false;
 
-    egui::Modal::new(egui::Id::new("gt_remove_summary")).show(ui.ctx(), |ui| {
+    let modal = egui::Modal::new(egui::Id::new("gt_remove_summary")).show(ui.ctx(), |ui| {
         ui.set_min_width(360.0);
         ui.heading(s.remove_summary_heading);
         ui.add_space(8.0);
@@ -186,6 +208,13 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             close = true;
         }
     });
+
+    // Esc / backdrop click dismisses this informational summary, same as the
+    // "Закрити" button - it reports an already-completed operation, so closing
+    // it has no side effects. `should_close` consumes the Escape press.
+    if modal.should_close() {
+        close = true;
+    }
 
     if close {
         app.remove_summary = None;
