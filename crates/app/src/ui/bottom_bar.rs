@@ -3,7 +3,7 @@
 
 use eframe::egui;
 
-use crate::model::{self, format_size, AUTO_SELECT_CONFIDENCE_THRESHOLD};
+use crate::model::{self, format_duration, format_size, AUTO_SELECT_CONFIDENCE_THRESHOLD};
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
@@ -73,6 +73,31 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 app.request_delete_confirmation();
             }
         });
+
+        // Persistent last-scan timing readout (see `crate::model::ScanTiming`)
+        // on its OWN row below the action cluster, right-aligned. Kept on a
+        // separate line rather than sharing the buttons' row: on a narrow
+        // window the two would otherwise overlap (the right-to-left label
+        // creeping over the buttons). The right-aligning `right_to_left`
+        // layout MUST be wrapped in a `ui.horizontal` so the row's height is
+        // its one line of content - a bare `with_layout` here instead takes
+        // the panel's full available height and vertical-centers the label,
+        // ballooning the bottom panel upward over the findings tree. Stays
+        // visible until the next scan starts (unlike the transient top-bar
+        // status line, whose total this deliberately duplicates - see
+        // `worker::scan_route::format_scan_summary`).
+        if let Some(timing) = app.last_scan_timing {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(i18n::scan_timing_summary(
+                        lang,
+                        &format_duration(timing.scan),
+                        &format_duration(timing.analyze),
+                        &format_duration(timing.total),
+                    ));
+                });
+            });
+        }
         ui.add_space(4.0);
     });
 }
