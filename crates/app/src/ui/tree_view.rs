@@ -865,14 +865,10 @@ fn show_header_row(
         |ui| {
             ui.add_space(INDENT_PX * level as f32);
 
-            let open = is_open(toggles, key, default_open);
-            if ui
-                .button(if open { "\u{25bc}" } else { "\u{25b6}" })
-                .clicked()
-            {
-                toggles.insert(key.to_string(), !open);
-            }
-
+            // Selection checkbox first, then the expand/collapse arrow: the
+            // checkbox is the row's primary control and belongs in the same
+            // leading column as the file-row checkboxes (which have no arrow),
+            // so the selection column reads consistently down the tree.
             let (all_selected, any_selected) = group_selection_state(findings, indices);
             let mut checked = all_selected;
             let response = ui.add(
@@ -880,6 +876,14 @@ fn show_header_row(
             );
             if response.clicked() {
                 toggle_group(findings, indices);
+            }
+
+            let open = is_open(toggles, key, default_open);
+            if ui
+                .button(if open { "\u{25bc}" } else { "\u{25b6}" })
+                .clicked()
+            {
+                toggles.insert(key.to_string(), !open);
             }
 
             let response = ui.add(
