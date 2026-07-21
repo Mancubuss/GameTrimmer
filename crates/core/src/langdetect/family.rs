@@ -359,24 +359,149 @@ fn compute_directory_occurrence_family(
                 *atom_freq.entry(atom.as_str()).or_default() += 1;
             }
         }
+
+        // The naive form of "supported" above is an O(members^2) nested
+        // scan with a fresh HashSet allocated per differing-canonical pair
+        // - fine for a handful of siblings but explosive for the
+        // thousand-file flat directories real game installs produce. The
+        // three conditions below (distinctive shared atom / 3+ shared
+        // atoms / 2+ shared before-atoms) are independent (OR'd), so each
+        // can be answered from a small index built once over `survivors`
+        // instead of a pairwise scan:
+        //
+        // - C1 (distinctive shared atom): for each distinctive atom
+        //   (`atom_freq[a] * 2 <= survivors.len()`), the set of canonicals
+        //   carrying it. A member is C1-supported iff one of its own
+        //   distinctive atoms has >= 2 distinct canonicals against it -
+        //   its own canonical is always one of them, so >= 2 means a
+        //   different-canonical member shares it too.
+        // - C3 (2+ shared before-atoms): same idea, keyed by unordered
+        //   pairs of a member's own before-atoms. `|before(m) ∩
+        //   before(n)| >= 2` implies m and n share some concrete pair
+        //   drawn from that intersection, so indexing pairs -> canonicals
+        //   finds it without ever comparing m against n directly.
+        // - C2 (3+ shared atoms, multiplicity-aware): only evaluated for
+        //   members not already C1/C3-supported. `max_mult[a]` bounds how
+        //   many times atom `a` can appear in any single member's
+        //   `all_atoms()`; if a member's own atoms can't sum to 3 even at
+        //   that bound, no partner can push it over 3 shared, so it's
+        //   skipped outright. Otherwise only candidates sharing >= 1 atom
+        //   (via a postings index) are checked, each with the exact
+        //   original expression so multiplicity semantics match
+        //   precisely.
+        let total = survivors.len();
+        let all_atoms_sets: Vec<HashSet<&str>> = survivors
+            .iter()
+            .map(|m| m.all_atoms().map(|a| a.as_str()).collect())
+            .collect();
+        let before_sorted: Vec<Vec<&str>> = survivors
+            .iter()
+            .map(|m| {
+                let mut v: Vec<&str> = m.before_atoms.iter().map(|s| s.as_str()).collect();
+                v.sort_unstable();
+                v
+            })
+            .collect();
+
+        let mut distinctive_atom_canonicals: HashMap<&str, HashSet<&'static str>> = HashMap::new();
+        for (si, m) in survivors.iter().enumerate() {
+            for &atom in &all_atoms_sets[si] {
+                if atom_freq[atom] * 2 <= total {
+                    distinctive_atom_canonicals
+                        .entry(atom)
+                        .or_default()
+                        .insert(m.canonical);
+                }
+            }
+        }
+
+        let mut before_pair_canonicals: HashMap<(&str, &str), HashSet<&'static str>> =
+            HashMap::new();
+        for (si, m) in survivors.iter().enumerate() {
+            let before = &before_sorted[si];
+            for i in 0..before.len() {
+                for j in (i + 1)..before.len() {
+                    before_pair_canonicals
+                        .entry((before[i], before[j]))
+                        .or_default()
+                        .insert(m.canonical);
+                }
+            }
+        }
+
+        let mut max_mult: HashMap<&str, u8> = HashMap::new();
+        let mut postings: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (si, m) in survivors.iter().enumerate() {
+            for &atom in &all_atoms_sets[si] {
+                let mult = m.before_atoms.contains(atom) as u8 + m.after_atoms.contains(atom) as u8;
+                let entry = max_mult.entry(atom).or_insert(0);
+                if mult > *entry {
+                    *entry = mult;
+                }
+                postings.entry(atom).or_default().push(si);
+            }
+        }
+        let maxpossible: Vec<u32> = all_atoms_sets
+            .iter()
+            .map(|atoms| atoms.iter().map(|a| u32::from(max_mult[a])).sum())
+            .collect();
+
+        let mut is_supported = vec![false; total];
+        for (si, m) in survivors.iter().enumerate() {
+            let c1 = all_atoms_sets[si].iter().any(|a| {
+                distinctive_atom_canonicals
+                    .get(a)
+                    .is_some_and(|s| s.len() >= 2)
+            });
+            if c1 {
+                is_supported[si] = true;
+                continue;
+            }
+            let before = &before_sorted[si];
+            let c3 = (0..before.len()).any(|i| {
+                (i + 1..before.len()).any(|j| {
+                    before_pair_canonicals
+                        .get(&(before[i], before[j]))
+                        .is_some_and(|s| s.len() >= 2)
+                })
+            });
+            if c3 {
+                is_supported[si] = true;
+                continue;
+            }
+            if maxpossible[si] < 3 {
+                continue;
+            }
+            let m_all = &all_atoms_sets[si];
+            let mut seen: HashSet<usize> = HashSet::new();
+            let mut c2 = false;
+            'candidates: for &atom in m_all.iter() {
+                let Some(candidates) = postings.get(atom) else {
+                    continue;
+                };
+                for &ni in candidates {
+                    if ni == si || !seen.insert(ni) {
+                        continue;
+                    }
+                    let n = survivors[ni];
+                    if n.canonical == m.canonical {
+                        continue;
+                    }
+                    let shared_count = n.all_atoms().filter(|a| m_all.contains(a.as_str())).count();
+                    if shared_count >= 3 {
+                        c2 = true;
+                        break 'candidates;
+                    }
+                }
+            }
+            is_supported[si] = c2;
+        }
+
         let supported: Vec<&&PositionMember> = survivors
             .iter()
-            .filter(|m| {
-                survivors.iter().any(|n| {
-                    if n.canonical == m.canonical {
-                        return false;
-                    }
-                    let m_all: HashSet<&String> = m.all_atoms().collect();
-                    let shared: Vec<&String> =
-                        n.all_atoms().filter(|a| m_all.contains(a)).collect();
-                    let shared_before = m.before_atoms.intersection(&n.before_atoms).count();
-                    shared
-                        .iter()
-                        .any(|atom| atom_freq[atom.as_str()] * 2 <= survivors.len())
-                        || shared.len() >= 3
-                        || shared_before >= 2
-                })
-            })
+            .enumerate()
+            .filter(|(si, _)| is_supported[*si])
+            .map(|(_, m)| m)
             .collect();
 
         let distinct: HashSet<&'static str> = supported.iter().map(|m| m.canonical).collect();
