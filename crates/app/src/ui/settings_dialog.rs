@@ -43,7 +43,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     // value on every frame it happens to be open.
     let mut picked_categories = app.settings.enabled_categories.clone();
 
-    egui::Modal::new(egui::Id::new("gt_settings")).show(ui.ctx(), |ui| {
+    let settings_modal = egui::Modal::new(egui::Id::new("gt_settings")).show(ui.ctx(), |ui| {
         // egui draws the modal inside the single OS viewport, so it can
         // never be wider than the window - clamp the usual min width down
         // to whatever room is actually available instead of letting a
@@ -351,6 +351,15 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             close = true;
         }
     });
+
+    // Esc (when this is the top modal and no popup is open) or a click on the
+    // backdrop dismisses the dialog, same as the "Закрити" button - closing is
+    // non-destructive because every setting is already applied and persisted
+    // as it changes (see the module docs). `should_close` consumes the Escape
+    // key press, so it never leaks to any other handler.
+    if settings_modal.should_close() {
+        close = true;
+    }
 
     app.set_delete_method(picked_method);
     app.set_language(picked_lang);
