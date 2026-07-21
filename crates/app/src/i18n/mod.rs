@@ -100,6 +100,11 @@ pub struct Strings {
     pub col_confidence: &'static str,
     pub col_name: &'static str,
 
+    // -- tree_view.rs: row right-click context menu --
+    pub ctx_reveal_in_explorer: &'static str,
+    pub ctx_open_with: &'static str,
+    pub ctx_copy_path: &'static str,
+
     // -- app.rs: dialog titles / filter labels --
     pub add_library_dialog_title: &'static str,
     pub export_dialog_title: &'static str,
@@ -285,6 +290,9 @@ impl Strings {
             ("col_size", self.col_size),
             ("col_confidence", self.col_confidence),
             ("col_name", self.col_name),
+            ("ctx_reveal_in_explorer", self.ctx_reveal_in_explorer),
+            ("ctx_open_with", self.ctx_open_with),
+            ("ctx_copy_path", self.ctx_copy_path),
             ("add_library_dialog_title", self.add_library_dialog_title),
             ("export_dialog_title", self.export_dialog_title),
             ("text_file_filter_label", self.text_file_filter_label),
