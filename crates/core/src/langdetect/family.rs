@@ -34,11 +34,14 @@
 //! sufficient.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::error::{CoreError, Result as CoreResult};
 use crate::langdetect::data::LangData;
 use crate::langdetect::dict::Level;
 use crate::langdetect::occurrences::Occurrence;
 use crate::langdetect::tokens::Segment;
+use crate::scanner::CANCEL_POLL_INTERVAL;
 
 const MIN_FAMILY_SIZE: usize = 3;
 /// Stricter threshold for mechanism 3 (`compute_directory_occurrence_family`)
@@ -141,20 +144,42 @@ fn shape_of(filename_lower: &str, start: usize, end: usize) -> String {
     shaped
 }
 
+/// Returns `Err(CoreError::Other("cancelled"))` if `cancel` is set, else
+/// `Ok(())`. The hot loops below poll this every [`CANCEL_POLL_INTERVAL`]
+/// iterations so a Stop request during the analysis of a huge game (ARK's
+/// thousand-file flat directories) is honored promptly instead of only after
+/// the whole family computation runs to completion. The "cancelled" sentinel
+/// matches [`crate::scanner::collect_cancellable`] so the app's writer treats
+/// it as a normal user action, not a scan failure.
+#[inline]
+fn check_cancel(cancel: &AtomicBool) -> CoreResult<()> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(CoreError::Other("cancelled".to_string()))
+    } else {
+        Ok(())
+    }
+}
+
 /// Computes family-confirmed findings across every file of one game.
 /// `seg_lists`/`occ_lists` must be index-aligned with the game's file list.
+///
+/// `cancel` is polled inside the hot loops (see [`check_cancel`]); when it is
+/// observed set this returns `Err(CoreError::Other("cancelled"))` without
+/// finishing the remaining mechanisms. When `cancel` is never set the output
+/// is exactly what the previous non-cancellable version produced.
 pub fn compute_family(
     data: &LangData,
     seg_lists: &[Vec<Segment>],
     occ_lists: &[Vec<Occurrence>],
     keep: &HashSet<String>,
-) -> HashMap<usize, FamilyHit> {
+    cancel: &AtomicBool,
+) -> CoreResult<HashMap<usize, FamilyHit>> {
     let mut result = HashMap::new();
-    compute_file_shape_family(seg_lists, occ_lists, keep, &mut result);
-    compute_directory_occurrence_family(seg_lists, occ_lists, keep, &mut result);
-    compute_folder_family(data, seg_lists, keep, &mut result);
-    compute_prefixed_folder_family(seg_lists, occ_lists, keep, &mut result);
-    result
+    compute_file_shape_family(seg_lists, occ_lists, keep, cancel, &mut result)?;
+    compute_directory_occurrence_family(seg_lists, occ_lists, keep, cancel, &mut result)?;
+    compute_folder_family(data, seg_lists, keep, cancel, &mut result)?;
+    compute_prefixed_folder_family(seg_lists, occ_lists, keep, cancel, &mut result)?;
+    Ok(result)
 }
 
 /// Mechanism 1: sibling files in the same directory whose name differs only
@@ -163,11 +188,15 @@ fn compute_file_shape_family(
     seg_lists: &[Vec<Segment>],
     occ_lists: &[Vec<Occurrence>],
     keep: &HashSet<String>,
+    cancel: &AtomicBool,
     result: &mut HashMap<usize, FamilyHit>,
-) {
+) -> CoreResult<()> {
     let mut shape_groups: ShapeGroups = HashMap::new();
 
     for (i, segs) in seg_lists.iter().enumerate() {
+        if i % CANCEL_POLL_INTERVAL == 0 {
+            check_cancel(cancel)?;
+        }
         let Some(filename_seg) = segs.last() else {
             continue;
         };
@@ -216,6 +245,7 @@ fn compute_file_shape_family(
             );
         }
     }
+    Ok(())
 }
 
 /// Mechanism 3: files in the same directory whose filename carries a
@@ -250,8 +280,9 @@ fn compute_directory_occurrence_family(
     seg_lists: &[Vec<Segment>],
     occ_lists: &[Vec<Occurrence>],
     keep: &HashSet<String>,
+    cancel: &AtomicBool,
     result: &mut HashMap<usize, FamilyHit>,
-) {
+) -> CoreResult<()> {
     // (parent_dir, variant, "from start"|"from end", atom index) -> members.
     // `variant` distinguishes two atom sequences per file, since real
     // conventions disagree on whether the language token lives inside or
@@ -267,6 +298,9 @@ fn compute_directory_occurrence_family(
     let mut position_groups: PositionGroups = HashMap::new();
 
     for (i, segs) in seg_lists.iter().enumerate() {
+        if i % CANCEL_POLL_INTERVAL == 0 {
+            check_cancel(cancel)?;
+        }
         let Some(filename_seg) = segs.last() else {
             continue;
         };
@@ -324,7 +358,12 @@ fn compute_directory_occurrence_family(
         }
     }
 
-    for ((parent_dir, _variant, _from_start, _idx), members) in &position_groups {
+    for (group_idx, ((parent_dir, _variant, _from_start, _idx), members)) in
+        position_groups.iter().enumerate()
+    {
+        if group_idx % CANCEL_POLL_INTERVAL == 0 {
+            check_cancel(cancel)?;
+        }
         // Filter 1 (2026-07-16 report): a "language" that accounts for more
         // than half the group is a constant naming convention, not the
         // varying slot of a per-language set — `*_bg_*` background textures
@@ -448,6 +487,9 @@ fn compute_directory_occurrence_family(
 
         let mut is_supported = vec![false; total];
         for (si, m) in survivors.iter().enumerate() {
+            if si % CANCEL_POLL_INTERVAL == 0 {
+                check_cancel(cancel)?;
+            }
             let c1 = all_atoms_sets[si].iter().any(|a| {
                 distinctive_atom_canonicals
                     .get(a)
@@ -545,6 +587,7 @@ fn compute_directory_occurrence_family(
             );
         }
     }
+    Ok(())
 }
 
 /// Mechanism 2: sibling subdirectories whose entire name is a recognized
@@ -553,13 +596,17 @@ fn compute_folder_family(
     data: &LangData,
     seg_lists: &[Vec<Segment>],
     keep: &HashSet<String>,
+    cancel: &AtomicBool,
     result: &mut HashMap<usize, FamilyHit>,
-) {
+) -> CoreResult<()> {
     // parent_prefix -> child segment text (lowercase) -> (canonical, level)
     let mut folder_children: HashMap<String, HashMap<String, (&'static str, Level)>> =
         HashMap::new();
 
-    for segs in seg_lists {
+    for (i, segs) in seg_lists.iter().enumerate() {
+        if i % CANCEL_POLL_INTERVAL == 0 {
+            check_cancel(cancel)?;
+        }
         if segs.len() < 2 {
             continue; // file sits at the library root, no folders at all
         }
@@ -594,10 +641,13 @@ fn compute_folder_family(
     }
 
     if confirmed.is_empty() {
-        return;
+        return Ok(());
     }
 
     for (i, segs) in seg_lists.iter().enumerate() {
+        if i % CANCEL_POLL_INTERVAL == 0 {
+            check_cancel(cancel)?;
+        }
         if segs.len() < 2 {
             continue;
         }
@@ -623,6 +673,7 @@ fn compute_folder_family(
             }
         }
     }
+    Ok(())
 }
 
 /// Mechanism 4 (2026-07-16 report, Mafia II miss): sibling subdirectories
@@ -637,14 +688,18 @@ fn compute_prefixed_folder_family(
     seg_lists: &[Vec<Segment>],
     occ_lists: &[Vec<Occurrence>],
     keep: &HashSet<String>,
+    cancel: &AtomicBool,
     result: &mut HashMap<usize, FamilyHit>,
-) {
+) -> CoreResult<()> {
     // (parent_prefix, folder-name shape) -> child folder lower ->
     // (canonical, level).
     type ShapeChildren = HashMap<(String, String), HashMap<String, (&'static str, Level)>>;
     let mut shape_children: ShapeChildren = HashMap::new();
 
     for (i, segs) in seg_lists.iter().enumerate() {
+        if i % CANCEL_POLL_INTERVAL == 0 {
+            check_cancel(cancel)?;
+        }
         for occ in &occ_lists[i] {
             if occ.is_filename || occ.whole_segment {
                 continue; // whole-segment folders are mechanism 2's job
@@ -683,10 +738,13 @@ fn compute_prefixed_folder_family(
     }
 
     if confirmed.is_empty() {
-        return;
+        return Ok(());
     }
 
     for (i, segs) in seg_lists.iter().enumerate() {
+        if i % CANCEL_POLL_INTERVAL == 0 {
+            check_cancel(cancel)?;
+        }
         if segs.len() < 2 {
             continue;
         }
@@ -711,6 +769,7 @@ fn compute_prefixed_folder_family(
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -718,6 +777,11 @@ mod tests {
     use super::*;
     use crate::langdetect::occurrences::collect_occurrences;
     use crate::langdetect::tokens::tokenize_path;
+
+    /// The tests never exercise cancellation — a fresh, never-set flag.
+    fn no_cancel() -> AtomicBool {
+        AtomicBool::new(false)
+    }
 
     fn data() -> std::sync::Arc<LangData> {
         LangData::builtin()
@@ -741,7 +805,14 @@ mod tests {
             .map(|s| collect_occurrences(&data(), s))
             .collect();
 
-        let hits = compute_family(&data(), &seg_lists, &occ_lists, &keep_default());
+        let hits = compute_family(
+            &data(),
+            &seg_lists,
+            &occ_lists,
+            &keep_default(),
+            &no_cancel(),
+        )
+        .unwrap();
 
         assert!(!hits.contains_key(&0), "english is kept");
         assert!(hits.contains_key(&1), "french should be flagged");
@@ -763,7 +834,14 @@ mod tests {
             .map(|s| collect_occurrences(&data(), s))
             .collect();
 
-        let hits = compute_family(&data(), &seg_lists, &occ_lists, &keep_default());
+        let hits = compute_family(
+            &data(),
+            &seg_lists,
+            &occ_lists,
+            &keep_default(),
+            &no_cancel(),
+        )
+        .unwrap();
 
         assert!(!hits.contains_key(&0), "en/ folder is kept");
         assert!(hits.contains_key(&1), "de/ folder should be flagged");
@@ -780,7 +858,14 @@ mod tests {
             .map(|s| collect_occurrences(&data(), s))
             .collect();
 
-        let hits = compute_family(&data(), &seg_lists, &occ_lists, &keep_default());
+        let hits = compute_family(
+            &data(),
+            &seg_lists,
+            &occ_lists,
+            &keep_default(),
+            &no_cancel(),
+        )
+        .unwrap();
         assert!(hits.is_empty(), "only 2 siblings must not confirm a family");
     }
 }
