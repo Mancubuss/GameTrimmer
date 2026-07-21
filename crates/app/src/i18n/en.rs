@@ -99,6 +99,10 @@ pub(super) const STRINGS: Strings = Strings {
     col_confidence: "Confidence",
     col_name: "Name",
 
+    ctx_reveal_in_explorer: "Reveal in Explorer",
+    ctx_open_with: "Open with\u{2026}",
+    ctx_copy_path: "Copy path",
+
     add_library_dialog_title: "Choose a library folder",
     export_dialog_title: "Export analysis results",
     text_file_filter_label: "Text file",

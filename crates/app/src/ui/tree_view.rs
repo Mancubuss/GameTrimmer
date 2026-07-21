@@ -36,6 +36,7 @@
 //! The cursor row is highlighted; clicking a row's name places the cursor.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use eframe::egui;
 
@@ -46,6 +47,7 @@ use crate::model::{
     set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem, TreeNode,
     AUTO_SELECT_CONFIDENCE_THRESHOLD,
 };
+use crate::ui::row_actions;
 
 /// Horizontal indent per nesting level (disk = 0, game = 1, category = 2,
 /// folder = 3, orphan file = 3, folder member = 4).
@@ -817,7 +819,7 @@ fn show_folder_row(
         group_dir,
     );
     let name = egui::RichText::new(format!("{group_dir}\\"));
-    show_header_row(
+    let response = show_header_row(
         ui,
         findings,
         toggles,
@@ -831,6 +833,17 @@ fn show_folder_row(
         name,
         lang,
     );
+
+    // The folder's absolute path comes from any member (they all share the
+    // game's install dir); the same path drives the hover tooltip and the
+    // reveal/copy context-menu actions. "Open with..." is omitted - it is a
+    // file-only chooser.
+    if let Some(&first) = item_indices.first() {
+        let abs_path =
+            row_actions::windows_path_string(&findings[first].row.install_dir.join(group_dir));
+        let response = response.on_hover_text(abs_path.clone());
+        row_context_menu(&response, lang, &abs_path, false);
+    }
 }
 
 /// Renders one expandable header row shared by disk/game/category/folder
@@ -901,6 +914,40 @@ fn show_header_row(
     name_response.expect("row_columns always runs the left closure")
 }
 
+/// Attaches the shared right-click context menu to a file or folder row:
+/// reveal the item in Explorer, optionally the "Open with..." chooser (files
+/// only - it is meaningless for a directory), and copy the path. `abs_path` is
+/// the item's absolute path in Windows-native form. Launch failures are logged
+/// (the app's convention for non-fatal errors), never surfaced mid-menu.
+fn row_context_menu(
+    response: &egui::Response,
+    lang: Lang,
+    abs_path: &str,
+    include_open_with: bool,
+) {
+    let s = i18n::strings(lang);
+    response.context_menu(|ui| {
+        if ui.button(s.ctx_reveal_in_explorer).clicked() {
+            let (program, args) = row_actions::reveal_in_explorer_args(Path::new(abs_path));
+            if let Err(err) = row_actions::launch(program, &args) {
+                eprintln!("Не вдалося відкрити Провідник: {err}");
+            }
+            ui.close();
+        }
+        if include_open_with && ui.button(s.ctx_open_with).clicked() {
+            let (program, args) = row_actions::open_with_args(Path::new(abs_path));
+            if let Err(err) = row_actions::launch(program, &args) {
+                eprintln!("Не вдалося відкрити діалог «Відкрити за допомогою»: {err}");
+            }
+            ui.close();
+        }
+        if ui.button(s.ctx_copy_path).clicked() {
+            ui.ctx().copy_text(abs_path.to_string());
+            ui.close();
+        }
+    });
+}
+
 /// Renders one file row: checkbox, name, and the language/size/confidence
 /// columns. The classification reason lives in the name's hover tooltip
 /// rather than inline - being under a category header already explains the
@@ -956,12 +1003,11 @@ fn show_file_row(
         egui::RichText::new(format!("{}%", item.row.confidence))
     };
 
-    let mut hover = i18n::hover_reason(
-        lang,
-        &item.row.rel_path,
-        &item.row.rule_desc,
-        item.row.confidence,
-    );
+    // Absolute path (Windows-native separators): the tooltip's first line, the
+    // clipboard payload, and the argument to every context-menu shell action.
+    let abs_path = row_actions::windows_path_string(&item.row.install_dir.join(&item.row.rel_path));
+
+    let mut hover = i18n::hover_reason(lang, &abs_path, &item.row.rule_desc, item.row.confidence);
     if let Some(lang_tag) = &item.row.lang_tag {
         hover.push_str(&i18n::hover_lang_suffix(lang, lang_tag));
     }
@@ -985,6 +1031,7 @@ fn show_file_row(
             if response.clicked() {
                 *cursor = Some(row_index);
             }
+            row_context_menu(&response, lang, &abs_path, true);
         },
     );
 }

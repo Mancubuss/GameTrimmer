@@ -547,10 +547,13 @@ pub fn deselect_category_on_disk(lang: Lang, label: &str, disk: &str) -> String 
     }
 }
 
-pub fn hover_reason(lang: Lang, rel_path: &str, rule_desc: &str, confidence: u8) -> String {
+/// Tooltip for a file row: the full path on the first line (details on
+/// demand - the inline row only shows the leaf name), then the classification
+/// reason. `path` is the file's absolute path, not the relative one.
+pub fn hover_reason(lang: Lang, path: &str, rule_desc: &str, confidence: u8) -> String {
     match lang {
-        Lang::En => format!("{rel_path}\nReason: {rule_desc} (confidence {confidence}%)"),
-        Lang::Uk => format!("{rel_path}\nПричина: {rule_desc} (упевненість {confidence}%)"),
+        Lang::En => format!("{path}\nReason: {rule_desc} (confidence {confidence}%)"),
+        Lang::Uk => format!("{path}\nПричина: {rule_desc} (упевненість {confidence}%)"),
     }
 }
 

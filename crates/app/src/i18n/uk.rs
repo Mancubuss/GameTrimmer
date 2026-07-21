@@ -98,6 +98,10 @@ pub(super) const STRINGS: Strings = Strings {
     col_confidence: "Довіра",
     col_name: "Назва",
 
+    ctx_reveal_in_explorer: "Відкрити в Провіднику",
+    ctx_open_with: "Відкрити за допомогою\u{2026}",
+    ctx_copy_path: "Копіювати шлях",
+
     add_library_dialog_title: "Виберіть теку бібліотеки",
     export_dialog_title: "Експорт результатів аналізу",
     text_file_filter_label: "Текстовий файл",
