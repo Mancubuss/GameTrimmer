@@ -21,6 +21,7 @@ use crate::i18n::Verb;
 use crate::model::FindingRow;
 
 const DB_FILE_NAME: &str = "gametrimmer.db";
+const LOG_FILE_NAME: &str = "gametrimmer.log";
 pub(crate) const RULES_FILE_NAME: &str = "rules.json";
 /// Localization-detector data pack (community rules).
 pub const L10N_RULES_FILE_NAME: &str = "l10n_rules.json";
@@ -182,7 +183,9 @@ pub(crate) fn occupancy_or_default(conn: &rusqlite::Connection) -> crate::model:
     match gametrimmer_core::db::occupied_by_library(conn) {
         Ok(by_library) => crate::model::Occupancy::from_by_library(by_library),
         Err(err) => {
-            eprintln!("Не вдалося порахувати зайнятий обсяг за бібліотеками: {err}");
+            crate::logger::log(&format!(
+                "Не вдалося порахувати зайнятий обсяг за бібліотеками: {err}"
+            ));
             crate::model::Occupancy::default()
         }
     }
@@ -200,6 +203,12 @@ fn exe_dir() -> io::Result<PathBuf> {
 /// Resolves the database path: `gametrimmer.db` next to the executable.
 pub fn db_path() -> io::Result<PathBuf> {
     Ok(exe_dir()?.join(DB_FILE_NAME))
+}
+
+/// Resolves the diagnostic log path: `gametrimmer.log` next to the
+/// executable - see `crate::logger`.
+pub fn log_path() -> io::Result<PathBuf> {
+    Ok(exe_dir()?.join(LOG_FILE_NAME))
 }
 
 /// Ensures `dir/file_name` exists, seeding it with `builtin` on first use.

@@ -35,6 +35,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let mut picked_scan_routing = app.settings.scan_routing;
     let mut picked_lang = app.lang();
     let mut picked_theme = app.settings.theme;
+    let mut picked_logging_enabled = app.settings.logging_enabled;
     // Kept in the same "empty means every category enabled" representation
     // used for storage (see `Settings::enabled_categories`) - the checkbox
     // loop below reads/writes it through `category_enabled`, and the block
@@ -342,6 +343,15 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                         }
                     }
                 }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.label(s.logging_label);
+                ui.add_space(4.0);
+                ui.checkbox(&mut picked_logging_enabled, s.logging_checkbox);
+                ui.small(s.logging_hint);
             });
 
         // Outside the scroll area, so it stays visible (and clickable) no
@@ -367,6 +377,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     app.set_keep_languages(picked_keep_languages);
     app.set_scan_routing(picked_scan_routing);
     app.set_enabled_categories(picked_categories);
+    app.set_logging_enabled(picked_logging_enabled);
     if compact_clicked {
         app.start_compact();
     }

@@ -930,14 +930,16 @@ fn row_context_menu(
         if ui.button(s.ctx_reveal_in_explorer).clicked() {
             let (program, args) = row_actions::reveal_in_explorer_args(Path::new(abs_path));
             if let Err(err) = row_actions::launch(program, &args) {
-                eprintln!("Не вдалося відкрити Провідник: {err}");
+                crate::logger::log(&format!("Не вдалося відкрити Провідник: {err}"));
             }
             ui.close();
         }
         if include_open_with && ui.button(s.ctx_open_with).clicked() {
             let (program, args) = row_actions::open_with_args(Path::new(abs_path));
             if let Err(err) = row_actions::launch(program, &args) {
-                eprintln!("Не вдалося відкрити діалог «Відкрити за допомогою»: {err}");
+                crate::logger::log(&format!(
+                    "Не вдалося відкрити діалог «Відкрити за допомогою»: {err}"
+                ));
             }
             ui.close();
         }

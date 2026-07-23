@@ -16,6 +16,7 @@ use gametrimmer_core::settings::{DeleteMethod, Lang, ScanRouting, Settings, Them
 use crate::elevation;
 use crate::export;
 use crate::i18n;
+use crate::logger;
 use crate::model::{self, DiskGroup, FindingItem};
 use crate::ui;
 use crate::worker::delete::DeleteItem;
@@ -224,6 +225,17 @@ impl GameTrimmerApp {
         // change.
         let show_elevation_prompt =
             !elevated && compute_show_elevation_prompt(settings.scan_routing, &libraries);
+
+        // Diagnostic logging is opt-in (see `settings::Settings::logging_enabled`)
+        // and off by default - only turn it on here if the user already
+        // enabled it in a previous session. A `log_path()` failure (the exe's
+        // own directory could not be resolved) just means logging stays off
+        // for this session; there is no UI up yet to report it through.
+        if settings.logging_enabled {
+            if let Ok(log_path) = worker::log_path() {
+                logger::set_enabled(true, elevated, &log_path);
+            }
+        }
 
         let (tx, rx) = mpsc::channel();
 
@@ -790,6 +802,32 @@ impl GameTrimmerApp {
             ..self.settings.clone()
         };
         self.persist_settings();
+    }
+
+    /// Applies the diagnostic-logging toggle and persists it immediately,
+    /// mirroring `set_theme`. Unlike the other setters, this also has an
+    /// immediate side effect beyond persistence: the logger itself is
+    /// enabled/disabled right away (see `crate::logger::set_enabled`), so a
+    /// toggle in the settings dialog starts (or stops) writing to
+    /// `gametrimmer.log` the same frame rather than waiting for a restart.
+    pub fn set_logging_enabled(&mut self, enabled: bool) {
+        if self.settings.logging_enabled == enabled {
+            return;
+        }
+        self.settings = Settings {
+            logging_enabled: enabled,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+
+        // The exe directory could not be resolved - extremely unlikely, and
+        // not worth a user-facing warning for what is purely a
+        // troubleshooting feature; log it to stderr like the other
+        // startup-only path-resolution edge cases and move on.
+        match worker::log_path() {
+            Ok(path) => logger::set_enabled(enabled, self.elevated, &path),
+            Err(err) => eprintln!("Не вдалося визначити шлях до журналу діагностики: {err}"),
+        }
     }
 
     fn persist_settings(&mut self) {

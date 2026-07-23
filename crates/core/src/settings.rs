@@ -209,6 +209,26 @@ fn serialize_enabled_categories(ids: &[String]) -> String {
     ids.join(",")
 }
 
+/// Inverse of [`bool_as_str`]. `None` for unknown values (e.g. written by a
+/// future version) - callers fall back to the field's default.
+fn parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Stable string form persisted into the `settings` table for a plain `bool`
+/// setting.
+fn bool_as_str(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
 /// All persisted settings, with defaults for anything missing from the
 /// database. Grows one field per setting as the settings dialog gains
 /// options (deletion method, keep-list languages, categories, app language,
@@ -238,6 +258,12 @@ pub struct Settings {
     /// settings dialog) are responsible for never letting the *last*
     /// checked category be unchecked - see `ui::settings_dialog`.
     pub enabled_categories: Vec<String>,
+    /// Whether the app writes a `gametrimmer.log` file next to the
+    /// executable with diagnostics (errors and scan lifecycle events) - see
+    /// the `logger` module in the `app` crate. Opt-in and off by default:
+    /// this is strictly a troubleshooting aid, not something every user
+    /// needs a file written for.
+    pub logging_enabled: bool,
 }
 
 impl Default for Settings {
@@ -249,6 +275,7 @@ impl Default for Settings {
             scan_routing: ScanRouting::default(),
             theme: Theme::default(),
             enabled_categories: Vec::new(),
+            logging_enabled: false,
         }
     }
 }
@@ -259,6 +286,7 @@ const KEEP_LANGUAGES_KEY: &str = "keep_languages";
 const SCAN_ROUTING_KEY: &str = "scan_routing";
 const THEME_KEY: &str = "theme";
 const ENABLED_CATEGORIES_KEY: &str = "enabled_categories";
+const LOGGING_ENABLED_KEY: &str = "logging_enabled";
 
 /// Reads one raw value from the `settings` table.
 fn read_value(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -301,6 +329,9 @@ pub fn load(conn: &Connection) -> Result<Settings> {
     let enabled_categories = read_value(conn, ENABLED_CATEGORIES_KEY)?
         .map(|value| parse_enabled_categories(&value))
         .unwrap_or_default();
+    let logging_enabled = read_value(conn, LOGGING_ENABLED_KEY)?
+        .and_then(|value| parse_bool(&value))
+        .unwrap_or_default();
     Ok(Settings {
         delete_method,
         app_language,
@@ -308,6 +339,7 @@ pub fn load(conn: &Connection) -> Result<Settings> {
         scan_routing,
         theme,
         enabled_categories,
+        logging_enabled,
     })
 }
 
@@ -326,6 +358,11 @@ pub fn save(conn: &Connection, settings: &Settings) -> Result<()> {
         conn,
         ENABLED_CATEGORIES_KEY,
         &serialize_enabled_categories(&settings.enabled_categories),
+    )?;
+    write_value(
+        conn,
+        LOGGING_ENABLED_KEY,
+        bool_as_str(settings.logging_enabled),
     )
 }
 
@@ -629,6 +666,47 @@ mod tests {
             settings.enabled_categories,
             vec!["redist".to_string(), "docs".to_string()],
             "enabled-categories should be deduplicated, trimmed, and lowercased"
+        );
+    }
+
+    #[test]
+    fn defaults_to_disabled_logging_on_empty_database() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        let settings = load(&conn).expect("load settings");
+        assert!(
+            !settings.logging_enabled,
+            "diagnostic logging must be opt-in, off by default"
+        );
+    }
+
+    #[test]
+    fn save_then_load_round_trips_logging_enabled() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+
+        for enabled in [true, false] {
+            let settings = Settings {
+                logging_enabled: enabled,
+                ..Settings::default()
+            };
+            save(&conn, &settings).expect("save settings");
+            let loaded = load(&conn).expect("load settings");
+            assert_eq!(loaded.logging_enabled, enabled);
+        }
+    }
+
+    #[test]
+    fn unknown_stored_logging_value_falls_back_to_default() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('logging_enabled', 'maybe')",
+            [],
+        )
+        .expect("insert unknown value");
+
+        let settings = load(&conn).expect("load settings");
+        assert!(
+            !settings.logging_enabled,
+            "a value written by a future version must not break loading"
         );
     }
 }
