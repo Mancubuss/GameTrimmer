@@ -103,9 +103,9 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         let category: String = row.get(6)?;
         let file_id: i64 = row.get(3)?;
         let Some(source) = parse_source_key(&category) else {
-            eprintln!(
+            crate::logger::log(&format!(
                 "Пропущено findings-рядок з невідомою категорією \"{category}\" (file_id={file_id})"
-            );
+            ));
             continue;
         };
 

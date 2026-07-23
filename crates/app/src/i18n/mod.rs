@@ -83,6 +83,9 @@ pub struct Strings {
     pub theme_dark_label: &'static str,
     pub categories_label: &'static str,
     pub categories_hint: &'static str,
+    pub logging_label: &'static str,
+    pub logging_checkbox: &'static str,
+    pub logging_hint: &'static str,
 
     // -- libraries_panel --
     pub libraries_header: &'static str,
@@ -278,6 +281,9 @@ impl Strings {
             ("theme_dark_label", self.theme_dark_label),
             ("categories_label", self.categories_label),
             ("categories_hint", self.categories_hint),
+            ("logging_label", self.logging_label),
+            ("logging_checkbox", self.logging_checkbox),
+            ("logging_hint", self.logging_hint),
             ("libraries_header", self.libraries_header),
             ("btn_add_folder", self.btn_add_folder),
             ("picking_folder", self.picking_folder),

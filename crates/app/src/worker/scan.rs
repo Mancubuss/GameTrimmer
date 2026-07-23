@@ -108,6 +108,10 @@ fn run_scan(
         enabled_categories.as_slice(),
     );
     let started_at = Instant::now();
+    crate::logger::log(&format!(
+        "Scan started (routing: {scan_routing:?}, elevated: {elevated}, keep: {})",
+        keep_languages.join(",")
+    ));
     // Both rule files live next to the executable and are materialized from
     // the embedded defaults on first use (see `super::ensure_rules_path`) -
     // the scan reads them exclusively from disk, so what the user can audit
@@ -221,8 +225,14 @@ fn run_scan(
         libraries: libraries.len(),
         games: games.len(),
     });
+    crate::logger::log(&format!(
+        "Libraries: {}, games: {}",
+        libraries.len(),
+        games.len()
+    ));
 
     if cancel.load(Ordering::Relaxed) {
+        crate::logger::log("Scan cancelled");
         notifier.send(WorkerMsg::Cancelled);
         return;
     }
@@ -238,6 +248,10 @@ fn run_scan(
     // back to a normal `scan_dir` walk for those, exactly as before this
     // path existed.
     let mft_pass = run_mft_pass(elevated, scan_routing, &games, cancel, notifier, lang);
+    crate::logger::log(&format!(
+        "MFT pass: {} via MFT, {} via walkdir",
+        mft_pass.mft_count, mft_pass.walkdir_count
+    ));
 
     // Marks the end of the "scan" phase (discovery + persist + the MFT
     // pre-pass) and the start of "analyze" (per-game scan+classify+write) -
@@ -247,6 +261,7 @@ fn run_scan(
     let scan_phase_end = Instant::now();
 
     if cancel.load(Ordering::Relaxed) {
+        crate::logger::log("Scan cancelled");
         notifier.send(WorkerMsg::Cancelled);
         return;
     }
@@ -307,6 +322,7 @@ fn run_scan(
     };
 
     if cancel.load(Ordering::Relaxed) {
+        crate::logger::log("Scan cancelled");
         notifier.send(WorkerMsg::Cancelled);
         return;
     }
@@ -321,7 +337,9 @@ fn run_scan(
     // scan must not be reported as failed just because its final
     // housekeeping checkpoint didn't take.
     if let Err(err) = db::checkpoint_truncate(&conn) {
-        eprintln!("Не вдалося виконати checkpoint WAL після сканування: {err}");
+        crate::logger::log(&format!(
+            "Не вдалося виконати checkpoint WAL після сканування: {err}"
+        ));
     }
 
     let scan_summary = scan_route::format_scan_summary(
@@ -347,6 +365,13 @@ fn run_scan(
         analyze: analyze_phase_end.duration_since(scan_phase_end),
         total: started_at.elapsed(),
     };
+    crate::logger::log(&format!(
+        "Scan done in {:?} (scan {:?}, analyze {:?}), findings: {}",
+        timing.total,
+        timing.scan,
+        timing.analyze,
+        findings.len()
+    ));
 
     notifier.send(WorkerMsg::Done {
         findings,
@@ -778,10 +803,10 @@ fn run_writer(
                 // Stop) - that is a normal user action, not a scan failure,
                 // so it is not logged as an error.
                 if error.to_string() != "cancelled" {
-                    eprintln!(
+                    crate::logger::log(&format!(
                         "Помилка сканування \"{name}\" ({}): {error}",
                         install_dir.display()
-                    );
+                    ));
                 }
                 notifier.send(WorkerMsg::Progress {
                     verb: Verb::Analyze,
@@ -823,17 +848,20 @@ fn flush_batch(
             for prepared in batch.drain(..) {
                 match persist_prepared_game(&db_tx, &prepared) {
                     Ok(mut rows) => findings.append(&mut rows),
-                    Err(err) => {
-                        eprintln!("Помилка запису \"{}\" у базу даних: {err}", prepared.name)
-                    }
+                    Err(err) => crate::logger::log(&format!(
+                        "Помилка запису \"{}\" у базу даних: {err}",
+                        prepared.name
+                    )),
                 }
             }
             if let Err(err) = db_tx.commit() {
-                eprintln!("Помилка збереження пакету ігор у базу даних: {err}");
+                crate::logger::log(&format!(
+                    "Помилка збереження пакету ігор у базу даних: {err}"
+                ));
             }
         }
         Err(err) => {
-            eprintln!("Помилка початку транзакції запису: {err}");
+            crate::logger::log(&format!("Помилка початку транзакції запису: {err}"));
             batch.clear();
         }
     }

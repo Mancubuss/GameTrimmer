@@ -4,6 +4,7 @@ mod app;
 mod elevation;
 mod export;
 mod i18n;
+mod logger;
 mod model;
 mod ui;
 mod worker;

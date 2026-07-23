@@ -84,6 +84,9 @@ pub(super) const STRINGS: Strings = Strings {
     categories_hint: "Unchecked categories are skipped entirely during scanning - their files \
          are never analyzed, listed, or saved. At least one category must stay \
          checked. Changes take effect on the next scan.",
+    logging_label: "Diagnostic log",
+    logging_checkbox: "Write diagnostic log (gametrimmer.log next to the app)",
+    logging_hint: "Only for troubleshooting: records errors and scan events. Off by default.",
 
     libraries_header: "Libraries",
     btn_add_folder: "Add folder...",
