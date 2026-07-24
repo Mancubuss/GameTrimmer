@@ -42,6 +42,7 @@ pub struct Strings {
     pub confirm_delete_heading: &'static str,
     pub confirm_label_permanent: &'static str,
     pub confirm_label_recycle: &'static str,
+    pub remember_delete_method: &'static str,
     pub remove_summary_heading: &'static str,
     pub btn_close: &'static str,
 
@@ -218,6 +219,7 @@ impl Strings {
             ("confirm_delete_heading", self.confirm_delete_heading),
             ("confirm_label_permanent", self.confirm_label_permanent),
             ("confirm_label_recycle", self.confirm_label_recycle),
+            ("remember_delete_method", self.remember_delete_method),
             ("remove_summary_heading", self.remove_summary_heading),
             ("btn_close", self.btn_close),
             ("settings_heading", self.settings_heading),

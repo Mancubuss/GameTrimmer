@@ -22,6 +22,7 @@ pub(super) const STRINGS: Strings = Strings {
     confirm_delete_heading: "Підтвердження видалення",
     confirm_label_permanent: "Видалити безповоротно",
     confirm_label_recycle: "Перемістити в Кошик",
+    remember_delete_method: "Запам'ятати мій вибір",
     remove_summary_heading: "Результат видалення",
     btn_close: "Закрити",
     confirm_clear_heading: "Очистити базу даних?",

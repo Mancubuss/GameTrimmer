@@ -61,34 +61,59 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 }
 
 fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
-    let Some(indices) = app.confirm_delete.clone() else {
+    let Some(state) = app.confirm_delete.clone() else {
         return;
     };
 
     let lang = app.lang();
     let s = i18n::strings(lang);
-    let count = indices.len();
-    let bytes = group_size_bytes(&app.findings, &indices);
+    let count = state.indices.len();
+    let bytes = group_size_bytes(&app.findings, &state.indices);
 
-    let (question, confirm_label) = match app.settings.delete_method {
-        DeleteMethod::Permanent => (
-            i18n::confirm_permanent_question(lang, count, &format_size(lang, bytes)),
-            s.confirm_label_permanent,
-        ),
-        DeleteMethod::RecycleBin => (
-            i18n::confirm_recycle_question(lang, count, &format_size(lang, bytes)),
-            s.confirm_label_recycle,
-        ),
-    };
+    // Edited copies of the modal's own state; written back to `app` once, at
+    // the end, so the borrow of `app.findings` above stays put.
+    let mut picked_method = state.method;
+    let mut picked_remember = state.remember;
 
     let mut confirmed = false;
     let mut cancelled = false;
 
     let modal = egui::Modal::new(egui::Id::new("gt_confirm_delete")).show(ui.ctx(), |ui| {
-        ui.set_min_width(320.0);
+        ui.set_min_width(380.0);
         ui.heading(s.confirm_delete_heading);
         ui.add_space(8.0);
+
+        // The question is phrased per method, so it has to be recomputed from
+        // the radio buttons below rather than from the persisted setting -
+        // picking "Recycle Bin" here must immediately reword the prompt and
+        // the confirm button, not only affect what the worker does.
+        let (question, confirm_label) = match picked_method {
+            DeleteMethod::Permanent => (
+                i18n::confirm_permanent_question(lang, count, &format_size(lang, bytes)),
+                s.confirm_label_permanent,
+            ),
+            DeleteMethod::RecycleBin => (
+                i18n::confirm_recycle_question(lang, count, &format_size(lang, bytes)),
+                s.confirm_label_recycle,
+            ),
+        };
+
         ui.label(question);
+        ui.add_space(8.0);
+
+        ui.radio_value(
+            &mut picked_method,
+            DeleteMethod::Permanent,
+            s.delete_method_permanent_label,
+        );
+        ui.radio_value(
+            &mut picked_method,
+            DeleteMethod::RecycleBin,
+            s.delete_method_recycle_label,
+        );
+        ui.add_space(4.0);
+        ui.checkbox(&mut picked_remember, s.remember_delete_method);
+
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button(s.btn_cancel).clicked() {
@@ -99,6 +124,14 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             }
         });
     });
+
+    // Keep the in-flight choice across frames: the modal is rebuilt every
+    // frame, so an edit that isn't written back would snap straight back to
+    // the persisted setting on the next one.
+    if let Some(pending) = app.confirm_delete.as_mut() {
+        pending.method = picked_method;
+        pending.remember = picked_remember;
+    }
 
     // Esc / backdrop click dismisses this destructive confirmation as a
     // *cancel*, never a delete - dismissing a "are you sure?" prompt must

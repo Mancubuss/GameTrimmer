@@ -23,6 +23,7 @@ pub(super) const STRINGS: Strings = Strings {
     confirm_delete_heading: "Confirm deletion",
     confirm_label_permanent: "Delete permanently",
     confirm_label_recycle: "Move to Recycle Bin",
+    remember_delete_method: "Remember my choice",
     remove_summary_heading: "Deletion result",
     btn_close: "Close",
     confirm_clear_heading: "Clear database?",
