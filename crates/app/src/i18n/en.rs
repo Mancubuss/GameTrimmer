@@ -139,6 +139,9 @@ pub(super) const STRINGS: Strings = Strings {
     category_bonus: "Bonus content",
     category_loc: "Localization files",
     category_other: "Other",
+    category_orphan: "Orphaned",
+
+    orphan_branch_label: "Orphaned residue",
 
     unit_gb: "GB",
     unit_mb: "MB",

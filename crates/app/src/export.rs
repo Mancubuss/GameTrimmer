@@ -8,7 +8,8 @@ use std::path::Path;
 
 use crate::i18n::{self, Lang};
 use crate::model::{
-    category_display, format_size, source_key, DiskGroup, DisplayCategory, FindingItem, TreeNode,
+    category_display, format_size, is_orphan_branch, source_key, DiskGroup, DisplayCategory,
+    FindingItem, TreeNode,
 };
 
 /// Builds the full CSV text (UTF-8 with a leading BOM, `;`-separated, CRLF
@@ -26,6 +27,14 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[DiskGroup]) -> S
 
     for disk_group in tree {
         for game in &disk_group.games {
+            // Orphan-branch findings have no real game name (see
+            // `ORPHAN_GAME_ID`); label the CSV's Game column with the localized
+            // branch heading so an exported orphan row isn't left blank there.
+            let game_name = if is_orphan_branch(game.game_id) {
+                i18n::strings(lang).orphan_branch_label
+            } else {
+                game.game_name.as_str()
+            };
             for category_node in &game.categories {
                 for node in &category_node.nodes {
                     match node {
@@ -40,7 +49,7 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[DiskGroup]) -> S
                                     &mut out,
                                     &disk_group.disk,
                                     category_node.category,
-                                    &game.game_name,
+                                    game_name,
                                     Some(group_dir.as_str()),
                                     &findings[index],
                                 );
@@ -52,7 +61,7 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[DiskGroup]) -> S
                                 &mut out,
                                 &disk_group.disk,
                                 category_node.category,
-                                &game.game_name,
+                                game_name,
                                 None,
                                 &findings[*index],
                             );

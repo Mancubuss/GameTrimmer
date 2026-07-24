@@ -35,7 +35,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Why a path is considered orphaned residue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrphanKind {
     /// A subfolder of a launcher's managed install container (e.g.
     /// `steamapps/common/<name>`) with no matching manifest - the classic

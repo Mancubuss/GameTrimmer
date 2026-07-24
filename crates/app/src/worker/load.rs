@@ -15,7 +15,9 @@ use gametrimmer_core::error::Result as CoreResult;
 use rusqlite::Connection;
 
 use crate::i18n::{self, Lang};
-use crate::model::{parse_source_key, FindingRow};
+use crate::model::{
+    orphan_install_dir_and_name, parse_source_key, FindingRow, FindingSource, ORPHAN_GAME_ID,
+};
 
 use super::{Notifier, WorkerMsg};
 
@@ -87,6 +89,16 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
 /// finding written by a build from before the column existed - see
 /// `db::migrate`) comes back as `None`, exactly the "no grouping" the UI
 /// tree already handles; the next scan repopulates real values.
+///
+/// Orphaned-residue findings (GT-02) are stored with a `NULL` `files.game_id`
+/// (there is no game), so the `games` join is a `LEFT JOIN` and the finding's
+/// own [`FindingSource`] - not the join's nullness - decides how a row is
+/// rebuilt: an `Orphan` source takes the synthetic [`ORPHAN_GAME_ID`] and
+/// splits the full path stored in `files.rel_path` back into its
+/// `(install_dir, rel_path)` pair (see [`orphan_install_dir_and_name`]); every
+/// other source requires its `games` row and is skipped (logged) if that row
+/// is somehow absent, which foreign-key enforcement makes impossible for a
+/// non-`NULL` `game_id` anyway.
 pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
     let mut stmt = conn.prepare(
         "SELECT g.id, g.name, g.install_dir, \
@@ -94,7 +106,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                 fi.category, fi.rule_id, fi.confidence, fi.lang_tag, fi.group_dir \
          FROM findings fi \
          JOIN files f ON f.id = fi.file_id \
-         JOIN games g ON g.id = f.game_id",
+         LEFT JOIN games g ON g.id = f.game_id",
     )?;
 
     let mut rows = Vec::new();
@@ -109,18 +121,53 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
             continue;
         };
 
+        let rel_path: String = row.get(4)?;
+        let size = row.get::<_, i64>(5)? as u64;
+        let rule_desc = row.get::<_, Option<String>>(7)?.unwrap_or_default();
+        let confidence = row.get::<_, i64>(8)? as u8;
+        let lang_tag: Option<String> = row.get(9)?;
+
+        if matches!(source, FindingSource::Orphan(_)) {
+            // The orphan's full path lives in `rel_path`; split it back into the
+            // parent (`install_dir`) + folder name the UI model expects. Orphan
+            // findings never carry a `group_dir`.
+            let (install_dir, name) = orphan_install_dir_and_name(&PathBuf::from(&rel_path));
+            rows.push(FindingRow {
+                file_id,
+                game_id: ORPHAN_GAME_ID,
+                game_name: String::new(),
+                install_dir,
+                rel_path: name,
+                size,
+                source,
+                rule_desc,
+                confidence,
+                lang_tag,
+                group_dir: None,
+            });
+            continue;
+        }
+
+        let Some(game_id) = row.get::<_, Option<i64>>(0)? else {
+            // A non-orphan finding whose game row is missing - impossible under
+            // foreign-key enforcement, but skip rather than fabricate a game.
+            crate::logger::log(&format!(
+                "Пропущено findings-рядок без гри (категорія \"{category}\", file_id={file_id})"
+            ));
+            continue;
+        };
         let install_dir: String = row.get(2)?;
         rows.push(FindingRow {
             file_id,
-            game_id: row.get(0)?,
+            game_id,
             game_name: row.get(1)?,
             install_dir: PathBuf::from(install_dir),
-            rel_path: row.get(4)?,
-            size: row.get::<_, i64>(5)? as u64,
+            rel_path,
+            size,
             source,
-            rule_desc: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
-            confidence: row.get::<_, i64>(8)? as u8,
-            lang_tag: row.get(9)?,
+            rule_desc,
+            confidence,
+            lang_tag,
             group_dir: row.get(10)?,
         });
     }
@@ -333,6 +380,71 @@ mod tests {
                 .all(|row| row.group_dir.as_deref() == Some("junk")),
             "both findings must come back with the persisted group folder"
         );
+    }
+
+    /// An orphaned-residue finding (GT-02) is stored with a `NULL`
+    /// `files.game_id` and the leftover's full path in `files.rel_path`. Load
+    /// must reconstruct it as the synthetic orphan branch: `ORPHAN_GAME_ID`,
+    /// empty game name, and the full path split back into install_dir + name.
+    /// A normal game finding in the same database must still load unaffected -
+    /// proving the `LEFT JOIN` didn't drop or corrupt either kind.
+    #[test]
+    fn load_findings_reconstructs_orphan_rows_and_keeps_game_rows() {
+        let conn = db::open_in_memory().expect("open in-memory db");
+
+        // A normal game finding.
+        let library_id = insert_library(&conn, "F:/lib");
+        let game_id = insert_game(&conn, library_id, "Real Game", "F:\\lib\\Real Game");
+        let game_file = insert_file(&conn, game_id, "redist\\setup.exe", 500);
+        insert_finding(&conn, game_file, "redist_file", "installer", 90, None, None);
+
+        // An orphan finding: NULL game_id, full path in rel_path.
+        let orphan_full = r"F:\lib\steamapps\common\Leftover";
+        conn.execute(
+            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (NULL, ?1, ?2, NULL)",
+            params![orphan_full, 4096i64],
+        )
+        .expect("insert orphan file");
+        let orphan_file = conn.last_insert_rowid();
+        insert_finding(
+            &conn,
+            orphan_file,
+            "orphan_folder",
+            "осиротіла тека",
+            60,
+            None,
+            None,
+        );
+
+        let rows = load_findings(&conn).expect("load should succeed");
+        assert_eq!(rows.len(), 2, "both the game and the orphan finding load");
+
+        let orphan = rows
+            .iter()
+            .find(|row| row.game_id == ORPHAN_GAME_ID)
+            .expect("the orphan row must come back under the sentinel game id");
+        assert!(orphan.game_name.is_empty());
+        assert_eq!(
+            orphan.install_dir,
+            PathBuf::from(r"F:\lib\steamapps\common")
+        );
+        assert_eq!(orphan.rel_path, "Leftover");
+        assert_eq!(
+            orphan.install_dir.join(&orphan.rel_path),
+            PathBuf::from(orphan_full),
+            "install_dir + rel_path must reconstruct the stored full path"
+        );
+        assert_eq!(
+            orphan.source,
+            FindingSource::Orphan(gametrimmer_core::orphans::OrphanKind::UnmanagedFolder)
+        );
+
+        let game = rows
+            .iter()
+            .find(|row| row.game_id == game_id)
+            .expect("the normal game finding must still load");
+        assert_eq!(game.game_name, "Real Game");
+        assert_eq!(game.rel_path, "redist\\setup.exe");
     }
 
     /// A finding persisted with a `NULL` `group_dir` (an ungrouped/orphan

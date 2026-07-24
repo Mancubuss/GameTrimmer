@@ -205,6 +205,39 @@ pub fn write_thread_crashed(lang: Lang) -> String {
     }
 }
 
+/// The classification reason (persisted into `findings.rule_id`, shown in the
+/// row tooltip) for an orphaned-residue finding - see `worker::scan`'s orphan
+/// pass and `gametrimmer_core::orphans::OrphanKind`.
+pub fn orphan_reason(lang: Lang, kind: gametrimmer_core::orphans::OrphanKind) -> String {
+    use gametrimmer_core::orphans::OrphanKind;
+    match (lang, kind) {
+        (Lang::En, OrphanKind::UnmanagedFolder) => {
+            "Folder in the library with no matching launcher manifest (orphaned install)"
+                .to_string()
+        }
+        (Lang::En, OrphanKind::ServiceFolder) => {
+            "Launcher download/cache scratch folder (aborted or partial downloads)".to_string()
+        }
+        (Lang::Uk, OrphanKind::UnmanagedFolder) => {
+            "Тека в бібліотеці без відповідного маніфесту лаунчера (осиротіла інсталяція)"
+                .to_string()
+        }
+        (Lang::Uk, OrphanKind::ServiceFolder) => {
+            "Службова тека завантажень лаунчера (незавершені або часткові завантаження)".to_string()
+        }
+    }
+}
+
+/// Non-fatal warning: the game scan succeeded but persisting the orphaned-
+/// residue findings (GT-02) failed. The rest of the results are intact; only
+/// the orphan branch is missing until the next scan.
+pub fn orphans_persist_failed(lang: Lang, err: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => format!("Failed to record orphaned residue: {err}"),
+        Lang::Uk => format!("Не вдалося зберегти осиротілі рештки: {err}"),
+    }
+}
+
 pub fn reading_mft_detail(lang: Lang, volume: char, percent: u64) -> String {
     match lang {
         Lang::En => format!("Reading file table {volume}: — {percent}%"),

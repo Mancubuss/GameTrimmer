@@ -5,18 +5,26 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf, Prefix};
 
 use gametrimmer_core::langdetect::LangKind;
+use gametrimmer_core::orphans::OrphanKind;
 use gametrimmer_core::rules::Category;
 
-/// Granular source of a finding: either a rules-engine category (redist,
-/// docs, bonus, ...) or a localization-detector kind (audio, text, video,
-/// font, unknown). Both variants wrap public `core` types unchanged. Kept on
-/// every row so the persistence key and the file's original rule/detector
-/// provenance survive the coarser [`DisplayCategory`] grouping used by the
-/// tree.
+/// Granular source of a finding: a rules-engine category (redist, docs,
+/// bonus, ...), a localization-detector kind (audio, text, video, font,
+/// unknown), or an orphaned-residue kind (GT-02: a folder inside a launcher's
+/// managed area with no live game behind it, or the launcher's own
+/// download/cache scratch folder). All variants wrap public `core` types
+/// unchanged. Kept on every row so the persistence key and the file's original
+/// rule/detector/orphan provenance survive the coarser [`DisplayCategory`]
+/// grouping used by the tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FindingSource {
     Rule(Category),
     Loc(LangKind),
+    /// Orphaned launcher residue (see `gametrimmer_core::orphans`). Has no
+    /// game behind it by definition, so its rows carry the synthetic
+    /// [`ORPHAN_GAME_ID`] and are grouped into a per-disk pseudo-game branch
+    /// rather than nested under a real game.
+    Orphan(OrphanKind),
 }
 
 /// Top-level category shown in the tree, merged from the granular
@@ -29,13 +37,21 @@ pub enum DisplayCategory {
     Bonus,
     Loc,
     Other,
+    /// Orphaned launcher residue (GT-02) - shown under the per-disk pseudo-game
+    /// branch ([`ORPHAN_GAME_ID`]), never mixed into a real game's categories.
+    Orphan,
 }
 
 /// One classified file, as produced by the scan worker.
 #[derive(Debug, Clone)]
 pub struct FindingRow {
     pub file_id: i64,
+    /// The owning game's id, or the [`ORPHAN_GAME_ID`] sentinel for orphaned
+    /// residue (GT-02), which has no game behind it.
     pub game_id: i64,
+    /// The owning game's display name. Empty for orphan rows - the tree renders
+    /// the orphan branch with a localized label keyed off [`ORPHAN_GAME_ID`]
+    /// instead (see `ui::tree_view`).
     pub game_name: String,
     pub install_dir: PathBuf,
     pub rel_path: String,
@@ -77,14 +93,83 @@ pub struct FindingItem {
     pub removed: bool,
 }
 
-/// Fixed display order for the 5 top-level categories in the tree.
-pub const CATEGORY_ORDER: [DisplayCategory; 5] = [
+/// Fixed display order for the top-level categories in the tree. `Orphan`
+/// lives last: it only ever appears under the synthetic orphan branch (see
+/// [`ORPHAN_GAME_ID`]), never inside a real game, so its position relative to
+/// the other five is immaterial - but it must still be listed so the settings
+/// dialog offers a checkbox for it and [`category_enabled`] can gate it.
+pub const CATEGORY_ORDER: [DisplayCategory; 6] = [
     DisplayCategory::Redist,
     DisplayCategory::Docs,
     DisplayCategory::Bonus,
     DisplayCategory::Loc,
     DisplayCategory::Other,
+    DisplayCategory::Orphan,
 ];
+
+/// Synthetic `game_id` shared by every orphaned-residue finding (GT-02). Real
+/// game ids are SQLite rowids (always `>= 1`), so a single reserved negative
+/// sentinel can never collide with one. Because [`build_tree`] groups by
+/// `(disk, game_id)`, giving every orphan on a disk the same sentinel merges
+/// them all into exactly one "orphaned residue" pseudo-game node per disk,
+/// beside the real games - which is the separate tree branch GT-02 calls for.
+/// The rows themselves are persisted with a `NULL` `files.game_id` (there is
+/// no game), and reconstructed with this sentinel at scan/load time.
+pub const ORPHAN_GAME_ID: i64 = i64::MIN;
+
+/// Whether `game_id` is the orphan-branch sentinel (see [`ORPHAN_GAME_ID`]) -
+/// the tree renders such a node with a localized branch label instead of a
+/// quoted game name.
+pub fn is_orphan_branch(game_id: i64) -> bool {
+    game_id == ORPHAN_GAME_ID
+}
+
+/// Default confidence for an [`OrphanKind::UnmanagedFolder`] finding: a folder
+/// in the launcher's managed area with no matching manifest. Deliberately
+/// below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] so orphaned residue is shown but
+/// never auto-selected - a game installed *past* the launcher (portable,
+/// repack, manual copy) would otherwise be a false positive the user must
+/// opt into deleting, not have pre-checked.
+pub const ORPHAN_UNMANAGED_CONFIDENCE: u8 = 60;
+
+/// Default confidence for an [`OrphanKind::ServiceFolder`] finding (e.g.
+/// `steamapps/downloading` - aborted/partial depot downloads). Safer than an
+/// unmanaged folder (it is pure scratch space the launcher itself treats as
+/// disposable), but still kept below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] so
+/// the whole orphan category stays out of the default selection.
+pub const ORPHAN_SERVICE_CONFIDENCE: u8 = 80;
+
+/// The confidence [`FindingSource::Orphan`] carries for a given kind.
+pub fn orphan_confidence(kind: OrphanKind) -> u8 {
+    match kind {
+        OrphanKind::UnmanagedFolder => ORPHAN_UNMANAGED_CONFIDENCE,
+        OrphanKind::ServiceFolder => ORPHAN_SERVICE_CONFIDENCE,
+    }
+}
+
+/// Splits an orphan folder's absolute path into the `(install_dir, rel_path)`
+/// pair a [`FindingRow`] carries: the parent directory as `install_dir` (so
+/// the tree groups the row by disk and rebuilds its full path via
+/// `install_dir.join(rel_path)` exactly like a normal file row), and the
+/// folder's own name as `rel_path`. A path with no parent (a bare drive root,
+/// which the orphan scan never produces) degrades to an empty parent and the
+/// whole path as the name - which still reconstructs to the original path.
+///
+/// Orphan rows have no game row to hold an `install_dir`, so persistence stores
+/// the full path in `files.rel_path`; both the scan worker (when producing the
+/// row fresh) and `worker::load` (when reading it back) run it through here so
+/// the in-memory [`FindingRow`] shape is identical either way.
+pub fn orphan_install_dir_and_name(full_path: &Path) -> (PathBuf, String) {
+    let parent = full_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let name = full_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| full_path.to_string_lossy().into_owned());
+    (parent, name)
+}
 
 /// Maps a granular finding source onto its top-level display category.
 pub fn display_category(source: FindingSource) -> DisplayCategory {
@@ -98,6 +183,7 @@ pub fn display_category(source: FindingSource) -> DisplayCategory {
         FindingSource::Rule(Category::Bonus) => DisplayCategory::Bonus,
         FindingSource::Rule(Category::DevLeftovers) => DisplayCategory::Other,
         FindingSource::Loc(_) => DisplayCategory::Loc,
+        FindingSource::Orphan(_) => DisplayCategory::Orphan,
     }
 }
 
@@ -110,6 +196,7 @@ pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &
         DisplayCategory::Bonus => s.category_bonus,
         DisplayCategory::Loc => s.category_loc,
         DisplayCategory::Other => s.category_other,
+        DisplayCategory::Orphan => s.category_orphan,
     }
 }
 
@@ -131,6 +218,8 @@ pub fn source_key(source: FindingSource) -> &'static str {
         FindingSource::Loc(LangKind::Video) => "loc_video",
         FindingSource::Loc(LangKind::Font) => "loc_font",
         FindingSource::Loc(LangKind::Unknown) => "loc_unknown",
+        FindingSource::Orphan(OrphanKind::UnmanagedFolder) => "orphan_folder",
+        FindingSource::Orphan(OrphanKind::ServiceFolder) => "orphan_service",
     }
 }
 
@@ -154,6 +243,8 @@ pub fn parse_source_key(key: &str) -> Option<FindingSource> {
         "loc_video" => Some(FindingSource::Loc(LangKind::Video)),
         "loc_font" => Some(FindingSource::Loc(LangKind::Font)),
         "loc_unknown" => Some(FindingSource::Loc(LangKind::Unknown)),
+        "orphan_folder" => Some(FindingSource::Orphan(OrphanKind::UnmanagedFolder)),
+        "orphan_service" => Some(FindingSource::Orphan(OrphanKind::ServiceFolder)),
         _ => None,
     }
 }
@@ -167,6 +258,7 @@ pub fn category_ui_key(category: DisplayCategory) -> &'static str {
         DisplayCategory::Bonus => "bonus",
         DisplayCategory::Loc => "loc",
         DisplayCategory::Other => "other",
+        DisplayCategory::Orphan => "orphan",
     }
 }
 
@@ -704,6 +796,23 @@ mod tests {
         found
     }
 
+    /// An orphaned-residue finding as the scan/load path produces it: the
+    /// synthetic [`ORPHAN_GAME_ID`], an empty game name, and the orphan
+    /// folder's container as `install_dir` with the folder name as `rel_path`.
+    fn orphan_item(container: &str, folder: &str, kind: OrphanKind, size: u64) -> FindingItem {
+        let mut found = item_at(
+            ORPHAN_GAME_ID,
+            "",
+            container,
+            folder,
+            FindingSource::Orphan(kind),
+            orphan_confidence(kind),
+            size,
+        );
+        found.row.rule_desc = "осиротіла тека".to_string();
+        found
+    }
+
     #[test]
     fn display_category_maps_every_source_to_the_five_top_level_categories() {
         assert_eq!(
@@ -742,6 +851,12 @@ mod tests {
                 DisplayCategory::Loc
             );
         }
+        for kind in [OrphanKind::UnmanagedFolder, OrphanKind::ServiceFolder] {
+            assert_eq!(
+                display_category(FindingSource::Orphan(kind)),
+                DisplayCategory::Orphan
+            );
+        }
     }
 
     #[test]
@@ -775,6 +890,14 @@ mod tests {
             source_key(FindingSource::Loc(LangKind::Unknown)),
             "loc_unknown"
         );
+        assert_eq!(
+            source_key(FindingSource::Orphan(OrphanKind::UnmanagedFolder)),
+            "orphan_folder"
+        );
+        assert_eq!(
+            source_key(FindingSource::Orphan(OrphanKind::ServiceFolder)),
+            "orphan_service"
+        );
     }
 
     #[test]
@@ -791,6 +914,8 @@ mod tests {
             FindingSource::Loc(LangKind::Video),
             FindingSource::Loc(LangKind::Font),
             FindingSource::Loc(LangKind::Unknown),
+            FindingSource::Orphan(OrphanKind::UnmanagedFolder),
+            FindingSource::Orphan(OrphanKind::ServiceFolder),
         ];
 
         for source in all_sources {
@@ -811,7 +936,10 @@ mod tests {
     #[test]
     fn category_ui_key_is_stable_and_distinct_per_category() {
         let keys: Vec<&str> = CATEGORY_ORDER.iter().map(|&c| category_ui_key(c)).collect();
-        assert_eq!(keys, vec!["redist", "docs", "bonus", "loc", "other"]);
+        assert_eq!(
+            keys,
+            vec!["redist", "docs", "bonus", "loc", "other", "orphan"]
+        );
     }
 
     #[test]
@@ -1391,6 +1519,106 @@ mod tests {
     }
 
     #[test]
+    fn orphan_confidence_is_below_auto_select_threshold_for_both_kinds() {
+        // The GT-02 safety contract: orphaned residue is shown but never
+        // auto-selected, so a game installed past the launcher can't be
+        // pre-checked for deletion. Enforced purely through confidence.
+        assert!(orphan_confidence(OrphanKind::UnmanagedFolder) < AUTO_SELECT_CONFIDENCE_THRESHOLD);
+        assert!(orphan_confidence(OrphanKind::ServiceFolder) < AUTO_SELECT_CONFIDENCE_THRESHOLD);
+        assert!(!default_selected(orphan_confidence(
+            OrphanKind::UnmanagedFolder
+        )));
+        assert!(!default_selected(orphan_confidence(
+            OrphanKind::ServiceFolder
+        )));
+    }
+
+    #[test]
+    fn build_tree_merges_orphans_into_one_pseudo_game_per_disk() {
+        // Two leftovers in different containers on the same disk, plus a real
+        // game on that disk. The orphans must collapse into a single
+        // ORPHAN_GAME_ID pseudo-game node (not one per container, not mixed
+        // into the real game), and a leftover on another disk stays separate.
+        let items = vec![
+            item_at(
+                1,
+                "Real Game",
+                "F:\\SteamLibrary\\steamapps\\common\\Real Game",
+                "file.txt",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                10,
+            ),
+            orphan_item(
+                "F:\\SteamLibrary\\steamapps\\common",
+                "LeftoverA",
+                OrphanKind::UnmanagedFolder,
+                100,
+            ),
+            orphan_item(
+                "F:\\SteamLibrary\\steamapps",
+                "downloading",
+                OrphanKind::ServiceFolder,
+                50,
+            ),
+            orphan_item(
+                "D:\\Games\\steamapps\\common",
+                "LeftoverB",
+                OrphanKind::UnmanagedFolder,
+                7,
+            ),
+        ];
+
+        let tree = build_tree(&items);
+
+        let disk_f = tree
+            .iter()
+            .find(|disk| disk.disk == "F:")
+            .expect("disk F present");
+        let orphan_games: Vec<&GameNode> = disk_f
+            .games
+            .iter()
+            .filter(|game| is_orphan_branch(game.game_id))
+            .collect();
+        assert_eq!(
+            orphan_games.len(),
+            1,
+            "both F: leftovers must merge into one orphan pseudo-game node"
+        );
+        let orphan_branch = orphan_games[0];
+        assert_eq!(orphan_branch.categories.len(), 1);
+        assert_eq!(
+            orphan_branch.categories[0].category,
+            DisplayCategory::Orphan
+        );
+        assert_eq!(
+            orphan_branch.categories[0].all_indices.len(),
+            2,
+            "the two F: leftovers are both under the orphan branch"
+        );
+        assert_eq!(orphan_branch.total_bytes, 150);
+        assert!(
+            disk_f
+                .games
+                .iter()
+                .any(|game| game.game_name == "Real Game"),
+            "the real game must still be its own node, not swallowed by the orphan branch"
+        );
+
+        let disk_d = tree
+            .iter()
+            .find(|disk| disk.disk == "D:")
+            .expect("disk D present");
+        assert!(
+            disk_d
+                .games
+                .iter()
+                .any(|game| is_orphan_branch(game.game_id)),
+            "the D: leftover forms its own orphan branch on its own disk"
+        );
+    }
+
+    #[test]
     fn default_selected_applies_confidence_threshold() {
         assert!(default_selected(85));
         assert!(default_selected(95));
@@ -1446,7 +1674,7 @@ mod tests {
     }
 
     #[test]
-    fn category_display_covers_all_five_categories() {
+    fn category_display_covers_every_category() {
         use crate::i18n::Lang;
         assert_eq!(
             category_display(Lang::Uk, DisplayCategory::Redist),
@@ -1466,8 +1694,16 @@ mod tests {
         );
         assert_eq!(category_display(Lang::Uk, DisplayCategory::Other), "Інше");
         assert_eq!(
+            category_display(Lang::Uk, DisplayCategory::Orphan),
+            "Осиротіле"
+        );
+        assert_eq!(
             category_display(Lang::En, DisplayCategory::Redist),
             "Redistributables"
+        );
+        assert_eq!(
+            category_display(Lang::En, DisplayCategory::Orphan),
+            "Orphaned"
         );
     }
 
@@ -1486,6 +1722,7 @@ mod tests {
         assert!(!category_enabled(&enabled, DisplayCategory::Bonus));
         assert!(!category_enabled(&enabled, DisplayCategory::Loc));
         assert!(!category_enabled(&enabled, DisplayCategory::Other));
+        assert!(!category_enabled(&enabled, DisplayCategory::Orphan));
     }
 
     /// The scan worker dedups a file with both a rules-engine finding and a
