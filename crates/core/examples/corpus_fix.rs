@@ -160,11 +160,7 @@ fn main() {
         let game_rows = &by_game[game_key];
         let files: Vec<FileEntry> = game_rows
             .iter()
-            .map(|r| FileEntry {
-                rel_path: r.rel_path.clone(),
-                size: 0,
-                mtime: None,
-            })
+            .map(|r| FileEntry::logical_only(r.rel_path.clone(), 0, None))
             .collect();
 
         let findings = detector.analyze_game(&files);

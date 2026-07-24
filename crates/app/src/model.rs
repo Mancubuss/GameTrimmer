@@ -55,7 +55,14 @@ pub struct FindingRow {
     pub game_name: String,
     pub install_dir: PathBuf,
     pub rel_path: String,
+    /// Logical size (bytes) - shown as a secondary figure (tooltip) since it
+    /// isn't what deleting actually reclaims.
     pub size: u64,
+    /// On-disk allocated size (bytes) - the honest "space freed" figure and the
+    /// one shown as primary and summed for totals/estimates (GT-05a). Falls
+    /// back to `size` for rows loaded from a pre-GT-05a database (see
+    /// `worker::load`).
+    pub size_on_disk: u64,
     pub source: FindingSource,
     /// For rule findings: the rule's `desc`. For localization findings: the
     /// detector's `reason`. Persisted as-is into `findings.rule_id`.
@@ -373,7 +380,7 @@ fn majority_category(items: &[FindingItem], indices: &[usize]) -> DisplayCategor
     let mut bytes_by_category: HashMap<DisplayCategory, u64> = HashMap::new();
     for &index in indices {
         let row = &items[index].row;
-        *bytes_by_category.entry(row.display_category()).or_insert(0) += row.size;
+        *bytes_by_category.entry(row.display_category()).or_insert(0) += row.size_on_disk;
     }
 
     let mut best = CATEGORY_ORDER[0];
@@ -389,11 +396,12 @@ fn majority_category(items: &[FindingItem], indices: &[usize]) -> DisplayCategor
 }
 
 /// Total bytes represented by a tree node - a folder's precomputed total, or
-/// a single file's size - used to sort nodes within a category.
+/// a single file's size - used to sort nodes within a category. On-disk size,
+/// to match the figure shown and summed everywhere else (GT-05a).
 fn node_bytes(items: &[FindingItem], node: &TreeNode) -> u64 {
     match node {
         TreeNode::Folder { total_bytes, .. } => *total_bytes,
-        TreeNode::File { index } => items[*index].row.size,
+        TreeNode::File { index } => items[*index].row.size_on_disk,
     }
 }
 
@@ -758,6 +766,10 @@ mod tests {
                 install_dir: PathBuf::from(install_dir),
                 rel_path: rel_path.to_string(),
                 size,
+                // Synthetic rows keep on-disk == logical, so existing
+                // total/estimate assertions (which now sum on-disk) stay
+                // valid; a dedicated test exercises the two diverging.
+                size_on_disk: size,
                 source,
                 rule_desc: "test rule".to_string(),
                 confidence,

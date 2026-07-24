@@ -1030,12 +1030,22 @@ fn show_file_row(
     if let Some(lang_tag) = &item.row.lang_tag {
         hover.push_str(&i18n::hover_lang_suffix(lang, lang_tag));
     }
+    // The row shows the on-disk allocated size as primary (GT-05a); when the
+    // logical size differs (cluster slack, NTFS compression), spell it out in
+    // the tooltip so the two figures are both available without cluttering the
+    // row.
+    if item.row.size != item.row.size_on_disk {
+        hover.push_str(&i18n::hover_logical_size_suffix(
+            lang,
+            &format_size(lang, item.row.size),
+        ));
+    }
 
     row_columns(
         ui,
         lang_col,
         egui::RichText::new(""),
-        egui::RichText::new(format_size(lang, item.row.size)),
+        egui::RichText::new(format_size(lang, item.row.size_on_disk)),
         confidence,
         |ui| {
             ui.add_space(INDENT_PX * level as f32);

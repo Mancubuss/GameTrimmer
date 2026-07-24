@@ -51,11 +51,11 @@ fn synthetic_files(count: usize) -> Vec<FileEntry> {
             let character = CHARACTERS[i % CHARACTERS.len()];
             let code = CODES[i % CODES.len()];
             let take = i / group_size;
-            FileEntry {
-                rel_path: format!(r"Sound\VO\VO_Gameplay_{character}{take:03}_{code}.assets.bank"),
-                size: 0,
-                mtime: None,
-            }
+            FileEntry::logical_only(
+                format!(r"Sound\VO\VO_Gameplay_{character}{take:03}_{code}.assets.bank"),
+                0,
+                None,
+            )
         })
         .collect()
 }

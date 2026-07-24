@@ -20,7 +20,13 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 .filter(|item| item.selected && !item.removed)
                 .collect();
             let selected_count = selected_items.len();
-            let selected_bytes: u64 = selected_items.iter().map(|item| item.row.size).sum();
+            // On-disk allocation (GT-05a): the honest "space that will be
+            // freed" figure, matching the per-row and per-node totals and the
+            // occupancy denominator (both on-disk).
+            let selected_bytes: u64 = selected_items
+                .iter()
+                .map(|item| item.row.size_on_disk)
+                .sum();
 
             ui.label(i18n::selected_summary(
                 lang,

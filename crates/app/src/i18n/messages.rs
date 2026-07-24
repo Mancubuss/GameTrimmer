@@ -646,6 +646,17 @@ pub fn hover_lang_suffix(lang: Lang, lang_tag: &str) -> String {
     }
 }
 
+/// Tooltip line spelling out the logical size (GT-05a): the row and totals show
+/// the on-disk allocated size as primary - the honest "space freed" figure -
+/// so this adds the logical size for context. Only shown when the two differ
+/// (`logical` is a pre-formatted size string).
+pub fn hover_logical_size_suffix(lang: Lang, logical: &str) -> String {
+    match lang {
+        Lang::En => format!("\nLogical size: {logical}"),
+        Lang::Uk => format!("\nЛогічний розмір: {logical}"),
+    }
+}
+
 // -- ui::settings_dialog --
 
 /// Human-readable display name for a language code shown in the keep-list

@@ -22,11 +22,12 @@ CREATE TABLE IF NOT EXISTS games (
 );
 
 CREATE TABLE IF NOT EXISTS files (
-    id       INTEGER PRIMARY KEY,
-    game_id  INTEGER REFERENCES games(id),
-    rel_path TEXT NOT NULL,
-    size     INTEGER NOT NULL,
-    mtime    INTEGER
+    id           INTEGER PRIMARY KEY,
+    game_id      INTEGER REFERENCES games(id),
+    rel_path     TEXT NOT NULL,
+    size         INTEGER NOT NULL,
+    size_on_disk INTEGER,
+    mtime        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS findings (
@@ -139,10 +140,42 @@ fn apply_schema(conn: &Connection) -> Result<()> {
 /// next scan repopulates real values, and load treats `NULL` as an
 /// ungrouped (orphan) finding in the meantime.
 fn migrate(conn: &Connection) -> Result<()> {
-    if !column_exists(conn, "findings", "group_dir")? {
-        conn.execute("ALTER TABLE findings ADD COLUMN group_dir TEXT", [])?;
+    add_column_if_missing(conn, "findings", "group_dir", "TEXT")?;
+    // `files.size_on_disk` (GT-05a): the on-disk allocated size, added so
+    // sizes shown and reported match Explorer's "Size on disk" instead of the
+    // logical total. `NULL` for every file indexed by an earlier build; load
+    // falls back to `size` (via COALESCE) for those until the next scan
+    // repopulates the real on-disk figure.
+    add_column_if_missing(conn, "files", "size_on_disk", "INTEGER")?;
+    Ok(())
+}
+
+/// Adds `column` (`decl` is its SQL type) to `table` if the table exists and
+/// the column doesn't. The table-existence guard matters only for the
+/// partial-schema migration unit tests: the real `open()` path always runs
+/// `apply_schema` (which creates every table) before `migrate`, so in
+/// production every target table is guaranteed present. `table`/`column`/`decl`
+/// are hardcoded literals at every call site (never user input), so
+/// interpolating them into DDL - which can't take bound parameters for
+/// identifiers - is safe.
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    if table_exists(conn, table)? && !column_exists(conn, table, column)? {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
+            [],
+        )?;
     }
     Ok(())
+}
+
+/// Whether a table named `table` exists in the database.
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 /// Whether `table` has a column named `column`, via `PRAGMA table_info`. The
@@ -336,8 +369,11 @@ pub fn free_page_fraction(conn: &Connection) -> Result<f64> {
 /// Libraries with no files (or no games) are simply absent from the map;
 /// callers treat an absent library as 0 bytes.
 pub fn occupied_by_library(conn: &Connection) -> Result<HashMap<i64, u64>> {
+    // On-disk allocation (GT-05a), falling back to the logical size for rows
+    // indexed before `size_on_disk` existed - so occupancy matches the honest
+    // per-finding figures the tree sums, not the logical total.
     let mut stmt = conn.prepare(
-        "SELECT g.library_id, SUM(f.size) FROM files f \
+        "SELECT g.library_id, SUM(COALESCE(f.size_on_disk, f.size)) FROM files f \
          JOIN games g ON g.id = f.game_id \
          GROUP BY g.library_id",
     )?;
@@ -850,6 +886,57 @@ mod tests {
             column_exists(&conn, "findings", "group_dir").expect("probe migrated column"),
             "group_dir must exist after migrate"
         );
+
+        migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
+    }
+
+    /// `migrate` must add `files.size_on_disk` (GT-05a) to a database created
+    /// before that column existed, be idempotent, and leave pre-existing rows
+    /// with a `NULL` in it (so load's `COALESCE(size_on_disk, size)` fallback
+    /// keeps working until the next scan repopulates real values).
+    #[test]
+    fn migrate_adds_size_on_disk_to_a_legacy_files_table_and_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open bare in-memory db");
+        // The pre-`size_on_disk` files schema, with one row already in it.
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id       INTEGER PRIMARY KEY,
+                game_id  INTEGER,
+                rel_path TEXT NOT NULL,
+                size     INTEGER NOT NULL,
+                mtime    INTEGER
+            );
+            INSERT INTO files (id, game_id, rel_path, size, mtime)
+                VALUES (1, NULL, 'a.txt', 123, NULL);",
+        )
+        .expect("create legacy files table");
+        assert!(
+            !column_exists(&conn, "files", "size_on_disk").expect("probe legacy column"),
+            "precondition: the legacy table must not have size_on_disk"
+        );
+
+        migrate(&conn).expect("first migrate should add the column");
+        assert!(
+            column_exists(&conn, "files", "size_on_disk").expect("probe migrated column"),
+            "size_on_disk must exist after migrate"
+        );
+
+        let on_disk: Option<i64> = conn
+            .query_row("SELECT size_on_disk FROM files WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("read migrated row");
+        assert_eq!(on_disk, None, "pre-existing rows must be NULL, not 0");
+
+        // COALESCE fallback: a legacy NULL row still counts at its logical size.
+        let coalesced: i64 = conn
+            .query_row(
+                "SELECT COALESCE(size_on_disk, size) FROM files WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("coalesce legacy row");
+        assert_eq!(coalesced, 123);
 
         migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
     }

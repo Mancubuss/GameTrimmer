@@ -151,6 +151,7 @@ mod tests {
                 install_dir: PathBuf::from("C:\\Games\\Test"),
                 rel_path: rel_path.to_string(),
                 size,
+                size_on_disk: size,
                 source: FindingSource::Rule(Category::Bonus),
                 rule_desc: "test; rule".to_string(),
                 confidence: 90,

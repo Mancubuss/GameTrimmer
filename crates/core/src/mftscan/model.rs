@@ -21,9 +21,16 @@ pub struct NameAlias {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MftRecord {
     pub is_directory: bool,
-    /// Current size in bytes of the unnamed `$DATA` stream. Always `0` for
-    /// directories.
+    /// Current size in bytes of the unnamed `$DATA` stream (the *logical*
+    /// file size). Always `0` for directories.
     pub size: u64,
+    /// Size in bytes actually allocated on disk for the unnamed `$DATA`
+    /// stream - the non-resident attribute's `allocated_size` field, which
+    /// NTFS keeps cluster-aligned and compression-aware, so it equals what
+    /// Explorer reports as "Size on disk". `0` for directories and for
+    /// resident (tiny, MFT-embedded) files, which occupy no data clusters -
+    /// matching Explorer, which shows `0 bytes` on disk for them.
+    pub alloc_size: u64,
     /// Unix seconds of `$STANDARD_INFORMATION` modification time.
     pub mtime: Option<i64>,
     /// All `$FILE_NAME` aliases for this record (usually one; more than one

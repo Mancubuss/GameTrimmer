@@ -103,7 +103,8 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
     let mut stmt = conn.prepare(
         "SELECT g.id, g.name, g.install_dir, \
                 fi.file_id, f.rel_path, f.size, \
-                fi.category, fi.rule_id, fi.confidence, fi.lang_tag, fi.group_dir \
+                fi.category, fi.rule_id, fi.confidence, fi.lang_tag, fi.group_dir, \
+                COALESCE(f.size_on_disk, f.size) \
          FROM findings fi \
          JOIN files f ON f.id = fi.file_id \
          LEFT JOIN games g ON g.id = f.game_id",
@@ -126,6 +127,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         let rule_desc = row.get::<_, Option<String>>(7)?.unwrap_or_default();
         let confidence = row.get::<_, i64>(8)? as u8;
         let lang_tag: Option<String> = row.get(9)?;
+        let size_on_disk = row.get::<_, i64>(11)? as u64;
 
         if matches!(source, FindingSource::Orphan(_)) {
             // The orphan's full path lives in `rel_path`; split it back into the
@@ -139,6 +141,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                 install_dir,
                 rel_path: name,
                 size,
+                size_on_disk,
                 source,
                 rule_desc,
                 confidence,
@@ -164,6 +167,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
             install_dir: PathBuf::from(install_dir),
             rel_path,
             size,
+            size_on_disk,
             source,
             rule_desc,
             confidence,

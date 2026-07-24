@@ -4,11 +4,7 @@
 use super::*;
 
 fn fe(rel_path: &str) -> FileEntry {
-    FileEntry {
-        rel_path: rel_path.to_string(),
-        size: 0,
-        mtime: None,
-    }
+    FileEntry::logical_only(rel_path, 0, None)
 }
 
 fn analyze_one(rel_path: &str) -> Vec<(usize, LangFinding)> {
