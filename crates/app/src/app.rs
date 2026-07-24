@@ -32,6 +32,24 @@ pub struct RemoveSummary {
     pub failed: Vec<(PathBuf, String)>,
 }
 
+/// State of the delete confirmation modal (`ui::dialogs::show_confirm_delete`).
+///
+/// The removal method lives here rather than being read straight from
+/// `Settings` at delete time so the modal can offer it as a per-operation
+/// choice: `method` starts at the persisted setting and is only written back
+/// to it when the user ticks `remember`. Leaving `remember` off keeps the
+/// choice scoped to this one delete, which is the point of offering it at the
+/// moment of the decision instead of only in the settings dialog.
+#[derive(Clone)]
+pub struct ConfirmDelete {
+    /// Indices into `findings` awaiting confirmation.
+    pub indices: Vec<usize>,
+    /// Removal method to use for this operation.
+    pub method: DeleteMethod,
+    /// Whether confirming should also persist `method` as the new default.
+    pub remember: bool,
+}
+
 /// Progress of the currently running background operation (scan, delete, or
 /// compaction), rendered by `ui::top_bar` as `"{verb} {current}/{total}:
 /// {detail}"` for scan/delete, or `"{verb} {percent}%"` when `detail` is
@@ -156,9 +174,8 @@ pub struct GameTrimmerApp {
     /// modal): `Ok` carries the success line, `Err` the failure text.
     pub db_maint_result: Option<Result<String, String>>,
 
-    /// Indices into `findings` awaiting the user's confirmation in the
-    /// delete modal.
-    pub confirm_delete: Option<Vec<usize>>,
+    /// State of the delete confirmation modal, `None` while it is closed.
+    pub confirm_delete: Option<ConfirmDelete>,
     pub remove_summary: Option<RemoveSummary>,
     /// Whether the "Clear database" confirmation modal (see `ui::dialogs`)
     /// is currently shown. Set by the settings dialog's "Clear database"
@@ -603,7 +620,13 @@ impl GameTrimmerApp {
         if indices.is_empty() {
             return;
         }
-        self.confirm_delete = Some(indices);
+        // The persisted setting is the starting point, not a lock: the modal
+        // lets the user pick a different method for this delete alone.
+        self.confirm_delete = Some(ConfirmDelete {
+            indices,
+            method: self.settings.delete_method,
+            remember: false,
+        });
     }
 
     pub fn cancel_delete_confirmation(&mut self) {
@@ -613,13 +636,25 @@ impl GameTrimmerApp {
     /// Runs after the user confirms the modal: builds full paths and hands
     /// the job to the delete worker.
     pub fn confirm_delete_now(&mut self) {
-        let Some(indices) = self.confirm_delete.take() else {
+        let Some(ConfirmDelete {
+            indices,
+            method,
+            remember,
+        }) = self.confirm_delete.take()
+        else {
             return;
         };
         let Some(db_path) = self.db_path.clone() else {
             self.status_message = i18n::strings(self.lang()).no_db_path.to_string();
             return;
         };
+
+        // "Remember my choice" writes through the same setter the settings
+        // dialog uses, so the two never drift into separate sources of truth.
+        // A no-op when the method already matches (see `set_delete_method`).
+        if remember {
+            self.set_delete_method(method);
+        }
 
         let items: Vec<DeleteItem> = indices
             .iter()
@@ -639,7 +674,7 @@ impl GameTrimmerApp {
         let handle = worker::delete::spawn_delete(
             db_path,
             items,
-            self.settings.delete_method,
+            method,
             self.tx.clone(),
             self.lang(),
             self.egui_ctx.clone(),
