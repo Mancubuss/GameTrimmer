@@ -228,6 +228,9 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let s = i18n::strings(lang);
     let succeeded = summary.succeeded;
     let nuked = summary.nuked;
+    let expected_bytes = summary.expected_bytes;
+    let freed_bytes = summary.freed_bytes;
+    let recycled_pending_bytes = summary.recycled_pending_bytes;
     let failed_count = summary.failed.len();
     // The method this batch actually ran with - never `app.settings.delete_method`,
     // which can differ from the per-operation choice when the user picked a
@@ -250,18 +253,39 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         match method {
             DeleteMethod::Permanent => {
                 ui.label(i18n::success_line_permanent(lang, succeeded));
+                // Honest freed-vs-expected on-disk space (GT-05a): "of the
+                // expected Y" only when they diverge - i.e. some files failed;
+                // otherwise the shorter "Freed X" reads cleaner.
+                ui.label(i18n::freed_summary_line(
+                    lang,
+                    &format_size(lang, freed_bytes),
+                    &format_size(lang, expected_bytes),
+                    freed_bytes != expected_bytes,
+                ));
             }
             DeleteMethod::RecycleBin => {
                 // Only the files that really landed in the bin are recoverable;
                 // report those honestly as "space frees after you empty it".
                 let recycled = succeeded - nuked;
                 ui.label(i18n::success_line_recycle(lang, recycled));
+                // Bin-bound bytes only free once the bin is emptied (GT-05a);
+                // spell out the amount so the pre-delete estimate is reconciled.
+                if recycled_pending_bytes > 0 {
+                    ui.label(i18n::recycle_pending_size_line(
+                        lang,
+                        &format_size(lang, recycled_pending_bytes),
+                    ));
+                }
                 // Windows permanently deletes items too large for the volume's
                 // Recycle Bin quota, and `trash` reports that as success - so
                 // call those out as permanent, never recoverable (see
-                // `worker::RemoveOutcome::nuked`).
+                // `worker::RemoveOutcome::nuked`). Those bytes are freed now.
                 if nuked > 0 {
                     ui.label(i18n::success_line_nuked(lang, nuked));
+                    ui.label(i18n::freed_now_size_line(
+                        lang,
+                        &format_size(lang, freed_bytes),
+                    ));
                 }
             }
         }

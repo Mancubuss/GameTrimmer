@@ -157,6 +157,10 @@ pub struct RemoveOutcome {
     /// delete (nothing to reclassify) and when the bin could not be listed
     /// (we never assert a permanent delete we cannot prove).
     pub nuked: bool,
+    /// The file's on-disk allocated size (GT-05a), carried through from the
+    /// queued [`crate::worker::delete::DeleteItem`] so the summary can sum how
+    /// much space was actually freed versus expected.
+    pub size_on_disk: u64,
 }
 
 /// Pairs a [`WorkerMsg`] sender with the app's `egui::Context` so every
