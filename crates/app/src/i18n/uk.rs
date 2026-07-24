@@ -139,6 +139,9 @@ pub(super) const STRINGS: Strings = Strings {
     category_bonus: "Бонусні матеріали",
     category_loc: "Файли локалізацій",
     category_other: "Інше",
+    category_orphan: "Осиротіле",
+
+    orphan_branch_label: "Осиротілі рештки",
 
     unit_gb: "ГБ",
     unit_mb: "МБ",

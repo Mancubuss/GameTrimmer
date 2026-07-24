@@ -44,8 +44,8 @@ use crate::app::GameTrimmerApp;
 use crate::i18n::{self, Lang};
 use crate::model::{
     category_display, category_ui_key, format_size, group_min_confidence, group_selection_state,
-    set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem, TreeNode,
-    AUTO_SELECT_CONFIDENCE_THRESHOLD,
+    is_orphan_branch, set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem,
+    GameNode, TreeNode, AUTO_SELECT_CONFIDENCE_THRESHOLD,
 };
 use crate::ui::row_actions;
 
@@ -682,7 +682,16 @@ fn show_game_row(
     let disk_group = &tree[d];
     let game = &disk_group.games[g];
     let key = game_key(&disk_group.disk, game.game_id);
-    let name = egui::RichText::new(i18n::quoted(lang, &game.game_name)).strong();
+    // The orphan branch (GT-02) has no real game name - render a localized
+    // "orphaned residue" label instead of a quoted game title. Computed live
+    // off the sentinel id, so it follows the current UI language even though
+    // the stored `game_name` is empty.
+    let label = game_branch_label(lang, game);
+    let name = if is_orphan_branch(game.game_id) {
+        egui::RichText::new(label.clone()).strong()
+    } else {
+        egui::RichText::new(i18n::quoted(lang, &label)).strong()
+    };
     let response = show_header_row(
         ui,
         findings,
@@ -698,21 +707,29 @@ fn show_game_row(
         lang,
     );
     response.context_menu(|ui| {
-        if ui
-            .button(i18n::select_all_in_game(lang, &game.game_name))
-            .clicked()
-        {
+        if ui.button(i18n::select_all_in_game(lang, &label)).clicked() {
             set_group_selection(findings, &game.all_indices, true);
             ui.close();
         }
         if ui
-            .button(i18n::deselect_all_in_game(lang, &game.game_name))
+            .button(i18n::deselect_all_in_game(lang, &label))
             .clicked()
         {
             set_group_selection(findings, &game.all_indices, false);
             ui.close();
         }
     });
+}
+
+/// The label shown for a game node: the orphan branch's localized
+/// "orphaned residue" heading (GT-02) when this is the synthetic orphan
+/// pseudo-game, otherwise the real game's own name.
+fn game_branch_label(lang: Lang, game: &GameNode) -> String {
+    if is_orphan_branch(game.game_id) {
+        i18n::strings(lang).orphan_branch_label.to_string()
+    } else {
+        game.game_name.clone()
+    }
 }
 
 /// Every finding of `category` across all games of one disk - the target of

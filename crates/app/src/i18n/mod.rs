@@ -145,6 +145,10 @@ pub struct Strings {
     pub category_bonus: &'static str,
     pub category_loc: &'static str,
     pub category_other: &'static str,
+    pub category_orphan: &'static str,
+
+    // -- tree_view.rs: the synthetic orphan-branch pseudo-game label (GT-02) --
+    pub orphan_branch_label: &'static str,
 
     // -- model.rs: size units --
     pub unit_gb: &'static str,
@@ -330,6 +334,8 @@ impl Strings {
             ("category_bonus", self.category_bonus),
             ("category_loc", self.category_loc),
             ("category_other", self.category_other),
+            ("category_orphan", self.category_orphan),
+            ("orphan_branch_label", self.orphan_branch_label),
             ("unit_gb", self.unit_gb),
             ("unit_mb", self.unit_mb),
             ("unit_kb", self.unit_kb),

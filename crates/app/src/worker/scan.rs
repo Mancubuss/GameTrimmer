@@ -16,6 +16,7 @@ use gametrimmer_core::db;
 use gametrimmer_core::error::{CoreError, Result as CoreResult};
 use gametrimmer_core::langdetect::{LangData, LangDetector, LangFinding};
 use gametrimmer_core::mftscan;
+use gametrimmer_core::orphans::{self, OrphanKind};
 use gametrimmer_core::providers::{self, DiscoveredLibrary};
 use gametrimmer_core::rules::{Finding, RuleEngine};
 use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry};
@@ -23,7 +24,10 @@ use gametrimmer_core::settings::ScanRouting;
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang, Verb};
-use crate::model::{category_enabled, display_category, source_key, FindingRow, FindingSource};
+use crate::model::{
+    category_enabled, display_category, orphan_confidence, orphan_install_dir_and_name, source_key,
+    DisplayCategory, FindingRow, FindingSource, ORPHAN_GAME_ID,
+};
 
 use super::scan_route::{self, ScanRoute};
 use super::{manual, Notifier, WorkerMsg};
@@ -313,7 +317,7 @@ fn run_scan(
     // verb. See `crate::model::ScanTiming`.
     let analyze_phase_end = Instant::now();
 
-    let findings = match write_outcome {
+    let mut findings = match write_outcome {
         Ok(findings) => findings,
         Err(_) => {
             send_error(notifier, i18n::write_thread_crashed(lang));
@@ -325,6 +329,31 @@ fn run_scan(
         crate::logger::log("Scan cancelled");
         notifier.send(WorkerMsg::Cancelled);
         return;
+    }
+
+    // GT-02: orphaned launcher residue as its own tree branch. Runs after the
+    // per-game writer thread has joined (so `conn` is ours again) and only on a
+    // scan that reached here without cancellation. Detection is Steam-only for
+    // now - see `collect_orphans`. `persist_orphans` always replaces the whole
+    // set of `NULL`-game orphan rows first, so it is called even when the
+    // category is disabled (with an empty list) to clear any stale rows a
+    // prior scan left behind - otherwise disabling the category wouldn't hide
+    // them on the next load.
+    if category_enabled(enabled_categories, DisplayCategory::Orphan) {
+        let orphans = collect_orphans(&libraries, cancel);
+        if !cancel.load(Ordering::Relaxed) {
+            match persist_orphans(&mut conn, &orphans, lang) {
+                Ok(mut rows) => {
+                    crate::logger::log(&format!("Orphans: {} found", rows.len()));
+                    findings.append(&mut rows);
+                }
+                Err(err) => send_warning(notifier, i18n::orphans_persist_failed(lang, err)),
+            }
+        }
+    } else if let Err(err) = persist_orphans(&mut conn, &[], lang) {
+        crate::logger::log(&format!(
+            "Не вдалося очистити застарілі осиротілі рядки: {err}"
+        ));
     }
 
     // Fold this connection's own WAL into the main file and truncate it
@@ -1343,6 +1372,132 @@ fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<
     }
 }
 
+/// One orphaned-residue folder (GT-02) ready to persist: its absolute path,
+/// total size on disk (the sum of the files under it), and why it is residue.
+struct PreparedOrphan {
+    full_path: PathBuf,
+    size: u64,
+    kind: OrphanKind,
+}
+
+/// Detects orphaned launcher residue across every discovered Steam library and
+/// measures each leftover's size.
+///
+/// Steam-only for now: it is the single vendor with a `steam_spec`, and the
+/// task boundary for this GT-02 increment. The heavy lifting is the pure diff
+/// in `gametrimmer_core::orphans` - for each Steam library, the managed install
+/// set is exactly that library's already-discovered games' `install_dir`s, so
+/// anything sitting in `steamapps/common` (plus the fixed service folders) that
+/// no manifest points at is a candidate. A game installed *past* the launcher
+/// is never even looked at, since only subfolders of the vendor's own container
+/// are considered.
+///
+/// Each candidate's size is the sum of the files under it (`scan_dir`); a
+/// candidate whose contents can't be read (permission, vanished mid-scan) is
+/// still reported at size 0 - its presence is the finding, the size secondary.
+/// `cancel` is threaded into each candidate's walk and polled between
+/// candidates so a Stop during this pass (an orphan folder can be large) is
+/// honored promptly rather than after measuring every leftover.
+fn collect_orphans(libraries: &[DiscoveredLibrary], cancel: &AtomicBool) -> Vec<PreparedOrphan> {
+    let mut prepared = Vec::new();
+    for library in libraries {
+        // `vendor` is a `&'static str` on the provider, so this is a plain
+        // string compare, not a heap allocation.
+        if library.vendor != "steam" {
+            continue;
+        }
+        let managed =
+            orphans::managed_dir_set(library.games.iter().map(|game| game.install_dir.as_path()));
+        let spec = orphans::steam_spec(&library.path);
+        for candidate in orphans::find_orphans(&spec, &managed) {
+            if cancel.load(Ordering::Relaxed) {
+                return prepared;
+            }
+            // A cancelled walk returns `Err("cancelled")`, folding to size 0
+            // here; the outer cancel check discards the whole pass before it
+            // is ever persisted, so a half-measured leftover never lands.
+            let size = scan_dir_cancellable(&candidate.path, cancel)
+                .map(|entries| entries.iter().map(|entry| entry.size).sum())
+                .unwrap_or(0);
+            prepared.push(PreparedOrphan {
+                full_path: candidate.path,
+                size,
+                kind: candidate.kind,
+            });
+        }
+    }
+    prepared
+}
+
+/// Persists the detected orphaned residue and returns it as [`FindingRow`]s for
+/// the UI. Orphan rows have no game, so they are stored with a `NULL`
+/// `files.game_id` and reconstructed with the synthetic [`ORPHAN_GAME_ID`] here
+/// and in `worker::load`.
+///
+/// The whole set of `NULL`-game rows is replaced each call: `persist_libraries`
+/// only ever wipes rows tied to a game, so without this these rows would
+/// accumulate across scans (a leftover deleted or a game reinstalled since the
+/// last scan would otherwise linger). Passing an empty `orphans` therefore
+/// doubles as "clear all orphan residue" - used when the category is disabled.
+/// One transaction so a mid-write failure can't leave a half-replaced set.
+fn persist_orphans(
+    conn: &mut Connection,
+    orphans: &[PreparedOrphan],
+    lang: Lang,
+) -> CoreResult<Vec<FindingRow>> {
+    let tx = conn.transaction()?;
+
+    // `findings` first - it references `files.id`.
+    tx.execute(
+        "DELETE FROM findings WHERE file_id IN (SELECT id FROM files WHERE game_id IS NULL)",
+        [],
+    )?;
+    tx.execute("DELETE FROM files WHERE game_id IS NULL", [])?;
+
+    let mut rows = Vec::with_capacity(orphans.len());
+    {
+        let mut insert_file = tx.prepare_cached(
+            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (NULL, ?1, ?2, NULL)",
+        )?;
+        let mut insert_finding = tx.prepare_cached(
+            "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag, group_dir) \
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL)",
+        )?;
+
+        for orphan in orphans {
+            let source = FindingSource::Orphan(orphan.kind);
+            let confidence = orphan_confidence(orphan.kind);
+            let reason = i18n::orphan_reason(lang, orphan.kind);
+
+            // Stored full-path-in-`rel_path`: an orphan has no game row to hold
+            // its `install_dir`, so the row must be self-contained. `load`
+            // splits it back into the same `(install_dir, rel_path)` pair.
+            let full_path_str = orphan.full_path.to_string_lossy().to_string();
+            insert_file.execute(params![full_path_str, orphan.size as i64])?;
+            let file_id = tx.last_insert_rowid();
+            insert_finding.execute(params![file_id, source_key(source), &reason, confidence])?;
+
+            let (install_dir, rel_path) = orphan_install_dir_and_name(&orphan.full_path);
+            rows.push(FindingRow {
+                file_id,
+                game_id: ORPHAN_GAME_ID,
+                game_name: String::new(),
+                install_dir,
+                rel_path,
+                size: orphan.size,
+                source,
+                rule_desc: reason,
+                confidence,
+                lang_tag: None,
+                group_dir: None,
+            });
+        }
+    }
+
+    tx.commit()?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2178,5 +2333,261 @@ mod tests {
             "\"junk\" has only 1 of 2 files flagged, so it can't collapse, \
              and the one flagged file has no other collapsible ancestor"
         );
+    }
+
+    // -- GT-02: orphaned residue pass --
+
+    /// Builds a Steam library on disk with a live game, a leftover folder, and
+    /// an aborted-download service folder, returning the temp dir plus the
+    /// `DiscoveredLibrary` describing only the live game (the manifest set).
+    fn steam_library_with_a_leftover() -> (tempfile::TempDir, DiscoveredLibrary) {
+        let dir = tempfile::tempdir().expect("create temp library");
+        let root = dir.path();
+        let common = root.join("steamapps").join("common");
+
+        // A live game (its install_dir goes into the managed set).
+        let live = common.join("Live Game");
+        write_file(&live.join("game.exe"), b"payload");
+
+        // A leftover folder with two files (total 7 bytes) - the orphan.
+        let leftover = common.join("Leftover Game");
+        write_file(&leftover.join("a.bin"), b"aaaa"); // 4 bytes
+        write_file(&leftover.join("sub").join("b.bin"), b"bbb"); // 3 bytes
+
+        // An aborted-download service folder (steamapps/downloading).
+        write_file(
+            &root.join("steamapps").join("downloading").join("state.tmp"),
+            b"xy",
+        );
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: root.to_path_buf(),
+            games: vec![GameInstall {
+                name: "Live Game".to_string(),
+                install_dir: live,
+                app_id: Some("1".to_string()),
+            }],
+        };
+        (dir, library)
+    }
+
+    #[test]
+    fn collect_orphans_flags_leftovers_and_service_folder_but_not_a_live_game() {
+        let (_dir, library) = steam_library_with_a_leftover();
+        let cancel = AtomicBool::new(false);
+
+        let orphans = collect_orphans(std::slice::from_ref(&library), &cancel);
+
+        let leftover = library
+            .path
+            .join("steamapps")
+            .join("common")
+            .join("Leftover Game");
+        let downloading = library.path.join("steamapps").join("downloading");
+        let live = library
+            .path
+            .join("steamapps")
+            .join("common")
+            .join("Live Game");
+
+        let unmanaged = orphans
+            .iter()
+            .find(|o| o.full_path == leftover)
+            .expect("the leftover folder must be detected");
+        assert_eq!(unmanaged.kind, OrphanKind::UnmanagedFolder);
+        assert_eq!(
+            unmanaged.size, 7,
+            "the leftover's size is the sum of its files (4 + 3)"
+        );
+
+        assert!(
+            orphans
+                .iter()
+                .any(|o| o.full_path == downloading && o.kind == OrphanKind::ServiceFolder),
+            "the downloading/ service folder must be detected"
+        );
+        assert!(
+            !orphans.iter().any(|o| o.full_path == live),
+            "a game still installed via the launcher must never be flagged"
+        );
+    }
+
+    #[test]
+    fn collect_orphans_ignores_non_steam_libraries() {
+        let (_dir, mut library) = steam_library_with_a_leftover();
+        // Same folders on disk, but discovered under a vendor with no
+        // orphan spec - nothing should be reported (Steam-only, this slice).
+        library.vendor = "epic";
+        let cancel = AtomicBool::new(false);
+
+        assert!(
+            collect_orphans(std::slice::from_ref(&library), &cancel).is_empty(),
+            "orphan detection is Steam-only in this increment"
+        );
+    }
+
+    #[test]
+    fn collect_orphans_stops_early_when_cancelled() {
+        let (_dir, library) = steam_library_with_a_leftover();
+        let cancel = AtomicBool::new(true);
+
+        assert!(
+            collect_orphans(std::slice::from_ref(&library), &cancel).is_empty(),
+            "a pre-cancelled orphan pass must produce nothing"
+        );
+    }
+
+    #[test]
+    fn persist_orphans_writes_null_game_rows_that_load_back_as_the_orphan_branch() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let full_path = PathBuf::from(r"F:\SteamLibrary\steamapps\common\Leftover");
+        let orphans = vec![PreparedOrphan {
+            full_path: full_path.clone(),
+            size: 4096,
+            kind: OrphanKind::UnmanagedFolder,
+        }];
+
+        let rows = persist_orphans(&mut conn, &orphans, Lang::Uk).expect("persist should succeed");
+
+        // The returned row is shaped for the UI: sentinel game id, empty name,
+        // container as install_dir, folder name as rel_path.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].game_id, ORPHAN_GAME_ID);
+        assert!(rows[0].game_name.is_empty());
+        assert_eq!(
+            rows[0].install_dir,
+            PathBuf::from(r"F:\SteamLibrary\steamapps\common")
+        );
+        assert_eq!(rows[0].rel_path, "Leftover");
+        assert_eq!(rows[0].install_dir.join(&rows[0].rel_path), full_path);
+        assert_eq!(
+            rows[0].source,
+            FindingSource::Orphan(OrphanKind::UnmanagedFolder)
+        );
+
+        // The persisted file row has a NULL game_id (there is no game).
+        let game_id: Option<i64> = conn
+            .query_row("SELECT game_id FROM files", [], |row| row.get(0))
+            .expect("read the single file row");
+        assert_eq!(
+            game_id, None,
+            "orphan files must be stored with game_id NULL"
+        );
+
+        // And it round-trips through the real load path as the orphan branch.
+        let loaded = crate::worker::load::load_findings(&conn).expect("load should succeed");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].game_id, ORPHAN_GAME_ID);
+        assert_eq!(loaded[0].install_dir.join(&loaded[0].rel_path), full_path);
+        assert_eq!(
+            loaded[0].source,
+            FindingSource::Orphan(OrphanKind::UnmanagedFolder)
+        );
+    }
+
+    #[test]
+    fn persist_orphans_replaces_the_previous_orphan_set_each_call() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+
+        let first = vec![PreparedOrphan {
+            full_path: PathBuf::from(r"F:\lib\steamapps\common\OldLeftover"),
+            size: 10,
+            kind: OrphanKind::UnmanagedFolder,
+        }];
+        persist_orphans(&mut conn, &first, Lang::Uk).expect("first persist");
+
+        // A later scan finds a different leftover; the old one is gone.
+        let second = vec![PreparedOrphan {
+            full_path: PathBuf::from(r"F:\lib\steamapps\common\NewLeftover"),
+            size: 20,
+            kind: OrphanKind::UnmanagedFolder,
+        }];
+        persist_orphans(&mut conn, &second, Lang::Uk).expect("second persist");
+
+        let paths: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT rel_path FROM files").expect("prepare");
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("query")
+                .collect::<rusqlite::Result<_>>()
+                .expect("collect");
+            rows
+        };
+        assert_eq!(
+            paths,
+            vec![r"F:\lib\steamapps\common\NewLeftover".to_string()],
+            "each persist replaces the whole NULL-game orphan set"
+        );
+    }
+
+    #[test]
+    fn persist_orphans_with_empty_list_clears_stale_orphan_rows() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+
+        let existing = vec![PreparedOrphan {
+            full_path: PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
+            size: 10,
+            kind: OrphanKind::UnmanagedFolder,
+        }];
+        persist_orphans(&mut conn, &existing, Lang::Uk).expect("seed orphan rows");
+
+        // The empty-list call is how a disabled category clears residue.
+        let rows = persist_orphans(&mut conn, &[], Lang::Uk).expect("clear should succeed");
+        assert!(rows.is_empty());
+
+        let file_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE game_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count NULL-game files");
+        assert_eq!(
+            file_count, 0,
+            "an empty persist must wipe stale orphan rows"
+        );
+    }
+
+    #[test]
+    fn persist_orphans_leaves_real_game_files_untouched() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        // A normal game file (non-NULL game_id) must survive the orphan wipe.
+        conn.execute(
+            "INSERT INTO game_libraries (id, vendor, path) VALUES (1, 'steam', 'F:/lib')",
+            [],
+        )
+        .expect("insert library");
+        conn.execute(
+            "INSERT INTO games (id, library_id, name, install_dir, app_id) \
+             VALUES (1, 1, 'Game', 'F:/lib/Game', NULL)",
+            [],
+        )
+        .expect("insert game");
+        conn.execute(
+            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (1, 'game.exe', 100, NULL)",
+            [],
+        )
+        .expect("insert game file");
+
+        persist_orphans(
+            &mut conn,
+            &[PreparedOrphan {
+                full_path: PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
+                size: 10,
+                kind: OrphanKind::UnmanagedFolder,
+            }],
+            Lang::Uk,
+        )
+        .expect("persist");
+
+        let game_files: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE game_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count game files");
+        assert_eq!(game_files, 1, "a real game's files must not be wiped");
     }
 }
