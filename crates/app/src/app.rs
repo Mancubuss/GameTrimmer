@@ -28,8 +28,20 @@ pub const APP_TITLE: &str = "GameTrimmer";
 
 /// Summary shown to the user after a delete operation completes.
 pub struct RemoveSummary {
+    /// Files removed without error. For a Recycle Bin batch this still
+    /// includes any `nuked` items (Windows reported them as success); the
+    /// summary splits them back out so the recoverable count is honest.
     pub succeeded: usize,
+    /// Of `succeeded`, how many were permanently deleted rather than recycled
+    /// because they exceeded the volume's Recycle Bin quota (see
+    /// [`crate::worker::RemoveOutcome::nuked`]). Always 0 for a permanent
+    /// delete.
+    pub nuked: usize,
     pub failed: Vec<(PathBuf, String)>,
+    /// The method this batch actually ran with, so the summary words itself
+    /// per-operation rather than off the persisted default (which may differ
+    /// when the user picked a one-off method without "remember").
+    pub method: gametrimmer_core::settings::DeleteMethod,
 }
 
 /// State of the delete confirmation modal (`ui::dialogs::show_confirm_delete`).
@@ -983,6 +995,7 @@ impl GameTrimmerApp {
             WorkerMsg::RemoveDone {
                 outcomes,
                 occupancy,
+                method,
             } => {
                 self._worker = None;
                 // The deleted files' rows were purged, so the footprint
@@ -995,6 +1008,7 @@ impl GameTrimmerApp {
                 self.progress = None;
 
                 let mut succeeded = 0usize;
+                let mut nuked = 0usize;
                 let mut failed = Vec::new();
                 for outcome in outcomes {
                     // Summary counts stay keyed off `error` alone - a purged-
@@ -1005,6 +1019,13 @@ impl GameTrimmerApp {
                     let succeeded_this_file = outcome.error.is_none();
                     if succeeded_this_file {
                         succeeded += 1;
+                        // A recycle that Windows turned into a permanent delete
+                        // (over-quota) is still a "success" for tree/DB
+                        // purposes, but the summary reports it as permanently
+                        // deleted, not recoverable - see `RemoveOutcome::nuked`.
+                        if outcome.nuked {
+                            nuked += 1;
+                        }
                     }
 
                     if succeeded_this_file || outcome.purged {
@@ -1028,7 +1049,12 @@ impl GameTrimmerApp {
                 self.tree = model::build_tree(&self.findings);
                 self.tree_dirty = false;
                 self.status_message = i18n::remove_done_status(lang, succeeded, failed.len());
-                self.remove_summary = Some(RemoveSummary { succeeded, failed });
+                self.remove_summary = Some(RemoveSummary {
+                    succeeded,
+                    nuked,
+                    failed,
+                    method,
+                });
 
                 // Rows deleted from `files`/`findings` leave free pages behind
                 // in the database file; chain straight into compaction after a

@@ -77,9 +77,15 @@ pub enum WorkerMsg {
     /// `occupancy` is recomputed after the deleted files' rows are purged
     /// from the database, so the UI's occupied-space/percent readout reflects
     /// the just-freed space instead of the pre-delete snapshot.
+    ///
+    /// `method` is the removal method this specific batch actually ran with
+    /// (the per-operation choice from the confirmation modal, not the
+    /// persisted default), so the post-delete summary can word itself
+    /// honestly - "moved to the Recycle Bin" only when it really was.
     RemoveDone {
         outcomes: Vec<RemoveOutcome>,
         occupancy: crate::model::Occupancy,
+        method: gametrimmer_core::settings::DeleteMethod,
     },
     /// One file finished being removed successfully mid-batch, so the UI can
     /// drop it from the tree immediately.
@@ -140,6 +146,17 @@ pub struct RemoveOutcome {
     /// though the removal attempt failed - the path is already gone from
     /// disk, so the UI must treat it as removed.
     pub purged: bool,
+    /// True only for a Recycle Bin removal that reported success yet did not
+    /// land in the bin: Windows permanently deletes (never recycles) an item
+    /// too large for the target volume's Recycle Bin quota, and `trash::delete`
+    /// returns `Ok(())` for it regardless - verified by `gametrimmer_core`'s
+    /// `tests/recycle_bin_quota.rs`. (Windows may well warn the user about such
+    /// a delete; the app does not depend on that either way.) The UI counts
+    /// these as permanent deletions so it never tells the user a gone-for-good
+    /// file is "recoverable in the Recycle Bin". Always `false` for a permanent
+    /// delete (nothing to reclassify) and when the bin could not be listed
+    /// (we never assert a permanent delete we cannot prove).
+    pub nuked: bool,
 }
 
 /// Pairs a [`WorkerMsg`] sender with the app's `egui::Context` so every
