@@ -19,10 +19,13 @@ use crate::i18n::{self, Lang, Verb};
 use super::{Notifier, RemoveOutcome, WorkerMsg};
 
 /// One file queued for removal: its `files.id` (to match the outcome back
-/// to a [`crate::model::FindingItem`]) and its full path on disk.
+/// to a [`crate::model::FindingItem`]), its full path on disk, and its on-disk
+/// allocated size (GT-05a) so the post-delete summary can report how much space
+/// was actually reclaimed versus expected.
 pub struct DeleteItem {
     pub file_id: i64,
     pub full_path: PathBuf,
+    pub size_on_disk: u64,
 }
 
 /// `ctx` is the app's `egui::Context` (see `Notifier`) so per-file delete
@@ -150,6 +153,7 @@ fn run_delete(
                 error: outcome.error,
                 purged,
                 nuked,
+                size_on_disk: item.size_on_disk,
             }
         })
         .collect();
@@ -207,6 +211,44 @@ fn nuked_flags(
                 && recycled_paths.is_some_and(|paths| !paths.contains(&outcome.path))
         })
         .collect()
+}
+
+/// On-disk space (GT-05a) a delete batch reclaimed, split by *how*: what was
+/// expected, what was freed immediately, and what only frees once the Recycle
+/// Bin is emptied. Pure so the accounting is unit-testable without a running
+/// app (which has no test constructor).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SpaceTally {
+    /// Sum of every queued item's on-disk size - the figure the confirm dialog
+    /// promised.
+    pub expected: u64,
+    /// Reclaimed immediately: successful permanent deletes, plus over-quota
+    /// recycles Windows turned into permanent deletes (`nuked`).
+    pub freed: u64,
+    /// Moved to the Recycle Bin on the same volume - frees only when the bin is
+    /// emptied. Always 0 for a permanent delete.
+    pub recycled_pending: u64,
+}
+
+/// Tallies [`SpaceTally`] over a batch's outcomes. A failed removal frees
+/// nothing (its bytes count only towards `expected`); a success frees its
+/// on-disk size now unless it is a genuine (non-`nuked`) recycle, whose space
+/// is merely bin-bound until emptied.
+pub(crate) fn space_tally(method: DeleteMethod, outcomes: &[RemoveOutcome]) -> SpaceTally {
+    let mut tally = SpaceTally::default();
+    for outcome in outcomes {
+        tally.expected += outcome.size_on_disk;
+        if outcome.error.is_some() {
+            continue;
+        }
+        let recycled_not_nuked = matches!(method, DeleteMethod::RecycleBin) && !outcome.nuked;
+        if recycled_not_nuked {
+            tally.recycled_pending += outcome.size_on_disk;
+        } else {
+            tally.freed += outcome.size_on_disk;
+        }
+    }
+    tally
 }
 
 #[cfg(test)]
@@ -268,6 +310,65 @@ mod tests {
             nuked_flags(DeleteMethod::RecycleBin, &outcomes, None),
             vec![false, false],
             "without a bin listing we cannot prove a nuke, so claim none"
+        );
+    }
+
+    fn removed(size_on_disk: u64, error: Option<&str>, nuked: bool) -> RemoveOutcome {
+        RemoveOutcome {
+            file_id: 0,
+            path: PathBuf::from("C:\\x"),
+            error: error.map(|e| e.to_string()),
+            purged: error.is_none(),
+            nuked,
+            size_on_disk,
+        }
+    }
+
+    #[test]
+    fn space_tally_permanent_delete_frees_every_success_and_counts_failures_only_as_expected() {
+        let outcomes = [
+            removed(4096, None, false),
+            removed(8192, None, false),
+            removed(1024, Some("permission denied"), false),
+        ];
+        let tally = space_tally(DeleteMethod::Permanent, &outcomes);
+        assert_eq!(
+            tally,
+            SpaceTally {
+                expected: 4096 + 8192 + 1024,
+                freed: 4096 + 8192,
+                recycled_pending: 0,
+            },
+            "a permanent delete frees every success; a failure adds only to expected"
+        );
+    }
+
+    #[test]
+    fn space_tally_recycle_defers_recoverable_space_but_counts_nuked_as_freed_now() {
+        let outcomes = [
+            // Recoverable recycle: space only frees on emptying.
+            removed(4096, None, false),
+            // Over-quota, permanently deleted by Windows: freed immediately.
+            removed(1_000_000, None, true),
+            // Failed: neither freed nor pending, but still expected.
+            removed(2048, Some("locked"), false),
+        ];
+        let tally = space_tally(DeleteMethod::RecycleBin, &outcomes);
+        assert_eq!(
+            tally,
+            SpaceTally {
+                expected: 4096 + 1_000_000 + 2048,
+                freed: 1_000_000,
+                recycled_pending: 4096,
+            }
+        );
+    }
+
+    #[test]
+    fn space_tally_empty_batch_is_all_zero() {
+        assert_eq!(
+            space_tally(DeleteMethod::Permanent, &[]),
+            SpaceTally::default()
         );
     }
 }

@@ -476,6 +476,40 @@ pub fn success_line_nuked(lang: Lang, nuked: usize) -> String {
     }
 }
 
+/// Post-delete "freed X of the expected Y" line (GT-05a): closes the loop on
+/// the confirm dialog's "will free {size}" promise with the on-disk space that
+/// was actually reclaimed. When nothing failed (`freed == expected`), the
+/// caller passes `show_expected = false` for the shorter "Freed X". `freed`
+/// and `expected` are pre-formatted size strings.
+pub fn freed_summary_line(lang: Lang, freed: &str, expected: &str, show_expected: bool) -> String {
+    match (lang, show_expected) {
+        (Lang::En, true) => format!("Freed {freed} of the expected {expected}"),
+        (Lang::En, false) => format!("Freed {freed}"),
+        (Lang::Uk, true) => format!("Звільнено {freed} з очікуваних {expected}"),
+        (Lang::Uk, false) => format!("Звільнено {freed}"),
+    }
+}
+
+/// Recycle summary line (GT-05a): on-disk bytes that will free only once the
+/// Recycle Bin is emptied - they still sit on the same volume until then.
+/// `size` is a pre-formatted size string.
+pub fn recycle_pending_size_line(lang: Lang, size: &str) -> String {
+    match lang {
+        Lang::En => format!("Will free after emptying the Recycle Bin: {size}"),
+        Lang::Uk => format!("Звільниться після очищення Кошика: {size}"),
+    }
+}
+
+/// Recycle summary line (GT-05a): on-disk bytes freed immediately because
+/// Windows permanently deleted over-quota items (the `nuked` ones). `size` is a
+/// pre-formatted size string.
+pub fn freed_now_size_line(lang: Lang, size: &str) -> String {
+    match lang {
+        Lang::En => format!("Freed immediately: {size}"),
+        Lang::Uk => format!("Звільнено відразу: {size}"),
+    }
+}
+
 /// Non-fatal warning: the Recycle Bin could not be enumerated after a recycle
 /// delete, so the app could not tell whether any item was permanently deleted
 /// (see `worker::delete::nuked_flags`). The delete itself already

@@ -42,6 +42,16 @@ pub struct RemoveSummary {
     /// per-operation rather than off the persisted default (which may differ
     /// when the user picked a one-off method without "remember").
     pub method: gametrimmer_core::settings::DeleteMethod,
+    /// On-disk bytes the user expected to free (sum over everything queued) -
+    /// the same figure the confirm dialog promised (GT-05a).
+    pub expected_bytes: u64,
+    /// On-disk bytes actually reclaimed *now*: successfully removed files for a
+    /// permanent delete, or only the over-quota `nuked` files for a recycle
+    /// (recycled files still occupy the same volume until the bin is emptied).
+    pub freed_bytes: u64,
+    /// On-disk bytes moved to the Recycle Bin that will free once it is emptied
+    /// (recycle batches only; 0 for a permanent delete).
+    pub recycled_pending_bytes: u64,
 }
 
 /// State of the delete confirmation modal (`ui::dialogs::show_confirm_delete`).
@@ -675,6 +685,7 @@ impl GameTrimmerApp {
                 DeleteItem {
                     file_id: row.file_id,
                     full_path: row.install_dir.join(&row.rel_path),
+                    size_on_disk: row.size_on_disk,
                 }
             })
             .collect();
@@ -1007,6 +1018,11 @@ impl GameTrimmerApp {
                 // `progress`) - mirrors the scan `Done` arm.
                 self.progress = None;
 
+                // On-disk space accounting for the honest "freed X of expected
+                // Y" summary (GT-05a) - a pure tally so it stays unit-testable
+                // outside the app; see `worker::delete::space_tally`.
+                let space = worker::delete::space_tally(method, &outcomes);
+
                 let mut succeeded = 0usize;
                 let mut nuked = 0usize;
                 let mut failed = Vec::new();
@@ -1054,6 +1070,9 @@ impl GameTrimmerApp {
                     nuked,
                     failed,
                     method,
+                    expected_bytes: space.expected,
+                    freed_bytes: space.freed,
+                    recycled_pending_bytes: space.recycled_pending,
                 });
 
                 // Rows deleted from `files`/`findings` leave free pages behind
