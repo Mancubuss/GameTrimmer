@@ -170,6 +170,7 @@ pub fn scan_frn_map(map: &FrnMap, roots: &[ScanRoot]) -> Vec<(i64, Vec<FileEntry
                     bucket.push(FileEntry {
                         rel_path,
                         size: record.size,
+                        size_on_disk: record.alloc_size,
                         mtime: record.mtime,
                     });
                 }
@@ -192,6 +193,7 @@ mod tests {
         MftRecord {
             is_directory: true,
             size: 0,
+            alloc_size: 0,
             mtime: None,
             aliases: vec![NameAlias {
                 parent_frn: parent,
@@ -204,6 +206,10 @@ mod tests {
         MftRecord {
             is_directory: false,
             size,
+            // Synthetic path-mapping tests don't care about on-disk vs
+            // logical; keep them equal so `size_on_disk` assertions (where a
+            // test makes them) stay predictable.
+            alloc_size: size,
             mtime,
             aliases: vec![NameAlias {
                 parent_frn: parent,

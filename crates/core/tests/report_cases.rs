@@ -989,11 +989,7 @@ fn report_golden_cases() {
     for (game, cases) in games() {
         let files: Vec<FileEntry> = cases
             .iter()
-            .map(|case| FileEntry {
-                rel_path: case.path.to_string(),
-                size: 0,
-                mtime: None,
-            })
+            .map(|case| FileEntry::logical_only(case.path, 0, None))
             .collect();
         let loc: std::collections::HashMap<usize, LangFinding> =
             detector.analyze_game(&files).into_iter().collect();

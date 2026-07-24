@@ -89,8 +89,15 @@ pub struct ParsedRecord {
     /// Whether the `IS_DIRECTORY` flag is set. Only meaningful (and only
     /// consulted by [`FrnAccumulator`]) when `base_frn == 0`.
     pub is_directory: bool,
-    /// The unnamed `$DATA` attribute's size, if this record carries one.
+    /// The unnamed `$DATA` attribute's logical size, if this record carries
+    /// one.
     pub unnamed_data_size: Option<u64>,
+    /// The unnamed `$DATA` attribute's on-disk allocated size (cluster-aligned,
+    /// compression-aware), if this record carries a *non-resident* one.
+    /// `Some(0)` for a resident `$DATA` (no clusters allocated - the data lives
+    /// in the MFT record itself); `None` when this record carries no unnamed
+    /// `$DATA` attribute at all.
+    pub unnamed_alloc_size: Option<u64>,
     /// `$STANDARD_INFORMATION`'s modification time, converted to Unix
     /// seconds, if this record carries that attribute.
     pub mtime: Option<i64>,
@@ -268,6 +275,7 @@ pub fn parse_record(buf: &mut [u8], frn: u64) -> Option<ParsedRecord> {
             in_use: false,
             is_directory: false,
             unnamed_data_size: None,
+            unnamed_alloc_size: None,
             mtime: None,
             aliases: Vec::new(),
         });
@@ -277,6 +285,7 @@ pub fn parse_record(buf: &mut [u8], frn: u64) -> Option<ParsedRecord> {
     let base_frn = read_frn48(buf, 32);
 
     let mut unnamed_data_size = None;
+    let mut unnamed_alloc_size = None;
     let mut mtime = None;
     let mut aliases = Vec::new();
 
@@ -316,23 +325,32 @@ pub fn parse_record(buf: &mut [u8], frn: u64) -> Option<ParsedRecord> {
             }
             0x80 if name_length_chars == 0 => {
                 // unnamed $DATA
-                let size = if is_non_resident {
-                    // Non-resident header: lowest_vcn @+16, data_size @+48.
-                    // A $DATA attribute fragmented across several attribute
-                    // records (large files with an $ATTRIBUTE_LIST) has
-                    // valid size fields only in the fragment whose
-                    // lowest_vcn == 0; the other fragments carry zeros
-                    // there and must not overwrite the real size.
+                let (size, alloc) = if is_non_resident {
+                    // Non-resident header: lowest_vcn @+16, allocated_size
+                    // @+40, data_size @+48. A $DATA attribute fragmented
+                    // across several attribute records (large files with an
+                    // $ATTRIBUTE_LIST) has valid size fields only in the
+                    // fragment whose lowest_vcn == 0; the other fragments
+                    // carry zeros there and must not overwrite the real size.
                     if attr_length >= 64 && read_u64(buf, offset + 16) == 0 {
-                        Some(read_u64(buf, offset + 48))
+                        (
+                            Some(read_u64(buf, offset + 48)),
+                            Some(read_u64(buf, offset + 40)),
+                        )
                     } else {
-                        None
+                        (None, None)
                     }
                 } else {
-                    resident_value_length(buf, offset)
+                    // Resident data lives inside the MFT record - it occupies
+                    // no data clusters, so its on-disk allocation is 0, which
+                    // is exactly what Explorer reports for such tiny files.
+                    (resident_value_length(buf, offset), Some(0))
                 };
                 if let Some(size) = size {
                     unnamed_data_size = Some(size);
+                }
+                if let Some(alloc) = alloc {
+                    unnamed_alloc_size = Some(alloc);
                 }
             }
             _ => {}
@@ -347,6 +365,7 @@ pub fn parse_record(buf: &mut [u8], frn: u64) -> Option<ParsedRecord> {
         in_use: true,
         is_directory,
         unnamed_data_size,
+        unnamed_alloc_size,
         mtime,
         aliases,
     })
@@ -387,6 +406,7 @@ pub fn parse_chunk(buf: &mut [u8], record_size: u64, first_frn: u64) -> Vec<Pars
 struct PartialRecord {
     is_directory: bool,
     size: Option<u64>,
+    alloc_size: Option<u64>,
     mtime: Option<i64>,
     aliases: Vec<NameAlias>,
 }
@@ -433,6 +453,9 @@ impl FrnAccumulator {
         if let Some(size) = parsed.unnamed_data_size {
             entry.size = Some(size);
         }
+        if let Some(alloc) = parsed.unnamed_alloc_size {
+            entry.alloc_size = Some(alloc);
+        }
         if let Some(mtime) = parsed.mtime {
             entry.mtime = Some(mtime);
         }
@@ -460,6 +483,11 @@ impl FrnAccumulator {
                         0
                     } else {
                         partial.size.unwrap_or(0)
+                    },
+                    alloc_size: if partial.is_directory {
+                        0
+                    } else {
+                        partial.alloc_size.unwrap_or(0)
                     },
                     mtime: partial.mtime,
                     aliases: partial.aliases,
@@ -608,8 +636,21 @@ mod tests {
         /// A non-resident `$DATA` fragment with an explicit `lowest_vcn`.
         /// Fragments with `lowest_vcn > 0` carry zeros (or garbage) in
         /// their size fields on a real volume, which is what `data_size`
-        /// simulates here.
-        fn add_nonresident_data_fragment(mut self, lowest_vcn: u64, data_size: u64) -> Self {
+        /// simulates here. Leaves `allocated_size` (@+40) at zero; use
+        /// [`add_nonresident_data_with_alloc`] to exercise that field.
+        fn add_nonresident_data_fragment(self, lowest_vcn: u64, data_size: u64) -> Self {
+            self.add_nonresident_data_with_alloc(lowest_vcn, data_size, 0)
+        }
+
+        /// A non-resident `$DATA` fragment writing both `data_size` (@+48) and
+        /// `allocated_size` (@+40), mirroring how NTFS records the logical
+        /// size and the cluster-aligned on-disk allocation side by side.
+        fn add_nonresident_data_with_alloc(
+            mut self,
+            lowest_vcn: u64,
+            data_size: u64,
+            allocated_size: u64,
+        ) -> Self {
             const ATTR_LEN: usize = 64;
             let start = self.cursor;
             self.buf[start..start + 4].copy_from_slice(&0x80u32.to_le_bytes());
@@ -617,6 +658,7 @@ mod tests {
             self.buf[start + 8] = 1; // non-resident
             self.buf[start + 9] = 0; // unnamed
             self.buf[start + 16..start + 24].copy_from_slice(&lowest_vcn.to_le_bytes());
+            self.buf[start + 40..start + 48].copy_from_slice(&allocated_size.to_le_bytes());
             self.buf[start + 48..start + 56].copy_from_slice(&data_size.to_le_bytes());
             self.cursor = start + ATTR_LEN;
             self
@@ -781,6 +823,66 @@ mod tests {
 
         let parsed = parse_record(&mut buf, 32).expect("well-formed record parses");
         assert_eq!(parsed.unnamed_data_size, Some(123_456_789));
+    }
+
+    #[test]
+    fn non_resident_allocated_size_is_read_from_the_allocated_size_field() {
+        // A 10-byte-logical file whose data run occupies one 4 KiB cluster:
+        // NTFS records allocated_size = 4096 next to data_size = 10.
+        let mut buf = RecordBuilder::new(RECORD_SIZE)
+            .set_flags(true, false)
+            .add_file_name(5, "tiny.xml", 1)
+            .add_nonresident_data_with_alloc(0, 10, 4096)
+            .finish();
+
+        let parsed = parse_record(&mut buf, 32).expect("well-formed record parses");
+        assert_eq!(parsed.unnamed_data_size, Some(10));
+        assert_eq!(
+            parsed.unnamed_alloc_size,
+            Some(4096),
+            "on-disk allocation must come from the allocated_size field, not the logical size"
+        );
+
+        let mut acc = FrnAccumulator::with_capacity(1);
+        acc.add(parsed);
+        let map = acc.finish(16);
+        let record = &map[&32];
+        assert_eq!(record.size, 10);
+        assert_eq!(record.alloc_size, 4096);
+    }
+
+    #[test]
+    fn resident_data_has_zero_on_disk_allocation() {
+        // Resident data lives in the MFT record and occupies no data
+        // clusters - Explorer reports "0 bytes" on disk for such files.
+        let mut buf = RecordBuilder::new(RECORD_SIZE)
+            .set_flags(true, false)
+            .add_file_name(5, "note.txt", 1)
+            .add_resident_data(&[7u8; 100])
+            .finish();
+
+        let parsed = parse_record(&mut buf, 33).expect("well-formed record parses");
+        assert_eq!(parsed.unnamed_data_size, Some(100));
+        assert_eq!(parsed.unnamed_alloc_size, Some(0));
+
+        let mut acc = FrnAccumulator::with_capacity(1);
+        acc.add(parsed);
+        let map = acc.finish(16);
+        assert_eq!(map[&33].alloc_size, 0);
+    }
+
+    #[test]
+    fn directory_record_has_zero_on_disk_allocation() {
+        let mut buf = RecordBuilder::new(RECORD_SIZE)
+            .set_flags(true, true)
+            .add_file_name(5, "SteamLibrary", 1)
+            .finish();
+
+        let parsed = parse_record(&mut buf, 30).expect("well-formed record parses");
+        let mut acc = FrnAccumulator::with_capacity(1);
+        acc.add(parsed);
+        let map = acc.finish(16);
+        assert_eq!(map[&30].alloc_size, 0);
     }
 
     #[test]

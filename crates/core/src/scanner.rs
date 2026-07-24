@@ -15,15 +15,39 @@ use crate::error::{CoreError, Result};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
     pub rel_path: String,
+    /// Logical file size (bytes) - `std::fs` `len()` / the NTFS `$DATA`
+    /// data size.
     pub size: u64,
+    /// On-disk allocated size (bytes), cluster-aligned and compression-aware -
+    /// what Explorer shows as "Size on disk". The honest figure for how much
+    /// space removing the file actually reclaims. See [`crate::ondisk`] (the
+    /// `walkdir` path) and [`crate::mftscan`] (`allocated_size`).
+    pub size_on_disk: u64,
     /// Unix seconds; None when the mtime is unavailable.
     pub mtime: Option<i64>,
+}
+
+impl FileEntry {
+    /// Constructs an entry whose on-disk size equals its logical size - used
+    /// by synthetic/test data and any producer without a real on-disk figure,
+    /// so `size_on_disk` is never accidentally left at zero.
+    pub fn logical_only(rel_path: impl Into<String>, size: u64, mtime: Option<i64>) -> Self {
+        Self {
+            rel_path: rel_path.into(),
+            size,
+            size_on_disk: size,
+            mtime,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ScanStats {
     pub files: u64,
+    /// Sum of logical sizes.
     pub bytes: u64,
+    /// Sum of on-disk allocated sizes - the honest occupancy figure.
+    pub bytes_on_disk: u64,
 }
 
 /// How many items pass between polls of `cancel` inside
@@ -71,11 +95,15 @@ pub fn scan_dir_cancellable(dir: &Path, cancel: &AtomicBool) -> Result<Vec<FileE
         )));
     }
 
+    // Query the volume's cluster size once for the whole root and reuse it
+    // for every file, rather than paying a `GetDiskFreeSpaceW` per file.
+    let cluster = crate::ondisk::cluster_size(dir);
+
     let entries = WalkDir::new(dir)
         .follow_links(false)
         .into_iter()
         .filter_map(|entry| entry.ok())
-        .filter_map(|entry| map_walkdir_entry(dir, entry));
+        .filter_map(|entry| map_walkdir_entry(dir, entry, cluster));
 
     collect_cancellable(entries, cancel)
 }
@@ -84,7 +112,7 @@ pub fn scan_dir_cancellable(dir: &Path, cancel: &AtomicBool) -> Result<Vec<FileE
 /// applying the same filtering `scan_dir` has always applied: only regular
 /// files are kept, and any entry whose relative path or metadata cannot be
 /// read is skipped rather than failing the whole scan.
-fn map_walkdir_entry(dir: &Path, entry: walkdir::DirEntry) -> Option<FileEntry> {
+fn map_walkdir_entry(dir: &Path, entry: walkdir::DirEntry, cluster: u64) -> Option<FileEntry> {
     if !entry.file_type().is_file() {
         return None;
     }
@@ -100,6 +128,7 @@ fn map_walkdir_entry(dir: &Path, entry: walkdir::DirEntry) -> Option<FileEntry> 
 
     let meta = entry.metadata().ok()?;
     let size = meta.len();
+    let size_on_disk = crate::ondisk::on_disk_size(entry.path(), size, cluster);
     let mtime = meta
         .modified()
         .ok()
@@ -109,6 +138,7 @@ fn map_walkdir_entry(dir: &Path, entry: walkdir::DirEntry) -> Option<FileEntry> 
     Some(FileEntry {
         rel_path,
         size,
+        size_on_disk,
         mtime,
     })
 }
@@ -157,13 +187,21 @@ pub fn store_files_no_tx(
     let mut stats = ScanStats::default();
     {
         let mut stmt = conn.prepare_cached(
-            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO files (game_id, rel_path, size, size_on_disk, mtime) VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         for entry in entries {
             let size_i64 = entry.size as i64;
-            stmt.execute(params![game_id, entry.rel_path, size_i64, entry.mtime])?;
+            let size_on_disk_i64 = entry.size_on_disk as i64;
+            stmt.execute(params![
+                game_id,
+                entry.rel_path,
+                size_i64,
+                size_on_disk_i64,
+                entry.mtime
+            ])?;
             stats.files += 1;
             stats.bytes += entry.size;
+            stats.bytes_on_disk += entry.size_on_disk;
         }
     }
 
@@ -303,11 +341,7 @@ mod tests {
                 return None;
             }
             self.yielded.set(done + 1);
-            Some(FileEntry {
-                rel_path: format!("file{done}.txt"),
-                size: 1,
-                mtime: None,
-            })
+            Some(FileEntry::logical_only(format!("file{done}.txt"), 1, None))
         }
     }
 
@@ -412,26 +446,14 @@ mod tests {
         let game_id = 1i64;
 
         let first_batch = vec![
-            FileEntry {
-                rel_path: "a.txt".into(),
-                size: 10,
-                mtime: Some(100),
-            },
-            FileEntry {
-                rel_path: "b\\c.txt".into(),
-                size: 20,
-                mtime: Some(200),
-            },
+            FileEntry::logical_only("a.txt", 10, Some(100)),
+            FileEntry::logical_only("b\\c.txt", 20, Some(200)),
         ];
         let stats = store_files(&mut conn, game_id, &first_batch).expect("store first batch");
         assert_eq!(stats.files, 2);
         assert_eq!(stats.bytes, 30);
 
-        let second_batch = vec![FileEntry {
-            rel_path: "only.txt".into(),
-            size: 42,
-            mtime: None,
-        }];
+        let second_batch = vec![FileEntry::logical_only("only.txt", 42, None)];
         let stats = store_files(&mut conn, game_id, &second_batch).expect("store second batch");
         assert_eq!(stats.files, 1);
         assert_eq!(stats.bytes, 42);
@@ -547,11 +569,7 @@ mod tests {
         .expect("insert game");
 
         let game_id = 1i64;
-        let entries = vec![FileEntry {
-            rel_path: "a.txt".into(),
-            size: 10,
-            mtime: Some(100),
-        }];
+        let entries = vec![FileEntry::logical_only("a.txt", 10, Some(100))];
 
         let tx = conn.transaction().expect("begin transaction");
         let stats = store_files_no_tx(&tx, game_id, &entries).expect("store within shared tx");

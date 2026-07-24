@@ -2,6 +2,7 @@ pub mod db;
 pub mod error;
 pub mod langdetect;
 pub mod mftscan;
+pub mod ondisk;
 pub mod ops;
 pub mod orphans;
 pub mod packs;

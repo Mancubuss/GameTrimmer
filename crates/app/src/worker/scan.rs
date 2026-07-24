@@ -1007,6 +1007,7 @@ fn persist_libraries(
 struct PreparedFinding {
     rel_path: String,
     size: u64,
+    size_on_disk: u64,
     source: FindingSource,
     rule_id: String,
     confidence: u8,
@@ -1142,6 +1143,7 @@ fn classify_game(
             PreparedFinding {
                 rel_path: entry.rel_path.clone(),
                 size: entry.size,
+                size_on_disk: entry.size_on_disk,
                 source: combined.source,
                 rule_id: combined.rule_id,
                 confidence: combined.confidence,
@@ -1291,6 +1293,7 @@ fn persist_prepared_game(
             install_dir: prepared.install_dir.clone(),
             rel_path: finding.rel_path.clone(),
             size: finding.size,
+            size_on_disk: finding.size_on_disk,
             source: finding.source,
             rule_desc: finding.rule_id.clone(),
             confidence: finding.confidence,
@@ -1376,7 +1379,11 @@ fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<
 /// total size on disk (the sum of the files under it), and why it is residue.
 struct PreparedOrphan {
     full_path: PathBuf,
+    /// Logical size (sum of the leftover's files' logical sizes).
     size: u64,
+    /// On-disk allocated size (GT-05a) - the honest reclaimable figure, shown
+    /// and summed as primary.
+    size_on_disk: u64,
     kind: OrphanKind,
 }
 
@@ -1416,12 +1423,17 @@ fn collect_orphans(libraries: &[DiscoveredLibrary], cancel: &AtomicBool) -> Vec<
             // A cancelled walk returns `Err("cancelled")`, folding to size 0
             // here; the outer cancel check discards the whole pass before it
             // is ever persisted, so a half-measured leftover never lands.
-            let size = scan_dir_cancellable(&candidate.path, cancel)
-                .map(|entries| entries.iter().map(|entry| entry.size).sum())
-                .unwrap_or(0);
+            let (size, size_on_disk) = scan_dir_cancellable(&candidate.path, cancel)
+                .map(|entries| {
+                    entries.iter().fold((0u64, 0u64), |(sz, on_disk), entry| {
+                        (sz + entry.size, on_disk + entry.size_on_disk)
+                    })
+                })
+                .unwrap_or((0, 0));
             prepared.push(PreparedOrphan {
                 full_path: candidate.path,
                 size,
+                size_on_disk,
                 kind: candidate.kind,
             });
         }
@@ -1457,7 +1469,8 @@ fn persist_orphans(
     let mut rows = Vec::with_capacity(orphans.len());
     {
         let mut insert_file = tx.prepare_cached(
-            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (NULL, ?1, ?2, NULL)",
+            "INSERT INTO files (game_id, rel_path, size, size_on_disk, mtime) \
+             VALUES (NULL, ?1, ?2, ?3, NULL)",
         )?;
         let mut insert_finding = tx.prepare_cached(
             "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag, group_dir) \
@@ -1473,7 +1486,11 @@ fn persist_orphans(
             // its `install_dir`, so the row must be self-contained. `load`
             // splits it back into the same `(install_dir, rel_path)` pair.
             let full_path_str = orphan.full_path.to_string_lossy().to_string();
-            insert_file.execute(params![full_path_str, orphan.size as i64])?;
+            insert_file.execute(params![
+                full_path_str,
+                orphan.size as i64,
+                orphan.size_on_disk as i64
+            ])?;
             let file_id = tx.last_insert_rowid();
             insert_finding.execute(params![file_id, source_key(source), &reason, confidence])?;
 
@@ -1485,6 +1502,7 @@ fn persist_orphans(
                 install_dir,
                 rel_path,
                 size: orphan.size,
+                size_on_disk: orphan.size_on_disk,
                 source,
                 rule_desc: reason,
                 confidence,
@@ -1610,16 +1628,8 @@ mod tests {
         let lang_detector = LangDetector::new();
 
         let entries = vec![
-            FileEntry {
-                rel_path: "a.txt".into(),
-                size: 1,
-                mtime: None,
-            },
-            FileEntry {
-                rel_path: "b\\c.txt".into(),
-                size: 1,
-                mtime: None,
-            },
+            FileEntry::logical_only("a.txt", 1, None),
+            FileEntry::logical_only("b\\c.txt", 1, None),
         ];
         let cancel = AtomicBool::new(true);
 
@@ -2092,11 +2102,7 @@ mod tests {
             || {
                 Ok(vec![(
                     1i64,
-                    Ok(vec![FileEntry {
-                        rel_path: "a.txt".into(),
-                        size: 1,
-                        mtime: None,
-                    }]),
+                    Ok(vec![FileEntry::logical_only("a.txt", 1, None)]),
                 )])
             },
             &game_ids,
@@ -2228,11 +2234,7 @@ mod tests {
     }
 
     fn entry(rel_path: &str) -> FileEntry {
-        FileEntry {
-            rel_path: rel_path.to_string(),
-            size: 1,
-            mtime: None,
-        }
+        FileEntry::logical_only(rel_path, 1, None)
     }
 
     #[test]
@@ -2444,7 +2446,10 @@ mod tests {
         let full_path = PathBuf::from(r"F:\SteamLibrary\steamapps\common\Leftover");
         let orphans = vec![PreparedOrphan {
             full_path: full_path.clone(),
-            size: 4096,
+            size: 3000,
+            // Deliberately distinct from the logical size: many small files
+            // round up to more clusters on disk (GT-05a).
+            size_on_disk: 4096,
             kind: OrphanKind::UnmanagedFolder,
         }];
 
@@ -2454,6 +2459,11 @@ mod tests {
         // container as install_dir, folder name as rel_path.
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].game_id, ORPHAN_GAME_ID);
+        assert_eq!(rows[0].size, 3000, "logical size preserved");
+        assert_eq!(
+            rows[0].size_on_disk, 4096,
+            "on-disk allocation is the primary orphan size (GT-05a)"
+        );
         assert!(rows[0].game_name.is_empty());
         assert_eq!(
             rows[0].install_dir,
@@ -2479,6 +2489,10 @@ mod tests {
         let loaded = crate::worker::load::load_findings(&conn).expect("load should succeed");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].game_id, ORPHAN_GAME_ID);
+        assert_eq!(
+            loaded[0].size_on_disk, 4096,
+            "the stored on-disk size must survive the load round-trip"
+        );
         assert_eq!(loaded[0].install_dir.join(&loaded[0].rel_path), full_path);
         assert_eq!(
             loaded[0].source,
@@ -2493,6 +2507,7 @@ mod tests {
         let first = vec![PreparedOrphan {
             full_path: PathBuf::from(r"F:\lib\steamapps\common\OldLeftover"),
             size: 10,
+            size_on_disk: 10,
             kind: OrphanKind::UnmanagedFolder,
         }];
         persist_orphans(&mut conn, &first, Lang::Uk).expect("first persist");
@@ -2501,6 +2516,7 @@ mod tests {
         let second = vec![PreparedOrphan {
             full_path: PathBuf::from(r"F:\lib\steamapps\common\NewLeftover"),
             size: 20,
+            size_on_disk: 20,
             kind: OrphanKind::UnmanagedFolder,
         }];
         persist_orphans(&mut conn, &second, Lang::Uk).expect("second persist");
@@ -2528,6 +2544,7 @@ mod tests {
         let existing = vec![PreparedOrphan {
             full_path: PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
             size: 10,
+            size_on_disk: 10,
             kind: OrphanKind::UnmanagedFolder,
         }];
         persist_orphans(&mut conn, &existing, Lang::Uk).expect("seed orphan rows");
@@ -2575,6 +2592,7 @@ mod tests {
             &[PreparedOrphan {
                 full_path: PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
                 size: 10,
+                size_on_disk: 10,
                 kind: OrphanKind::UnmanagedFolder,
             }],
             Lang::Uk,
