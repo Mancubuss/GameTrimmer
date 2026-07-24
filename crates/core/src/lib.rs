@@ -3,6 +3,7 @@ pub mod error;
 pub mod langdetect;
 pub mod mftscan;
 pub mod ops;
+pub mod orphans;
 pub mod packs;
 pub mod providers;
 pub mod rules;
