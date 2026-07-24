@@ -416,8 +416,47 @@ pub fn success_line_permanent(lang: Lang, succeeded: usize) -> String {
 
 pub fn success_line_recycle(lang: Lang, succeeded: usize) -> String {
     match lang {
-        Lang::En => format!("Successfully moved to Recycle Bin: {succeeded}"),
-        Lang::Uk => format!("Успішно переміщено в Кошик: {succeeded}"),
+        Lang::En => format!(
+            "Moved to the Recycle Bin: {succeeded} \
+             (disk space frees up after you empty it)"
+        ),
+        Lang::Uk => format!(
+            "Переміщено в Кошик: {succeeded} \
+             (місце на диску звільниться після його очищення)"
+        ),
+    }
+}
+
+/// Shown after a Recycle Bin delete when Windows permanently deleted some
+/// items because they exceeded the volume's Recycle Bin quota - see
+/// `worker::RemoveOutcome::nuked`. These are gone for good, so the wording
+/// must never imply they are recoverable.
+pub fn success_line_nuked(lang: Lang, nuked: usize) -> String {
+    match lang {
+        Lang::En => format!(
+            "Permanently deleted (too large for the Recycle Bin, cannot be \
+             recovered): {nuked}"
+        ),
+        Lang::Uk => {
+            format!("Видалено безповоротно (завеликі для Кошика, відновити не можна): {nuked}")
+        }
+    }
+}
+
+/// Non-fatal warning: the Recycle Bin could not be enumerated after a recycle
+/// delete, so the app could not tell whether any item was permanently deleted
+/// (see `worker::delete::nuked_flags`). The delete itself already
+/// happened; this only means the summary may over-report recoverability.
+pub fn recycle_bin_list_failed(lang: Lang, err: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => format!(
+            "Could not read the Recycle Bin to confirm which files are \
+             recoverable: {err}"
+        ),
+        Lang::Uk => format!(
+            "Не вдалося прочитати Кошик, щоб підтвердити, які файли можна \
+             відновити: {err}"
+        ),
     }
 }
 

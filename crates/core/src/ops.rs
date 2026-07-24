@@ -63,6 +63,20 @@ pub struct OpOutcome {
     pub error: Option<String>,
 }
 
+/// Lists the original on-disk paths of everything currently in the Windows
+/// Recycle Bin.
+///
+/// Used to tell, after a [`RecycleBin`] removal, which items really landed in
+/// the bin versus were permanently deleted by Windows because they exceeded the
+/// target volume's bin quota - `trash::delete` returns `Ok(())` either way (see
+/// the app's `worker::delete::nuked_flags` and this crate's
+/// `tests/recycle_bin_quota.rs`). Kept here so the `trash` dependency stays
+/// contained in `core` rather than leaking into the app crate.
+pub fn recycled_original_paths() -> Result<Vec<PathBuf>> {
+    let items = trash::os_limited::list()?;
+    Ok(items.iter().map(|item| item.original_path()).collect())
+}
+
 /// Removes `paths` one by one via `remover`, journaling every attempt into the
 /// `operations` table (row written as `pending` before the attempt, updated to
 /// `done`/`failed` after). Continues past individual failures.

@@ -2,13 +2,16 @@
 //! chosen in settings (permanent delete by default, or the Recycle Bin)
 //! and journals every attempt via `gametrimmer_core::ops`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
 use eframe::egui;
 use gametrimmer_core::db;
-use gametrimmer_core::ops::{remove_with_log_observed, PermanentDelete, RecycleBin, Remover};
+use gametrimmer_core::ops::{
+    remove_with_log_observed, OpOutcome, PermanentDelete, RecycleBin, Remover,
+};
 use gametrimmer_core::settings::DeleteMethod;
 
 use crate::i18n::{self, Lang, Verb};
@@ -101,6 +104,27 @@ fn run_delete(
         }
     };
 
+    // For a Recycle Bin batch, list the bin once and cross-reference: a
+    // reported-success path that is not actually in the bin was permanently
+    // deleted by Windows because it did not fit the volume's bin quota
+    // (verified in `gametrimmer_core`'s `tests/recycle_bin_quota.rs`).
+    // `None` means the bin could not be listed - then `nuked_flags` claims no
+    // such delete, since we must never assert one we cannot prove. Skipped
+    // entirely for a permanent delete: nothing to reclassify.
+    let recycled_paths: Option<HashSet<PathBuf>> = match method {
+        DeleteMethod::RecycleBin => match gametrimmer_core::ops::recycled_original_paths() {
+            Ok(paths) => Some(paths.into_iter().collect()),
+            Err(err) => {
+                notifier.send(WorkerMsg::Warning {
+                    msg: i18n::recycle_bin_list_failed(lang, err),
+                });
+                None
+            }
+        },
+        DeleteMethod::Permanent => None,
+    };
+    let nuked = nuked_flags(method, &outcomes, recycled_paths.as_ref());
+
     // Files actually removed from disk must also disappear from `files`/
     // `findings`, or the next app start (worker::load) would resurrect them
     // as selectable despite being gone - re-deleting would then just fail.
@@ -116,7 +140,8 @@ fn run_delete(
     let mapped: Vec<RemoveOutcome> = items
         .iter()
         .zip(outcomes)
-        .map(|(item, outcome)| {
+        .zip(nuked)
+        .map(|((item, outcome), nuked)| {
             let purged =
                 outcome.error.is_none() || std::fs::symlink_metadata(&outcome.path).is_err();
             RemoveOutcome {
@@ -124,6 +149,7 @@ fn run_delete(
                 path: outcome.path,
                 error: outcome.error,
                 purged,
+                nuked,
             }
         })
         .collect();
@@ -154,5 +180,94 @@ fn run_delete(
     notifier.send(WorkerMsg::RemoveDone {
         outcomes: mapped,
         occupancy,
+        method,
     });
+}
+
+/// Decides, per outcome, whether a reported-success removal was actually a
+/// permanent delete (see [`RemoveOutcome::nuked`]). Pure so the classification
+/// is unit-testable without touching the real Recycle Bin:
+///
+/// - Permanent-delete batches never flag - the user already chose a permanent
+///   delete, so there is nothing to reclassify.
+/// - `recycled_paths == None` (the bin could not be listed) yields all
+///   `false`: we never assert a permanent delete we cannot prove.
+/// - Otherwise an outcome is flagged when it succeeded (`error.is_none()`) yet
+///   its path is absent from the bin.
+fn nuked_flags(
+    method: DeleteMethod,
+    outcomes: &[OpOutcome],
+    recycled_paths: Option<&HashSet<PathBuf>>,
+) -> Vec<bool> {
+    outcomes
+        .iter()
+        .map(|outcome| {
+            matches!(method, DeleteMethod::RecycleBin)
+                && outcome.error.is_none()
+                && recycled_paths.is_some_and(|paths| !paths.contains(&outcome.path))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ok(path: &str) -> OpOutcome {
+        OpOutcome {
+            path: PathBuf::from(path),
+            error: None,
+        }
+    }
+
+    fn failed(path: &str) -> OpOutcome {
+        OpOutcome {
+            path: PathBuf::from(path),
+            error: Some("boom".to_string()),
+        }
+    }
+
+    #[test]
+    fn permanent_delete_never_marks_anything_nuked() {
+        let outcomes = [ok("C:\\a"), failed("C:\\b")];
+        // Even with an empty bin listing, a permanent delete has nothing to
+        // reclassify - the user asked for a permanent delete.
+        assert_eq!(
+            nuked_flags(DeleteMethod::Permanent, &outcomes, Some(&HashSet::new())),
+            vec![false, false]
+        );
+    }
+
+    #[test]
+    fn recycle_success_absent_from_bin_is_nuked() {
+        let outcomes = [ok("C:\\in_bin"), ok("C:\\too_big")];
+        let mut bin = HashSet::new();
+        bin.insert(PathBuf::from("C:\\in_bin"));
+        assert_eq!(
+            nuked_flags(DeleteMethod::RecycleBin, &outcomes, Some(&bin)),
+            vec![false, true],
+            "a recycle success not present in the bin must be flagged nuked"
+        );
+    }
+
+    #[test]
+    fn recycle_failure_is_not_nuked_even_when_absent_from_bin() {
+        // A failed removal is already reported as a per-file error; it is not a
+        // permanent delete of the over-quota kind, so it must never be flagged.
+        let outcomes = [failed("C:\\gone")];
+        assert_eq!(
+            nuked_flags(DeleteMethod::RecycleBin, &outcomes, Some(&HashSet::new())),
+            vec![false]
+        );
+    }
+
+    #[test]
+    fn unlistable_bin_claims_no_nuke() {
+        let outcomes = [ok("C:\\a"), ok("C:\\b")];
+        assert_eq!(
+            nuked_flags(DeleteMethod::RecycleBin, &outcomes, None),
+            vec![false, false],
+            "without a bin listing we cannot prove a nuke, so claim none"
+        );
+    }
 }

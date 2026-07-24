@@ -17,6 +17,27 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     show_remove_summary(app, ui);
 }
 
+/// Draws `text` while reserving the vertical space `tallest` would need at the
+/// current width. A caller that swaps between texts of different heights (the
+/// delete modal's per-method question) then keeps a constant overall height
+/// instead of resizing on every switch. Both are laid out at the same
+/// `available_width`, so the reserved height is exactly what `tallest` needs;
+/// `text` is top-aligned within it.
+fn label_reserving_height(ui: &mut egui::Ui, text: &str, tallest: &str) {
+    let wrap_width = ui.available_width();
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let color = ui.visuals().text_color();
+    let tallest_height = ui
+        .painter()
+        .layout(tallest.to_owned(), font_id, color, wrap_width)
+        .size()
+        .y;
+    ui.scope(|ui| {
+        ui.set_min_height(tallest_height);
+        ui.label(text);
+    });
+}
+
 /// Startup modal offering to relaunch elevated for the faster MFT scan
 /// path. Only shown once, and only when the process isn't already
 /// Administrator-elevated (see `crate::elevation`).
@@ -78,27 +99,26 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let mut confirmed = false;
     let mut cancelled = false;
 
+    let size_str = format_size(lang, bytes);
     let modal = egui::Modal::new(egui::Id::new("gt_confirm_delete")).show(ui.ctx(), |ui| {
         ui.set_min_width(380.0);
         ui.heading(s.confirm_delete_heading);
         ui.add_space(8.0);
 
-        // The question is phrased per method, so it has to be recomputed from
-        // the radio buttons below rather than from the persisted setting -
-        // picking "Recycle Bin" here must immediately reword the prompt and
-        // the confirm button, not only affect what the worker does.
-        let (question, confirm_label) = match picked_method {
-            DeleteMethod::Permanent => (
-                i18n::confirm_permanent_question(lang, count, &format_size(lang, bytes)),
-                s.confirm_label_permanent,
-            ),
-            DeleteMethod::RecycleBin => (
-                i18n::confirm_recycle_question(lang, count, &format_size(lang, bytes)),
-                s.confirm_label_recycle,
-            ),
+        // The question is phrased per method, recomputed from the radio value
+        // below (not the persisted setting) so picking "Recycle Bin" here
+        // immediately rewords the prompt. Rendered into a block that always
+        // reserves the *taller* question's height (the permanent wording is the
+        // longer, multi-line one) so switching the method never resizes the
+        // modal: without that, the modal grew/shrank on each switch, and the
+        // confirm button jumping to a new position could swallow the first
+        // click aimed at it.
+        let question = match picked_method {
+            DeleteMethod::Permanent => i18n::confirm_permanent_question(lang, count, &size_str),
+            DeleteMethod::RecycleBin => i18n::confirm_recycle_question(lang, count, &size_str),
         };
-
-        ui.label(question);
+        let tallest_question = i18n::confirm_permanent_question(lang, count, &size_str);
+        label_reserving_height(ui, &question, &tallest_question);
         ui.add_space(8.0);
 
         ui.radio_value(
@@ -115,6 +135,12 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.checkbox(&mut picked_remember, s.remember_delete_method);
 
         ui.add_space(8.0);
+        // Derived from the just-updated radio value so the button reflects the
+        // current choice the same frame the radio changes, not one frame later.
+        let confirm_label = match picked_method {
+            DeleteMethod::Permanent => s.confirm_label_permanent,
+            DeleteMethod::RecycleBin => s.confirm_label_recycle,
+        };
         ui.horizontal(|ui| {
             if ui.button(s.btn_cancel).clicked() {
                 cancelled = true;
@@ -201,7 +227,12 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
     let s = i18n::strings(lang);
     let succeeded = summary.succeeded;
+    let nuked = summary.nuked;
     let failed_count = summary.failed.len();
+    // The method this batch actually ran with - never `app.settings.delete_method`,
+    // which can differ from the per-operation choice when the user picked a
+    // one-off method without ticking "remember".
+    let method = summary.method;
     // Only the first few errors are shown so one bad batch doesn't flood the dialog.
     let failed_preview: Vec<String> = summary
         .failed
@@ -216,11 +247,24 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.set_min_width(360.0);
         ui.heading(s.remove_summary_heading);
         ui.add_space(8.0);
-        let success_line = match app.settings.delete_method {
-            DeleteMethod::Permanent => i18n::success_line_permanent(lang, succeeded),
-            DeleteMethod::RecycleBin => i18n::success_line_recycle(lang, succeeded),
-        };
-        ui.label(success_line);
+        match method {
+            DeleteMethod::Permanent => {
+                ui.label(i18n::success_line_permanent(lang, succeeded));
+            }
+            DeleteMethod::RecycleBin => {
+                // Only the files that really landed in the bin are recoverable;
+                // report those honestly as "space frees after you empty it".
+                let recycled = succeeded - nuked;
+                ui.label(i18n::success_line_recycle(lang, recycled));
+                // Windows permanently deletes items too large for the volume's
+                // Recycle Bin quota, and `trash` reports that as success - so
+                // call those out as permanent, never recoverable (see
+                // `worker::RemoveOutcome::nuked`).
+                if nuked > 0 {
+                    ui.label(i18n::success_line_nuked(lang, nuked));
+                }
+            }
+        }
         ui.label(i18n::errors_count_line(lang, failed_count));
 
         if !failed_preview.is_empty() {
