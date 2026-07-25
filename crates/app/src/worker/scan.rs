@@ -1408,7 +1408,8 @@ struct PreparedOrphan {
 /// container diff there could flag the user's own unrelated folders - the exact
 /// false positive GT-02 forbids. Humble is likewise deferred: its download
 /// location is user-chosen and it leaves no per-game ownership marker to prove a
-/// folder is its residue rather than a foreign game. See `BACKLOG.md`, GT-02.
+/// folder is its residue rather than a foreign game. Tracked on the Kanban
+/// board as "GT-24 - spike: default roots of registry-based launchers".
 fn orphan_spec_for(library: &DiscoveredLibrary) -> Option<orphans::OrphanScanSpec> {
     // `vendor` is a `&'static str` on the provider, so these are plain string
     // compares, not heap allocations.

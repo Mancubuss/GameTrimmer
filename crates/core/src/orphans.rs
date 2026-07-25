@@ -16,9 +16,10 @@
 //! ([`OrphanScanSpec`], [`steam_spec`]) and the IO that ties them together
 //! ([`find_orphans`]). Turning the returned [`OrphanCandidate`]s into findings
 //! rows, a separate UI tree branch, and an autoselect-off category is the next
-//! increment (see `BACKLOG.md`, GT-02) - deliberately kept out of here so the
-//! detection logic can be verified in isolation against GT-02's acceptance
-//! criteria first.
+//! increment - deliberately kept out of here so the detection logic can be
+//! verified in isolation against the acceptance criteria of "GT-02 - orphaned
+//! installs and launcher residue" first. (That increment has since landed; the
+//! ticket lives on the Kanban board, not in a file in this repo.)
 //!
 //! # Safety stance
 //!
