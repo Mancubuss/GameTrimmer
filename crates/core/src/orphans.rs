@@ -67,6 +67,21 @@ pub struct OrphanScanSpec {
     /// (download staging, etc.), as absolute paths. A path that does not exist
     /// on disk is simply skipped by [`find_orphans`].
     pub service_folders: Vec<PathBuf>,
+    /// Optional structural proof-of-ownership. When non-empty, a container
+    /// subfolder is only reported as an [`OrphanKind::UnmanagedFolder`] orphan
+    /// if it *contains* at least one of these marker paths (each relative to
+    /// the subfolder, checked with [`find_orphans`]).
+    ///
+    /// This is what lets a launcher whose install root can be a *shared*
+    /// user-chosen folder (itch, whose location the user picks and may point at
+    /// a folder also holding Steam/manual games) still honor GT-02's invariant:
+    /// a foreign or manually-installed game in that same folder never carries
+    /// this launcher's residue marker (e.g. itch's `.itch` receipt directory),
+    /// so it is never flagged. Empty means the container is *structurally*
+    /// launcher-exclusive - a fixed subfolder the launcher creates and fills
+    /// alone (Steam's `steamapps/common`, Xbox's `XboxGames`) - and no marker
+    /// is required.
+    pub ownership_markers: Vec<PathBuf>,
 }
 
 /// Lower-cases a path to a comparison key. Windows paths are case-insensitive,
@@ -125,6 +140,19 @@ pub fn list_subdirs(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// True when `candidate` may be reported as an unmanaged-folder orphan under
+/// `markers`: either no marker is required (`markers` empty - a structurally
+/// launcher-exclusive container), or the candidate contains at least one marker
+/// path, proving it is this launcher's residue. `symlink_metadata` (not
+/// `exists`) so a marker that is itself a dangling junction still counts as
+/// present - it is still proof the folder belonged to this launcher.
+fn has_ownership_marker(candidate: &Path, markers: &[PathBuf]) -> bool {
+    markers.is_empty()
+        || markers
+            .iter()
+            .any(|marker| std::fs::symlink_metadata(candidate.join(marker)).is_ok())
+}
+
 /// Ties [`list_subdirs`] and [`unmanaged_subdirs`] together for one library:
 /// every unmanaged subfolder of `spec.container` becomes an
 /// [`OrphanKind::UnmanagedFolder`] candidate, and every existing
@@ -134,6 +162,11 @@ pub fn list_subdirs(dir: &Path) -> Vec<PathBuf> {
 /// manifests point at (case-insensitive keys via [`key`]); typically built from
 /// the provider's already-discovered `GameInstall::install_dir`s. Anything in
 /// the container not in that set is residue.
+///
+/// When `spec.ownership_markers` is non-empty, an unmanaged subfolder is only
+/// kept if it carries one of those markers (see [`has_ownership_marker`]) - the
+/// structural guard that keeps a shared-root launcher (itch) from ever flagging
+/// a foreign or manual game that merely happens to live in the same folder.
 pub fn find_orphans(
     spec: &OrphanScanSpec,
     managed_install_dirs: &HashSet<String>,
@@ -141,6 +174,9 @@ pub fn find_orphans(
     let mut candidates = Vec::new();
 
     for path in unmanaged_subdirs(&list_subdirs(&spec.container), managed_install_dirs) {
+        if !has_ownership_marker(&path, &spec.ownership_markers) {
+            continue;
+        }
         candidates.push(OrphanCandidate {
             path,
             kind: OrphanKind::UnmanagedFolder,
@@ -187,6 +223,64 @@ pub fn steam_spec(library_root: &Path) -> OrphanScanSpec {
     OrphanScanSpec {
         container: steamapps.join("common"),
         service_folders: vec![steamapps.join("downloading")],
+        // `steamapps/common` is a fixed folder Steam creates and fills alone:
+        // structurally exclusive, so no per-folder ownership marker is needed.
+        ownership_markers: Vec::new(),
+    }
+}
+
+/// The Xbox / Microsoft Store (Game Pass) orphan-scan spec for one discovered
+/// library root.
+///
+/// `xbox_games_root` is the `XboxGames` folder a `.GamingRoot` file points at
+/// (see `providers::xbox`); it is where every Game Pass title installs as an
+/// immediate subfolder. Like Steam's `steamapps/common`, `XboxGames` is a fixed
+/// folder the platform creates and fills alone, so it is structurally exclusive
+/// and needs no ownership marker - a subfolder with no live game behind it is a
+/// leftover of the well-known "uninstalled a Game Pass title, the folder
+/// stayed" kind.
+///
+/// No service folders: Xbox has no fixed download-staging directory alongside
+/// `XboxGames` that is unambiguously safe to sweep.
+///
+/// Caveat (deletion, not detection): the game payload under `XboxGames\<game>\
+/// Content` is ACL-protected by the Gaming Services, so removing a detected
+/// leftover may be denied by the OS. That is handled honestly by the deletion
+/// layer (a failed remove is reported as not-freed), and detection itself is
+/// safe and correct regardless.
+pub fn xbox_spec(xbox_games_root: &Path) -> OrphanScanSpec {
+    OrphanScanSpec {
+        container: xbox_games_root.to_path_buf(),
+        service_folders: Vec::new(),
+        ownership_markers: Vec::new(),
+    }
+}
+
+/// The name of itch's per-game receipt directory, written inside every folder
+/// the itch app installs (`<game>/.itch/receipt.json.gz`). Its presence is
+/// structural proof a folder is an itch install - a foreign or manual game in
+/// the same location never has it.
+const ITCH_RECEIPT_MARKER: &str = ".itch";
+
+/// The itch.io app orphan-scan spec for one discovered install location.
+///
+/// `location_root` is an itch install location (see `providers::itch`), where
+/// every installed game ("cave") lives as an immediate subfolder. Unlike Steam,
+/// this root is *user-chosen* and may be a folder shared with other launchers
+/// or manual games, so it is **not** structurally exclusive. The ownership
+/// marker [`ITCH_RECEIPT_MARKER`] closes that gap: only a subfolder that both
+/// has no live cave behind it *and* still carries itch's own `.itch` receipt is
+/// flagged, which is exactly an itch install the app forgot to clean up - never
+/// a foreign or manually-installed game (which never carries that receipt).
+///
+/// No service folders for now: itch's `<name>-stage` staging dirs are wiped on
+/// install success/discard and a lingering one may belong to a download in
+/// progress, so sweeping them by a fixed rule is deferred.
+pub fn itch_spec(location_root: &Path) -> OrphanScanSpec {
+    OrphanScanSpec {
+        container: location_root.to_path_buf(),
+        service_folders: Vec::new(),
+        ownership_markers: vec![PathBuf::from(ITCH_RECEIPT_MARKER)],
     }
 }
 
@@ -350,5 +444,96 @@ mod tests {
             spec.service_folders,
             vec![PathBuf::from(r"F:\SteamLibrary\steamapps\downloading")]
         );
+        assert!(
+            spec.ownership_markers.is_empty(),
+            "steamapps/common is structurally exclusive - no marker required"
+        );
+    }
+
+    #[test]
+    fn xbox_spec_uses_the_root_directly_and_needs_no_marker() {
+        let spec = xbox_spec(Path::new(r"F:\XboxGames"));
+        assert_eq!(spec.container, PathBuf::from(r"F:\XboxGames"));
+        assert!(spec.service_folders.is_empty());
+        assert!(
+            spec.ownership_markers.is_empty(),
+            "XboxGames is a fixed platform-created folder - structurally exclusive"
+        );
+    }
+
+    #[test]
+    fn itch_spec_requires_the_receipt_marker() {
+        let spec = itch_spec(Path::new(r"F:\itch"));
+        assert_eq!(spec.container, PathBuf::from(r"F:\itch"));
+        assert_eq!(spec.ownership_markers, vec![PathBuf::from(".itch")]);
+    }
+
+    /// Xbox: a structurally-exclusive container (no marker) reports a leftover
+    /// and spares a live game, exactly like Steam.
+    #[test]
+    fn find_orphans_xbox_flags_leftover_but_not_a_live_game() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path().join("XboxGames");
+        std::fs::create_dir_all(root.join("Starfield")).expect("live game");
+        std::fs::create_dir_all(root.join("UninstalledTitle")).expect("leftover");
+
+        let spec = xbox_spec(&root);
+        let managed = managed_dir_set(std::iter::once(root.join("Starfield").as_path()));
+
+        let orphans = find_orphans(&spec, &managed);
+
+        assert!(orphans.contains(&OrphanCandidate {
+            path: root.join("UninstalledTitle"),
+            kind: OrphanKind::UnmanagedFolder,
+        }));
+        assert!(
+            !orphans.iter().any(|o| o.path == root.join("Starfield")),
+            "a live Xbox game must never be flagged"
+        );
+    }
+
+    /// itch: the ownership marker is what makes a *shared* install location
+    /// safe. A leftover itch folder still carries `.itch` and is flagged; a
+    /// foreign/manual game folder in the same location has no `.itch` and is
+    /// never flagged, even though neither is in the managed set.
+    #[test]
+    fn find_orphans_itch_flags_only_folders_carrying_the_receipt() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let location = dir.path().join("itch");
+
+        // A live itch game (in the managed set, carries a receipt).
+        let live = location.join("celeste");
+        std::fs::create_dir_all(live.join(".itch")).expect("live cave + receipt");
+
+        // An itch leftover: receipt present, but no live cave behind it.
+        let leftover = location.join("old-jam-game");
+        std::fs::create_dir_all(leftover.join(".itch")).expect("leftover + receipt");
+
+        // A foreign/manual game the user dropped into the same shared folder:
+        // no itch receipt, so it must never be flagged.
+        let foreign = location.join("ManualRepack");
+        std::fs::create_dir_all(&foreign).expect("foreign folder, no receipt");
+
+        let spec = itch_spec(&location);
+        let managed = managed_dir_set(std::iter::once(live.as_path()));
+
+        let orphans = find_orphans(&spec, &managed);
+
+        assert_eq!(
+            orphans,
+            vec![OrphanCandidate {
+                path: leftover,
+                kind: OrphanKind::UnmanagedFolder,
+            }],
+            "only the receipt-bearing leftover is an orphan; the live game and \
+             the foreign folder are both spared"
+        );
+    }
+
+    #[test]
+    fn has_ownership_marker_is_true_when_no_marker_required() {
+        // Empty marker list = structurally exclusive container: every candidate
+        // qualifies (the managed-set diff is the only gate).
+        assert!(has_ownership_marker(Path::new(r"F:\anything"), &[]));
     }
 }

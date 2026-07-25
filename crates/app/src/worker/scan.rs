@@ -1387,17 +1387,49 @@ struct PreparedOrphan {
     kind: OrphanKind,
 }
 
-/// Detects orphaned launcher residue across every discovered Steam library and
-/// measures each leftover's size.
+/// Maps one discovered library to its orphan-scan spec, or `None` when the
+/// vendor has no container we can diff *safely*.
 ///
-/// Steam-only for now: it is the single vendor with a `steam_spec`, and the
-/// task boundary for this GT-02 increment. The heavy lifting is the pure diff
-/// in `gametrimmer_core::orphans` - for each Steam library, the managed install
-/// set is exactly that library's already-discovered games' `install_dir`s, so
-/// anything sitting in `steamapps/common` (plus the fixed service folders) that
-/// no manifest points at is a candidate. A game installed *past* the launcher
-/// is never even looked at, since only subfolders of the vendor's own container
-/// are considered.
+/// Only vendors with a launcher-owned container qualify. Two shapes:
+///   - **Structurally exclusive** containers - a fixed folder the launcher
+///     creates and fills alone: Steam's `steamapps/common` (derived from the
+///     library root) and Xbox's `XboxGames` (which *is* the discovered
+///     `library.path`, since `group_by_parent_dir` groups Game Pass titles
+///     under their shared `XboxGames` parent).
+///   - **Shared-root** containers made safe by an ownership marker: itch, whose
+///     install location is user-chosen and may be shared, but whose leftovers
+///     still carry a `.itch` receipt (see `orphans::itch_spec`). Here too
+///     `library.path` *is* the container (the itch location = the parent of
+///     each cave's install dir).
+///
+/// The registry-based providers (Epic, GOG, EA, Ubisoft, Battle.net, Rockstar,
+/// Riot) are deliberately absent: their `library.path` is merely the parent of
+/// wherever the user chose to install, not a launcher-exclusive folder, so a
+/// container diff there could flag the user's own unrelated folders - the exact
+/// false positive GT-02 forbids. Humble is likewise deferred: its download
+/// location is user-chosen and it leaves no per-game ownership marker to prove a
+/// folder is its residue rather than a foreign game. See `BACKLOG.md`, GT-02.
+fn orphan_spec_for(library: &DiscoveredLibrary) -> Option<orphans::OrphanScanSpec> {
+    // `vendor` is a `&'static str` on the provider, so these are plain string
+    // compares, not heap allocations.
+    match library.vendor {
+        "steam" => Some(orphans::steam_spec(&library.path)),
+        "xbox" => Some(orphans::xbox_spec(&library.path)),
+        "itch" => Some(orphans::itch_spec(&library.path)),
+        _ => None,
+    }
+}
+
+/// Detects orphaned launcher residue across every discovered *supported* library
+/// (see [`orphan_spec_for`]) and measures each leftover's size.
+///
+/// The heavy lifting is the pure diff in `gametrimmer_core::orphans` - for each
+/// library, the managed install set is exactly that library's already-discovered
+/// games' `install_dir`s, so anything sitting in the vendor's container that no
+/// manifest points at (and, for shared-root vendors, that still carries the
+/// vendor's ownership marker) is a candidate. A game installed *past* the
+/// launcher is never even looked at, since only subfolders of the vendor's own
+/// container are considered.
 ///
 /// Each candidate's size is the sum of the files under it (`scan_dir`); a
 /// candidate whose contents can't be read (permission, vanished mid-scan) is
@@ -1408,14 +1440,15 @@ struct PreparedOrphan {
 fn collect_orphans(libraries: &[DiscoveredLibrary], cancel: &AtomicBool) -> Vec<PreparedOrphan> {
     let mut prepared = Vec::new();
     for library in libraries {
-        // `vendor` is a `&'static str` on the provider, so this is a plain
-        // string compare, not a heap allocation.
-        if library.vendor != "steam" {
+        // Only vendors with a launcher-owned container we can diff safely are
+        // handled; the rest (registry-based providers whose install roots are
+        // arbitrary user folders) have no exclusive container and are skipped
+        // by construction - see `orphan_spec_for`.
+        let Some(spec) = orphan_spec_for(library) else {
             continue;
-        }
+        };
         let managed =
             orphans::managed_dir_set(library.games.iter().map(|game| game.install_dir.as_path()));
-        let spec = orphans::steam_spec(&library.path);
         for candidate in orphans::find_orphans(&spec, &managed) {
             if cancel.load(Ordering::Relaxed) {
                 return prepared;
@@ -2416,16 +2449,101 @@ mod tests {
     }
 
     #[test]
-    fn collect_orphans_ignores_non_steam_libraries() {
+    fn collect_orphans_ignores_registry_based_libraries() {
         let (_dir, mut library) = steam_library_with_a_leftover();
-        // Same folders on disk, but discovered under a vendor with no
-        // orphan spec - nothing should be reported (Steam-only, this slice).
+        // Same folders on disk, but discovered under a registry-based vendor
+        // whose `library.path` is an arbitrary user folder, not a launcher-
+        // exclusive container - it has no orphan spec, so nothing is reported.
         library.vendor = "epic";
         let cancel = AtomicBool::new(false);
 
         assert!(
             collect_orphans(std::slice::from_ref(&library), &cancel).is_empty(),
-            "orphan detection is Steam-only in this increment"
+            "registry-based providers have no exclusive container and are skipped"
+        );
+    }
+
+    #[test]
+    fn collect_orphans_flags_xbox_leftover_in_xboxgames_root() {
+        let dir = tempfile::tempdir().expect("create temp xbox root");
+        // For Xbox, `library.path` IS the XboxGames container (games are its
+        // immediate subfolders), so no `steamapps/common` nesting here.
+        let root = dir.path().join("XboxGames");
+        let live = root.join("Starfield");
+        write_file(&live.join("Content").join("game.exe"), b"payload");
+        let leftover = root.join("UninstalledTitle");
+        write_file(&leftover.join("leftover.bin"), b"abcd"); // 4 bytes
+
+        let library = DiscoveredLibrary {
+            vendor: "xbox",
+            path: root.clone(),
+            games: vec![GameInstall {
+                name: "Starfield".to_string(),
+                install_dir: live.clone(),
+                app_id: None,
+            }],
+        };
+        let cancel = AtomicBool::new(false);
+
+        let orphans = collect_orphans(std::slice::from_ref(&library), &cancel);
+
+        assert!(
+            orphans
+                .iter()
+                .any(|o| o.full_path == leftover && o.kind == OrphanKind::UnmanagedFolder),
+            "an XboxGames folder with no live game must be flagged"
+        );
+        assert!(
+            !orphans.iter().any(|o| o.full_path == live),
+            "a live Xbox game must never be flagged"
+        );
+    }
+
+    #[test]
+    fn collect_orphans_flags_itch_leftover_only_when_it_carries_a_receipt() {
+        let dir = tempfile::tempdir().expect("create temp itch location");
+        // For itch, `library.path` IS the install location (parent of each
+        // cave), which may be shared - so the `.itch` receipt is the guard.
+        let location = dir.path().join("itch");
+        let live = location.join("celeste");
+        write_file(&live.join(".itch").join("receipt.json.gz"), b"r");
+        write_file(&live.join("game.exe"), b"payload");
+
+        let leftover = location.join("old-jam");
+        write_file(&leftover.join(".itch").join("receipt.json.gz"), b"r");
+        write_file(&leftover.join("data.bin"), b"abcd"); // 4 bytes
+
+        // A foreign/manual game in the same shared location, no itch receipt.
+        let foreign = location.join("ManualRepack");
+        write_file(&foreign.join("repack.exe"), b"nope");
+
+        let library = DiscoveredLibrary {
+            vendor: "itch",
+            path: location.clone(),
+            games: vec![GameInstall {
+                name: "Celeste".to_string(),
+                install_dir: live.clone(),
+                app_id: Some("123".to_string()),
+            }],
+        };
+        let cancel = AtomicBool::new(false);
+
+        let orphans = collect_orphans(std::slice::from_ref(&library), &cancel);
+
+        assert!(
+            orphans
+                .iter()
+                .any(|o| o.full_path == leftover && o.kind == OrphanKind::UnmanagedFolder),
+            "a receipt-bearing itch folder with no live cave must be flagged"
+        );
+        assert!(
+            !orphans.iter().any(|o| o.full_path == foreign),
+            "a foreign folder without an itch receipt must never be flagged, \
+             even in a shared location"
+        );
+        assert!(
+            !orphans.iter().any(|o| o.full_path == live),
+            "a live itch game must never be flagged"
         );
     }
 
