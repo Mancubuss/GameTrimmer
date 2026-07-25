@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use gametrimmer_core::error::Result as CoreResult;
-use gametrimmer_core::providers::{DiscoveredLibrary, GameInstall};
+use gametrimmer_core::providers::{holds_installed_files, DiscoveredLibrary, GameInstall};
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang};
@@ -117,10 +117,16 @@ pub fn discover_manual_libraries(
     Ok((libraries, warnings))
 }
 
-/// Every first-level subdirectory of `library_path`, sorted by name.
-/// Directories that cannot be read (permissions, ...) are silently skipped,
-/// same policy as `gametrimmer_core::scanner::scan_dir` uses for individual
-/// entries.
+/// Every first-level subdirectory of `library_path` that actually holds
+/// files, sorted by name. Directories that cannot be read (permissions, ...)
+/// are silently skipped, same policy as `gametrimmer_core::scanner::scan_dir`
+/// uses for individual entries.
+///
+/// The `holds_installed_files` filter is the manual-library half of GT-29: a
+/// hand-picked folder is enumerated by name just like a vendor root, so a
+/// contentless subfolder became a phantom game here for the same reason.
+/// Pointing GameTrimmer at a folder is not a claim that every subfolder of it
+/// is an installed game.
 fn enumerate_subfolders(library_path: &Path) -> Vec<GameInstall> {
     let Ok(entries) = std::fs::read_dir(library_path) else {
         return Vec::new();
@@ -129,6 +135,7 @@ fn enumerate_subfolders(library_path: &Path) -> Vec<GameInstall> {
     let mut games: Vec<GameInstall> = entries
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_dir()))
+        .filter(|entry| holds_installed_files(&entry.path()))
         .map(|entry| GameInstall {
             name: entry.file_name().to_string_lossy().into_owned(),
             install_dir: entry.path(),
@@ -185,6 +192,36 @@ mod tests {
             .expect("Game A present");
         assert_eq!(game_a.install_dir, sub_a);
         assert!(game_a.app_id.is_none());
+    }
+
+    /// The manual-library half of GT-29: pointing GameTrimmer at a folder is
+    /// not a claim that every subfolder of it is an installed game. A
+    /// contentless subfolder is residue, and a phantom game must not enter the
+    /// model of a tool that deletes files.
+    #[test]
+    fn discover_manual_libraries_ignores_contentless_subfolders() {
+        let conn = db::open_in_memory().expect("open in-memory db");
+        let dir = tempfile::tempdir().expect("create temp dir");
+
+        let real = dir.path().join("Real Game");
+        std::fs::create_dir_all(&real).expect("create subfolder");
+        std::fs::write(real.join("game.exe"), b"MZ").expect("write file");
+        // Residue: the folder survived, its files did not.
+        std::fs::create_dir_all(dir.path().join(r"Ghost Game\bin")).expect("create empty tree");
+
+        add_manual_library(&conn, dir.path()).expect("register manual library");
+
+        let (libraries, _) =
+            discover_manual_libraries(&conn, Lang::En).expect("discover should succeed");
+
+        let games = &libraries[0].games;
+        assert_eq!(
+            games.len(),
+            1,
+            "only the subfolder with files is a game, got {:?}",
+            games.iter().map(|g| &g.name).collect::<Vec<_>>()
+        );
+        assert_eq!(games[0].name, "Real Game");
     }
 
     #[test]
