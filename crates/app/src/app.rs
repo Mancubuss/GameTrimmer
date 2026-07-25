@@ -19,7 +19,7 @@ use crate::elevation;
 use crate::export;
 use crate::i18n;
 use crate::logger;
-use crate::model::{self, DiskGroup, FindingItem};
+use crate::model::{self, DiskGroup, DisplayCategory, FindingItem};
 use crate::ui;
 use crate::worker::delete::DeleteItem;
 use crate::worker::manual::{self, LibraryRow};
@@ -165,6 +165,11 @@ pub struct GameTrimmerApp {
     /// The findings tree viewport height as of the last rendered frame - the
     /// "page" for PgUp/PgDn.
     pub tree_viewport_height: f32,
+    /// Active "plan of action" card filter (GT-03): when `Some`, the findings
+    /// tree shows only that display category (the user clicked a card's
+    /// "Переглянути"). `None` = the full tree. UI-only; never persisted, and
+    /// cleared whenever a fresh tree is built.
+    pub tree_category_filter: Option<model::DisplayCategory>,
 
     /// Every registered library (all vendors), for the library management
     /// list. Refreshed after every add/remove and on startup.
@@ -305,6 +310,7 @@ impl GameTrimmerApp {
             tree_cursor: None,
             tree_scroll_offset: 0.0,
             tree_viewport_height: 0.0,
+            tree_category_filter: None,
             libraries,
             folder_picker_active: false,
             export_active: false,
@@ -655,6 +661,38 @@ impl GameTrimmerApp {
 
     pub fn cancel_delete_confirmation(&mut self) {
         self.confirm_delete = None;
+    }
+
+    /// Focuses the findings tree on a single display category (GT-03: a plan
+    /// card's "Переглянути"), or clears the filter with `None`. Resets the
+    /// keyboard cursor, since the set of visible rows changes.
+    pub fn set_category_filter(&mut self, filter: Option<DisplayCategory>) {
+        self.tree_category_filter = filter;
+        self.tree_cursor = None;
+    }
+
+    /// Opens the delete confirmation for every non-removed finding in one
+    /// display category (GT-03: a plan card's "Прибрати"). Unlike
+    /// [`Self::request_delete_confirmation`], it acts on the whole category
+    /// regardless of the current checkbox selection, so the card is a
+    /// self-contained action. No-op if the category is empty.
+    pub fn request_delete_for_category(&mut self, category: DisplayCategory) {
+        let indices: Vec<usize> = self
+            .findings
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| !item.removed && item.row.display_category() == category)
+            .map(|(index, _)| index)
+            .collect();
+
+        if indices.is_empty() {
+            return;
+        }
+        self.confirm_delete = Some(ConfirmDelete {
+            indices,
+            method: self.settings.delete_method,
+            remember: false,
+        });
     }
 
     /// Runs after the user confirms the modal: builds full paths and hands
@@ -1029,6 +1067,9 @@ impl GameTrimmerApp {
                 // cursor's row index no longer points at the same row.
                 self.tree_toggles.clear();
                 self.tree_cursor = None;
+                // A fresh result set means the previous plan-card filter (if
+                // any) may no longer have matching findings - start unfiltered.
+                self.tree_category_filter = None;
                 self.status_message = i18n::scan_done_status(lang, &scan_summary, count);
             }
             WorkerMsg::FileRemoved { file_id } => {
@@ -1330,6 +1371,7 @@ impl eframe::App for GameTrimmerApp {
         self.drain_messages(&ctx);
 
         ui::top_bar::show(self, ui);
+        ui::plan_panel::show(self, ui);
         ui::bottom_bar::show(self, ui);
         ui::tree_view::show(self, ui);
         ui::dialogs::show(self, ui);
