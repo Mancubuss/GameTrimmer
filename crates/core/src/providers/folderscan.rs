@@ -22,7 +22,7 @@ use serde::Deserialize;
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{holds_installed_files, DiscoveredLibrary, GameInstall, LibraryProvider};
 
 /// Vendor tag -> folder names (relative to a container directory) that hold
 /// that vendor's games.
@@ -99,8 +99,14 @@ fn scan_container(container: &Path) -> Vec<DiscoveredLibrary> {
 }
 
 /// Builds one library from a vendor root folder: every non-infrastructure
-/// subfolder is a game. Returns `None` when no games remain - an empty
-/// vendor folder is not worth registering as a library.
+/// subfolder that actually holds files is a game. Returns `None` when no games
+/// remain - an empty vendor folder is not worth registering as a library.
+///
+/// The `holds_installed_files` filter is GT-29: without it a contentless
+/// subfolder became a phantom game, counted in the totals of a tool that
+/// deletes files. Unlike the metadata providers, folder-name discovery has no
+/// launcher to ask whether a game is installed - the files on disk are the
+/// only evidence there is.
 fn read_vendor_library(vendor: &'static str, root: &Path) -> Option<DiscoveredLibrary> {
     let entries = std::fs::read_dir(root).ok()?;
 
@@ -108,6 +114,7 @@ fn read_vendor_library(vendor: &'static str, root: &Path) -> Option<DiscoveredLi
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.is_dir() && !is_infrastructure_dir(path))
+        .filter(|dir| holds_installed_files(dir))
         .filter_map(|dir| build_game(vendor, dir))
         .collect();
 
@@ -213,12 +220,20 @@ mod tests {
         std::fs::write(path, contents).unwrap();
     }
 
+    /// Creates a game folder that looks installed - i.e. with a file in it.
+    /// Fixtures here used to be bare directories, which only passed because
+    /// contentless folders were wrongly accepted as games (GT-29).
+    fn create_installed_game(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        write_file(&dir.join("game.exe"), "MZ");
+    }
+
     #[test]
     fn scan_container_finds_vendor_roots_with_games() {
         let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(temp.path().join(r"Epic\Celeste")).unwrap();
-        std::fs::create_dir_all(temp.path().join(r"Blizzard\StarCraft II")).unwrap();
-        std::fs::create_dir_all(temp.path().join(r"Unrelated\Stuff")).unwrap();
+        create_installed_game(&temp.path().join(r"Epic\Celeste"));
+        create_installed_game(&temp.path().join(r"Blizzard\StarCraft II"));
+        create_installed_game(&temp.path().join(r"Unrelated\Stuff"));
 
         let libraries = scan_container(temp.path());
 
@@ -240,14 +255,51 @@ mod tests {
     fn read_vendor_library_excludes_infrastructure_and_hidden_dirs() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Blizzard");
-        std::fs::create_dir_all(root.join("Diablo III")).unwrap();
-        std::fs::create_dir_all(root.join("Battle.net")).unwrap();
-        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        create_installed_game(&root.join("Diablo III"));
+        create_installed_game(&root.join("Battle.net"));
+        create_installed_game(&root.join(".hidden"));
 
         let library = read_vendor_library("battlenet", &root).expect("expected a library");
 
         assert_eq!(library.games.len(), 1);
         assert_eq!(library.games[0].name, "Diablo III");
+    }
+
+    /// GT-29. A contentless subfolder of a vendor root used to be registered
+    /// as an installed game. It is residue - typically the directory skeleton
+    /// a removed install leaves behind - and a phantom entry in the model of a
+    /// tool that deletes files must not exist, even when the phantom itself is
+    /// empty: it is counted in the same totals as real games.
+    #[test]
+    fn read_vendor_library_ignores_a_contentless_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Epic");
+        create_installed_game(&root.join("Celeste"));
+        // Residue: the folder is there, every file is gone.
+        std::fs::create_dir_all(root.join(r"Uninstalled Game\bin")).unwrap();
+
+        let library = read_vendor_library("epic", &root).expect("expected a library");
+
+        assert_eq!(
+            library.games.len(),
+            1,
+            "only the folder with files is a game, got {:?}",
+            library.games.iter().map(|g| &g.name).collect::<Vec<_>>()
+        );
+        assert_eq!(library.games[0].name, "Celeste");
+    }
+
+    /// The whole-library case of the same rule: a vendor root holding nothing
+    /// but empty folders registers no library at all, rather than a library of
+    /// phantoms.
+    #[test]
+    fn read_vendor_library_is_none_when_every_subfolder_is_contentless() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("GOG");
+        std::fs::create_dir_all(root.join("Ghost One")).unwrap();
+        std::fs::create_dir_all(root.join("Ghost Two")).unwrap();
+
+        assert!(read_vendor_library("gog", &root).is_none());
     }
 
     #[test]

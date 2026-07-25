@@ -1,7 +1,7 @@
 //! Discovery of game libraries across launcher vendors.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
@@ -68,6 +68,54 @@ pub fn all() -> Vec<Box<dyn LibraryProvider>> {
         // keeps the earlier (metadata) entries with their richer names/ids.
         Box::new(folderscan::FolderScanProvider),
     ]
+}
+
+/// How deep [`holds_installed_files`] looks for the first file before giving
+/// up. Three levels covers every realistic layout (`Game\bin\x64\game.exe`)
+/// while keeping the probe bounded: a folder tree is attacker-shaped often
+/// enough by accident, and an unbounded walk here would run on every drive
+/// root at every scan.
+const INSTALL_PROBE_DEPTH: u32 = 3;
+
+/// Whether a folder actually holds an installation - that is, whether it
+/// contains at least one file, at any depth down to [`INSTALL_PROBE_DEPTH`].
+///
+/// Folder-name-based discovery cannot ask a launcher whether a game is
+/// installed; all it sees is a subfolder of a vendor root. An installed game
+/// always has files, so a folder with none is residue (a partially removed
+/// install typically leaves the empty directory skeleton behind), not a game.
+/// Registering it anyway put a phantom entry into the model of a tool that
+/// DELETES FILES, counted in the same totals as real games - which is why
+/// this is a correctness matter and not cosmetics.
+///
+/// Stops at the first file found, so the common case costs one `read_dir`.
+/// Reparse points (junctions, symlinks) report as neither file nor directory
+/// on Windows and are counted as content without being descended into, so a
+/// junction loop cannot spin this.
+pub fn holds_installed_files(dir: &Path) -> bool {
+    let mut pending = vec![(dir.to_path_buf(), 0u32)];
+
+    while let Some((current, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            // Unreadable (permissions, vanished mid-scan): nothing to prove a
+            // game with, same silent-skip policy as `scanner::scan_dir`.
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                return true;
+            }
+            if depth < INSTALL_PROBE_DEPTH {
+                pending.push((entry.path(), depth + 1));
+            }
+        }
+    }
+
+    false
 }
 
 /// Merges libraries that share the same root path (case-insensitive, since
@@ -231,6 +279,51 @@ mod tests {
 
         assert_eq!(deduped.len(), 1);
         assert_eq!(deduped[0].name, "From Origin");
+    }
+
+    #[test]
+    fn holds_installed_files_rejects_an_empty_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!holds_installed_files(temp.path()));
+    }
+
+    /// The realistic shape of the residue this exists to reject: a removed
+    /// install often leaves its directory skeleton behind with every file
+    /// gone.
+    #[test]
+    fn holds_installed_files_rejects_a_tree_of_only_empty_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join(r"bin\x64")).unwrap();
+        std::fs::create_dir_all(temp.path().join("data")).unwrap();
+
+        assert!(!holds_installed_files(temp.path()));
+    }
+
+    #[test]
+    fn holds_installed_files_accepts_a_file_at_the_top_level() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("readme.txt"), b"hi").unwrap();
+
+        assert!(holds_installed_files(temp.path()));
+    }
+
+    /// A game whose top level is only folders is still a game - the probe has
+    /// to look inside, not just count entries.
+    #[test]
+    fn holds_installed_files_accepts_a_file_nested_below_the_top_level() {
+        let temp = tempfile::tempdir().unwrap();
+        let deep = temp.path().join(r"bin\x64");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("game.exe"), b"MZ").unwrap();
+
+        assert!(holds_installed_files(temp.path()));
+    }
+
+    #[test]
+    fn holds_installed_files_is_false_for_a_path_that_does_not_exist() {
+        assert!(!holds_installed_files(Path::new(
+            r"Z:\definitely\not\a\folder"
+        )));
     }
 
     #[test]
