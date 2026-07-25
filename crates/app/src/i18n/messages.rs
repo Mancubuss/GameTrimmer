@@ -19,19 +19,14 @@ pub fn plan_risk_label(lang: Lang, risk: RiskLevel) -> &'static str {
     }
 }
 
-/// A plan card's secondary line (GT-03): "N item(s) in M game(s)", or just
-/// "N item(s)" for the orphan branch, which has no real games behind it.
-pub fn plan_card_summary(
-    lang: Lang,
-    finding_count: usize,
-    game_count: usize,
-    is_orphan: bool,
-) -> String {
-    match (lang, is_orphan) {
-        (Lang::En, true) => format!("{finding_count} item(s)"),
-        (Lang::En, false) => format!("{finding_count} item(s) in {game_count} game(s)"),
-        (Lang::Uk, true) => format!("{finding_count} об’єктів"),
-        (Lang::Uk, false) => format!("{finding_count} об’єктів у {game_count} іграх"),
+/// The summary that opens the row above the tree (GT-12): "Found N item(s)
+/// in M game(s)". `game_count` counts distinct games across every category,
+/// so it is never the sum of the per-category figures - see
+/// [`crate::model::plan_totals`].
+pub fn plan_totals_summary(lang: Lang, finding_count: usize, game_count: usize) -> String {
+    match lang {
+        Lang::En => format!("Found {finding_count} item(s) in {game_count} game(s)"),
+        Lang::Uk => format!("Знайдено {finding_count} об’єктів у {game_count} іграх"),
     }
 }
 
