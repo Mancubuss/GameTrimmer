@@ -991,15 +991,28 @@ fn persist_libraries(
                 params![library_id],
             )?;
 
+            let build_ids = build_ids_for(library);
+
             for game in &library.games {
+                // GT-14: record now, show later. The build id costs nothing to
+                // store and nothing in the UI shows it yet, but users of v1
+                // start accumulating history from their first scan - so the
+                // "what came back" diff in a later release works for them
+                // immediately, instead of only after one more full scan.
+                let build_id = game
+                    .app_id
+                    .as_ref()
+                    .and_then(|app_id| build_ids.get(app_id.as_str()));
+
                 tx.execute(
-                    "INSERT INTO games (library_id, name, install_dir, app_id) \
-                     VALUES (?1, ?2, ?3, ?4)",
+                    "INSERT INTO games (library_id, name, install_dir, app_id, build_id) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
                     params![
                         library_id,
                         game.name,
                         game.install_dir.to_string_lossy(),
-                        game.app_id
+                        game.app_id,
+                        build_id
                     ],
                 )?;
                 games.push((
@@ -1013,6 +1026,28 @@ fn persist_libraries(
         tx.commit()?;
         Ok(games)
     })
+}
+
+/// Content build ids for one library, keyed by vendor app id (GT-14).
+///
+/// Only Steam publishes one: `buildid` in each `appmanifest_*.acf`, bumped by
+/// Valve on every content update and by a `Verify` that re-downloads files.
+/// Every other vendor yields an empty map, so their games are stored with
+/// `build_id = NULL` - which `gamestate::changed_games` reads as "unknown,
+/// claim nothing" rather than "changed".
+///
+/// Cheap by construction: this reads a few dozen small text files, never
+/// walking the games themselves. A library whose manifests are unreadable
+/// yields an empty map, which costs a NULL - never a failed scan.
+fn build_ids_for(library: &DiscoveredLibrary) -> HashMap<String, String> {
+    if library.vendor != "steam" {
+        return HashMap::new();
+    }
+
+    providers::steam::manifest_states(&library.path)
+        .into_iter()
+        .filter_map(|state| Some((state.app_id, state.build_id?)))
+        .collect()
 }
 
 /// One file's finding, already resolved (rule engine vs. localization
@@ -2030,6 +2065,154 @@ mod tests {
             |row| row.get(0),
         )
         .expect("library row should exist")
+    }
+
+    fn build_id_of(conn: &Connection, game_name: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT build_id FROM games WHERE name = ?1",
+            params![game_name],
+            |row| row.get(0),
+        )
+        .expect("game row should exist")
+    }
+
+    /// Writes a Steam library root holding one `appmanifest_*.acf` for app
+    /// 620 with the given build id, and returns the root.
+    fn steam_library_with_build_id(root: &Path, build_id: &str) {
+        let steamapps = root.join("steamapps");
+        std::fs::create_dir_all(&steamapps).expect("create steamapps");
+        write_file(
+            &steamapps.join("appmanifest_620.acf"),
+            format!(
+                "\"AppState\"\n{{\n\t\"appid\"\t\t\"620\"\n\t\"name\"\t\t\"Portal 2\"\n\t\"buildid\"\t\t\"{build_id}\"\n}}\n"
+            )
+            .as_bytes(),
+        );
+    }
+
+    /// GT-14: record now, show later. Nothing in the UI reads `build_id` yet,
+    /// but writing it during every scan is what lets a later release tell the
+    /// user "these games came back" from their very first scan, instead of
+    /// only after one more full scan.
+    #[test]
+    fn scan_records_the_steam_build_id_for_a_game() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let library_root = tempfile::tempdir().expect("create temp library root");
+        steam_library_with_build_id(library_root.path(), "17038203");
+        let install_dir = library_root.path().join(r"steamapps\common\Portal 2");
+        write_file(&install_dir.join("portal2.exe"), b"MZ");
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: library_root.path().to_path_buf(),
+            games: vec![GameInstall {
+                name: "Portal 2".to_string(),
+                install_dir,
+                app_id: Some("620".to_string()),
+            }],
+        };
+        run_one_cycle(&mut conn, &engine, &lang_detector, &library)
+            .expect("scan cycle should succeed");
+
+        assert_eq!(build_id_of(&conn, "Portal 2").as_deref(), Some("17038203"));
+    }
+
+    /// Steam is the only vendor that publishes a content build id. Everyone
+    /// else stores NULL, which `gamestate::changed_games` reads as "unknown,
+    /// claim nothing" - never as "changed".
+    #[test]
+    fn scan_leaves_build_id_null_for_a_non_steam_vendor() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let library_root = tempfile::tempdir().expect("create temp library root");
+        // Even with a Steam-shaped manifest present, a GOG library must not
+        // borrow it: the vendor decides, not the folder layout.
+        steam_library_with_build_id(library_root.path(), "17038203");
+        let install_dir = library_root.path().join("Fallout 2");
+        write_file(&install_dir.join("fallout2.exe"), b"MZ");
+
+        let library = DiscoveredLibrary {
+            vendor: "gog",
+            path: library_root.path().to_path_buf(),
+            games: vec![GameInstall {
+                name: "Fallout 2".to_string(),
+                install_dir,
+                app_id: Some("620".to_string()),
+            }],
+        };
+        run_one_cycle(&mut conn, &engine, &lang_detector, &library)
+            .expect("scan cycle should succeed");
+
+        assert_eq!(build_id_of(&conn, "Fallout 2"), None);
+    }
+
+    /// A Steam game the manifests say nothing about (manifest deleted, game
+    /// discovered by folder scan, ...) stores NULL rather than a stale or
+    /// borrowed id.
+    #[test]
+    fn scan_leaves_build_id_null_for_a_steam_game_without_a_manifest() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let library_root = tempfile::tempdir().expect("create temp library root");
+        steam_library_with_build_id(library_root.path(), "17038203");
+        let install_dir = library_root.path().join(r"steamapps\common\Other Game");
+        write_file(&install_dir.join("other.exe"), b"MZ");
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: library_root.path().to_path_buf(),
+            games: vec![GameInstall {
+                name: "Other Game".to_string(),
+                install_dir,
+                app_id: Some("999999".to_string()),
+            }],
+        };
+        run_one_cycle(&mut conn, &engine, &lang_detector, &library)
+            .expect("scan cycle should succeed");
+
+        assert_eq!(build_id_of(&conn, "Other Game"), None);
+    }
+
+    /// The recorded id has to track the manifest, otherwise the very first
+    /// comparison a later release makes would be against a value frozen at
+    /// the first scan.
+    #[test]
+    fn rescanning_updates_the_recorded_build_id() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let library_root = tempfile::tempdir().expect("create temp library root");
+        steam_library_with_build_id(library_root.path(), "17038203");
+        let install_dir = library_root.path().join(r"steamapps\common\Portal 2");
+        write_file(&install_dir.join("portal2.exe"), b"MZ");
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: library_root.path().to_path_buf(),
+            games: vec![GameInstall {
+                name: "Portal 2".to_string(),
+                install_dir,
+                app_id: Some("620".to_string()),
+            }],
+        };
+        run_one_cycle(&mut conn, &engine, &lang_detector, &library)
+            .expect("first scan should succeed");
+        assert_eq!(build_id_of(&conn, "Portal 2").as_deref(), Some("17038203"));
+
+        // Valve ships an update: the manifest's build id moves.
+        steam_library_with_build_id(library_root.path(), "17999999");
+        run_one_cycle(&mut conn, &engine, &lang_detector, &library)
+            .expect("second scan should succeed");
+
+        assert_eq!(build_id_of(&conn, "Portal 2").as_deref(), Some("17999999"));
     }
 
     /// GT-30. `vendor` is not cosmetic: `orphan_spec_for` reads it to decide
