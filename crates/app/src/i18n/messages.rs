@@ -5,6 +5,35 @@
 //! placeholder count to silently drift from its call site.
 
 use super::Lang;
+use crate::model::RiskLevel;
+
+/// Localized risk badge for a plan card (GT-03): "Risk: none/low/medium".
+pub fn plan_risk_label(lang: Lang, risk: RiskLevel) -> &'static str {
+    match (lang, risk) {
+        (Lang::En, RiskLevel::None) => "Risk: none",
+        (Lang::En, RiskLevel::Low) => "Risk: low",
+        (Lang::En, RiskLevel::Medium) => "Risk: medium",
+        (Lang::Uk, RiskLevel::None) => "Ризик: нульовий",
+        (Lang::Uk, RiskLevel::Low) => "Ризик: низький",
+        (Lang::Uk, RiskLevel::Medium) => "Ризик: середній",
+    }
+}
+
+/// A plan card's secondary line (GT-03): "N item(s) in M game(s)", or just
+/// "N item(s)" for the orphan branch, which has no real games behind it.
+pub fn plan_card_summary(
+    lang: Lang,
+    finding_count: usize,
+    game_count: usize,
+    is_orphan: bool,
+) -> String {
+    match (lang, is_orphan) {
+        (Lang::En, true) => format!("{finding_count} item(s)"),
+        (Lang::En, false) => format!("{finding_count} item(s) in {game_count} game(s)"),
+        (Lang::Uk, true) => format!("{finding_count} об’єктів"),
+        (Lang::Uk, false) => format!("{finding_count} об’єктів у {game_count} іграх"),
+    }
+}
 
 /// "Scanned N games (MFT: x, walkdir: y) in s.s sec." - the scan-method
 /// breakdown shown in the final status line after a scan completes. Pure

@@ -121,13 +121,13 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             || app.show_elevation_prompt;
         let mut scroll_override = None;
         if !modal_open {
-            let rows = build_visible_rows(&app.tree, &app.tree_toggles);
+            let rows = build_visible_rows(&app.tree, &app.tree_toggles, app.tree_category_filter);
             scroll_override = handle_keyboard(app, ui, &rows, row_stride);
         }
 
         // Rebuilt after key handling: expanding/collapsing above changes
         // which rows are visible.
-        let rows = build_visible_rows(&app.tree, &app.tree_toggles);
+        let rows = build_visible_rows(&app.tree, &app.tree_toggles, app.tree_category_filter);
         if let Some(cursor) = app.tree_cursor {
             if cursor >= rows.len() {
                 app.tree_cursor = rows.len().checked_sub(1);
@@ -245,22 +245,55 @@ fn group_confidence_text(
 /// disk/game/category/folder, and collects every structurally-visible row.
 /// O(number of rows produced): closed subtrees are never descended into, so
 /// this stays cheap even when the tree holds tens of thousands of findings.
-fn build_visible_rows(tree: &[DiskGroup], toggles: &HashMap<String, bool>) -> Vec<Row> {
+/// Whether a game has any node under the active plan-card filter (GT-03).
+/// `None` filter matches everything.
+fn game_matches_filter(game: &crate::model::GameNode, filter: Option<DisplayCategory>) -> bool {
+    match filter {
+        None => true,
+        Some(category) => game.categories.iter().any(|node| node.category == category),
+    }
+}
+
+/// Whether a disk has any game with a node under the active filter (GT-03).
+fn disk_matches_filter(disk_group: &DiskGroup, filter: Option<DisplayCategory>) -> bool {
+    disk_group
+        .games
+        .iter()
+        .any(|game| game_matches_filter(game, filter))
+}
+
+fn build_visible_rows(
+    tree: &[DiskGroup],
+    toggles: &HashMap<String, bool>,
+    filter: Option<DisplayCategory>,
+) -> Vec<Row> {
     let mut rows = Vec::new();
 
     for (d, disk_group) in tree.iter().enumerate() {
+        // Under a plan-card filter, a disk (and each game) with nothing in the
+        // chosen category is skipped entirely rather than shown as an empty
+        // header, so "Переглянути" lands on exactly that category's findings.
+        if !disk_matches_filter(disk_group, filter) {
+            continue;
+        }
         rows.push(Row::Disk { d });
         if !is_open(toggles, &disk_key(&disk_group.disk), true) {
             continue;
         }
 
         for (g, game) in disk_group.games.iter().enumerate() {
+            if !game_matches_filter(game, filter) {
+                continue;
+            }
             rows.push(Row::Game { d, g });
             if !is_open(toggles, &game_key(&disk_group.disk, game.game_id), false) {
                 continue;
             }
 
             for (c, category_node) in game.categories.iter().enumerate() {
+                if filter.is_some_and(|category| category_node.category != category) {
+                    continue;
+                }
                 rows.push(Row::Category { d, g, c });
                 let cat_key = category_key(&disk_group.disk, game.game_id, category_node.category);
                 if !is_open(toggles, &cat_key, true) {

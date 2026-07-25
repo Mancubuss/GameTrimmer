@@ -23,6 +23,11 @@ pub(super) const STRINGS: Strings = Strings {
          keep-list. Aggressive: + everything at 70% confidence or higher. Custom: the plain 85% \
          threshold — hand-pick the rest. Switching re-checks the current findings.",
 
+    plan_heading: "Action plan",
+    plan_show_all: "Show all",
+    btn_card_view: "Review",
+    btn_card_remove: "Clean up",
+
     elevation_heading: "Speed up scanning?",
     elevation_body: "Fast scanning reads the NTFS file table ($MFT) directly, like the Everything \
          tool, which requires administrator rights. Without them, scanning will \

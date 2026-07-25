@@ -337,6 +337,98 @@ pub fn profile_auto_selects(
     }
 }
 
+/// Coarse deletion-risk band shown on a [`PlanCard`] (GT-03). Deliberately a
+/// small curated scale, *not* derived from a finding's raw `confidence`: the
+/// action screen answers "how safe is it to sweep this whole category" in
+/// human terms, which does not line up with per-file detector confidence (an
+/// orphaned leftover carries low confidence yet is safe to remove - the game is
+/// already gone). Ordered least-risky first so [`plan_cards`] can sort by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RiskLevel {
+    /// Nothing of value is lost: the launcher already forgot it (orphaned
+    /// residue) or it is trivially re-created (redistributable installers).
+    None,
+    /// Re-downloadable from the store on demand (bonus material, documentation,
+    /// non-keep-list languages) - inconvenient to lose, never damaging.
+    Low,
+    /// Usually safe but less certain (developer leftovers): worth a look before
+    /// a blanket sweep.
+    Medium,
+}
+
+/// The curated deletion risk of a whole display category on the action screen
+/// (GT-03). See [`RiskLevel`] for why this is a hand-tuned table rather than a
+/// function of confidence.
+pub fn category_risk(category: DisplayCategory) -> RiskLevel {
+    match category {
+        // Orphaned residue: the game is already uninstalled. Redist: MSVC/DX
+        // installers a game re-runs or the store re-fetches on demand.
+        DisplayCategory::Orphan | DisplayCategory::Redist => RiskLevel::None,
+        DisplayCategory::Bonus | DisplayCategory::Docs | DisplayCategory::Loc => RiskLevel::Low,
+        // Dev leftovers (PDBs, editor junk): almost always disposable, but the
+        // one category where a false positive is plausible enough to flag.
+        DisplayCategory::Other => RiskLevel::Medium,
+    }
+}
+
+/// One aggregated action on the "plan of action" screen (GT-03): a whole
+/// display category rolled up across every disk and game, with the total space
+/// it would reclaim and its curated risk band. Built by [`plan_cards`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanCard {
+    pub category: DisplayCategory,
+    /// Total on-disk allocation across the category's findings (GT-05a) - the
+    /// honest reclaimable figure, matching the tree and bottom-bar totals.
+    pub total_size_on_disk: u64,
+    /// How many findings the category holds.
+    pub finding_count: usize,
+    /// How many distinct games contribute (the orphan branch counts as one),
+    /// so the card can say "unused languages in N games".
+    pub game_count: usize,
+    pub risk: RiskLevel,
+}
+
+/// Rolls the current findings up into one [`PlanCard`] per non-empty display
+/// category, ordered "benefit ÷ risk": least-risky first, and within a risk
+/// band the biggest reclaim first. Removed items are excluded (they are gone).
+/// A pure function of the findings, so it is cheap to recompute each frame and
+/// unit-testable without any UI.
+pub fn plan_cards(items: &[FindingItem]) -> Vec<PlanCard> {
+    use std::collections::HashSet;
+
+    // (total_on_disk, finding_count, distinct game ids) per category.
+    let mut totals: HashMap<DisplayCategory, (u64, usize, HashSet<i64>)> = HashMap::new();
+    for item in items {
+        if item.removed {
+            continue;
+        }
+        let entry = totals.entry(item.row.display_category()).or_default();
+        entry.0 += item.row.size_on_disk;
+        entry.1 += 1;
+        entry.2.insert(item.row.game_id);
+    }
+
+    let mut cards: Vec<PlanCard> = totals
+        .into_iter()
+        .map(|(category, (size, count, games))| PlanCard {
+            category,
+            total_size_on_disk: size,
+            finding_count: count,
+            game_count: games.len(),
+            risk: category_risk(category),
+        })
+        .collect();
+
+    // Least-risky first (RiskLevel is ordered), then biggest reclaim first
+    // within a band - so a zero-risk, high-payoff card leads the plan.
+    cards.sort_by(|a, b| {
+        a.risk
+            .cmp(&b.risk)
+            .then(b.total_size_on_disk.cmp(&a.total_size_on_disk))
+    });
+    cards
+}
+
 /// One node in the tree, either a collapsed folder (every file under it is
 /// flagged, see `worker::scan::assign_group_dirs`) or a single orphan file
 /// with no collapsible ancestor. Always nested under a [`GameNode`], so it
@@ -1809,6 +1901,98 @@ mod tests {
                 ORPHAN_SERVICE_CONFIDENCE
             ));
         }
+    }
+
+    #[test]
+    fn risk_level_is_ordered_least_risky_first() {
+        assert!(RiskLevel::None < RiskLevel::Low);
+        assert!(RiskLevel::Low < RiskLevel::Medium);
+    }
+
+    #[test]
+    fn category_risk_follows_the_curated_table() {
+        use DisplayCategory::*;
+        assert_eq!(category_risk(Orphan), RiskLevel::None);
+        assert_eq!(category_risk(Redist), RiskLevel::None);
+        assert_eq!(category_risk(Bonus), RiskLevel::Low);
+        assert_eq!(category_risk(Docs), RiskLevel::Low);
+        assert_eq!(category_risk(Loc), RiskLevel::Low);
+        assert_eq!(category_risk(Other), RiskLevel::Medium);
+    }
+
+    #[test]
+    fn plan_cards_aggregates_by_category_and_orders_by_benefit_over_risk() {
+        let items = vec![
+            // Two zero-risk categories: orphan (bigger) should lead redist.
+            item(
+                ORPHAN_GAME_ID,
+                "",
+                FindingSource::Orphan(OrphanKind::UnmanagedFolder),
+                ORPHAN_UNMANAGED_CONFIDENCE,
+                500,
+            ),
+            item(
+                1,
+                "Game A",
+                FindingSource::Rule(Category::RedistFolder),
+                90,
+                100,
+            ),
+            // One low-risk category spread across two games.
+            item(1, "Game A", FindingSource::Loc(LangKind::Audio), 90, 300),
+            item(2, "Game B", FindingSource::Loc(LangKind::Audio), 90, 200),
+            // One medium-risk category.
+            item(
+                1,
+                "Game A",
+                FindingSource::Rule(Category::DevLeftovers),
+                90,
+                50,
+            ),
+        ];
+
+        let cards = plan_cards(&items);
+
+        let categories: Vec<DisplayCategory> = cards.iter().map(|c| c.category).collect();
+        assert_eq!(
+            categories,
+            vec![
+                DisplayCategory::Orphan, // None, 500
+                DisplayCategory::Redist, // None, 100
+                DisplayCategory::Loc,    // Low, 500
+                DisplayCategory::Other,  // Medium, 50
+            ],
+            "least-risky first, biggest reclaim first within a risk band"
+        );
+
+        let loc = cards
+            .iter()
+            .find(|c| c.category == DisplayCategory::Loc)
+            .expect("a Loc card");
+        assert_eq!(loc.total_size_on_disk, 500);
+        assert_eq!(loc.finding_count, 2);
+        assert_eq!(loc.game_count, 2, "two distinct games contribute languages");
+        assert_eq!(loc.risk, RiskLevel::Low);
+    }
+
+    #[test]
+    fn plan_cards_excludes_removed_items_and_empty_categories() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 100),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 100),
+        ];
+        items[0].removed = true;
+
+        let cards = plan_cards(&items);
+
+        assert_eq!(
+            cards.len(),
+            1,
+            "only categories with a live finding get a card"
+        );
+        assert_eq!(cards[0].category, DisplayCategory::Bonus);
+        assert_eq!(cards[0].finding_count, 1, "the removed item is excluded");
+        assert_eq!(cards[0].total_size_on_disk, 100);
     }
 
     #[test]
