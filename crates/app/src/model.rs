@@ -429,6 +429,39 @@ pub fn plan_cards(items: &[FindingItem]) -> Vec<PlanCard> {
     cards
 }
 
+/// The whole-plan roll-up behind the one-line summary above the tree
+/// (GT-12). Built by [`plan_totals`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlanTotals {
+    /// How many findings there are in total.
+    pub finding_count: usize,
+    /// How many distinct games contribute, counted across every category at
+    /// once - a game that appears in three categories is one game here, which
+    /// is why this cannot be the sum of the per-card counts.
+    pub game_count: usize,
+}
+
+/// Rolls every finding up into one line's worth of numbers. Removed items are
+/// excluded (they are gone), matching [`plan_cards`]. Pure, so it is cheap to
+/// recompute each frame and unit-testable without any UI.
+pub fn plan_totals(items: &[FindingItem]) -> PlanTotals {
+    use std::collections::HashSet;
+
+    let live = items.iter().filter(|item| !item.removed);
+    let mut games: HashSet<i64> = HashSet::new();
+    let mut finding_count = 0usize;
+
+    for item in live {
+        finding_count += 1;
+        games.insert(item.row.game_id);
+    }
+
+    PlanTotals {
+        finding_count,
+        game_count: games.len(),
+    }
+}
+
 /// One node in the tree, either a collapsed folder (every file under it is
 /// flagged, see `worker::scan::assign_group_dirs`) or a single orphan file
 /// with no collapsible ancestor. Always nested under a [`GameNode`], so it
@@ -1993,6 +2026,62 @@ mod tests {
         assert_eq!(cards[0].category, DisplayCategory::Bonus);
         assert_eq!(cards[0].finding_count, 1, "the removed item is excluded");
         assert_eq!(cards[0].total_size_on_disk, 100);
+    }
+
+    /// GT-12. The summary row states one game count for the whole plan, so it
+    /// must count distinct games across categories - summing the per-card
+    /// figures would report a game contributing to three categories as three
+    /// games, inflating the headline number of a tool that deletes files.
+    #[test]
+    fn plan_totals_counts_each_game_once_across_categories() {
+        let items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 100),
+            item(1, "Game A", FindingSource::Loc(LangKind::Audio), 90, 300),
+            item(
+                1,
+                "Game A",
+                FindingSource::Rule(Category::DevLeftovers),
+                90,
+                50,
+            ),
+            item(2, "Game B", FindingSource::Loc(LangKind::Audio), 90, 200),
+        ];
+
+        let totals = plan_totals(&items);
+
+        assert_eq!(totals.finding_count, 4);
+        assert_eq!(
+            totals.game_count, 2,
+            "Game A contributes to three categories but is one game"
+        );
+
+        let summed_over_cards: usize = plan_cards(&items).iter().map(|c| c.game_count).sum();
+        assert_ne!(
+            summed_over_cards, totals.game_count,
+            "precondition: this test is only meaningful while the naive sum differs"
+        );
+    }
+
+    #[test]
+    fn plan_totals_excludes_removed_items() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 100),
+            item(2, "Game B", FindingSource::Rule(Category::Bonus), 90, 100),
+        ];
+        items[1].removed = true;
+
+        let totals = plan_totals(&items);
+
+        assert_eq!(totals.finding_count, 1, "the removed item is gone");
+        assert_eq!(
+            totals.game_count, 1,
+            "a game whose only finding was removed no longer contributes"
+        );
+    }
+
+    #[test]
+    fn plan_totals_of_nothing_is_zero() {
+        assert_eq!(plan_totals(&[]), PlanTotals::default());
     }
 
     #[test]

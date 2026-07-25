@@ -42,15 +42,15 @@ pub struct Strings {
     /// Tooltip explaining what the selection profile changes.
     pub profile_hint: &'static str,
 
-    // -- plan_panel (GT-03) --
-    /// Heading of the "plan of action" card strip above the tree.
-    pub plan_heading: &'static str,
-    /// Button/label that clears an active plan-card filter on the tree.
-    pub plan_show_all: &'static str,
-    /// A plan card's "jump to this category in the tree" button.
-    pub btn_card_view: &'static str,
-    /// A plan card's "delete this whole category" button.
-    pub btn_card_remove: &'static str,
+    // -- plan_panel (GT-12) --
+    /// Label in front of the category selector on the summary row above the
+    /// tree.
+    pub plan_filter_label: &'static str,
+    /// The selector's "no filter" entry - the tree shows every category.
+    pub plan_filter_all: &'static str,
+    /// Deletes every finding of the currently selected category. Only offered
+    /// while a category is selected, so it can never mean "delete everything".
+    pub btn_remove_category: &'static str,
 
     // -- dialogs --
     pub elevation_heading: &'static str,

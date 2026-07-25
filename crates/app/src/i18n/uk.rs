@@ -22,10 +22,9 @@ pub(super) const STRINGS: Strings = Strings {
          Агресивний: + усе з довірою від 70%. Налаштувати: звичайний поріг 85% — решту обираєте \
          вручну. Перемикання перепозначає поточні знахідки.",
 
-    plan_heading: "План дій",
-    plan_show_all: "Показати все",
-    btn_card_view: "Переглянути",
-    btn_card_remove: "Прибрати",
+    plan_filter_label: "Показувати:",
+    plan_filter_all: "усі категорії",
+    btn_remove_category: "Прибрати всю категорію",
 
     elevation_heading: "Пришвидшити сканування?",
     elevation_body: "Швидке сканування читає файлову таблицю NTFS ($MFT) напряму, як інструмент \
