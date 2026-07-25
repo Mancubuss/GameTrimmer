@@ -947,9 +947,26 @@ fn persist_libraries(
         for library in libraries {
             let path_str = library.path.to_string_lossy().to_string();
 
+            // Upsert, not `INSERT OR IGNORE` (GT-30): on a path already known
+            // the ignore kept whatever vendor was stored first - typically
+            // `manual`, from the user registering the folder by hand before
+            // any provider knew it. `vendor` then never caught up, and since
+            // `orphan_spec_for` reads it to decide whether to hunt for
+            // orphaned residue at all, detection stayed silently off for a
+            // library that does support it.
+            //
+            // `manual` is a floor, never a destination: a scan where a
+            // provider dropped out (registry key missing, drive briefly
+            // absent) re-offers the folder as `manual`, and demoting on that
+            // would switch orphan detection off exactly when a scan half
+            // failed. Any other vendor is the provider's verdict from this
+            // scan and wins - `merge_libraries_by_path` has already reduced a
+            // path to its single best-known vendor by the time we get here.
             tx.execute(
-                "INSERT OR IGNORE INTO game_libraries (vendor, path) VALUES (?1, ?2)",
-                params![library.vendor, path_str],
+                "INSERT INTO game_libraries (vendor, path) VALUES (?1, ?2)
+                 ON CONFLICT(path) DO UPDATE SET vendor = excluded.vendor
+                 WHERE excluded.vendor <> ?3 AND vendor <> excluded.vendor",
+                params![library.vendor, path_str, manual::MANUAL_VENDOR],
             )?;
             let library_id: i64 = tx.query_row(
                 "SELECT id FROM game_libraries WHERE path = ?1",
@@ -2003,6 +2020,107 @@ mod tests {
             count(&conn, "SELECT COUNT(*) FROM games WHERE name = 'Old Game'"),
             1,
             "the vanished library's game must still be present, untouched"
+        );
+    }
+
+    fn vendor_of(conn: &Connection, path: &str) -> String {
+        conn.query_row(
+            "SELECT vendor FROM game_libraries WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )
+        .expect("library row should exist")
+    }
+
+    /// GT-30. `vendor` is not cosmetic: `orphan_spec_for` reads it to decide
+    /// whether to hunt for orphaned residue in a library and under which
+    /// scheme. A folder the user registered by hand is stored as `manual`;
+    /// once a provider recognises that same folder as a real Steam library,
+    /// the stored vendor must follow - otherwise orphan detection stays
+    /// silently off for a library that does support it, and nothing in the UI
+    /// says so.
+    #[test]
+    fn rescanning_upgrades_a_manual_library_to_its_real_vendor() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("readme.txt"), b"hi");
+
+        // The user adds the folder by hand, before any provider knows it.
+        manual::add_manual_library(&conn, Path::new("F:/SteamLibrary"))
+            .expect("manual add should succeed");
+        assert_eq!(
+            vendor_of(&conn, "F:/SteamLibrary"),
+            manual::MANUAL_VENDOR,
+            "precondition: a hand-added folder starts out as manual"
+        );
+
+        // A later scan: the Steam provider now discovers the same root.
+        let discovered = DiscoveredLibrary {
+            vendor: "steam",
+            path: PathBuf::from("F:/SteamLibrary"),
+            games: vec![GameInstall {
+                name: "Portal 2".to_string(),
+                install_dir: install_dir.path().to_path_buf(),
+                app_id: Some("620".to_string()),
+            }],
+        };
+        run_one_cycle(&mut conn, &engine, &lang_detector, &discovered)
+            .expect("scan cycle should succeed");
+
+        assert_eq!(
+            vendor_of(&conn, "F:/SteamLibrary"),
+            "steam",
+            "a rescan must record the most precise vendor known, not keep manual"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM game_libraries"),
+            1,
+            "the upgrade must update the existing row, not add a second one"
+        );
+    }
+
+    /// The other direction of GT-30, and the reason the upgrade is not a
+    /// plain unconditional overwrite: when a provider fails mid-scan (registry
+    /// key missing, launcher config unreadable, drive briefly absent) its
+    /// libraries are absent from the discovery results, and a folder the user
+    /// also added by hand comes through tagged `manual`. Letting that
+    /// overwrite a known `steam` would switch orphan detection off exactly
+    /// when a scan half-failed. `manual` is a floor, never a destination.
+    #[test]
+    fn rescanning_never_downgrades_a_known_vendor_to_manual() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("readme.txt"), b"hi");
+
+        let as_steam = DiscoveredLibrary {
+            vendor: "steam",
+            path: PathBuf::from("F:/SteamLibrary"),
+            games: vec![GameInstall {
+                name: "Portal 2".to_string(),
+                install_dir: install_dir.path().to_path_buf(),
+                app_id: Some("620".to_string()),
+            }],
+        };
+        run_one_cycle(&mut conn, &engine, &lang_detector, &as_steam)
+            .expect("initial scan should succeed");
+
+        let as_manual = DiscoveredLibrary {
+            vendor: manual::MANUAL_VENDOR,
+            ..as_steam
+        };
+        run_one_cycle(&mut conn, &engine, &lang_detector, &as_manual)
+            .expect("degraded scan should still succeed");
+
+        assert_eq!(
+            vendor_of(&conn, "F:/SteamLibrary"),
+            "steam",
+            "a scan where the provider dropped out must not demote the library"
         );
     }
 
