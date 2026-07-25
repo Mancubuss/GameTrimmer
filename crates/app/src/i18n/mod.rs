@@ -66,6 +66,10 @@ pub struct Strings {
 
     // -- settings_dialog --
     pub settings_heading: &'static str,
+    /// Collapsed-by-default section heading (GT-13) gathering the technical
+    /// knobs (scan routing, database maintenance, rule packs, logging) that
+    /// aren't decisions a user makes on every visit.
+    pub advanced_section: &'static str,
     pub delete_method_label: &'static str,
     pub delete_method_permanent_label: &'static str,
     pub delete_method_permanent_hint: &'static str,
@@ -245,6 +249,7 @@ impl Strings {
             ("remove_summary_heading", self.remove_summary_heading),
             ("btn_close", self.btn_close),
             ("settings_heading", self.settings_heading),
+            ("advanced_section", self.advanced_section),
             ("delete_method_label", self.delete_method_label),
             (
                 "delete_method_permanent_label",

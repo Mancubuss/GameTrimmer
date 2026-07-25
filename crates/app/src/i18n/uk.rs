@@ -47,6 +47,7 @@ pub(super) const STRINGS: Strings = Strings {
     btn_confirm_clear: "Очистити базу даних",
 
     settings_heading: "Налаштування",
+    advanced_section: "Додатково",
     delete_method_label: "Спосіб видалення файлів:",
     delete_method_permanent_label: "Остаточне видалення (найшвидше)",
     delete_method_permanent_hint:
