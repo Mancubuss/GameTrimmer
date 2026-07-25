@@ -13,6 +13,15 @@ pub(super) const STRINGS: Strings = Strings {
     btn_select_all: "Select all",
     btn_deselect_all: "Deselect all",
     btn_delete_selected: "Delete selected",
+    profile_label: "Profile:",
+    profile_cautious: "Cautious",
+    profile_balanced: "Balanced",
+    profile_aggressive: "Aggressive",
+    profile_custom: "Custom",
+    profile_hint: "Which findings are pre-checked. Cautious: only what a launcher won't restore \
+         (orphaned residue, bonus material, documentation). Balanced: + languages outside your \
+         keep-list. Aggressive: + everything at 70% confidence or higher. Custom: the plain 85% \
+         threshold — hand-pick the rest. Switching re-checks the current findings.",
 
     elevation_heading: "Speed up scanning?",
     elevation_body: "Fast scanning reads the NTFS file table ($MFT) directly, like the Everything \

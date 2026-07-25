@@ -2,11 +2,31 @@
 //! the delete action.
 
 use eframe::egui;
+use gametrimmer_core::settings::SelectionProfile;
 
 use crate::model::{self, format_duration, format_size, AUTO_SELECT_CONFIDENCE_THRESHOLD};
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
+
+/// The selection profiles offered in the picker, in increasing aggressiveness,
+/// with `Custom` (the bare confidence threshold) last.
+const PROFILE_ORDER: [SelectionProfile; 4] = [
+    SelectionProfile::Cautious,
+    SelectionProfile::Balanced,
+    SelectionProfile::Aggressive,
+    SelectionProfile::Custom,
+];
+
+/// Localized label for one profile.
+fn profile_label(s: &i18n::Strings, profile: SelectionProfile) -> &'static str {
+    match profile {
+        SelectionProfile::Cautious => s.profile_cautious,
+        SelectionProfile::Balanced => s.profile_balanced,
+        SelectionProfile::Aggressive => s.profile_aggressive,
+        SelectionProfile::Custom => s.profile_custom,
+    }
+}
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
@@ -44,6 +64,29 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 &format_size(lang, app.occupancy.total),
                 pct,
             ));
+
+            ui.add_space(12.0);
+
+            // Selection profile (GT-04): a one-click policy for which findings
+            // arrive pre-checked. Switching re-checks the current findings in
+            // place (no re-scan) via `app.set_selection_profile`.
+            ui.label(s.profile_label).on_hover_text(s.profile_hint);
+            let mut picked_profile = app.settings.selection_profile;
+            egui::ComboBox::from_id_salt("selection_profile")
+                .selected_text(profile_label(s, picked_profile))
+                .show_ui(ui, |ui| {
+                    for profile in PROFILE_ORDER {
+                        ui.selectable_value(
+                            &mut picked_profile,
+                            profile,
+                            profile_label(s, profile),
+                        )
+                        .on_hover_text(s.profile_hint);
+                    }
+                });
+            if picked_profile != app.settings.selection_profile {
+                app.set_selection_profile(picked_profile);
+            }
 
             ui.add_space(12.0);
 

@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf, Prefix};
 use gametrimmer_core::langdetect::LangKind;
 use gametrimmer_core::orphans::OrphanKind;
 use gametrimmer_core::rules::Category;
+use gametrimmer_core::settings::SelectionProfile;
 
 /// Granular source of a finding: a rules-engine category (redist, docs,
 /// bonus, ...), a localization-detector kind (audio, text, video, font,
@@ -282,10 +283,58 @@ pub fn category_enabled(enabled_categories: &[String], category: DisplayCategory
 
 /// Default selection policy (docs/04 §5.5): auto-select only high-confidence
 /// findings; lower-confidence ones are shown but left for the user to opt in.
+/// This is the [`SelectionProfile::Custom`] policy - the confidence-only path.
 pub const AUTO_SELECT_CONFIDENCE_THRESHOLD: u8 = 85;
 
 pub fn default_selected(confidence: u8) -> bool {
     confidence >= AUTO_SELECT_CONFIDENCE_THRESHOLD
+}
+
+/// The confidence floor [`SelectionProfile::Aggressive`] adds on top of the
+/// safe categories: any finding at or above it is pre-selected regardless of
+/// its category. Set below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] on purpose -
+/// "aggressive" reaches lower than the cautious default, pulling in the
+/// mid-confidence rule findings (70-84) the `Custom` path leaves unchecked.
+pub const AGGRESSIVE_CONFIDENCE_FLOOR: u8 = 70;
+
+/// Whether a finding in `category` with `confidence` is pre-selected under
+/// `profile` (GT-04). A pure policy over already-scanned findings, so switching
+/// profiles re-selects without re-scanning. Orthogonal to [`category_enabled`],
+/// which decides what is scanned in the first place.
+///
+/// The "safe" categories - [`DisplayCategory::Bonus`], [`DisplayCategory::Docs`],
+/// [`DisplayCategory::Orphan`] - are the residue a launcher will not restore on
+/// its own. `Cautious` selects exactly those (at any confidence); `Balanced`
+/// adds [`DisplayCategory::Loc`] (localization files only ever exist for
+/// languages already outside the keep-list); `Aggressive` additionally selects
+/// anything at or above [`AGGRESSIVE_CONFIDENCE_FLOOR`]; `Custom` defers to the
+/// plain confidence threshold ([`default_selected`]).
+///
+/// Note (GT-02): unlike the confidence-threshold path, a profile *can*
+/// pre-select orphaned residue - by the user's explicit choice of a profile
+/// that includes the `Orphan` category. The orphan confidences deliberately
+/// stay below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`], so the `Custom` (and any
+/// bare-confidence) path still never auto-selects them; the safety contract is
+/// now scoped to that path rather than to every possible selection policy.
+pub fn profile_auto_selects(
+    profile: SelectionProfile,
+    category: DisplayCategory,
+    confidence: u8,
+) -> bool {
+    let is_safe_category = matches!(
+        category,
+        DisplayCategory::Bonus | DisplayCategory::Docs | DisplayCategory::Orphan
+    );
+    match profile {
+        SelectionProfile::Cautious => is_safe_category,
+        SelectionProfile::Balanced => is_safe_category || category == DisplayCategory::Loc,
+        SelectionProfile::Aggressive => {
+            is_safe_category
+                || category == DisplayCategory::Loc
+                || confidence >= AGGRESSIVE_CONFIDENCE_FLOOR
+        }
+        SelectionProfile::Custom => default_selected(confidence),
+    }
 }
 
 /// One node in the tree, either a collapsed folder (every file under it is
@@ -1635,6 +1684,131 @@ mod tests {
         assert!(default_selected(85));
         assert!(default_selected(95));
         assert!(!default_selected(84));
+    }
+
+    #[test]
+    fn cautious_profile_selects_only_launcher_wont_restore_categories() {
+        use DisplayCategory::*;
+        // Bonus / Docs / Orphan at ANY confidence - the "safe" residue.
+        for category in [Bonus, Docs, Orphan] {
+            assert!(profile_auto_selects(
+                SelectionProfile::Cautious,
+                category,
+                10
+            ));
+            assert!(profile_auto_selects(
+                SelectionProfile::Cautious,
+                category,
+                95
+            ));
+        }
+        // Everything else is left unchecked, even at high confidence.
+        for category in [Loc, Redist, Other] {
+            assert!(!profile_auto_selects(
+                SelectionProfile::Cautious,
+                category,
+                95
+            ));
+        }
+    }
+
+    #[test]
+    fn balanced_profile_adds_localization_to_cautious() {
+        use DisplayCategory::*;
+        // Everything Cautious selects, plus Loc at any confidence.
+        for category in [Bonus, Docs, Orphan, Loc] {
+            assert!(profile_auto_selects(
+                SelectionProfile::Balanced,
+                category,
+                10
+            ));
+        }
+        // Still leaves redistributables and dev leftovers for the user.
+        assert!(!profile_auto_selects(
+            SelectionProfile::Balanced,
+            Redist,
+            95
+        ));
+        assert!(!profile_auto_selects(SelectionProfile::Balanced, Other, 95));
+    }
+
+    #[test]
+    fn aggressive_profile_adds_everything_at_or_above_the_floor() {
+        use DisplayCategory::*;
+        // Safe categories and Loc still selected regardless of confidence.
+        for category in [Bonus, Docs, Orphan, Loc] {
+            assert!(profile_auto_selects(
+                SelectionProfile::Aggressive,
+                category,
+                10
+            ));
+        }
+        // Redist / Other now come in - but only at or above the floor (70).
+        assert!(profile_auto_selects(
+            SelectionProfile::Aggressive,
+            Redist,
+            AGGRESSIVE_CONFIDENCE_FLOOR
+        ));
+        assert!(profile_auto_selects(
+            SelectionProfile::Aggressive,
+            Other,
+            90
+        ));
+        assert!(!profile_auto_selects(
+            SelectionProfile::Aggressive,
+            Redist,
+            AGGRESSIVE_CONFIDENCE_FLOOR - 1
+        ));
+    }
+
+    #[test]
+    fn custom_profile_is_the_plain_confidence_threshold() {
+        use DisplayCategory::*;
+        // Category-agnostic: matches default_selected exactly.
+        for category in [Bonus, Docs, Orphan, Loc, Redist, Other] {
+            assert_eq!(
+                profile_auto_selects(SelectionProfile::Custom, category, 85),
+                default_selected(85)
+            );
+            assert_eq!(
+                profile_auto_selects(SelectionProfile::Custom, category, 84),
+                default_selected(84)
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_profile_never_the_confidence_path_can_select_orphans() {
+        use DisplayCategory::Orphan;
+        // GT-02 contract, now profile-scoped: the Custom (confidence-only) path
+        // still never auto-selects orphaned residue (its confidence is < 85)...
+        assert!(!profile_auto_selects(
+            SelectionProfile::Custom,
+            Orphan,
+            ORPHAN_UNMANAGED_CONFIDENCE
+        ));
+        assert!(!profile_auto_selects(
+            SelectionProfile::Custom,
+            Orphan,
+            ORPHAN_SERVICE_CONFIDENCE
+        ));
+        // ...but a chosen non-Custom profile may, by design (user's explicit call).
+        for profile in [
+            SelectionProfile::Cautious,
+            SelectionProfile::Balanced,
+            SelectionProfile::Aggressive,
+        ] {
+            assert!(profile_auto_selects(
+                profile,
+                Orphan,
+                ORPHAN_UNMANAGED_CONFIDENCE
+            ));
+            assert!(profile_auto_selects(
+                profile,
+                Orphan,
+                ORPHAN_SERVICE_CONFIDENCE
+            ));
+        }
     }
 
     #[test]

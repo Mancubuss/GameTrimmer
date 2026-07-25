@@ -155,6 +155,60 @@ impl Theme {
     }
 }
 
+/// Which findings a scan pre-selects for deletion - the "aggressiveness" the
+/// user picks instead of hand-reasoning about per-category confidence. It is a
+/// pure *selection* policy applied over already-scanned findings (see
+/// `gametrimmer_app::model::profile_auto_selects`), so switching profiles
+/// re-selects without re-scanning. Orthogonal to
+/// [`Settings::enabled_categories`], which decides what is *scanned* at all.
+///
+/// `Balanced` is the default: it pre-selects the residue a launcher will not
+/// restore (orphaned leftovers, bonus material, documentation) plus languages
+/// outside the keep-list - the everyday "reclaim the obvious" set - while
+/// leaving redistributables and dev leftovers for the user to opt into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectionProfile {
+    /// Only what a launcher will not bring back on its own: orphaned residue,
+    /// bonus material, documentation.
+    Cautious,
+    /// `Cautious` plus non-keep-list localization files (which only ever exist
+    /// for languages already outside the keep-list).
+    #[default]
+    Balanced,
+    /// `Balanced` plus everything else at or above the aggressive confidence
+    /// floor (see `gametrimmer_app::model::AGGRESSIVE_CONFIDENCE_FLOOR`).
+    Aggressive,
+    /// No profile: the plain confidence threshold decides
+    /// (`gametrimmer_app::model::AUTO_SELECT_CONFIDENCE_THRESHOLD`). Entered
+    /// when the user hand-edits the selection, so manual choices are not
+    /// clobbered by a profile policy.
+    Custom,
+}
+
+impl SelectionProfile {
+    /// Stable string form persisted into the `settings` table.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SelectionProfile::Cautious => "cautious",
+            SelectionProfile::Balanced => "balanced",
+            SelectionProfile::Aggressive => "aggressive",
+            SelectionProfile::Custom => "custom",
+        }
+    }
+
+    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values (e.g.
+    /// written by a future version) - callers fall back to the default.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cautious" => Some(SelectionProfile::Cautious),
+            "balanced" => Some(SelectionProfile::Balanced),
+            "aggressive" => Some(SelectionProfile::Aggressive),
+            "custom" => Some(SelectionProfile::Custom),
+            _ => None,
+        }
+    }
+}
+
 /// The keep-list used when the database has no stored value (or an empty
 /// one): the user's own language plus English are never flagged.
 pub fn default_keep_languages() -> Vec<String> {
@@ -258,6 +312,11 @@ pub struct Settings {
     /// settings dialog) are responsible for never letting the *last*
     /// checked category be unchecked - see `ui::settings_dialog`.
     pub enabled_categories: Vec<String>,
+    /// Which findings a scan pre-selects for deletion - see
+    /// [`SelectionProfile`]. Orthogonal to [`Self::enabled_categories`]:
+    /// that decides what is scanned, this decides what is pre-checked among
+    /// what was scanned.
+    pub selection_profile: SelectionProfile,
     /// Whether the app writes a `gametrimmer.log` file next to the
     /// executable with diagnostics (errors and scan lifecycle events) - see
     /// the `logger` module in the `app` crate. Opt-in and off by default:
@@ -275,6 +334,7 @@ impl Default for Settings {
             scan_routing: ScanRouting::default(),
             theme: Theme::default(),
             enabled_categories: Vec::new(),
+            selection_profile: SelectionProfile::default(),
             logging_enabled: false,
         }
     }
@@ -286,6 +346,7 @@ const KEEP_LANGUAGES_KEY: &str = "keep_languages";
 const SCAN_ROUTING_KEY: &str = "scan_routing";
 const THEME_KEY: &str = "theme";
 const ENABLED_CATEGORIES_KEY: &str = "enabled_categories";
+const SELECTION_PROFILE_KEY: &str = "selection_profile";
 const LOGGING_ENABLED_KEY: &str = "logging_enabled";
 
 /// Reads one raw value from the `settings` table.
@@ -329,6 +390,9 @@ pub fn load(conn: &Connection) -> Result<Settings> {
     let enabled_categories = read_value(conn, ENABLED_CATEGORIES_KEY)?
         .map(|value| parse_enabled_categories(&value))
         .unwrap_or_default();
+    let selection_profile = read_value(conn, SELECTION_PROFILE_KEY)?
+        .and_then(|value| SelectionProfile::parse(&value))
+        .unwrap_or_default();
     let logging_enabled = read_value(conn, LOGGING_ENABLED_KEY)?
         .and_then(|value| parse_bool(&value))
         .unwrap_or_default();
@@ -339,6 +403,7 @@ pub fn load(conn: &Connection) -> Result<Settings> {
         scan_routing,
         theme,
         enabled_categories,
+        selection_profile,
         logging_enabled,
     })
 }
@@ -358,6 +423,11 @@ pub fn save(conn: &Connection, settings: &Settings) -> Result<()> {
         conn,
         ENABLED_CATEGORIES_KEY,
         &serialize_enabled_categories(&settings.enabled_categories),
+    )?;
+    write_value(
+        conn,
+        SELECTION_PROFILE_KEY,
+        settings.selection_profile.as_str(),
     )?;
     write_value(
         conn,
@@ -666,6 +736,65 @@ mod tests {
             settings.enabled_categories,
             vec!["redist".to_string(), "docs".to_string()],
             "enabled-categories should be deduplicated, trimmed, and lowercased"
+        );
+    }
+
+    #[test]
+    fn defaults_to_balanced_profile_on_empty_database() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        let settings = load(&conn).expect("load settings");
+        assert_eq!(
+            settings.selection_profile,
+            SelectionProfile::Balanced,
+            "Balanced is the default aggressiveness profile (GT-04)"
+        );
+    }
+
+    #[test]
+    fn save_then_load_round_trips_every_selection_profile() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        for profile in [
+            SelectionProfile::Cautious,
+            SelectionProfile::Balanced,
+            SelectionProfile::Aggressive,
+            SelectionProfile::Custom,
+        ] {
+            let settings = Settings {
+                selection_profile: profile,
+                ..Settings::default()
+            };
+            save(&conn, &settings).expect("save settings");
+            let loaded = load(&conn).expect("load settings");
+            assert_eq!(loaded.selection_profile, profile);
+        }
+    }
+
+    #[test]
+    fn selection_profile_round_trips_through_as_str_parse() {
+        for profile in [
+            SelectionProfile::Cautious,
+            SelectionProfile::Balanced,
+            SelectionProfile::Aggressive,
+            SelectionProfile::Custom,
+        ] {
+            assert_eq!(SelectionProfile::parse(profile.as_str()), Some(profile));
+        }
+        assert_eq!(SelectionProfile::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn unknown_stored_selection_profile_falls_back_to_balanced() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('selection_profile', 'reckless')",
+            [],
+        )
+        .expect("insert unknown value");
+        let settings = load(&conn).expect("load settings");
+        assert_eq!(
+            settings.selection_profile,
+            SelectionProfile::Balanced,
+            "a value written by a future version must not break loading"
         );
     }
 
