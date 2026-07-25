@@ -1,5 +1,6 @@
 pub mod db;
 pub mod error;
+pub mod gamestate;
 pub mod langdetect;
 pub mod mftscan;
 pub mod ondisk;

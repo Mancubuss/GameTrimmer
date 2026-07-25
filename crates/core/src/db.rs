@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS games (
     library_id  INTEGER NOT NULL REFERENCES game_libraries(id),
     name        TEXT NOT NULL,
     install_dir TEXT NOT NULL,
-    app_id      TEXT
+    app_id      TEXT,
+    build_id    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS files (
@@ -147,6 +148,14 @@ fn migrate(conn: &Connection) -> Result<()> {
     // falls back to `size` (via COALESCE) for those until the next scan
     // repopulates the real on-disk figure.
     add_column_if_missing(conn, "files", "size_on_disk", "INTEGER")?;
+    // `games.build_id` (GT-09): the launcher's content build id recorded at
+    // scan time, so a later startup can tell whether a game was updated or
+    // re-verified (and therefore may have its trimmed files back) without
+    // rescanning. `NULL` for every game indexed by an earlier build - and
+    // deliberately treated as "unknown, claim nothing" by
+    // `gamestate::changed_games`, so the first run after an upgrade does not
+    // flag the whole library.
+    add_column_if_missing(conn, "games", "build_id", "TEXT")?;
     Ok(())
 }
 
@@ -937,6 +946,51 @@ mod tests {
             )
             .expect("coalesce legacy row");
         assert_eq!(coalesced, 123);
+
+        migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
+    }
+
+    /// GT-09: `games.build_id` must be added to a database created before that
+    /// column existed, be idempotent, and leave pre-existing games with `NULL`,
+    /// which `gamestate::changed_games` reads as "unknown, claim nothing" - so
+    /// the first startup after an upgrade never flags the whole library as
+    /// changed.
+    #[test]
+    fn migrate_adds_build_id_to_a_legacy_games_table_and_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open bare in-memory db");
+        // The pre-`build_id` games schema, with one row already in it.
+        conn.execute_batch(
+            "CREATE TABLE games (
+                id          INTEGER PRIMARY KEY,
+                library_id  INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                install_dir TEXT NOT NULL,
+                app_id      TEXT
+            );
+            INSERT INTO games (id, library_id, name, install_dir, app_id)
+                VALUES (1, 1, 'Portal 2', 'F:\\SteamLibrary\\common\\Portal 2', '620');",
+        )
+        .expect("create legacy games table");
+        assert!(
+            !column_exists(&conn, "games", "build_id").expect("probe legacy column"),
+            "precondition: the legacy table must not have build_id"
+        );
+
+        migrate(&conn).expect("first migrate should add the column");
+        assert!(
+            column_exists(&conn, "games", "build_id").expect("probe migrated column"),
+            "build_id must exist after migrate"
+        );
+
+        let build_id: Option<String> = conn
+            .query_row("SELECT build_id FROM games WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("read migrated row");
+        assert_eq!(
+            build_id, None,
+            "pre-existing games must be NULL so no change is claimed for them"
+        );
 
         migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
     }

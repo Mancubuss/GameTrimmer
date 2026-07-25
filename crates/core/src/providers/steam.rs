@@ -182,6 +182,85 @@ pub fn parse_appmanifest(acf: &str, library_root: &Path) -> Option<GameInstall> 
     })
 }
 
+/// The cheap *state* subset of an `appmanifest_*.acf` (GT-09): just enough to
+/// tell whether a game changed since the last scan, without walking a single
+/// file of it.
+///
+/// Deliberately separate from [`GameInstall`] rather than a field on it: the
+/// state probe runs on its own schedule (once at startup, over manifests only)
+/// and adding a field to `GameInstall` would touch all twelve providers for
+/// data only Steam can supply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestState {
+    /// Steam appid - the stable key matching `games.app_id`.
+    pub app_id: String,
+    /// Steam's `buildid`, bumped by Valve on every content update (and by a
+    /// `Verify` that re-downloads). A change since the last scan means the
+    /// installed files changed - i.e. trimmed files may well be back.
+    /// `None` when the manifest omits it (older/partial manifests).
+    pub build_id: Option<String>,
+}
+
+/// Reads one `appmanifest_*.acf`'s state fields. Pure (text in, data out), so
+/// the parsing is unit-tested without touching a real Steam install.
+/// `None` when the text isn't a manifest or carries no `appid` - without the
+/// appid there is nothing to match a stored game against.
+pub fn parse_manifest_state(acf: &str) -> Option<ManifestState> {
+    let root = parse_vdf(acf);
+    let VdfValue::Obj(entries) = &root else {
+        return None;
+    };
+
+    let app_state = entries.iter().find_map(|(key, val)| {
+        if key.eq_ignore_ascii_case("AppState") {
+            match val {
+                VdfValue::Obj(fields) => Some(fields),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })?;
+
+    let get_field = |field: &str| -> Option<String> {
+        app_state.iter().find_map(|(key, val)| {
+            if key.eq_ignore_ascii_case(field) {
+                match val {
+                    VdfValue::Str(s) => Some(s.clone()),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        })
+    };
+
+    let app_id = get_field("appid").filter(|s| !s.trim().is_empty())?;
+    let build_id = get_field("buildid").filter(|s| !s.trim().is_empty());
+
+    Some(ManifestState { app_id, build_id })
+}
+
+/// Collects the [`ManifestState`] of every game in one Steam library root.
+///
+/// Reads only `steamapps/appmanifest_*.acf` - a few dozen small text files, no
+/// directory walk of the games themselves - so this is cheap enough to run on
+/// every startup (that is the whole point: detecting "what changed" must not
+/// cost a scan). An unreadable manifest is skipped, never fatal.
+pub fn manifest_states(library_root: &Path) -> Vec<ManifestState> {
+    let steamapps = library_root.join("steamapps");
+    let Ok(entries) = std::fs::read_dir(&steamapps) else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .filter(|entry| is_appmanifest(&entry.path()))
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .filter_map(|contents| parse_manifest_state(&contents))
+        .collect()
+}
+
 /// A minimal in-memory representation of Valve's KeyValues (VDF) text format:
 /// either a leaf string, or an object holding an ordered list of key/value pairs
 /// (values may themselves be nested objects).
@@ -396,6 +475,75 @@ mod tests {
 "#;
 
         assert!(parse_libraryfolders(vdf).is_empty());
+    }
+
+    #[test]
+    fn parse_manifest_state_reads_appid_and_buildid() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"name"		"Portal 2"
+	"installdir"		"Portal 2"
+	"buildid"		"17038203"
+}
+"#;
+        let state = parse_manifest_state(acf).expect("expected a parsed state");
+        assert_eq!(state.app_id, "620");
+        assert_eq!(state.build_id.as_deref(), Some("17038203"));
+    }
+
+    #[test]
+    fn parse_manifest_state_tolerates_a_manifest_without_buildid() {
+        // Older/partial manifests omit it; the appid alone is still useful, and
+        // `gamestate::changed_games` treats a missing build id as "unknown".
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"name"		"Portal 2"
+	"installdir"		"Portal 2"
+}
+"#;
+        let state = parse_manifest_state(acf).expect("expected a parsed state");
+        assert_eq!(state.app_id, "620");
+        assert_eq!(state.build_id, None);
+    }
+
+    #[test]
+    fn parse_manifest_state_returns_none_without_an_appid() {
+        // Without the appid there is no key to match a stored game against.
+        let acf = r#"
+"AppState"
+{
+	"name"		"Portal 2"
+	"buildid"		"17038203"
+}
+"#;
+        assert!(parse_manifest_state(acf).is_none());
+        assert!(parse_manifest_state("not a vdf file at all").is_none());
+        assert!(parse_manifest_state("").is_none());
+    }
+
+    #[test]
+    fn parse_manifest_state_ignores_blank_fields() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"buildid"		""
+}
+"#;
+        let state = parse_manifest_state(acf).expect("expected a parsed state");
+        assert_eq!(
+            state.build_id, None,
+            "a blank buildid is no build id, not an empty-string one"
+        );
+    }
+
+    #[test]
+    fn manifest_states_on_a_missing_library_root_is_empty_not_an_error() {
+        assert!(manifest_states(Path::new(r"Z:\definitely\not\a\steam\library")).is_empty());
     }
 
     #[test]
