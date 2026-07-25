@@ -2,13 +2,18 @@
 //! (see `GameTrimmerApp::set_delete_method`), so "Закрити" only dismisses
 //! the dialog - there is no separate save step to forget.
 //!
-//! Sections: deletion method, keep-list languages (never flagged by the
-//! localization detector - see `gametrimmer_core::settings::keep_languages`),
-//! scan-routing mode (MFT index vs. directory walk - see
-//! `gametrimmer_core::settings::ScanRouting` and
-//! `crate::worker::scan_route`), scanned artifact categories, app language,
-//! theme, database maintenance ("Стиснути базу даних"), analysis rule packs
-//! (export/import - see docs/05_rules_pack_plan.md).
+//! Sections are split into two tiers (GT-13): the choices a user actually
+//! makes on every visit - deletion method, app language, theme, keep-list
+//! languages (never flagged by the localization detector - see
+//! `gametrimmer_core::settings::keep_languages`), scanned artifact
+//! categories - sit on the surface, ordered roughly by how often they're
+//! touched. Everything else is a technical knob a newcomer doesn't need to
+//! see by default (scan-routing mode - see `gametrimmer_core::settings::ScanRouting`
+//! and `crate::worker::scan_route` -, database maintenance
+//! ("Стиснути базу даних"), analysis rule packs (export/import - see
+//! docs/05_rules_pack_plan.md), and diagnostic logging), so it lives behind
+//! a collapsed-by-default "Advanced" section instead of competing for
+//! attention on first open.
 
 use eframe::egui;
 
@@ -167,46 +172,6 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 ui.separator();
                 ui.add_space(8.0);
 
-                ui.label(s.scan_routing_label);
-                ui.add_space(4.0);
-                // Disabled while a worker is running: the new mode only takes
-                // effect on the *next* scan (see `GameTrimmerApp::set_scan_routing`),
-                // so there is nothing for it to apply to mid-scan, and persisting
-                // immediately would still race a concurrent DB connection like the
-                // sections above.
-                ui.add_enabled_ui(!app.busy, |ui| {
-                    ui.radio_value(
-                        &mut picked_scan_routing,
-                        ScanRouting::Auto,
-                        s.scan_routing_auto_label,
-                    );
-                    ui.indent("gt_settings_scan_routing_auto_hint", |ui| {
-                        ui.small(s.scan_routing_auto_hint);
-                    });
-                    ui.add_space(4.0);
-                    ui.radio_value(
-                        &mut picked_scan_routing,
-                        ScanRouting::ForceMft,
-                        s.scan_routing_force_mft_label,
-                    );
-                    ui.indent("gt_settings_scan_routing_force_mft_hint", |ui| {
-                        ui.small(s.scan_routing_force_mft_hint);
-                    });
-                    ui.add_space(4.0);
-                    ui.radio_value(
-                        &mut picked_scan_routing,
-                        ScanRouting::ForceWalkdir,
-                        s.scan_routing_force_walkdir_label,
-                    );
-                    ui.indent("gt_settings_scan_routing_force_walkdir_hint", |ui| {
-                        ui.small(s.scan_routing_force_walkdir_hint);
-                    });
-                });
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
                 ui.label(s.categories_label);
                 ui.add_space(4.0);
                 // Disabled while a worker is running: the same reasoning as the
@@ -256,102 +221,156 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 ui.separator();
                 ui.add_space(8.0);
 
-                ui.label(s.database_label);
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!app.busy, egui::Button::new(s.btn_compact_database))
-                        .clicked()
-                    {
-                        compact_clicked = true;
-                    }
-                    // Destructive (wipes findings/files/games/operations) -
-                    // gated behind a confirmation modal (see
-                    // `ui::dialogs::show_confirm_clear_database`), never runs
-                    // straight off this click.
-                    if ui
-                        .add_enabled(!app.busy, egui::Button::new(s.btn_clear_database))
-                        .clicked()
-                    {
-                        clear_clicked = true;
-                    }
-                });
-                ui.small(s.compact_hint);
-                ui.add_space(4.0);
-                ui.small(s.clear_hint);
+                // Everything below is a technical knob rather than a decision the
+                // user is expected to make on every visit - collapsed by default so
+                // a newcomer's first look at Settings is just the five sections
+                // above (GT-13). Nothing here changes behavior, only visibility.
+                egui::CollapsingHeader::new(s.advanced_section)
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.label(s.scan_routing_label);
+                        ui.add_space(4.0);
+                        // Disabled while a worker is running: the new mode only takes
+                        // effect on the *next* scan (see `GameTrimmerApp::set_scan_routing`),
+                        // so there is nothing for it to apply to mid-scan, and persisting
+                        // immediately would still race a concurrent DB connection like the
+                        // sections above.
+                        ui.add_enabled_ui(!app.busy, |ui| {
+                            ui.radio_value(
+                                &mut picked_scan_routing,
+                                ScanRouting::Auto,
+                                s.scan_routing_auto_label,
+                            );
+                            ui.indent("gt_settings_scan_routing_auto_hint", |ui| {
+                                ui.small(s.scan_routing_auto_hint);
+                            });
+                            ui.add_space(4.0);
+                            ui.radio_value(
+                                &mut picked_scan_routing,
+                                ScanRouting::ForceMft,
+                                s.scan_routing_force_mft_label,
+                            );
+                            ui.indent("gt_settings_scan_routing_force_mft_hint", |ui| {
+                                ui.small(s.scan_routing_force_mft_hint);
+                            });
+                            ui.add_space(4.0);
+                            ui.radio_value(
+                                &mut picked_scan_routing,
+                                ScanRouting::ForceWalkdir,
+                                s.scan_routing_force_walkdir_label,
+                            );
+                            ui.indent("gt_settings_scan_routing_force_walkdir_hint", |ui| {
+                                ui.small(s.scan_routing_force_walkdir_hint);
+                            });
+                        });
 
-                // Same reason as the rules section below: the top-bar status
-                // line (and progress bar) are hidden behind this modal, so a
-                // compact/clear job must show its running state and outcome
-                // right here - otherwise it finishes invisibly and the user
-                // clicks the button a second time.
-                if app.db_maint_active {
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(s.running_ellipsis);
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        ui.label(s.database_label);
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(!app.busy, egui::Button::new(s.btn_compact_database))
+                                .clicked()
+                            {
+                                compact_clicked = true;
+                            }
+                            // Destructive (wipes findings/files/games/operations) -
+                            // gated behind a confirmation modal (see
+                            // `ui::dialogs::show_confirm_clear_database`), never runs
+                            // straight off this click.
+                            if ui
+                                .add_enabled(!app.busy, egui::Button::new(s.btn_clear_database))
+                                .clicked()
+                            {
+                                clear_clicked = true;
+                            }
+                        });
+                        ui.small(s.compact_hint);
+                        ui.add_space(4.0);
+                        ui.small(s.clear_hint);
+
+                        // Same reason as the rules section below: the top-bar status
+                        // line (and progress bar) are hidden behind this modal, so a
+                        // compact/clear job must show its running state and outcome
+                        // right here - otherwise it finishes invisibly and the user
+                        // clicks the button a second time.
+                        if app.db_maint_active {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(s.running_ellipsis);
+                            });
+                        } else if let Some(result) = &app.db_maint_result {
+                            ui.add_space(4.0);
+                            match result {
+                                Ok(msg) => {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(0x4c, 0xaf, 0x50),
+                                        msg,
+                                    );
+                                }
+                                Err(msg) => {
+                                    ui.colored_label(ui.visuals().error_fg_color, msg);
+                                }
+                            }
+                        }
+
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        ui.label(s.rules_label);
+                        ui.add_space(4.0);
+                        // The export only reads the pack files, but the import rewrites the
+                        // files a scan loads at startup - both are disabled during any
+                        // background job to keep the flow simple, plus while a previous
+                        // rules dialog is still open (`rules_io_active`).
+                        ui.add_enabled_ui(!app.busy && !app.rules_io_active, |ui| {
+                            ui.horizontal(|ui| {
+                                if ui.button(s.btn_export_rules).clicked() {
+                                    export_rules_clicked = true;
+                                }
+                                if ui.button(s.btn_import_rules).clicked() {
+                                    import_rules_clicked = true;
+                                }
+                            });
+                        });
+                        ui.small(s.rules_hint);
+                        // The top-bar status line is hidden behind this modal, so the
+                        // outcome must be shown right here, under the buttons.
+                        if app.rules_io_active {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(s.running_ellipsis);
+                            });
+                        } else if let Some(result) = &app.rules_io_result {
+                            ui.add_space(4.0);
+                            match result {
+                                Ok(msg) => {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(0x4c, 0xaf, 0x50),
+                                        msg,
+                                    );
+                                }
+                                Err(msg) => {
+                                    ui.colored_label(ui.visuals().error_fg_color, msg);
+                                }
+                            }
+                        }
+
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        ui.label(s.logging_label);
+                        ui.add_space(4.0);
+                        ui.checkbox(&mut picked_logging_enabled, s.logging_checkbox);
+                        ui.small(s.logging_hint);
                     });
-                } else if let Some(result) = &app.db_maint_result {
-                    ui.add_space(4.0);
-                    match result {
-                        Ok(msg) => {
-                            ui.colored_label(egui::Color32::from_rgb(0x4c, 0xaf, 0x50), msg);
-                        }
-                        Err(msg) => {
-                            ui.colored_label(ui.visuals().error_fg_color, msg);
-                        }
-                    }
-                }
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.label(s.rules_label);
-                ui.add_space(4.0);
-                // The export only reads the pack files, but the import rewrites the
-                // files a scan loads at startup - both are disabled during any
-                // background job to keep the flow simple, plus while a previous
-                // rules dialog is still open (`rules_io_active`).
-                ui.add_enabled_ui(!app.busy && !app.rules_io_active, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button(s.btn_export_rules).clicked() {
-                            export_rules_clicked = true;
-                        }
-                        if ui.button(s.btn_import_rules).clicked() {
-                            import_rules_clicked = true;
-                        }
-                    });
-                });
-                ui.small(s.rules_hint);
-                // The top-bar status line is hidden behind this modal, so the
-                // outcome must be shown right here, under the buttons.
-                if app.rules_io_active {
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(s.running_ellipsis);
-                    });
-                } else if let Some(result) = &app.rules_io_result {
-                    ui.add_space(4.0);
-                    match result {
-                        Ok(msg) => {
-                            ui.colored_label(egui::Color32::from_rgb(0x4c, 0xaf, 0x50), msg);
-                        }
-                        Err(msg) => {
-                            ui.colored_label(ui.visuals().error_fg_color, msg);
-                        }
-                    }
-                }
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.label(s.logging_label);
-                ui.add_space(4.0);
-                ui.checkbox(&mut picked_logging_enabled, s.logging_checkbox);
-                ui.small(s.logging_hint);
             });
 
         // Outside the scroll area, so it stays visible (and clickable) no

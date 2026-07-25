@@ -48,6 +48,7 @@ pub(super) const STRINGS: Strings = Strings {
     btn_confirm_clear: "Clear database",
 
     settings_heading: "Settings",
+    advanced_section: "Advanced",
     delete_method_label: "File deletion method:",
     delete_method_permanent_label: "Permanent deletion (fastest)",
     delete_method_permanent_hint:
