@@ -96,6 +96,12 @@ enum Row {
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
     egui::CentralPanel::default().show(ui, |ui| {
+        // GT-03 plan cards ride at the top of this panel, directly above the
+        // tree, so the summary and the drill-down live in one always-visible
+        // region (a no-op with no findings). The tree's own scroll area below
+        // takes whatever height remains.
+        crate::ui::plan_panel::show(app, ui);
+
         if app.tree.is_empty() {
             let s = i18n::strings(lang);
             ui.add_space(16.0);
