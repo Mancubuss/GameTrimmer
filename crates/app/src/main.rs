@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod cli;
 mod elevation;
 mod export;
 mod i18n;
@@ -39,6 +40,19 @@ const KOREAN_FONT_NAME: &str = "malgun-gothic";
 const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/gametrimmer_256.png");
 
 fn main() -> eframe::Result {
+    // Headless (CLI) mode - GT-10. With no CLI flag this returns `LaunchGui`
+    // and the graphical app starts exactly as before; with `--scan`/`--apply`/
+    // etc. the run completes here and the process exits with a status code,
+    // never constructing a window.
+    match cli::run_from_env() {
+        cli::Outcome::Exit(code) => std::process::exit(code as i32),
+        cli::Outcome::LaunchGui => {}
+    }
+
+    run_gui()
+}
+
+fn run_gui() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(APP_TITLE)
         .with_inner_size(WINDOW_SIZE);
