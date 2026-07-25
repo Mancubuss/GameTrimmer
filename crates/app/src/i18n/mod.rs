@@ -33,6 +33,14 @@ pub struct Strings {
     pub btn_select_all: &'static str,
     pub btn_deselect_all: &'static str,
     pub btn_delete_selected: &'static str,
+    /// Label preceding the selection-profile picker (GT-04).
+    pub profile_label: &'static str,
+    pub profile_cautious: &'static str,
+    pub profile_balanced: &'static str,
+    pub profile_aggressive: &'static str,
+    pub profile_custom: &'static str,
+    /// Tooltip explaining what the selection profile changes.
+    pub profile_hint: &'static str,
 
     // -- dialogs --
     pub elevation_heading: &'static str,

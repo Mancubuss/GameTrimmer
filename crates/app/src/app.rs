@@ -11,7 +11,9 @@ use std::thread::JoinHandle;
 use eframe::egui;
 
 use gametrimmer_core::mftscan;
-use gametrimmer_core::settings::{DeleteMethod, Lang, ScanRouting, Settings, Theme};
+use gametrimmer_core::settings::{
+    DeleteMethod, Lang, ScanRouting, SelectionProfile, Settings, Theme,
+};
 
 use crate::elevation;
 use crate::export;
@@ -862,6 +864,34 @@ impl GameTrimmerApp {
         self.persist_settings();
     }
 
+    /// Switches the selection profile (GT-04), persists it, and **re-applies**
+    /// it to the currently displayed findings without re-scanning: every
+    /// non-removed finding's checkbox is recomputed from the new profile,
+    /// overwriting any manual tweaks (the point of a profile is to be a
+    /// one-click policy). Removed items are left alone - they are already gone.
+    /// The tree is not rebuilt: its shape is independent of selection, which is
+    /// per-item state the tree reads live.
+    pub fn set_selection_profile(&mut self, profile: SelectionProfile) {
+        if self.settings.selection_profile == profile {
+            return;
+        }
+        self.settings = Settings {
+            selection_profile: profile,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+        for item in &mut self.findings {
+            if item.removed {
+                continue;
+            }
+            item.selected = model::profile_auto_selects(
+                profile,
+                item.row.display_category(),
+                item.row.confidence,
+            );
+        }
+    }
+
     /// Applies the diagnostic-logging toggle and persists it immediately,
     /// mirroring `set_theme`. Unlike the other setters, this also has an
     /// immediate side effect beyond persistence: the logger itself is
@@ -972,10 +1002,18 @@ impl GameTrimmerApp {
                 self._worker = None;
                 self.last_scan_timing = timing;
                 let count = findings.len();
+                // GT-04: the persisted selection profile decides which findings
+                // arrive pre-checked (see `model::profile_auto_selects`), not a
+                // bare confidence threshold.
+                let profile = self.settings.selection_profile;
                 self.findings = findings
                     .into_iter()
                     .map(|row| {
-                        let selected = model::default_selected(row.confidence);
+                        let selected = model::profile_auto_selects(
+                            profile,
+                            row.display_category(),
+                            row.confidence,
+                        );
                         FindingItem {
                             row,
                             selected,
