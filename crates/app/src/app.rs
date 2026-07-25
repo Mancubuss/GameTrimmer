@@ -1371,8 +1371,12 @@ impl eframe::App for GameTrimmerApp {
         self.drain_messages(&ctx);
 
         ui::top_bar::show(self, ui);
-        ui::plan_panel::show(self, ui);
         ui::bottom_bar::show(self, ui);
+        // The plan-card strip is rendered inside the tree region (at the top of
+        // its central panel), so the tree is always visible directly below the
+        // cards - see `ui::tree_view::show`. It is deliberately not a separate
+        // top panel: a second top panel starved the central tree panel of
+        // height, hiding the tree entirely (the GT-03 regression this fixes).
         ui::tree_view::show(self, ui);
         ui::dialogs::show(self, ui);
         ui::settings_dialog::show(self, ui);
