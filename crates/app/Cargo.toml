@@ -7,6 +7,16 @@ edition.workspace = true
 name = "gametrimmer"
 path = "src/main.rs"
 
+[features]
+# Enables the CLI's `--apply` flag - the only path in the whole app where
+# files are removed without a human click (GT-15). Off by default, and off in
+# the v1 release build: that path has never been run live, and there is no way
+# yet to point a scan at a single library (see the board card "GT-39 - scanning
+# a chosen library or game"), so a live rehearsal would have to delete from a
+# real game library. Verification is deferred until games can be restored
+# automatically; build with `--features cli-apply` to re-enable it.
+cli-apply = []
+
 [build-dependencies]
 winresource = "0.1.23"
 

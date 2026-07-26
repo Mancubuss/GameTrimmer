@@ -3,7 +3,14 @@
 //! The same portable exe runs without a GUI when given CLI flags: it scans,
 //! reports what it would remove, and (only with `--apply`) removes the profile's
 //! auto-selected findings, communicating solely through an exit code and a text
-//! report. This is a *second front end over the same worker layer* - it drives
+//! report.
+//!
+//! `--apply` is gated behind the off-by-default `cli-apply` feature (GT-15) and
+//! is therefore absent from the v1 release build - see
+//! [`args::APPLY_ENABLED`]. The code below still compiles and type-checks it,
+//! so the path cannot rot while it is switched off.
+//!
+//! This is a *second front end over the same worker layer* - it drives
 //! [`crate::worker::scan`] and [`crate::worker::delete`] exactly as the GUI does,
 //! draining their [`WorkerMsg`] stream on this thread instead of the egui event
 //! loop. No scanning/classification/deletion logic is duplicated here.
@@ -30,7 +37,7 @@ use crate::worker::scan::ScanOptions;
 use crate::worker::{self, RemoveOutcome, WorkerMsg};
 use report::{ApplyReport, ReportData, EXIT_RUNTIME, EXIT_USAGE};
 
-const USAGE: &str = "\
+const USAGE_HEAD: &str = "\
 GameTrimmer - headless mode
 
 USAGE:
@@ -41,9 +48,27 @@ Running with no flags launches the graphical app.
 FLAGS:
     --scan               Scan libraries and report (deletes nothing).
     --dry-run            Same as --scan: report only, delete nothing (default).
-    --apply              Delete the profile's auto-selected findings.
+";
+
+/// The `--apply` block of the help, present only in a build that accepts the
+/// flag (GT-15) - help that advertises a flag the build refuses is worse than
+/// no help at all.
+///
+/// No `\`-continuation after the opening quote in this and the blocks below:
+/// that escape also swallows the next line's leading whitespace, which would
+/// silently strip the indentation these blocks are aligned by.
+const USAGE_APPLY: &str = "    --apply              Delete the profile's auto-selected findings.
                          Requires --profile; the only mode that removes files.
-    --profile <name>     Selection profile: cautious | balanced | aggressive | custom.
+";
+
+/// Stated rather than silently omitted, so an operator who expected `--apply`
+/// learns why it is missing instead of assuming a typo.
+const USAGE_APPLY_DISABLED: &str = "    (--apply is not part of this build: that deletion path
+     has never been run live, so v1 ships without it.)
+";
+
+const USAGE_TAIL: &str =
+    "    --profile <name>     Selection profile: cautious | balanced | aggressive | custom.
                          Optional for a dry run (defaults to the saved setting);
                          mandatory for --apply.
     --report <path>      Also write the full text report to <path>.
@@ -54,6 +79,15 @@ EXIT CODES:
     0  success            1  bad arguments
     2  runtime error      3  apply completed with some deletion failures
 ";
+
+fn usage() -> String {
+    let apply_block = if args::APPLY_ENABLED {
+        USAGE_APPLY
+    } else {
+        USAGE_APPLY_DISABLED
+    };
+    format!("{USAGE_HEAD}{apply_block}{USAGE_TAIL}")
+}
 
 /// What [`run_from_env`] decided the process should do.
 pub enum Outcome {
@@ -72,7 +106,7 @@ pub fn run_from_env() -> Outcome {
         Invocation::Gui => Outcome::LaunchGui,
         Invocation::Help => {
             attach_console();
-            println!("{USAGE}");
+            println!("{}", usage());
             Outcome::Exit(0)
         }
         Invocation::Version => {
@@ -83,7 +117,7 @@ pub fn run_from_env() -> Outcome {
         Invocation::Error(msg) => {
             attach_console();
             eprintln!("Помилка аргументів: {msg}\n");
-            eprint!("{USAGE}");
+            eprint!("{}", usage());
             Outcome::Exit(EXIT_USAGE)
         }
         Invocation::Headless(config) => {

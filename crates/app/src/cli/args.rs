@@ -11,6 +11,21 @@ use std::path::PathBuf;
 
 use gametrimmer_core::settings::SelectionProfile;
 
+/// Whether this build accepts `--apply` at all (GT-15).
+///
+/// A plain `const` rather than `#[cfg]` attributes on every apply-related
+/// branch: the deletion path stays compiled and type-checked (so it cannot rot
+/// while it is switched off) but becomes unreachable, and re-enabling it is a
+/// build flag rather than an archaeology exercise.
+pub const APPLY_ENABLED: bool = cfg!(feature = "cli-apply");
+
+/// Why `--apply` is refused in a build without the `cli-apply` feature. Says
+/// what to use instead, so someone automating GameTrimmer is not left guessing
+/// whether the flag was renamed.
+const APPLY_DISABLED_MSG: &str = "--apply вимкнено в цій збірці: цей шлях видалення ще не \
+     проганявся наживо, тож у v1 він не входить. Доступні --scan / --dry-run / --report — вони \
+     нічого не видаляють";
+
 /// What the process should do, decided purely from its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
@@ -109,6 +124,18 @@ pub fn parse_invocation(args: &[String]) -> Invocation {
     }
     if version {
         return Invocation::Version;
+    }
+
+    // Checked after the help/version short-circuit above, so `--apply --help`
+    // still prints help - and before every other headless validation, so the
+    // reason reported is "this build has no --apply" rather than a complaint
+    // about a missing --profile for a flag that is not going to run anyway.
+    //
+    // Refused outright rather than silently downgraded to a dry run: someone
+    // who typed --apply expects files to go, and a run that quietly deletes
+    // nothing would read as success.
+    if apply && !APPLY_ENABLED {
+        return Invocation::Error(APPLY_DISABLED_MSG.to_string());
     }
 
     let headless = scan || apply || dry_run || profile_raw.is_some() || report.is_some();
@@ -214,6 +241,29 @@ mod tests {
         );
     }
 
+    /// GT-15: in a build without the `cli-apply` feature - which is what v1
+    /// ships - the flag is refused outright. Never downgraded to a dry run:
+    /// someone who typed `--apply` expects files to go, and a run that quietly
+    /// deleted nothing would read as success.
+    #[cfg(not(feature = "cli-apply"))]
+    #[test]
+    fn apply_is_refused_in_a_build_without_the_feature() {
+        for argv in [
+            vec!["--apply"],
+            vec!["--apply", "--profile", "aggressive"],
+            vec!["--apply", "--dry-run", "--profile", "cautious"],
+        ] {
+            match parse_invocation(&args(&argv)) {
+                Invocation::Error(msg) => assert!(
+                    msg.contains("вимкнено в цій збірці"),
+                    "expected the disabled-build reason for {argv:?}, got: {msg}"
+                ),
+                other => panic!("expected a refusal for {argv:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(feature = "cli-apply")]
     #[test]
     fn apply_requires_explicit_profile() {
         match parse_invocation(&args(&["--apply"])) {
@@ -222,6 +272,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cli-apply")]
     #[test]
     fn apply_with_profile_is_apply_mode() {
         assert_eq!(
@@ -234,6 +285,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "cli-apply")]
     #[test]
     fn apply_and_dry_run_conflict() {
         match parse_invocation(&args(&["--apply", "--dry-run", "--profile", "cautious"])) {
@@ -336,6 +388,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cli-apply")]
     fn apply_accepts_custom_profile_explicitly() {
         // `custom` is a valid explicit choice (the plain confidence path); only
         // *omitting* the profile under --apply is rejected.
