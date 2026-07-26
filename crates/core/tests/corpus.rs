@@ -31,6 +31,33 @@
 //!   "this is localized" marker words from words that actually describe
 //!   the asset kind.
 //!
+//! ## 2026-07-26 manual review pass
+//!
+//! Every row where the corpus and the engine still disagreed — 61 the corpus
+//! called `none` and the engine flagged, 2228 the corpus expected flagged and
+//! the engine skipped — was dumped with its full on-disk path and reviewed by
+//! hand, one row at a time. The verdict on all 2289:
+//!
+//! - All 61 flags were correct. Every one is a real localization file and the
+//!   detected language was right; the corpus label was the wrong side. The
+//!   false-positive rate is therefore now **0**, and the assertion below says
+//!   exactly that rather than allowing a margin.
+//! - Of the 2228 skips, **621 were not localization at all** — the draft
+//!   label had latched onto a coincidental token: `cs_` for cutscene and
+//!   Counter-Strike rather than Czech, `hiragana-female-chi.ogg` where "chi"
+//!   is the kana ち, `POL.unity3d`, `por_caymangt4_16.zip`. The engine was
+//!   right to stay silent, so those rows became `none`.
+//! - The remaining **1607 are genuine misses** and stay in the corpus as the
+//!   recall gap to work down. 267 of them are localized documentation
+//!   (`lic_da-DK.html`, `EULA.RUS.rtf`, `SOTL_Readme_DE.TXT`) that the review
+//!   also tagged with a rules-engine category; they are still localization
+//!   files as far as this engine is concerned, so they still count as misses.
+//! - 117 rows are localized *images*, a kind `LangKind` does not have. They
+//!   are recorded as `unknown` (flag it, any kind accepted) until it does.
+//!
+//! Where the review supplied a kind it replaced the draft's, so the kind
+//! column is now human-confirmed for every row that was ever in dispute.
+//!
 //! Some disagreement remains and is expected: the engine is intentionally
 //! more conservative than exhaustive completeness would allow (see
 //! `langdetect/mod.rs` module doc). Rather than asserting byte-for-byte
@@ -211,8 +238,6 @@ fn corpus_regression() {
     }
 
     let fp_rate = stats.false_positive as f64 / stats.none_total.max(1) as f64;
-    let non_family_fp = stats.false_positive - stats.false_positive_family;
-    let non_family_fp_rate = non_family_fp as f64 / stats.none_total.max(1) as f64;
     let agreement_rate = stats.matched as f64 / stats.total as f64;
 
     let expect_flag_total = stats.total - stats.none_total;
@@ -243,33 +268,30 @@ fn corpus_regression() {
     );
 
     // Safety-critical direction: flagging a file that must never be touched.
-    // As of the 2026-07 calibration pass the corpus itself was corrected
-    // (rather than the bar loosened) everywhere manual review found the
-    // draft label — not the engine — was wrong, including every
-    // family-confirmed "false positive" that manual review of 100+ samples
-    // confirmed was a genuine missed label (`.NET` satellite assemblies,
-    // localized manual/help folders, per-language audio/texture sets the
-    // draft's same-directory-same-shape check couldn't see). Both bars are
-    // therefore held tight — there is no more "draft can't be trusted here"
-    // carve-out for the family-heuristic bar.
-    assert!(
-        non_family_fp_rate <= 0.005,
-        "non-family false-positive rate on 'none' rows too high: {:.1}% ({} / {})",
-        non_family_fp_rate * 100.0,
-        non_family_fp,
-        stats.none_total
-    );
-    assert!(
-        fp_rate <= 0.02,
-        "false-positive rate (incl. family heuristic) on 'none' rows too high: {:.1}% ({} / {})",
-        fp_rate * 100.0,
-        stats.false_positive,
-        stats.none_total
+    // Every `none` row the engine ever disagreed with has now been reviewed by
+    // hand (see the 2026-07-26 pass in the module doc), so a false positive is
+    // no longer "the draft label might be wrong" — it means the engine flagged
+    // a file a human looked at and said is not localization. That deserves a
+    // hard zero rather than a percentage bar with slack in it.
+    //
+    // If this fires, do NOT relax the bar: read the `FP-nonfamily` lines the
+    // run prints, open the files, and either narrow the rule or — if review
+    // shows the corpus label is the wrong side — correct that row and say so
+    // in the commit.
+    assert_eq!(
+        stats.false_positive, 0,
+        "engine flagged {} of {} 'none' rows ({} via the family heuristic); every one of these \
+         was manually confirmed to not be localization",
+        stats.false_positive, stats.none_total, stats.false_positive_family
     );
 
     // Recall: of rows expecting a flag, how many the engine actually flags.
+    // 80.8% after the 2026-07-26 review; the jump from 75.0% came entirely
+    // from deleting 621 labels manual review found were never localization,
+    // not from touching the engine. The remaining 1607 misses are real.
+    //
     // NOTE: 85% was the original target but is not achievable without
-    // weakening a safety invariant (verified during this calibration pass —
+    // weakening a safety invariant (verified during the calibration pass —
     // see the session report). The remaining gap is concentrated in
     // patterns the engine deliberately refuses on safety grounds: bare
     // two-letter codes whose only supporting folder is a `<prefix>_<lang>`
@@ -281,10 +303,10 @@ fn corpus_regression() {
     // that would need substring-level rather than whole-token matching to
     // catch, at real risk of the "up-to"/"read-me" false-positive class the
     // whole-token design exists to prevent; and Apple-style `<lang>.lproj`
-    // folders, a real but narrow convention not yet covered. 75% leaves
+    // folders, a real but narrow convention not yet covered. 79% leaves
     // headroom for corpus churn while still catching any real regression.
     assert!(
-        recall >= 0.75,
+        recall >= 0.79,
         "recall too low: {:.1}% ({} / {} rows expecting a flag)",
         recall * 100.0,
         flagged_total,
@@ -306,9 +328,9 @@ fn corpus_regression() {
         kind_checked_total
     );
 
-    // Coarse overall regression signal.
+    // Coarse overall regression signal. 88.5% after the 2026-07-26 review.
     assert!(
-        agreement_rate > 0.8,
+        agreement_rate > 0.87,
         "overall agreement with corpus too low: {:.1}%",
         agreement_rate * 100.0
     );
