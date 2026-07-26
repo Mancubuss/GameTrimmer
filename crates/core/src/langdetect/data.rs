@@ -92,6 +92,11 @@ pub struct MarkerTables {
     /// field existed. Missing simply means "no audio extensions".
     #[serde(default)]
     pub audio_extensions: Vec<String>,
+    /// Same post-1.0 addition as `audio_extensions`, and the only way a
+    /// finding can ever get the `Graphic` kind — there is deliberately no
+    /// graphic marker *word* (see `LangKind::Graphic`).
+    #[serde(default)]
+    pub graphic_extensions: Vec<String>,
 }
 
 /// The on-disk shape of `l10n_rules.json` — also what "export rules"
@@ -184,6 +189,10 @@ impl LangPack {
                     base.markers.audio_extensions,
                     incoming.markers.audio_extensions,
                 ),
+                graphic_extensions: union(
+                    base.markers.graphic_extensions,
+                    incoming.markers.graphic_extensions,
+                ),
                 text_extensions: union(
                     base.markers.text_extensions,
                     incoming.markers.text_extensions,
@@ -215,6 +224,7 @@ impl LangPack {
                 &self.markers.font_extensions,
                 &self.markers.text_extensions,
                 &self.markers.audio_extensions,
+                &self.markers.graphic_extensions,
             ]
             .iter()
             .map(|list| list.len())
@@ -265,6 +275,7 @@ pub struct LangData {
     pub font_extensions: HashSet<String>,
     pub text_extensions: HashSet<String>,
     pub audio_extensions: HashSet<String>,
+    pub graphic_extensions: HashSet<String>,
 }
 
 static BUILTIN: LazyLock<Arc<LangData>> =
@@ -322,6 +333,7 @@ impl LangData {
             font_extensions: to_set(&pack.markers.font_extensions),
             text_extensions: to_set(&pack.markers.text_extensions),
             audio_extensions: to_set(&pack.markers.audio_extensions),
+            graphic_extensions: to_set(&pack.markers.graphic_extensions),
         }
     }
 
@@ -529,6 +541,7 @@ mod tests {
                 font_extensions: vec![],
                 text_extensions: vec![],
                 audio_extensions: vec![],
+                graphic_extensions: vec![],
             },
         };
 

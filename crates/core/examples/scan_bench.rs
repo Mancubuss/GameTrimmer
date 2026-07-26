@@ -512,6 +512,7 @@ fn lang_category_key(kind: LangKind) -> &'static str {
         LangKind::Text => "loc_text",
         LangKind::Video => "loc_video",
         LangKind::Font => "loc_font",
+        LangKind::Graphic => "loc_graphic",
         LangKind::Unknown => "loc_unknown",
     }
 }

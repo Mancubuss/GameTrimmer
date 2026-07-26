@@ -225,6 +225,7 @@ pub fn source_key(source: FindingSource) -> &'static str {
         FindingSource::Loc(LangKind::Text) => "loc_text",
         FindingSource::Loc(LangKind::Video) => "loc_video",
         FindingSource::Loc(LangKind::Font) => "loc_font",
+        FindingSource::Loc(LangKind::Graphic) => "loc_graphic",
         FindingSource::Loc(LangKind::Unknown) => "loc_unknown",
         FindingSource::Orphan(OrphanKind::UnmanagedFolder) => "orphan_folder",
         FindingSource::Orphan(OrphanKind::ServiceFolder) => "orphan_service",
@@ -250,6 +251,7 @@ pub fn parse_source_key(key: &str) -> Option<FindingSource> {
         "loc_text" => Some(FindingSource::Loc(LangKind::Text)),
         "loc_video" => Some(FindingSource::Loc(LangKind::Video)),
         "loc_font" => Some(FindingSource::Loc(LangKind::Font)),
+        "loc_graphic" => Some(FindingSource::Loc(LangKind::Graphic)),
         "loc_unknown" => Some(FindingSource::Loc(LangKind::Unknown)),
         "orphan_folder" => Some(FindingSource::Orphan(OrphanKind::UnmanagedFolder)),
         "orphan_service" => Some(FindingSource::Orphan(OrphanKind::ServiceFolder)),
@@ -1030,6 +1032,7 @@ mod tests {
             LangKind::Text,
             LangKind::Video,
             LangKind::Font,
+            LangKind::Graphic,
             LangKind::Unknown,
         ] {
             assert_eq!(

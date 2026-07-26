@@ -80,6 +80,7 @@ fn kind_label(kind: LangKind) -> &'static str {
         LangKind::Text => "text",
         LangKind::Video => "video",
         LangKind::Font => "font",
+        LangKind::Graphic => "graphic",
         LangKind::Unknown => "unknown",
     }
 }
@@ -215,6 +216,7 @@ fn main() {
                     "text" => f.kind != LangKind::Text,
                     "video" => f.kind != LangKind::Video,
                     "font" => f.kind != LangKind::Font,
+                    "graphic" => f.kind != LangKind::Graphic,
                     _ => false,
                 };
                 if !mismatch_kind_ok {

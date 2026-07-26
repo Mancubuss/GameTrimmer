@@ -43,6 +43,19 @@ pub enum LangKind {
     Video,
     /// Localized font files.
     Font,
+    /// Localized images: signage, UI art, screen overlays rendered per
+    /// language.
+    ///
+    /// The engine never *finds* a file because it looks graphical — the
+    /// opposite, in fact: `art`, `models`, `meshes` and `materials` are
+    /// negative markers, and `textures`/`gui` are overridable ones, because
+    /// textures are the bulk of a game's bytes and almost never depend on
+    /// the language. This kind only ever refines the label of a file that
+    /// some language evidence already flagged, via `graphic_extensions`.
+    /// Introduced after the 2026-07-26 manual corpus review labelled 117
+    /// rows as localized graphics that the engine could only call
+    /// `Unknown`.
+    Graphic,
     /// Clearly a localization file, but the asset kind is unclear.
     Unknown,
 }
@@ -200,6 +213,7 @@ fn marker_kind_to_lang_kind(kind: MarkerKind) -> LangKind {
         MarkerKind::Text => LangKind::Text,
         MarkerKind::Video => LangKind::Video,
         MarkerKind::Font => LangKind::Font,
+        MarkerKind::Graphic => LangKind::Graphic,
     }
 }
 

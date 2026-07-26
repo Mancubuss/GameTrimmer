@@ -263,6 +263,7 @@ fn lang_kind_label(kind: LangKind) -> &'static str {
         LangKind::Text => "loc_text",
         LangKind::Video => "loc_video",
         LangKind::Font => "loc_font",
+        LangKind::Graphic => "loc_graphic",
         LangKind::Unknown => "loc_unknown",
     }
 }
