@@ -70,11 +70,11 @@ pub fn all() -> Vec<Box<dyn LibraryProvider>> {
     ]
 }
 
-/// How deep [`holds_installed_files`] looks for the first file before giving
-/// up. Three levels covers every realistic layout (`Game\bin\x64\game.exe`)
-/// while keeping the probe bounded: a folder tree is attacker-shaped often
-/// enough by accident, and an unbounded walk here would run on every drive
-/// root at every scan.
+/// How many directory levels below the probed folder [`holds_installed_files`]
+/// descends before giving up. Covers every realistic layout
+/// (`Game\bin\x64\game.exe` is found at depth 2) while keeping the probe
+/// bounded - an unbounded walk here would run on every drive root at every
+/// scan, and the bound is also what makes a reparse-point cycle terminate.
 const INSTALL_PROBE_DEPTH: u32 = 3;
 
 /// Whether a folder actually holds an installation - that is, whether it
@@ -89,9 +89,17 @@ const INSTALL_PROBE_DEPTH: u32 = 3;
 /// this is a correctness matter and not cosmetics.
 ///
 /// Stops at the first file found, so the common case costs one `read_dir`.
-/// Reparse points (junctions, symlinks) report as neither file nor directory
-/// on Windows and are counted as content without being descended into, so a
-/// junction loop cannot spin this.
+///
+/// Reparse points (junctions, symlinks) need resolving rather than trusting:
+/// on Windows a junction reports `is_dir() == false` from `read_dir`, so
+/// taking that at face value would count a *dangling* junction as a file and
+/// hand back "installed" for a folder that is pure residue - the exact case
+/// this function exists to reject. `fs::metadata` follows the link, which
+/// separates the three outcomes that matter: it resolves to a directory (a
+/// game really can live behind a junction, so descend), it resolves to a file
+/// (content), or it resolves to nothing (no evidence either way - skip).
+/// Cycles are safe because [`INSTALL_PROBE_DEPTH`] bounds the descent, not
+/// because links go unfollowed.
 pub fn holds_installed_files(dir: &Path) -> bool {
     let mut pending = vec![(dir.to_path_buf(), 0u32)];
 
@@ -106,7 +114,19 @@ pub fn holds_installed_files(dir: &Path) -> bool {
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if !file_type.is_dir() {
+
+            // `file_type` comes free with the directory enumeration; the extra
+            // `metadata` syscall is paid only for the rare reparse-point entry.
+            let is_dir = if file_type.is_symlink() {
+                match std::fs::metadata(entry.path()) {
+                    Ok(resolved) => resolved.is_dir(),
+                    Err(_) => continue,
+                }
+            } else {
+                file_type.is_dir()
+            };
+
+            if !is_dir {
                 return true;
             }
             if depth < INSTALL_PROBE_DEPTH {
@@ -317,6 +337,62 @@ mod tests {
         std::fs::write(deep.join("game.exe"), b"MZ").unwrap();
 
         assert!(holds_installed_files(temp.path()));
+    }
+
+    /// Creates a directory junction, or returns `false` when this machine
+    /// won't make one. Junctions need no elevation (unlike symlinks), but the
+    /// filesystem under a temp dir is not guaranteed to support reparse
+    /// points, so the tests below skip rather than fail on a machine that
+    /// cannot host the scenario.
+    #[cfg(windows)]
+    fn try_make_junction(link: &Path, target: &Path) -> bool {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|out| out.status.success())
+    }
+
+    /// A junction reports `is_dir() == false` from `read_dir` on Windows, so
+    /// trusting that flag would count a *dangling* one as a file - and a
+    /// folder holding nothing but a broken link is exactly the residue this
+    /// probe exists to reject.
+    #[cfg(windows)]
+    #[test]
+    fn holds_installed_files_rejects_a_folder_holding_only_a_dangling_junction() {
+        let temp = tempfile::tempdir().unwrap();
+        let residue = temp.path().join("Uninstalled Game");
+        std::fs::create_dir_all(&residue).unwrap();
+
+        if !try_make_junction(&residue.join("shared"), &temp.path().join("gone")) {
+            eprintln!("skipping: this filesystem would not create a junction");
+            return;
+        }
+
+        assert!(!holds_installed_files(&residue));
+    }
+
+    /// The other side of following the link: a game really can be installed
+    /// behind a junction (launchers do this to move content to another drive),
+    /// and that is a game, not residue.
+    #[cfg(windows)]
+    #[test]
+    fn holds_installed_files_accepts_a_game_that_lives_behind_a_junction() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("elsewhere");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("game.exe"), b"MZ").unwrap();
+
+        let install = temp.path().join("Game");
+        std::fs::create_dir_all(&install).unwrap();
+
+        if !try_make_junction(&install.join("content"), &real) {
+            eprintln!("skipping: this filesystem would not create a junction");
+            return;
+        }
+
+        assert!(holds_installed_files(&install));
     }
 
     #[test]
