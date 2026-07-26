@@ -52,8 +52,10 @@
 //!   (`lic_da-DK.html`, `EULA.RUS.rtf`, `SOTL_Readme_DE.TXT`) that the review
 //!   also tagged with a rules-engine category; they are still localization
 //!   files as far as this engine is concerned, so they still count as misses.
-//! - 117 rows are localized *images*, a kind `LangKind` does not have. They
-//!   are recorded as `unknown` (flag it, any kind accepted) until it does.
+//! - 117 rows are localized *images*. `LangKind` had no such kind, which is
+//!   what prompted adding `LangKind::Graphic` and `graphic_extensions`; the
+//!   66 that are genuine localizations now carry the `graphic` label (the
+//!   other 51 are `none` — they were never localization to begin with).
 //!
 //! Where the review supplied a kind it replaced the draft's, so the kind
 //! column is now human-confirmed for every row that was ever in dispute.
@@ -65,8 +67,10 @@
 //! extension names a content type outright and the label names a different
 //! one, the extension wins. A `.wav` labelled `text`, a `.bank` labelled
 //! `video`, a `.srt` labelled `video`, an `.htm` help page about a sound
-//! card labelled `audio` — the draft had keyed off a neighbouring folder
-//! word. Rows labelled `none` or `unknown` were left alone: that is the
+//! card labelled `audio`, a localized UI image labelled `text` — the draft
+//! had keyed off a neighbouring folder word. The one exception mirrors the
+//! engine's: an image already labelled `font` stays `font`, because a bitmap
+//! font atlas is better described by its purpose than by its encoding. Rows labelled `none` or `unknown` were left alone: that is the
 //! localization-or-not axis, which the manual review owns.
 //!
 //! Some disagreement remains and is expected: the engine is intentionally
@@ -79,7 +83,8 @@
 //!   both for plain occurrence-based flags and for family-confirmed ones.
 //! - Asserts a floor on recall (of rows expecting a flag, how many the
 //!   engine actually flags) and on kind accuracy (of flagged rows, how
-//!   often Audio/Text/Video/Font is right) as coarse regression signals.
+//!   often Audio/Text/Video/Font/Graphic is right) as coarse regression
+//!   signals.
 //! - Prints a full breakdown so a human can review drift.
 //!
 //! If the corpus file is missing, the test is skipped (not failed) so the
@@ -136,6 +141,7 @@ fn expected_kind(label: &str) -> Option<LangKind> {
         "text" => Some(LangKind::Text),
         "video" => Some(LangKind::Video),
         "font" => Some(LangKind::Font),
+        "graphic" => Some(LangKind::Graphic),
         "unknown" => None, // any kind is acceptable, as long as it's flagged
         _ => None,
     }

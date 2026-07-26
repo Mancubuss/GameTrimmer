@@ -49,7 +49,7 @@
 //!   `fonts/` folder is a legitimate text-localization signal on its own);
 //!   `font` additionally covers the singular `"font"` token so
 //!   `font_schinese.ttf` matches.
-//! - The four `*_extensions` lists name extensions that state a content type
+//! - The `*_extensions` lists name extensions that state a content type
 //!   outright. They serve two distinct purposes, and the difference matters:
 //!
 //!   1. **Deciding `kind`** via `MarkerContext::ext_kind`, for every file.
@@ -68,6 +68,13 @@
 //!
 //!   `ext_kind` is deliberately absent from `has_any()` — see its field doc.
 //!   An extension says what a file contains, never that it is localized.
+//!
+//!   `graphic_extensions` is the odd one out twice over: it has no marker
+//!   word to reinforce (there is no "this looks graphical" evidence the
+//!   engine trusts — quite the opposite, `art`/`textures`/`meshes` are
+//!   negative markers), and it *loses* to a content-type word instead of
+//!   beating it, because an image format describes the encoding rather than
+//!   the purpose: `korean_font.png` is a font atlas, not just an image.
 
 use crate::langdetect::data::LangData;
 use crate::langdetect::tokens::Segment;
@@ -78,6 +85,9 @@ pub enum MarkerKind {
     Text,
     Video,
     Font,
+    /// Only ever reached through `graphic_extensions` — there is no
+    /// graphic marker *word*, on purpose (see `LangKind::Graphic`).
+    Graphic,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +147,12 @@ impl MarkerContext {
             MarkerKind::Text => &mut self.text,
             MarkerKind::Video => &mut self.video,
             MarkerKind::Font => &mut self.font,
+            // No slot on purpose: `Graphic` has no marker word and no
+            // reinforcement form, so it can only ever arrive as `ext_kind`.
+            // Giving it a slot would let a `.png` count as context, which is
+            // precisely what the negative markers on `textures`/`art` exist
+            // to prevent.
+            MarkerKind::Graphic => return,
         };
         // Strict `>` (not `>=`) so that a tie at the same segment index keeps
         // whichever hit was recorded first — word markers are scanned before
@@ -198,8 +214,19 @@ impl MarkerContext {
         // neighbourhood, the extension describes the file. `Movies\
         // Subtitles\..._pt-BR.vtt` is text, not video, and `lang\de_DE\
         // sounds\Male5a.wav` is audio however the folders read.
-        self.ext_kind
+        //
+        // `Graphic` is the one exception, and it goes the other way: an
+        // image format says how the bytes are encoded, not what the asset
+        // is for. `Assets\Fonts\High\korean_font.png` is a bitmap font
+        // atlas — "font" describes it better than "image" — while
+        // `WorkResource\Localization\Italian\UI_FlipperLeft01_italian.dds`
+        // has no content-type word at all and is exactly what `Graphic`
+        // was added for. So an image extension only decides the kind when
+        // nothing more specific was found.
+        let decisive_ext = self.ext_kind.filter(|k| *k != MarkerKind::Graphic);
+        decisive_ext
             .or_else(|| self.closest_hit().map(|h| h.kind))
+            .or(self.ext_kind)
             .or(self.generic_loc.as_ref().map(|_| MarkerKind::Text))
     }
 
@@ -276,6 +303,8 @@ pub fn scan_markers(
             Some(MarkerKind::Video)
         } else if data.font_extensions.contains(ext) {
             Some(MarkerKind::Font)
+        } else if data.graphic_extensions.contains(ext) {
+            Some(MarkerKind::Graphic)
         } else {
             None
         };
@@ -377,6 +406,24 @@ mod tests {
         assert_eq!(
             scan_markers(&data(), &help_page, false, Some("htm")).closest(),
             Some(MarkerKind::Text)
+        );
+    }
+
+    #[test]
+    fn image_extension_yields_graphic_only_when_nothing_more_specific_exists() {
+        // No content-type word on the path — the image extension decides.
+        let ui_art = tokenize_path("WorkResource\\Localization\\Italian\\UI_Flipper01.dds");
+        assert_eq!(
+            scan_markers(&data(), &ui_art, false, Some("dds")).closest(),
+            Some(MarkerKind::Graphic)
+        );
+
+        // A bitmap font atlas is still a font: "font" describes what the
+        // asset is for, ".png" only how its bytes are encoded.
+        let atlas = tokenize_path("Assets\\Fonts\\High\\korean_font.png");
+        assert_eq!(
+            scan_markers(&data(), &atlas, true, Some("png")).closest(),
+            Some(MarkerKind::Font)
         );
     }
 

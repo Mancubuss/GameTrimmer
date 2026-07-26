@@ -710,6 +710,17 @@
       "bnk",
       "wem",
       "xwm"
+    ],
+    "graphic_extensions": [
+      "png",
+      "dds",
+      "tga",
+      "bmp",
+      "jpg",
+      "jpeg",
+      "gif",
+      "psd",
+      "webp"
     ]
   }
 }
