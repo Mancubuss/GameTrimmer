@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "gametrimmer"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "dunce",
  "eframe",
@@ -1329,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "gametrimmer-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ntfs",
  "rayon",
