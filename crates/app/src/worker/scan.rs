@@ -950,10 +950,19 @@ fn persist_libraries(
             // Upsert, not `INSERT OR IGNORE` (GT-30): on a path already known
             // the ignore kept whatever vendor was stored first - typically
             // `manual`, from the user registering the folder by hand before
-            // any provider knew it. `vendor` then never caught up, and since
-            // `orphan_spec_for` reads it to decide whether to hunt for
-            // orphaned residue at all, detection stayed silently off for a
-            // library that does support it.
+            // any provider knew it - so the stored vendor never caught up with
+            // what discovery had since learned.
+            //
+            // What that actually costs, having traced it: the library list in
+            // the UI (`manual::list_libraries`) keeps labelling a real Steam
+            // library "manual", and `discover_manual_libraries`, which selects
+            // `WHERE vendor = 'manual'`, re-enumerates that path as a manual
+            // library on every later scan - redundant work resolved each time
+            // by `merge_libraries_by_path`. Orphan detection is NOT affected,
+            // contrary to what this comment first claimed: `collect_orphans`
+            // runs `orphan_spec_for` over the in-memory `DiscoveredLibrary`
+            // list, whose `vendor` is the provider's own `&'static str`, and
+            // never reads this column.
             //
             // `manual` is a floor, never a destination: a scan where a
             // provider dropped out (registry key missing, drive briefly
@@ -2215,13 +2224,13 @@ mod tests {
         assert_eq!(build_id_of(&conn, "Portal 2").as_deref(), Some("17999999"));
     }
 
-    /// GT-30. `vendor` is not cosmetic: `orphan_spec_for` reads it to decide
-    /// whether to hunt for orphaned residue in a library and under which
-    /// scheme. A folder the user registered by hand is stored as `manual`;
-    /// once a provider recognises that same folder as a real Steam library,
-    /// the stored vendor must follow - otherwise orphan detection stays
-    /// silently off for a library that does support it, and nothing in the UI
-    /// says so.
+    /// GT-30. A folder the user registered by hand is stored as `manual`; once
+    /// a provider recognises that same folder as a real Steam library, the
+    /// stored vendor must follow. Otherwise the library list keeps labelling
+    /// it "manual", and every later scan re-enumerates it through the
+    /// manual-library path (`WHERE vendor = 'manual'`) on top of the provider
+    /// that already found it. See the upsert in `persist_libraries` for why
+    /// this does *not* affect orphan detection.
     #[test]
     fn rescanning_upgrades_a_manual_library_to_its_real_vendor() {
         let mut conn = db::open_in_memory().expect("open in-memory db");
