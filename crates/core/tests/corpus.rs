@@ -58,6 +58,17 @@
 //! Where the review supplied a kind it replaced the draft's, so the kind
 //! column is now human-confirmed for every row that was ever in dispute.
 //!
+//! A follow-up sweep then fixed 232 kind labels the review never saw, on
+//! rows where the corpus and the engine agreed the file *is* localization
+//! and only disagreed about what it is. The rule was mechanical and applied
+//! to the whole corpus rather than only where it helped: when a row's
+//! extension names a content type outright and the label names a different
+//! one, the extension wins. A `.wav` labelled `text`, a `.bank` labelled
+//! `video`, a `.srt` labelled `video`, an `.htm` help page about a sound
+//! card labelled `audio` — the draft had keyed off a neighbouring folder
+//! word. Rows labelled `none` or `unknown` were left alone: that is the
+//! localization-or-not axis, which the manual review owns.
+//!
 //! Some disagreement remains and is expected: the engine is intentionally
 //! more conservative than exhaustive completeness would allow (see
 //! `langdetect/mod.rs` module doc). Rather than asserting byte-for-byte
@@ -314,14 +325,16 @@ fn corpus_regression() {
     );
 
     // Kind accuracy: of flagged rows with a specific expected kind, how
-    // often Audio/Text/Video/Font is right. One documented residual
-    // weakness keeps this under 100%: a same-segment "closest marker wins"
-    // tie can pick a generic scene/DLC-id token (`fmv_####`) in a filename
-    // over the file's own enclosing `audio\` folder when both is_filename
-    // markers exist — see the `audio -> Video` cluster in the session
-    // report. Left as-is rather than papered over by relabeling the corpus.
+    // often Audio/Text/Video/Font is right. Exactly one documented residual
+    // weakness keeps this under 100%, and it is now the *whole* remainder
+    // (29 rows, all `.pck`): a same-segment "closest marker wins" tie can
+    // pick a generic scene/DLC-id token (`fmv_####`) in a filename over the
+    // file's own enclosing `audio\` folder when both is_filename markers
+    // exist. `.pck` is a container extension that names no content type, so
+    // the extension cannot break the tie the way it now does for `.wav`,
+    // `.srt` and friends. Left as-is rather than papered over by relabeling.
     assert!(
-        kind_accuracy >= 0.98,
+        kind_accuracy >= 0.99,
         "kind accuracy too low: {:.1}% ({} / {} flagged rows)",
         kind_accuracy * 100.0,
         kind_correct,

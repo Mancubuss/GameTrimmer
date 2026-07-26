@@ -86,6 +86,12 @@ pub struct MarkerTables {
     pub video_extensions: Vec<String>,
     pub font_extensions: Vec<String>,
     pub text_extensions: Vec<String>,
+    /// Added after `LANG_PACK_VERSION` 1 shipped, so it must tolerate its own
+    /// absence: a pack exported by GameTrimmer 1.0.0 has no such key, and
+    /// refusing to load it would break every community pack made before the
+    /// field existed. Missing simply means "no audio extensions".
+    #[serde(default)]
+    pub audio_extensions: Vec<String>,
 }
 
 /// The on-disk shape of `l10n_rules.json` — also what "export rules"
@@ -174,6 +180,10 @@ impl LangPack {
                     base.markers.font_extensions,
                     incoming.markers.font_extensions,
                 ),
+                audio_extensions: union(
+                    base.markers.audio_extensions,
+                    incoming.markers.audio_extensions,
+                ),
                 text_extensions: union(
                     base.markers.text_extensions,
                     incoming.markers.text_extensions,
@@ -204,6 +214,7 @@ impl LangPack {
                 &self.markers.video_extensions,
                 &self.markers.font_extensions,
                 &self.markers.text_extensions,
+                &self.markers.audio_extensions,
             ]
             .iter()
             .map(|list| list.len())
@@ -253,6 +264,7 @@ pub struct LangData {
     pub video_extensions: HashSet<String>,
     pub font_extensions: HashSet<String>,
     pub text_extensions: HashSet<String>,
+    pub audio_extensions: HashSet<String>,
 }
 
 static BUILTIN: LazyLock<Arc<LangData>> =
@@ -309,6 +321,7 @@ impl LangData {
             video_extensions: to_set(&pack.markers.video_extensions),
             font_extensions: to_set(&pack.markers.font_extensions),
             text_extensions: to_set(&pack.markers.text_extensions),
+            audio_extensions: to_set(&pack.markers.audio_extensions),
         }
     }
 
@@ -515,6 +528,7 @@ mod tests {
                 video_extensions: vec![],
                 font_extensions: vec![],
                 text_extensions: vec![],
+                audio_extensions: vec![],
             },
         };
 
