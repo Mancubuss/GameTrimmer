@@ -107,40 +107,71 @@ pub fn collect_occurrences(data: &LangData, segments: &[Segment]) -> Vec<Occurre
                 }
             }
         }
-        // Camel-joined locale tags (`deDE.json`, `frFR`): the CamelCase
-        // split yields two adjacent atoms with NO delimiter between them
-        // (`de`+`de`), so neither the weak-piece pass (needs `-`/`_`) nor
-        // the plain atom pass (bare 2-letter, family-gated) recognizes the
-        // pair as the self-sufficient locale tag it is. Detect the pair
-        // explicitly: a 2-letter language atom immediately followed
-        // (byte-adjacent) by a 2-letter alphabetic region atom.
+        // Locale tags that neither pass above can see, because the tag sits
+        // *inside* a longer name rather than being the whole piece:
+        //
+        // - Camel-joined (`deDE.json`, `frFR`): the CamelCase split yields
+        //   two atoms with NO delimiter between them, so the weak-piece pass
+        //   (which needs `-`/`_`) never forms the tag.
+        // - Delimiter-separated but prefixed (`lic_da-DK.html`,
+        //   `visconfig_bg_BG.qm`, `actions_ro_ro.json`): the weak-piece pass
+        //   splits only on `. ( ) [ ]`, so the whole `lic_da-dk` stays glued
+        //   and never matches; the strong split then scatters it into `lic`,
+        //   `da`, `dk`, leaving only a family-gated bare code behind.
+        //
+        // Both are found the same way: a language atom immediately followed
+        // by a 2-letter region atom, either byte-adjacent or with exactly one
+        // `-`/`_` between them.
+        //
+        // The two cases are NOT trusted equally. `da-DK` written with its
+        // delimiter is the canonical BCP-47 spelling and is only accepted
+        // when the dictionary lists that exact tag as a Level A alias — so
+        // `pl_us` (Polish language, American region: not a real pairing)
+        // stays out. The glued form is the older, looser rule and keeps its
+        // original reach.
         for window in seg.atoms.windows(2) {
             let (a, b) = (&window[0], &window[1]);
-            if b.start != a.end || b.text.len() != 2 {
+            if b.text.len() != 2 || !b.text.chars().all(|c| c.is_ascii_alphabetic()) {
                 continue;
             }
-            if !b.text.chars().all(|c| c.is_ascii_alphabetic()) {
-                continue;
-            }
-            if let Some((canonical, Level::C)) = data.lookup(&a.text) {
-                covered.push((a.start, b.end));
-                let key = (seg.index, a.start, b.end, canonical);
-                if seen.insert(key) {
-                    out.push(Occurrence {
-                        canonical,
-                        level: Level::A,
-                        matched: format!("{}{}", a.text, b.text),
-                        is_filename: seg.is_filename,
-                        seg_index: seg.index,
-                        start: a.start,
-                        end: b.end,
-                        whole_segment: a.start == 0 && b.end == seg.lower.len(),
-                        whole_stem: a.start == 0 && b.end == seg_stem_end,
-                        loc_adjacent: false,
-                        loc_adjacent_generic: false,
-                        asset_adjacent: false,
-                    });
+            let delim = match b.start.checked_sub(a.end) {
+                Some(0) => None,
+                Some(1) => match seg.lower.as_bytes()[a.end] {
+                    sep @ (b'-' | b'_') => Some(sep as char),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let (canonical, matched) = match delim {
+                Some(sep) => {
+                    let tag = format!("{}{sep}{}", a.text, b.text);
+                    match data.lookup(&tag) {
+                        Some((canonical, Level::A)) => (canonical, tag),
+                        _ => continue,
+                    }
                 }
+                None => match data.lookup(&a.text) {
+                    Some((canonical, Level::C)) => (canonical, format!("{}{}", a.text, b.text)),
+                    _ => continue,
+                },
+            };
+            covered.push((a.start, b.end));
+            let key = (seg.index, a.start, b.end, canonical);
+            if seen.insert(key) {
+                out.push(Occurrence {
+                    canonical,
+                    level: Level::A,
+                    matched,
+                    is_filename: seg.is_filename,
+                    seg_index: seg.index,
+                    start: a.start,
+                    end: b.end,
+                    whole_segment: a.start == 0 && b.end == seg.lower.len(),
+                    whole_stem: a.start == 0 && b.end == seg_stem_end,
+                    loc_adjacent: false,
+                    loc_adjacent_generic: false,
+                    asset_adjacent: false,
+                });
             }
         }
 
@@ -237,6 +268,35 @@ mod tests {
     fn marks_loc_adjacent_language_atom() {
         let occs = occs_for("Game\\CookedPCConsole\\Opening_LOC_JPN.upk");
         assert!(occs.iter().any(|o| o.canonical == "ja" && o.loc_adjacent));
+    }
+
+    #[test]
+    fn finds_delimited_locale_tag_inside_a_longer_name() {
+        // `lic_da-dk` is one weak piece (the weak split does not break on
+        // `-`/`_`) and three atoms (`lic`, `da`, `dk`), so before the pair
+        // rule covered delimiters the canonical tag was invisible and only a
+        // family-gated bare "da" remained.
+        let occs = occs_for("Support\\License\\lic_da-DK.html");
+        let tag = occs
+            .iter()
+            .find(|o| o.canonical == "da")
+            .expect("da-DK should be recognized as a locale tag");
+        assert_eq!(tag.level, Level::A);
+        assert_eq!(tag.matched, "da-dk");
+    }
+
+    #[test]
+    fn unlisted_language_region_pair_is_not_a_locale_tag() {
+        // "pl" is Polish and "us" is a region, but `pl-US` is not a pairing
+        // the dictionary lists — accepting it would turn any two adjacent
+        // two-letter atoms into self-sufficient evidence.
+        let occs = occs_for("data\\map_pl-US.dat");
+        assert!(
+            !occs
+                .iter()
+                .any(|o| o.level == Level::A && o.matched.contains('-')),
+            "an unlisted language-region pair must not become a Level A tag"
+        );
     }
 
     #[test]

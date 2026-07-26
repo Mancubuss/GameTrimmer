@@ -686,7 +686,30 @@
     ],
     "text_extensions": [
       "srt",
-      "vtt"
+      "vtt",
+      "txt",
+      "html",
+      "htm",
+      "rtf",
+      "json",
+      "xml",
+      "csv",
+      "po",
+      "mo",
+      "strings"
+    ],
+    "audio_extensions": [
+      "wav",
+      "ogg",
+      "mp3",
+      "wma",
+      "flac",
+      "opus",
+      "fsb",
+      "bank",
+      "bnk",
+      "wem",
+      "xwm"
     ]
   }
 }

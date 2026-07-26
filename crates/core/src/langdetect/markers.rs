@@ -49,12 +49,25 @@
 //!   `fonts/` folder is a legitimate text-localization signal on its own);
 //!   `font` additionally covers the singular `"font"` token so
 //!   `font_schinese.ttf` matches.
-//! - `text_extensions` (`srt`, `vtt`) are subtitle extensions that stay text
-//!   even inside a `Movies`/`Cutscenes` folder — found via the corpus
-//!   regression: `rerelease\baseq2\video\eou6__ru.srt` has no "subtitles"/
-//!   "loc" word anywhere on its path, only the enclosing `video` folder
-//!   marker, so without this extension reinforcement it resolves to
-//!   `Video` even though a `.srt` file plainly cannot contain video.
+//! - The four `*_extensions` lists name extensions that state a content type
+//!   outright. They serve two distinct purposes, and the difference matters:
+//!
+//!   1. **Deciding `kind`** via `MarkerContext::ext_kind`, for every file.
+//!      The extension outranks every marker word, because words describe the
+//!      neighbourhood while the extension describes the file itself:
+//!      `Movies\Subtitles\..._pt-BR.vtt` is text, `lang\de_DE\sounds\*.wav`
+//!      is audio, and `Support\EA Help\Es\Sound_card.htm` is a help page
+//!      about a sound card, not a sound. The 2026-07-26 corpus pass found
+//!      ~230 such rows where a folder word was overriding the plain fact of
+//!      the extension.
+//!   2. **Reinforcing context** via `consider`, only when the file's own
+//!      name carries a language token. This form feeds `has_any()` and
+//!      therefore scoring, so it stays gated: a `.bik` in the same name as a
+//!      language token is a deliberate pairing, a `.bik` under some distant
+//!      folder is not.
+//!
+//!   `ext_kind` is deliberately absent from `has_any()` — see its field doc.
+//!   An extension says what a file contains, never that it is localized.
 
 use crate::langdetect::data::LangData;
 use crate::langdetect::tokens::Segment;
@@ -98,6 +111,18 @@ pub struct MarkerContext {
     /// folder-level localization context only — see
     /// `best_non_family_candidate` in `mod.rs`.
     pub generic_loc_in_folder: bool,
+    /// Kind implied by the file's own extension, when the extension names a
+    /// content type outright (`.wav`, `.srt`, `.bik`, `.ttf`).
+    ///
+    /// Deliberately kept out of [`MarkerContext::has_any`]: an extension says
+    /// what a file *contains*, never that it is a localization. Letting it
+    /// count as context would mean every `.wav` on the disk lends weight to a
+    /// weak language token — exactly the false-positive direction the whole
+    /// design guards against. It only settles `kind` for a file something
+    /// else already decided to flag, and there it is the most reliable
+    /// evidence available: a `.wav` is audio however many `Movies\` folders
+    /// it sits under, and a `.srt` is text however cinematic its neighbours.
+    pub ext_kind: Option<MarkerKind>,
 }
 
 impl MarkerContext {
@@ -169,8 +194,12 @@ impl MarkerContext {
     /// they must never outrank a real content-type marker even if they
     /// happen to sit in a segment closer to the file.
     pub fn closest(&self) -> Option<MarkerKind> {
-        self.closest_hit()
-            .map(|h| h.kind)
+        // The extension outranks every word marker: words describe the
+        // neighbourhood, the extension describes the file. `Movies\
+        // Subtitles\..._pt-BR.vtt` is text, not video, and `lang\de_DE\
+        // sounds\Male5a.wav` is audio however the folders read.
+        self.ext_kind
+            .or_else(|| self.closest_hit().map(|h| h.kind))
             .or(self.generic_loc.as_ref().map(|_| MarkerKind::Text))
     }
 
@@ -234,9 +263,29 @@ pub fn scan_markers(
         }
     }
 
-    if has_filename_lang_token {
-        if let Some(last) = segments.last() {
-            if let Some(ext) = extension {
+    if let Some(ext) = extension {
+        // `ext_kind` settles the kind but never counts as context (see the
+        // field doc), so unlike the marker words above it is safe to derive
+        // for every file — including one whose language token lives in a
+        // folder rather than in its own name.
+        ctx.ext_kind = if data.audio_extensions.contains(ext) {
+            Some(MarkerKind::Audio)
+        } else if data.text_extensions.contains(ext) {
+            Some(MarkerKind::Text)
+        } else if data.video_extensions.contains(ext) {
+            Some(MarkerKind::Video)
+        } else if data.font_extensions.contains(ext) {
+            Some(MarkerKind::Font)
+        } else {
+            None
+        };
+
+        // The filename-token gate stays on the *marker* form of the same
+        // evidence, which does feed `has_any()` and therefore scoring: a
+        // `.bik` next to a language token in the same name is a deliberate
+        // pairing, while a `.bik` under some distant folder is not.
+        if has_filename_lang_token {
+            if let Some(last) = segments.last() {
                 if data.video_extensions.contains(ext) {
                     ctx.consider(MarkerKind::Video, last.index, &format!(".{ext}"));
                 }
@@ -245,6 +294,9 @@ pub fn scan_markers(
                 }
                 if data.text_extensions.contains(ext) {
                     ctx.consider(MarkerKind::Text, last.index, &format!(".{ext}"));
+                }
+                if data.audio_extensions.contains(ext) {
+                    ctx.consider(MarkerKind::Audio, last.index, &format!(".{ext}"));
                 }
             }
         }
@@ -300,5 +352,43 @@ mod tests {
         let segs = tokenize_path("sound\\text\\voice_line.wav");
         let ctx = scan_markers(&data(), &segs, false, None);
         assert_eq!(ctx.closest(), Some(MarkerKind::Audio));
+    }
+
+    #[test]
+    fn extension_settles_kind_against_contradicting_folder_words() {
+        // A subtitle inside a Movies folder is text; a voice line inside a
+        // `lang\` folder is audio. Both had the folder word winning before
+        // the extension became the deciding evidence for `kind`.
+        let subtitle = tokenize_path("LIS\\Content\\Movies\\Subtitles\\Act_pt-BR.vtt");
+        assert_eq!(
+            scan_markers(&data(), &subtitle, true, Some("vtt")).closest(),
+            Some(MarkerKind::Text)
+        );
+
+        let voice = tokenize_path("lang\\de_DE\\sounds\\Male5a.wav");
+        assert_eq!(
+            scan_markers(&data(), &voice, false, Some("wav")).closest(),
+            Some(MarkerKind::Audio)
+        );
+
+        // ...and it applies even when the language token is in a folder, so
+        // the reinforcement gate cannot reach it.
+        let help_page = tokenize_path("Support\\EA Help\\Es\\Sound_card.htm");
+        assert_eq!(
+            scan_markers(&data(), &help_page, false, Some("htm")).closest(),
+            Some(MarkerKind::Text)
+        );
+    }
+
+    #[test]
+    fn extension_kind_never_counts_as_context() {
+        // An ordinary game sound with no marker word and no language token:
+        // knowing it is a `.wav` must not make it look like localization
+        // context, or every audio file on the disk would start lending
+        // weight to weak language tokens.
+        let segs = tokenize_path("data\\pak01\\chunk.wav");
+        let ctx = scan_markers(&data(), &segs, false, Some("wav"));
+        assert_eq!(ctx.ext_kind, Some(MarkerKind::Audio));
+        assert!(!ctx.has_any(), "extension alone must not count as context");
     }
 }

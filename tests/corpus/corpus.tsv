@@ -290,8 +290,8 @@ steam:1133320	Engine\Content\Internationalization\icudt53l\zone\no.res	none
 steam:1133320	Engine\Content\Internationalization\icudt53l\zone\zh_Hans_CN.res	none
 steam:1168490	Lang_English.vt	none
 steam:1172380	0003518\SwGame\Content\Deluxe\Movies\subtitles\DE_DDV_3_Subtitle.srt	text
-steam:1172380	0003518\SwGame\Content\Deluxe\Movies\subtitles\ES-ES_DDV_4_Subtitle.srt	video
-steam:1172380	0003518\SwGame\Content\Deluxe\Movies\subtitles\ES-MX_DDV_4_Subtitle.srt	video
+steam:1172380	0003518\SwGame\Content\Deluxe\Movies\subtitles\ES-ES_DDV_4_Subtitle.srt	text
+steam:1172380	0003518\SwGame\Content\Deluxe\Movies\subtitles\ES-MX_DDV_4_Subtitle.srt	text
 steam:1172380	0003518\SwGame\Content\Deluxe\Movies\subtitles\FR_DDV_3_Subtitle.srt	text
 steam:1172380	0003518\SwGame\Content\Deluxe\Movies\subtitles\IT_DDV_4_Subtitle.srt	text
 steam:1172380	0003518\SwGame\Content\Deluxe\Movies\subtitles\JA_DDV_4_Subtitle.srt	text
@@ -946,18 +946,18 @@ steam:1265920	LIS\Content\AltData\LI_E5_4A_JPN.lipsync	unknown
 steam:1265920	LIS\Content\Movies\Subtitles\BIK_E1_6A_DialEnd_ru.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\BIK_E2_7A_Eclipse3_es.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\BIK_E3_7C_Ending_pt-BR.vtt	text
-steam:1265920	LIS\Content\Movies\Subtitles\BIK_E5_5A_JeffersonCar_pt-BR.vtt	video
+steam:1265920	LIS\Content\Movies\Subtitles\BIK_E5_5A_JeffersonCar_pt-BR.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\BIK_E5_7C_Beach_es-419.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\BIK_End02_SaveTown_Start_ja.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\BIK_Previously_E3_it.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\BIK_Previously_E4_zh-Hans.vtt	text
-steam:1265920	LIS\Content\Movies\Subtitles\E2_1C_Matinee_Movie_de.vtt	video
+steam:1265920	LIS\Content\Movies\Subtitles\E2_1C_Matinee_Movie_de.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\E2_6A_KateAlive_it.vtt	text
-steam:1265920	LIS\Content\Movies\Subtitles\E2_6A_KateDead_zh-Hans.vtt	video
-steam:1265920	LIS\Content\Movies\Subtitles\E3_7D_Matinee_Movie_ru.vtt	video
+steam:1265920	LIS\Content\Movies\Subtitles\E2_6A_KateDead_zh-Hans.vtt	text
+steam:1265920	LIS\Content\Movies\Subtitles\E3_7D_Matinee_Movie_ru.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\E4_5C_LetNathanGetBeat_fr.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\E4_5C_PreventNathanFromBeat_ru.vtt	text
-steam:1265920	LIS\Content\Movies\Subtitles\E4_8C_WarrenSelfie_RTC_E4_5A_LetNathanGetBeat_Act_pt-BR.vtt	video
+steam:1265920	LIS\Content\Movies\Subtitles\E4_8C_WarrenSelfie_RTC_E4_5A_LetNathanGetBeat_Act_pt-BR.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\E5_1B_WarnVictoriaFriend_Act_es-419.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\E5_5E_LaunchPart1_es-419.vtt	text
 steam:1265920	LIS\Content\Movies\Subtitles\FullVersion_Trailer_ja.vtt	text
@@ -1583,7 +1583,7 @@ steam:1042800	UI\LoadingScreens\ENG\Khorne_Awakenings_1.dds	none
 steam:1042800	UI\menu\CharacterSelection\Character_List_Block_Crusader_BG_Over.dds	none
 steam:1042800	UI\NavigationWheel\Icons\Options_rollover_DE.dds	unknown
 steam:1042800	UI\OpenWorld\Ordo\Ordo_bg.dds	none
-steam:1042800	Videos\DE\Flashback_3_BattleSister.srt	video
+steam:1042800	Videos\DE\Flashback_3_BattleSister.srt	text
 steam:1042800	Videos\ENG\Extras\Footprint_Arctic.webm	none
 steam:1042800	Videos\ENG\Mission_NPC\Machine_Spirit\machine_spirit.webm	none
 steam:1042800	Videos\ENG\Monsters\renegade_soldier.webm	none
@@ -1591,9 +1591,9 @@ steam:1042800	Videos\ENG\Subclasses\Hierophant_spell.webm	none
 steam:1042800	Videos\ENG\SubSector2\Solar4\Planet2.webm	none
 steam:1042800	Videos\ENG\Terrains\floating_platform_05.webm	none
 steam:1042800	Videos\ENG\Tutorials\Aimed_shots.webm	none
-steam:1042800	Videos\FR\Campaign_Intro_Psyker.srt	video
-steam:1042800	Videos\KO\Campaign_Intro_Crusader.srt	video
-steam:1042800	Videos\RU\Campaign_Intro_Assassin.srt	video
+steam:1042800	Videos\FR\Campaign_Intro_Psyker.srt	text
+steam:1042800	Videos\KO\Campaign_Intro_Crusader.srt	text
+steam:1042800	Videos\RU\Campaign_Intro_Assassin.srt	text
 steam:104900	Binaries\InstallData\EULA.JPN.rtf	text
 steam:104900	Binaries\InstallData\EULA.RUS.rtf	text
 steam:104900	Engine\Content\EngineFonts_RUS.upk	font
@@ -2075,49 +2075,49 @@ steam:1150440	ASF\Content\Paks\pakchunk8-WindowsNoEditor.pak	none
 steam:1150440	ASF\Content\Paks\pakchunk9-WindowsNoEditor.pak	none
 steam:1150440	Engine\Extras\Redist\en-us\UE4PrereqSetup_x64.exe	none
 steam:1154790	XIII_Data\StreamingAssets\cine_no-vo.bank	audio
-steam:1154790	XIII_Data\StreamingAssets\dx_asylum_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_brighton_beach01_es.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_brighton_beach02_es.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_brighton_beach02_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_canyon01_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_canyon02_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_emerald_base01_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_emerald_base02_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_emerald_base03_es.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_emerald_base03_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_fbi_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_hotel_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_lake01_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_lake02_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_menu_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_mountain01_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_mountain02_es.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_mountain02_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_npc_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_prison_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_resolute_base01_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_resolute_base02_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_rooftops_es.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary01_es.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary01_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary02_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary03_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary04_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_spads_base01_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_spads_base02_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_spads_base03_es.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_spads_base04_es.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_spads_base04_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_ssh1_base01_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_ssh1_base02_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_ssh1_base03_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_ssh1_base04_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_submarine01_es.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_submarine01_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_submarine02_ru.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_winslow_bank_it.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_XIII_fr.bank	video
-steam:1154790	XIII_Data\StreamingAssets\dx_yatch_fr.bank	video
+steam:1154790	XIII_Data\StreamingAssets\dx_asylum_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_brighton_beach01_es.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_brighton_beach02_es.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_brighton_beach02_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_canyon01_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_canyon02_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_emerald_base01_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_emerald_base02_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_emerald_base03_es.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_emerald_base03_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_fbi_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_hotel_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_lake01_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_lake02_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_menu_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_mountain01_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_mountain02_es.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_mountain02_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_npc_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_prison_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_resolute_base01_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_resolute_base02_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_rooftops_es.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary01_es.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary01_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary02_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary03_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_sanctuary04_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_spads_base01_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_spads_base02_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_spads_base03_es.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_spads_base04_es.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_spads_base04_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_ssh1_base01_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_ssh1_base02_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_ssh1_base03_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_ssh1_base04_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_submarine01_es.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_submarine01_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_submarine02_ru.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_winslow_bank_it.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_XIII_fr.bank	audio
+steam:1154790	XIII_Data\StreamingAssets\dx_yatch_fr.bank	audio
 steam:1158370	Aragami2_Data\StreamingAssets\Audio\GeneratedSoundBanks\Windows\English(US)\100663543.wem	none
 steam:1158370	Aragami2_Data\StreamingAssets\Audio\GeneratedSoundBanks\Windows\English(US)\1033989959.wem	none
 steam:1158370	Aragami2_Data\StreamingAssets\Audio\GeneratedSoundBanks\Windows\English(US)\105439148.wem	none
@@ -2531,7 +2531,7 @@ steam:1238820	Support\EA Help\Da\default.css	unknown
 steam:1238820	Support\EA Help\Da\Minimum_requirements.htm	unknown
 steam:1238820	Support\EA Help\De\black background.JPG	unknown
 steam:1238820	Support\EA Help\De\index_n.gif	unknown
-steam:1238820	Support\EA Help\De\Video_Card.htm	video
+steam:1238820	Support\EA Help\De\Video_Card.htm	text
 steam:1238820	Support\EA Help\en-uk\EA_HELP_UK.htm	none
 steam:1238820	Support\EA Help\en-uk\startomg.jpg	none
 steam:1238820	Support\EA Help\en-us\eHelp.xml	none
@@ -2563,7 +2563,7 @@ steam:1238820	Support\EA Help\pt\content_n.gif	unknown
 steam:1238820	Support\EA Help\pt\LEFT HAND INDEX.htm	unknown
 steam:1238820	Support\EA Help\pt-br\autorun.htm	unknown
 steam:1238820	Support\EA Help\pt-br\Graphic_corruption.htm	unknown
-steam:1238820	Support\EA Help\pt-br\Updating_your_sound_driver.htm	audio
+steam:1238820	Support\EA Help\pt-br\Updating_your_sound_driver.htm	text
 steam:1238820	Support\EA Help\Ru\DirectX.htm	unknown
 steam:1238820	Support\EA Help\Ru\Starting_the_game.htm	unknown
 steam:1238820	Support\EA Help\Sv\crashes.htm	unknown
@@ -3956,7 +3956,7 @@ steam:17430	Support\EA Help\Da\cd_dvd_issues.htm	unknown
 steam:17430	Support\EA Help\Da\Hard_Drive_space.htm	unknown
 steam:17430	Support\EA Help\De\book_closed.gif	unknown
 steam:17430	Support\EA Help\De\Graphic_corruption.htm	unknown
-steam:17430	Support\EA Help\De\Video_Card.htm	video
+steam:17430	Support\EA Help\De\Video_Card.htm	text
 steam:17430	Support\EA Help\en-uk\go.jpg	none
 steam:17430	Support\EA Help\en-uk\Updating_your_video_driver.htm	none
 steam:17430	Support\EA Help\en-us\go.gif	none
@@ -4008,19 +4008,19 @@ steam:17480	Support\EA Help\en-us\whskin_ep_ins.xml	none
 steam:17480	Support\EA Help\en-us\wht_logo1.gif	none
 steam:17480	Support\EA Help\en-us\whxdata\whidata0.xml	none
 steam:17480	Support\EA Help\Es\glossary_h.gif	unknown
-steam:17480	Support\EA Help\Es\Sound_card.htm	audio
+steam:17480	Support\EA Help\Es\Sound_card.htm	text
 steam:17480	Support\EA Help\Fi\content_n.gif	unknown
 steam:17480	Support\EA Help\Fi\r02.gif	unknown
 steam:17480	Support\EA Help\fr-fr\cd_dvd_issues.htm	unknown
 steam:17480	Support\EA Help\fr-fr\go.gif	unknown
 steam:17480	Support\EA Help\Hu\badge.gif	unknown
 steam:17480	Support\EA Help\Hu\EA_Logo_White.GIF	unknown
-steam:17480	Support\EA Help\Hu\Updating_your_sound_driver.htm	audio
+steam:17480	Support\EA Help\Hu\Updating_your_sound_driver.htm	text
 steam:17480	Support\EA Help\It\default_ns.css	unknown
 steam:17480	Support\EA Help\It\Monitor.htm	unknown
 steam:17480	Support\EA Help\NL\content_h.gif	unknown
 steam:17480	Support\EA Help\NL\index_n.gif	unknown
-steam:17480	Support\EA Help\NL\Video_Card.htm	video
+steam:17480	Support\EA Help\NL\Video_Card.htm	text
 steam:17480	Support\EA Help\No\gameplay.jpg	unknown
 steam:17480	Support\EA Help\No\Starting_the_game.htm	unknown
 steam:17480	Support\EA Help\Pol\EA_Help_UK.log	unknown
@@ -4987,8 +4987,8 @@ steam:209000	SinglePlayer\BMGame\Localization\KOR\Batman_DarkKnight.Kor	text
 steam:209000	SinglePlayer\BMGame\Localization\POL\Xbox.POL	text
 steam:209000	SinglePlayer\BMGame\Localization\RUS\DO_NOT_DELETE.TXT	text
 steam:209000	SinglePlayer\DLC\237619\GFxUI.Kor	unknown
-steam:209000	SinglePlayer\DLC\277830\607DA31A_LOC_POR.bnk	text
-steam:209000	SinglePlayer\DLC\277830\C0ABC6B5_LOC_FRA.bnk	text
+steam:209000	SinglePlayer\DLC\277830\607DA31A_LOC_POR.bnk	audio
+steam:209000	SinglePlayer\DLC\277830\C0ABC6B5_LOC_FRA.bnk	audio
 steam:209000	SinglePlayer\DLC\277830\GFxUI.ITA	unknown
 steam:209000	SinglePlayer\Engine\Localization\ITA\startup.ITA	text
 steam:20920	CookedPC\movies\bumpers_HU.usm	video
@@ -5070,14 +5070,14 @@ steam:209630	YoshiGame\Localization\KOR\GFxUI.kor	text
 steam:209630	YoshiGame\Localization\POL\GFxUI.pol	text
 steam:209630	YoshiGame\Localization\RUS\Loc_Dialogs_Sounds.RUS	audio
 steam:209630	YoshiGame\Localization\UKR\Loc_UI.UKR	none
-steam:209630	YoshiGame\Movies\Ending_ITA.txt	video
-steam:209630	YoshiGame\Movies\Magrunner_intro_DEU.txt	video
-steam:209630	YoshiGame\Movies\Magrunner_intro_KOR.txt	video
-steam:209630	YoshiGame\Movies\Outro_FRA.txt	video
-steam:209630	YoshiGame\Movies\Outro_RUS.txt	video
-steam:209630	YoshiGame\Movies\Ritual2_ITA.txt	video
+steam:209630	YoshiGame\Movies\Ending_ITA.txt	text
+steam:209630	YoshiGame\Movies\Magrunner_intro_DEU.txt	text
+steam:209630	YoshiGame\Movies\Magrunner_intro_KOR.txt	text
+steam:209630	YoshiGame\Movies\Outro_FRA.txt	text
+steam:209630	YoshiGame\Movies\Outro_RUS.txt	text
+steam:209630	YoshiGame\Movies\Ritual2_ITA.txt	text
 steam:209630	YoshiGame\Movies\Ritual2_UKR.txt	none
-steam:209630	YoshiGame\Movies\Ritual_KOR.txt	video
+steam:209630	YoshiGame\Movies\Ritual_KOR.txt	text
 steam:209630	YoshiGame\PCTOC_DEU.txt	text
 steam:209630	YoshiGame\PCTOC_RUS.txt	text
 steam:210770	Engine\EditorResources\WPF\Localized\UnrealEd.JPN.xaml	text
@@ -6061,10 +6061,10 @@ steam:227560	ScourgeGame\Localization\RUS\ScourgeGame.rus	text
 steam:227560	ScourgeGame\Movies\CS_GameIntro.ogv	none
 steam:227560	ScourgeGame\Movies\Steam_Logo_BG.ogv	none
 steam:227560	ScourgeGame\PCConsoleTOC_JPN.txt	text
-steam:228280	lang\de_DE\sounds\Female2h.wav	text
-steam:228280	lang\de_DE\sounds\Female5b.wav	text
-steam:228280	lang\de_DE\sounds\Male2g.wav	text
-steam:228280	lang\de_DE\sounds\Male5a.wav	text
+steam:228280	lang\de_DE\sounds\Female2h.wav	audio
+steam:228280	lang\de_DE\sounds\Female5b.wav	audio
+steam:228280	lang\de_DE\sounds\Male2g.wav	audio
+steam:228280	lang\de_DE\sounds\Male5a.wav	audio
 steam:228280	lang\en_US\sounds\bdtpag0.wav	none
 steam:228280	lang\en_US\sounds\bdtpame.wav	none
 steam:228280	lang\en_US\sounds\bdtpbei.wav	none
@@ -6076,30 +6076,30 @@ steam:228280	lang\en_US\sounds\Female5d.wav	none
 steam:228280	lang\en_US\sounds\Male1l.wav	none
 steam:228280	lang\en_US\sounds\Male5d.wav	none
 steam:228280	lang\fr_FR\data\NPCSound.bif	text
-steam:228280	lang\fr_FR\sounds\Female3e.wav	text
-steam:228280	lang\fr_FR\sounds\Male3j.wav	text
-steam:228280	lang\pl_PL\override\AMNSO09.wav	text
-steam:228280	lang\pl_PL\override\CATTC04.wav	text
-steam:228280	lang\pl_PL\override\DRIZT09.wav	text
-steam:228280	lang\pl_PL\override\ENTAR04.wav	text
-steam:228280	lang\pl_PL\override\GLANM04.wav	text
-steam:228280	lang\pl_PL\override\HELMP06.wav	text
-steam:228280	lang\pl_PL\override\KAGAN38.wav	text
-steam:228280	lang\pl_PL\override\MARLL03.wav	text
-steam:228280	lang\pl_PL\override\NERED09.wav	text
-steam:228280	lang\pl_PL\override\RAMAZ04.wav	text
-steam:228280	lang\pl_PL\override\SHOAL04.wav	text
-steam:228280	lang\pl_PL\override\STORE06.wav	text
-steam:228280	lang\pl_PL\override\ULRAN04.wav	text
-steam:228280	lang\pl_PL\override\Voic2e.wav	text
-steam:228280	lang\pl_PL\override\Voic4l.wav	text
-steam:228280	lang\pl_PL\override\XVART08.wav	text
-steam:228280	lang\pl_PL\sounds\Female3a.wav	text
-steam:228280	lang\pl_PL\sounds\Male3f.wav	text
-steam:228280	lang\ru_RU\sounds\Female2a.wav	text
-steam:228280	lang\ru_RU\sounds\Female4h.wav	text
-steam:228280	lang\ru_RU\sounds\Male1m.wav	text
-steam:228280	lang\ru_RU\sounds\Male4h.wav	text
+steam:228280	lang\fr_FR\sounds\Female3e.wav	audio
+steam:228280	lang\fr_FR\sounds\Male3j.wav	audio
+steam:228280	lang\pl_PL\override\AMNSO09.wav	audio
+steam:228280	lang\pl_PL\override\CATTC04.wav	audio
+steam:228280	lang\pl_PL\override\DRIZT09.wav	audio
+steam:228280	lang\pl_PL\override\ENTAR04.wav	audio
+steam:228280	lang\pl_PL\override\GLANM04.wav	audio
+steam:228280	lang\pl_PL\override\HELMP06.wav	audio
+steam:228280	lang\pl_PL\override\KAGAN38.wav	audio
+steam:228280	lang\pl_PL\override\MARLL03.wav	audio
+steam:228280	lang\pl_PL\override\NERED09.wav	audio
+steam:228280	lang\pl_PL\override\RAMAZ04.wav	audio
+steam:228280	lang\pl_PL\override\SHOAL04.wav	audio
+steam:228280	lang\pl_PL\override\STORE06.wav	audio
+steam:228280	lang\pl_PL\override\ULRAN04.wav	audio
+steam:228280	lang\pl_PL\override\Voic2e.wav	audio
+steam:228280	lang\pl_PL\override\Voic4l.wav	audio
+steam:228280	lang\pl_PL\override\XVART08.wav	audio
+steam:228280	lang\pl_PL\sounds\Female3a.wav	audio
+steam:228280	lang\pl_PL\sounds\Male3f.wav	audio
+steam:228280	lang\ru_RU\sounds\Female2a.wav	audio
+steam:228280	lang\ru_RU\sounds\Female4h.wav	audio
+steam:228280	lang\ru_RU\sounds\Male1m.wav	audio
+steam:228280	lang\ru_RU\sounds\Male4h.wav	audio
 steam:228280	lang\uk_UA\data\LocCha.bif	none
 steam:228280	lang\uk_UA\sounds\female3i.wav	none
 steam:228280	lang\uk_UA\sounds\Female6c.wav	none
@@ -7127,19 +7127,19 @@ steam:24780	Support\EA Help\en-us\whskin_pdhtml.htm	none
 steam:24780	Support\EA Help\en-us\wht_idx_n.gif	none
 steam:24780	Support\EA Help\Es\black background.JPG	unknown
 steam:24780	Support\EA Help\Es\Error_message.htm	unknown
-steam:24780	Support\EA Help\Es\Updating_your_sound_driver.htm	audio
+steam:24780	Support\EA Help\Es\Updating_your_sound_driver.htm	text
 steam:24780	Support\EA Help\Fi\default_ns.css	unknown
 steam:24780	Support\EA Help\Fi\Minimum_requirements.htm	unknown
 steam:24780	Support\EA Help\fr-fr\Cleaning_your_CD_DVD.htm	unknown
 steam:24780	Support\EA Help\fr-fr\Graphic_corruption.htm	unknown
-steam:24780	Support\EA Help\fr-fr\Updating_your_sound_driver.htm	audio
+steam:24780	Support\EA Help\fr-fr\Updating_your_sound_driver.htm	text
 steam:24780	Support\EA Help\Hu\Emptying_Temporary_Files.htm	unknown
 steam:24780	Support\EA Help\Hu\searchweb_n.gif	unknown
 steam:24780	Support\EA Help\It\default_ns.css	unknown
 steam:24780	Support\EA Help\It\Minimum_requirements.htm	unknown
 steam:24780	Support\EA Help\NL\blueback.gif	unknown
 steam:24780	Support\EA Help\NL\Hard_Drive_space.htm	unknown
-steam:24780	Support\EA Help\NL\Updating_your_video_driver.htm	video
+steam:24780	Support\EA Help\NL\Updating_your_video_driver.htm	text
 steam:24780	Support\EA Help\No\default_ns.css	unknown
 steam:24780	Support\EA Help\No\searchweb_n.gif	unknown
 steam:24780	Support\EA Help\Pol\Cleaning_your_CD_DVD.htm	unknown
@@ -7174,7 +7174,7 @@ steam:24790	Support\EA Help\Es\directional.gif	unknown
 steam:24790	Support\EA Help\Es\leftarrow.gif	unknown
 steam:24790	Support\EA Help\Fi\black background.JPG	unknown
 steam:24790	Support\EA Help\Fi\index_h.gif	unknown
-steam:24790	Support\EA Help\Fi\Video_Card.htm	video
+steam:24790	Support\EA Help\Fi\Video_Card.htm	text
 steam:24790	Support\EA Help\fr-fr\gameplay_issues.htm	unknown
 steam:24790	Support\EA Help\fr-fr\Starting_the_installation_manually.htm	unknown
 steam:24790	Support\EA Help\Hu\Crashes.htm	unknown
@@ -7190,9 +7190,9 @@ steam:24790	Support\EA Help\Pol\Crashes.htm	unknown
 steam:24790	Support\EA Help\Pol\Installing_the_game.htm	unknown
 steam:24790	Support\EA Help\pt\badge.gif	unknown
 steam:24790	Support\EA Help\pt\Graphic_corruption.htm	unknown
-steam:24790	Support\EA Help\pt\Updating_your_sound_driver.htm	audio
+steam:24790	Support\EA Help\pt\Updating_your_sound_driver.htm	text
 steam:24790	Support\EA Help\pt-br\gameplay.jpg	unknown
-steam:24790	Support\EA Help\pt-br\Sound_card.htm	audio
+steam:24790	Support\EA Help\pt-br\Sound_card.htm	text
 steam:24790	Support\EA Help\Ru\Crashes.htm	unknown
 steam:24790	Support\EA Help\Ru\r02.gif	unknown
 steam:24790	Support\EA Help\Sv\cd_dvd_issues2.htm	unknown
@@ -7219,9 +7219,9 @@ steam:24800	Support\EA Help\Es\Display_Settings.htm	unknown
 steam:24800	Support\EA Help\Es\Minimum_requirements.htm	unknown
 steam:24800	Support\EA Help\Fi\blueback.gif	unknown
 steam:24800	Support\EA Help\Fi\index_n.gif	unknown
-steam:24800	Support\EA Help\Fi\Video_Card.htm	video
+steam:24800	Support\EA Help\Fi\Video_Card.htm	text
 steam:24800	Support\EA Help\fr-fr\display_settings.htm	unknown
-steam:24800	Support\EA Help\fr-fr\Sound_card.htm	audio
+steam:24800	Support\EA Help\fr-fr\Sound_card.htm	text
 steam:24800	Support\EA Help\Hu\content_h.gif	unknown
 steam:24800	Support\EA Help\Hu\page.gif	unknown
 steam:24800	Support\EA Help\It\book_closed.gif	unknown
@@ -7240,7 +7240,7 @@ steam:24800	Support\EA Help\pt-br\check.jpg	unknown
 steam:24800	Support\EA Help\pt-br\Monitor.htm	unknown
 steam:24800	Support\EA Help\Ru\Blue_Screen_.htm	unknown
 steam:24800	Support\EA Help\Ru\index_n.gif	unknown
-steam:24800	Support\EA Help\Ru\Video_Card.htm	video
+steam:24800	Support\EA Help\Ru\Video_Card.htm	text
 steam:24800	Support\EA Help\Sv\EA_HELP_SV.htm	unknown
 steam:24800	Support\EA Help\Sv\Starting_the_installation_manually.htm	unknown
 steam:24810	EnglishAudio\1.2\config.txt	none
@@ -7272,7 +7272,7 @@ steam:24810	Support\EA Help\It\check.jpg	unknown
 steam:24810	Support\EA Help\It\Minimum_requirements.htm	unknown
 steam:24810	Support\EA Help\NL\blueback.gif	unknown
 steam:24810	Support\EA Help\NL\Hard_Drive_space.htm	unknown
-steam:24810	Support\EA Help\NL\Updating_your_video_driver.htm	video
+steam:24810	Support\EA Help\NL\Updating_your_video_driver.htm	text
 steam:24810	Support\EA Help\No\default_ns.css	unknown
 steam:24810	Support\EA Help\No\search_h.gif	unknown
 steam:24810	Support\EA Help\Pol\close.gif	unknown
@@ -7286,7 +7286,7 @@ steam:24810	Support\EA Help\Ru\Crash_Issues2.htm	unknown
 steam:24810	Support\EA Help\Ru\LEFT HAND INDEX.htm	unknown
 steam:24810	Support\EA Help\Sv\badge.gif	unknown
 steam:24810	Support\EA Help\Sv\Graphic_corruption.htm	unknown
-steam:24810	Support\EA Help\Sv\Updating_your_sound_driver.htm	audio
+steam:24810	Support\EA Help\Sv\Updating_your_sound_driver.htm	text
 steam:24960	dist\win32\async\weapon\ru_at_rpg7-00.fbrb	none
 steam:24960	dist\win32\async\weapon\ru_sni_sv98_scoped-00.fbrb	none
 steam:24960	dist\win32\streaming_vo_pl-00.fbrb	audio
@@ -7325,13 +7325,13 @@ steam:24960	Support\EA Help\No\urls.gif	unknown
 steam:24960	Support\EA Help\Pol\Graphic_corruption.htm	unknown
 steam:24960	Support\EA Help\Pol\urls.gif	unknown
 steam:24960	Support\EA Help\pt\Emptying_Temporary_Files.htm	unknown
-steam:24960	Support\EA Help\pt\Video_Card.htm	video
+steam:24960	Support\EA Help\pt\Video_Card.htm	text
 steam:24960	Support\EA Help\pt-br\EA_Logo_White.GIF	unknown
 steam:24960	Support\EA Help\pt-br\urls.gif	unknown
 steam:24960	Support\EA Help\Ru\EA_Logo_White.GIF	unknown
 steam:24960	Support\EA Help\Ru\search_n.gif	unknown
 steam:24960	Support\EA Help\Sv\EA_Logo_White.GIF	unknown
-steam:24960	Support\EA Help\Sv\Sound_card.htm	audio
+steam:24960	Support\EA Help\Sv\Sound_card.htm	text
 steam:250520	data\locale\creatures\hu_f2\st.xnb	none
 steam:250520	data\locale\creatures\pl_at##depth\id_xphwg.xnb	none
 steam:250520	data\locale\creatures\pl_biotech##depth\a1.xnb	none
@@ -7421,16 +7421,16 @@ steam:2507950	Launcher\tpf_ui\res\common\background\light_mode\panel_bg.png	none
 steam:2507950	Launcher\tpf_ui\res\common\background\panel_bg.png	none
 steam:2507950	Launcher\tpf_ui\res\common\frame_bg_hover.png	none
 steam:2507950	Launcher\tpf_ui\res\common\frame_bg_semi.png	none
-steam:257350	lang\de_DE\override\AM5000O2.WAV	text
-steam:257350	lang\de_DE\sounds\Female1d.wav	text
-steam:257350	lang\de_DE\sounds\Female2k.wav	text
-steam:257350	lang\de_DE\sounds\Female3h.wav	text
-steam:257350	lang\de_DE\sounds\Female4f.wav	text
-steam:257350	lang\de_DE\sounds\Male1m.wav	text
-steam:257350	lang\de_DE\sounds\Male2j.wav	text
-steam:257350	lang\de_DE\sounds\Male3h.wav	text
-steam:257350	lang\de_DE\sounds\Male4t.wav	text
-steam:257350	lang\de_DE\sounds\Male5l.wav	text
+steam:257350	lang\de_DE\override\AM5000O2.WAV	audio
+steam:257350	lang\de_DE\sounds\Female1d.wav	audio
+steam:257350	lang\de_DE\sounds\Female2k.wav	audio
+steam:257350	lang\de_DE\sounds\Female3h.wav	audio
+steam:257350	lang\de_DE\sounds\Female4f.wav	audio
+steam:257350	lang\de_DE\sounds\Male1m.wav	audio
+steam:257350	lang\de_DE\sounds\Male2j.wav	audio
+steam:257350	lang\de_DE\sounds\Male3h.wav	audio
+steam:257350	lang\de_DE\sounds\Male4t.wav	audio
+steam:257350	lang\de_DE\sounds\Male5l.wav	audio
 steam:257350	lang\en_US\sounds\bdtpagr.wav	none
 steam:257350	lang\en_US\sounds\bdtpamq.wav	none
 steam:257350	lang\en_US\sounds\bdtpbeo.wav	none
@@ -7447,24 +7447,24 @@ steam:257350	lang\en_US\sounds\Male3b.wav	none
 steam:257350	lang\en_US\sounds\Male48.wav	none
 steam:257350	lang\en_US\sounds\Male5f.wav	none
 steam:257350	lang\it_IT\data\MISSound.bif	text
-steam:257350	lang\it_IT\sounds\Female1y.wav	text
-steam:257350	lang\it_IT\sounds\Female2u.wav	text
-steam:257350	lang\it_IT\sounds\Female3s.wav	text
-steam:257350	lang\it_IT\sounds\Female4_.wav	text
-steam:257350	lang\it_IT\sounds\Male1x.wav	text
-steam:257350	lang\it_IT\sounds\Male2u.wav	text
-steam:257350	lang\it_IT\sounds\Male41.wav	text
-steam:257350	lang\it_IT\sounds\Male4z.wav	text
+steam:257350	lang\it_IT\sounds\Female1y.wav	audio
+steam:257350	lang\it_IT\sounds\Female2u.wav	audio
+steam:257350	lang\it_IT\sounds\Female3s.wav	audio
+steam:257350	lang\it_IT\sounds\Female4_.wav	audio
+steam:257350	lang\it_IT\sounds\Male1x.wav	audio
+steam:257350	lang\it_IT\sounds\Male2u.wav	audio
+steam:257350	lang\it_IT\sounds\Male41.wav	audio
+steam:257350	lang\it_IT\sounds\Male4z.wav	audio
 steam:257350	lang\pl_PL\data\NPCSoCD2.bif	text
-steam:257350	lang\pl_PL\sounds\Female13.WAV	text
-steam:257350	lang\pl_PL\sounds\Female20.WAV	text
-steam:257350	lang\pl_PL\sounds\Female37.WAV	text
-steam:257350	lang\pl_PL\sounds\Female45.WAV	text
-steam:257350	lang\pl_PL\sounds\Male12.WAV	text
-steam:257350	lang\pl_PL\sounds\Male29.WAV	text
-steam:257350	lang\pl_PL\sounds\Male37.WAV	text
-steam:257350	lang\pl_PL\sounds\Male4e.WAV	text
-steam:257350	lang\pl_PL\sounds\Male5b.WAV	text
+steam:257350	lang\pl_PL\sounds\Female13.WAV	audio
+steam:257350	lang\pl_PL\sounds\Female20.WAV	audio
+steam:257350	lang\pl_PL\sounds\Female37.WAV	audio
+steam:257350	lang\pl_PL\sounds\Female45.WAV	audio
+steam:257350	lang\pl_PL\sounds\Male12.WAV	audio
+steam:257350	lang\pl_PL\sounds\Male29.WAV	audio
+steam:257350	lang\pl_PL\sounds\Male37.WAV	audio
+steam:257350	lang\pl_PL\sounds\Male4e.WAV	audio
+steam:257350	lang\pl_PL\sounds\Male5b.WAV	audio
 steam:261640	Binaries\Win32\en-US\Launcher.resources.dll	unknown
 steam:261640	DLC\Crocus\Compat\Localization\RUS\GD_Enforcer_Items_crocus.RUS	text
 steam:261640	DLC\Marigold\Compat\Localization\DEU\GD_Ma_MarauderMidget.DEU	text
@@ -8102,7 +8102,7 @@ steam:289070	Base\Assets\UI\Subtitles\ja_JP\Science.srt	text
 steam:289070	Base\Platforms\Windows\audio\Chinese(PRC)\833868276.wem	audio
 steam:289070	Base\Platforms\Windows\audio\Chinese(Taiwan)\815289412.wem	audio
 steam:289070	Base\Platforms\Windows\audio\French(France)\1044944629.wem	audio
-steam:289070	Base\Platforms\Windows\audio\French(France)\Cinematic_Intro_Speech.xml	audio
+steam:289070	Base\Platforms\Windows\audio\French(France)\Cinematic_Intro_Speech.xml	text
 steam:289070	Base\Platforms\Windows\audio\Italian\277977608.wem	audio
 steam:289070	Base\Platforms\Windows\audio\Japanese\23585237.wem	audio
 steam:289070	Base\Platforms\Windows\audio\Korean\193586854.wem	audio
@@ -8129,7 +8129,7 @@ steam:289070	DLC\Expansion1\Platforms\Windows\audio\Korean\793306811.wem	audio
 steam:289070	DLC\Expansion2\Platforms\ios\audio\Chinese(Taiwan)\568815833.wem	audio
 steam:289070	DLC\Expansion2\Platforms\ios\audio\Japanese\876102075.wem	audio
 steam:289070	DLC\Expansion2\Platforms\ios\audio\Spanish(Spain)\833088777.wem	audio
-steam:289070	DLC\Expansion2\Platforms\Windows\audio\Italian\XP2_Cinematics_Endgame_Speech.txt	audio
+steam:289070	DLC\Expansion2\Platforms\Windows\audio\Italian\XP2_Cinematics_Endgame_Speech.txt	text
 steam:289070	DLC\GranColombia_Maya\Platforms\ios\audio\Chinese(Taiwan)\492018165.wem	audio
 steam:289070	DLC\GranColombia_Maya\Platforms\ios\audio\Italian\287392484.wem	audio
 steam:289070	DLC\GranColombia_Maya\Platforms\ios\audio\Russian\170941819.wem	audio
@@ -8507,8 +8507,8 @@ steam:310510	CommonTextures\Runa_kor_16.dds	none
 steam:310510	Strings\Espanol\Files.N2PK	text
 steam:310510	Strings\Hungarian\Files.N2PK	text
 steam:310510	UI\LoadingScreens\Eng\Files.N2PK	none
-steam:310510	Videos\DE\Intro_dt_mage.srt	video
-steam:310510	Videos\DE\Outro_dt_mage.srt	video
+steam:310510	Videos\DE\Intro_dt_mage.srt	text
+steam:310510	Videos\DE\Outro_dt_mage.srt	text
 steam:310510	Videos\ENG\deathtrap_logo.webm	none
 steam:310510	Videos\ENG\Intro_dt_hunter.webm	none
 steam:310510	Videos\ENG\Intro_dt_warrior.ogg	none
@@ -8516,18 +8516,18 @@ steam:310510	Videos\ENG\neocore_logo.ogg	none
 steam:310510	Videos\ENG\Outro_dt_hunter.srt	none
 steam:310510	Videos\ENG\Outro_dt_mage.webm	none
 steam:310510	Videos\ENG\Outro_dt_warrior.webm	none
-steam:310510	Videos\ES\Intro_dt_warrior.srt	video
-steam:310510	Videos\FR\Intro_dt_hunter.srt	video
-steam:310510	Videos\FR\Outro_dt_hunter.srt	video
-steam:310510	Videos\HU\Intro_dt_mage.srt	video
-steam:310510	Videos\HU\Outro_dt_mage.srt	video
-steam:310510	Videos\IT\Intro_dt_mage.srt	video
-steam:310510	Videos\IT\Outro_dt_warrior.srt	video
-steam:310510	Videos\PL\Intro_dt_warrior.srt	video
-steam:310510	Videos\PL\Outro_dt_warrior.srt	video
-steam:310510	Videos\PT\Outro_dt_hunter.srt	video
-steam:310510	Videos\RU\Intro_dt_hunter.srt	video
-steam:310510	Videos\RU\Outro_dt_mage.srt	video
+steam:310510	Videos\ES\Intro_dt_warrior.srt	text
+steam:310510	Videos\FR\Intro_dt_hunter.srt	text
+steam:310510	Videos\FR\Outro_dt_hunter.srt	text
+steam:310510	Videos\HU\Intro_dt_mage.srt	text
+steam:310510	Videos\HU\Outro_dt_mage.srt	text
+steam:310510	Videos\IT\Intro_dt_mage.srt	text
+steam:310510	Videos\IT\Outro_dt_warrior.srt	text
+steam:310510	Videos\PL\Intro_dt_warrior.srt	text
+steam:310510	Videos\PL\Outro_dt_warrior.srt	text
+steam:310510	Videos\PT\Outro_dt_hunter.srt	text
+steam:310510	Videos\RU\Intro_dt_hunter.srt	text
+steam:310510	Videos\RU\Outro_dt_mage.srt	text
 steam:310560	cars\interiors\models\pol\int_pol_driver_rag_doll.xml	none
 steam:310560	cars\models\pol\livery_00\textures_high\pol_tex_wt_high_00.pssg	none
 steam:310560	readme\oculus_readme_russian.html	text
@@ -8721,19 +8721,19 @@ steam:319910	data\audio\windows\dev\english_us_\t3_player_character_vocal_fx.txt
 steam:319910	data\audio\windows\dev\french_france_\t3_level_1_speech.txt	text
 steam:319910	data\audio\windows\dev\french_france_\t3_level_4_speech.txt	text
 steam:319910	data\audio\windows\dev\french_france_\t3_player_character.txt	text
-steam:319910	data\audio\windows\dev\german\easteregg_voice.txt	audio
-steam:319910	data\audio\windows\dev\german\t3_level_4_objects.txt	audio
-steam:319910	data\audio\windows\dev\german\t3_menu_speech.txt	audio
-steam:319910	data\audio\windows\dev\japanese\challenge_speech.txt	audio
-steam:319910	data\audio\windows\dev\japanese\t3_level_3_speech.txt	audio
-steam:319910	data\audio\windows\dev\japanese\t3_level_5_speech.txt	audio
+steam:319910	data\audio\windows\dev\german\easteregg_voice.txt	text
+steam:319910	data\audio\windows\dev\german\t3_level_4_objects.txt	text
+steam:319910	data\audio\windows\dev\german\t3_menu_speech.txt	text
+steam:319910	data\audio\windows\dev\japanese\challenge_speech.txt	text
+steam:319910	data\audio\windows\dev\japanese\t3_level_3_speech.txt	text
+steam:319910	data\audio\windows\dev\japanese\t3_level_5_speech.txt	text
 steam:319910	data\audio\windows\dev\portuguese_brazil_\challenge_speech.txt	text
 steam:319910	data\audio\windows\dev\portuguese_brazil_\t3_level_2_speech.txt	text
 steam:319910	data\audio\windows\dev\portuguese_brazil_\t3_level_5_speech.txt	text
-steam:319910	data\audio\windows\dev\russian\challenge_speech.txt	audio
-steam:319910	data\audio\windows\dev\russian\t3_level_2_speech.txt	audio
-steam:319910	data\audio\windows\dev\russian\t3_level_4_speech.txt	audio
-steam:319910	data\audio\windows\dev\russian\t3_player_character_vocal_fx.txt	audio
+steam:319910	data\audio\windows\dev\russian\challenge_speech.txt	text
+steam:319910	data\audio\windows\dev\russian\t3_level_2_speech.txt	text
+steam:319910	data\audio\windows\dev\russian\t3_level_4_speech.txt	text
+steam:319910	data\audio\windows\dev\russian\t3_player_character_vocal_fx.txt	text
 steam:319910	data\audio\windows\dev\spanish_spain_\t3_level_1_speech.txt	text
 steam:319910	data\audio\windows\dev\spanish_spain_\t3_level_4_speech.txt	text
 steam:319910	data\audio\windows\dev\spanish_spain_\t3_player_character.txt	text
@@ -8791,13 +8791,13 @@ steam:321270	Engine\Content\Internationalization\icudt53l\zone\en_PW.res	none
 steam:321270	Engine\Content\Internationalization\icudt53l\zone\en_SL.res	none
 steam:321270	Engine\Content\Internationalization\icudt53l\zone\en_VG.res	none
 steam:321800	lang\cs_CZ\dialog.tlk	text
-steam:321800	lang\de_DE\sounds\FFIGHT2I.wav	text
-steam:321800	lang\de_DE\sounds\FMAGE1B.wav	text
-steam:321800	lang\de_DE\sounds\FMAGE4X.wav	text
-steam:321800	lang\de_DE\sounds\MALE2W.wav	text
-steam:321800	lang\de_DE\sounds\MFIGHT3K.wav	text
-steam:321800	lang\de_DE\sounds\MMAGE2C.wav	text
-steam:321800	lang\de_DE\sounds\MTHIEF2B.wav	text
+steam:321800	lang\de_DE\sounds\FFIGHT2I.wav	audio
+steam:321800	lang\de_DE\sounds\FMAGE1B.wav	audio
+steam:321800	lang\de_DE\sounds\FMAGE4X.wav	audio
+steam:321800	lang\de_DE\sounds\MALE2W.wav	audio
+steam:321800	lang\de_DE\sounds\MFIGHT3K.wav	audio
+steam:321800	lang\de_DE\sounds\MMAGE2C.wav	audio
+steam:321800	lang\de_DE\sounds\MTHIEF2B.wav	audio
 steam:321800	lang\en_US\sounds\bdtpbeb.wav	none
 steam:321800	lang\en_US\sounds\bdtptof.wav	none
 steam:321800	lang\en_US\sounds\ffight19.wav	none
@@ -8807,34 +8807,34 @@ steam:321800	lang\en_US\sounds\Male1i.wav	none
 steam:321800	lang\en_US\sounds\mfight2a.wav	none
 steam:321800	lang\en_US\sounds\mmage29.wav	none
 steam:321800	lang\en_US\sounds\mmage5v.wav	none
-steam:321800	lang\es_ES\sounds\FFIGHT3F.wav	text
-steam:321800	lang\es_ES\sounds\FMAGE28.wav	text
-steam:321800	lang\es_ES\sounds\FMAGE5U.wav	text
-steam:321800	lang\es_ES\sounds\MFIGHT3T.wav	text
-steam:321800	lang\es_ES\sounds\MMAGE2G.wav	text
-steam:321800	lang\es_ES\sounds\MTHIEF19.wav	text
-steam:321800	lang\fr_FR\sounds\FEMALE3S.wav	text
-steam:321800	lang\fr_FR\sounds\FFIGHT4F.wav	text
-steam:321800	lang\fr_FR\sounds\FMAGE4E.wav	text
-steam:321800	lang\fr_FR\sounds\MALE10.wav	text
-steam:321800	lang\fr_FR\sounds\MFIGHT1T.wav	text
-steam:321800	lang\fr_FR\sounds\MMAGE1S.wav	text
-steam:321800	lang\fr_FR\sounds\MMAGE5F.wav	text
-steam:321800	lang\it_IT\sounds\Female1m.wav	text
-steam:321800	lang\it_IT\sounds\FFIGHT3L.wav	text
-steam:321800	lang\it_IT\sounds\FMAGE2D.wav	text
-steam:321800	lang\it_IT\sounds\FTHIEF2C.wav	text
-steam:321800	lang\it_IT\sounds\Male3y.wav	text
-steam:321800	lang\it_IT\sounds\MFIGHT4M.wav	text
-steam:321800	lang\it_IT\sounds\MMAGE4L.wav	text
+steam:321800	lang\es_ES\sounds\FFIGHT3F.wav	audio
+steam:321800	lang\es_ES\sounds\FMAGE28.wav	audio
+steam:321800	lang\es_ES\sounds\FMAGE5U.wav	audio
+steam:321800	lang\es_ES\sounds\MFIGHT3T.wav	audio
+steam:321800	lang\es_ES\sounds\MMAGE2G.wav	audio
+steam:321800	lang\es_ES\sounds\MTHIEF19.wav	audio
+steam:321800	lang\fr_FR\sounds\FEMALE3S.wav	audio
+steam:321800	lang\fr_FR\sounds\FFIGHT4F.wav	audio
+steam:321800	lang\fr_FR\sounds\FMAGE4E.wav	audio
+steam:321800	lang\fr_FR\sounds\MALE10.wav	audio
+steam:321800	lang\fr_FR\sounds\MFIGHT1T.wav	audio
+steam:321800	lang\fr_FR\sounds\MMAGE1S.wav	audio
+steam:321800	lang\fr_FR\sounds\MMAGE5F.wav	audio
+steam:321800	lang\it_IT\sounds\Female1m.wav	audio
+steam:321800	lang\it_IT\sounds\FFIGHT3L.wav	audio
+steam:321800	lang\it_IT\sounds\FMAGE2D.wav	audio
+steam:321800	lang\it_IT\sounds\FTHIEF2C.wav	audio
+steam:321800	lang\it_IT\sounds\Male3y.wav	audio
+steam:321800	lang\it_IT\sounds\MFIGHT4M.wav	audio
+steam:321800	lang\it_IT\sounds\MMAGE4L.wav	audio
 steam:321800	lang\pl_PL\data\SNDVO.bif	text
-steam:321800	lang\pl_PL\sounds\FFIGHT1E.wav	text
-steam:321800	lang\pl_PL\sounds\FMAGE1D.wav	text
-steam:321800	lang\pl_PL\sounds\FMAGE4_.wav	text
-steam:321800	lang\pl_PL\sounds\MALE2Y.wav	text
-steam:321800	lang\pl_PL\sounds\MFIGHT3L.wav	text
-steam:321800	lang\pl_PL\sounds\MMAGE2E.wav	text
-steam:321800	lang\pl_PL\sounds\MTHIEF2D.wav	text
+steam:321800	lang\pl_PL\sounds\FFIGHT1E.wav	audio
+steam:321800	lang\pl_PL\sounds\FMAGE1D.wav	audio
+steam:321800	lang\pl_PL\sounds\FMAGE4_.wav	audio
+steam:321800	lang\pl_PL\sounds\MALE2Y.wav	audio
+steam:321800	lang\pl_PL\sounds\MFIGHT3L.wav	audio
+steam:321800	lang\pl_PL\sounds\MMAGE2E.wav	audio
+steam:321800	lang\pl_PL\sounds\MTHIEF2D.wav	audio
 steam:321960	Engine\Localization\POL\Engine.pol	text
 steam:321960	MMH7Game\CookedPC\WwiseAudio_H7Data\English(US)\2066760005.wem	none
 steam:321960	MMH7Game\CookedPC\WwiseAudio_H7Data\English(US)\2066823011.wem	none
@@ -8986,18 +8986,18 @@ steam:3286930	movies\hexen\CLUS1MSG_pt-br.srt	text
 steam:3286930	movies\hexen\CLUS2MSG_de.srt	text
 steam:3286930	movies\hexen\CLUS2MSG_fr.srt	text
 steam:3286930	movies\hexen\CLUS2MSG_ko.srt	text
-steam:3286930	movies\hexen\CLUS2MSG_zh-CN.srt	video
+steam:3286930	movies\hexen\CLUS2MSG_zh-CN.srt	text
 steam:3286930	movies\hexen\CLUS3MSG_es-mx.srt	text
 steam:3286930	movies\hexen\CLUS3MSG_it.srt	text
 steam:3286930	movies\hexen\CLUS3MSG_pt-br.srt	text
-steam:3286930	movies\hexen\CLUS3MSG_zh-TW.srt	video
+steam:3286930	movies\hexen\CLUS3MSG_zh-TW.srt	text
 steam:3286930	movies\hexen\CLUS4MSG_fr.srt	text
 steam:3286930	movies\hexen\CLUS4MSG_ko.srt	text
 steam:3286930	movies\hexen\CLUS4MSG_ru.srt	text
 steam:3286930	movies\hexen\FINALE_es-mx.srt	text
 steam:3286930	movies\hexen\FINALE_it.srt	text
 steam:3286930	movies\hexen\FINALE_pl.srt	text
-steam:3286930	movies\hexen\FINALE_zh-TW.srt	video
+steam:3286930	movies\hexen\FINALE_zh-TW.srt	text
 steam:3286930	movies\hexen\INTRO_es.srt	text
 steam:3286930	movies\hexen\INTRO_ko.srt	text
 steam:3286930	movies\hexen\INTRO_ru.srt	text
@@ -10816,18 +10816,18 @@ steam:45300	sound\dialogs_spanish.fev	audio
 steam:45300	sound\russian.fsb	unknown
 steam:45300	sound\speech_it.fsb	audio
 steam:45300	video\battle_of_britain.english.ogg	none
-steam:45300	video\battle_of_britain.italian.ogg	video
+steam:45300	video\battle_of_britain.italian.ogg	audio
 steam:45300	video\berlin.english.ogg	none
-steam:45300	video\berlin.russian.ogg	video
-steam:45300	video\bulge.french.ogg	video
-steam:45300	video\bulge.russian.ogg	video
-steam:45300	video\korsun.german.ogg	video
-steam:45300	video\korsun.spanish.ogg	video
-steam:45300	video\sicily.italian.ogg	video
+steam:45300	video\berlin.russian.ogg	audio
+steam:45300	video\bulge.french.ogg	audio
+steam:45300	video\bulge.russian.ogg	audio
+steam:45300	video\korsun.german.ogg	audio
+steam:45300	video\korsun.spanish.ogg	audio
+steam:45300	video\sicily.italian.ogg	audio
 steam:45300	video\stalingrad.english.ogg	none
-steam:45300	video\stalingrad.italian.ogg	video
-steam:45300	video\victory.french.ogg	video
-steam:45300	video\victory.russian.ogg	video
+steam:45300	video\stalingrad.italian.ogg	audio
+steam:45300	video\victory.french.ogg	audio
+steam:45300	video\victory.russian.ogg	audio
 steam:460930	dlc_10\sounds_dlc_10_ita.pck	unknown
 steam:460930	dlc_20\sounds_dlc_20_eng.pck	none
 steam:460930	dlc_20\sounds_dlc_20_spa.pck	unknown
@@ -11080,12 +11080,12 @@ steam:47700	Support\EA Help\fr-fr\cd_dvd_issues.htm	unknown
 steam:47700	Support\EA Help\fr-fr\Installing_the_game.htm	unknown
 steam:47700	Support\EA Help\fr-fr\Warranty.htm	unknown
 steam:47700	Support\EA Help\Hu\gameplay.jpg	unknown
-steam:47700	Support\EA Help\Hu\Sound_card.htm	audio
+steam:47700	Support\EA Help\Hu\Sound_card.htm	text
 steam:47700	Support\EA Help\It\close.gif	unknown
 steam:47700	Support\EA Help\It\Monitor.htm	unknown
 steam:47700	Support\EA Help\NL\blueback.gif	unknown
 steam:47700	Support\EA Help\NL\Ending_background_tasks.htm	unknown
-steam:47700	Support\EA Help\NL\Updating_your_sound_driver.htm	audio
+steam:47700	Support\EA Help\NL\Updating_your_sound_driver.htm	text
 steam:47700	Support\EA Help\No\Crash_Issues3.htm	unknown
 steam:47700	Support\EA Help\No\r02.gif	unknown
 steam:47700	Support\EA Help\Pol\CD_DVD_Issues.htm	unknown
@@ -11122,7 +11122,7 @@ steam:47780	Support\EA Help\Fi\crashes.htm	unknown
 steam:47780	Support\EA Help\Fi\r01.gif	unknown
 steam:47780	Support\EA Help\fr-fr\bookopen.gif	unknown
 steam:47780	Support\EA Help\fr-fr\gameplay.jpg	unknown
-steam:47780	Support\EA Help\fr-fr\Updating_your_video_driver.htm	video
+steam:47780	Support\EA Help\fr-fr\Updating_your_video_driver.htm	text
 steam:47780	Support\EA Help\Hu\default_ns.css	unknown
 steam:47780	Support\EA Help\Hu\Manually_starting_the_game.htm	unknown
 steam:47780	Support\EA Help\It\CD_DVD_Troubleshooting.htm	unknown
@@ -11144,7 +11144,7 @@ steam:47780	Support\EA Help\Ru\content_n.gif	unknown
 steam:47780	Support\EA Help\Ru\My_game_fails_to_start.htm	unknown
 steam:47780	Support\EA Help\Sv\blue_screen_.htm	unknown
 steam:47780	Support\EA Help\Sv\index_h.gif	unknown
-steam:47780	Support\EA Help\Sv\Updating_your_video_driver.htm	video
+steam:47780	Support\EA Help\Sv\Updating_your_video_driver.htm	text
 steam:47790	Support\EA Help\Da\content_h.gif	unknown
 steam:47790	Support\EA Help\Da\Monitor.htm	unknown
 steam:47790	Support\EA Help\De\black background.JPG	unknown
@@ -11164,7 +11164,7 @@ steam:47790	Support\EA Help\Es\default.css	unknown
 steam:47790	Support\EA Help\Es\install.jpg	unknown
 steam:47790	Support\EA Help\Fi\bookopen.gif	unknown
 steam:47790	Support\EA Help\Fi\Gameplay_Issues.htm	unknown
-steam:47790	Support\EA Help\Fi\Sound_card.htm	audio
+steam:47790	Support\EA Help\Fi\Sound_card.htm	text
 steam:47790	Support\EA Help\fr-fr\directional.gif	unknown
 steam:47790	Support\EA Help\fr-fr\Manually_starting_the_game.htm	unknown
 steam:47790	Support\EA Help\Hu\CD_DVD_Troubleshooting.htm	unknown
@@ -11174,14 +11174,14 @@ steam:47790	Support\EA Help\It\EA_HELP_IT.htm	unknown
 steam:47790	Support\EA Help\It\page.gif	unknown
 steam:47790	Support\EA Help\NL\bookopen.gif	unknown
 steam:47790	Support\EA Help\NL\index_h.gif	unknown
-steam:47790	Support\EA Help\NL\Updating_your_video_driver.htm	video
+steam:47790	Support\EA Help\NL\Updating_your_video_driver.htm	text
 steam:47790	Support\EA Help\No\EA_Logo_White.GIF	unknown
 steam:47790	Support\EA Help\No\r02.gif	unknown
 steam:47790	Support\EA Help\Pol\CD_DVD_Issues.htm	unknown
 steam:47790	Support\EA Help\Pol\install.jpg	unknown
-steam:47790	Support\EA Help\Pol\Video_Card.htm	video
+steam:47790	Support\EA Help\Pol\Video_Card.htm	text
 steam:47790	Support\EA Help\pt\display_settings.htm	unknown
-steam:47790	Support\EA Help\pt\Sound_card.htm	audio
+steam:47790	Support\EA Help\pt\Sound_card.htm	text
 steam:47790	Support\EA Help\pt-br\close.gif	unknown
 steam:47790	Support\EA Help\pt-br\Monitor.htm	unknown
 steam:47790	Support\EA Help\Ru\black background.JPG	unknown
@@ -11211,7 +11211,7 @@ steam:47810	docs\EA Help\fr-fr\welcome.htm	unknown
 steam:47810	docs\EA Help\It\search_n.gif	unknown
 steam:47810	docs\EA Help\No\leftarrow.gif	unknown
 steam:47810	docs\EA Help\pt-br\book_closed.gif	unknown
-steam:47810	docs\EA Help\Ru\Video_Card.htm	video
+steam:47810	docs\EA Help\Ru\Video_Card.htm	text
 steam:47810	modules\single player\audio\vo\en-us\vo\arl100cr_refugee_m.fsb	none
 steam:47810	modules\single player\audio\vo\en-us\vo\bdc120_thug1.fev	none
 steam:47810	modules\single player\audio\vo\en-us\vo\bdn100_silkmerchant.fev	none
@@ -11930,7 +11930,7 @@ steam:50300	SRGame\DLC\PCConsole\DLC1\COOP-Refugees_01_sfx_LOC_RUS.upk	text
 steam:50300	SRGame\DLC\PCConsole\DLC1\Localization\FRA\DLC__OnlineSubsystemPSN.fra	text
 steam:50300	SRGame\DLC\PCConsole\DLC1\Localization\ITA\DLC__SRGame.ita	text
 steam:50300	SRGame\DLC\PCConsole\DLC1\Localization\KOR\DLC__OnlineSubsystemPSN.kor	text
-steam:50300	SRGame\Movies\prologue_m01_transition_noSound.bik	audio
+steam:50300	SRGame\Movies\prologue_m01_transition_noSound.bik	video
 steam:504010	Engine\Content\Internationalization\icudt53l\ar_LB.res	none
 steam:504010	Engine\Content\Internationalization\icudt53l\brkitr\it.res	none
 steam:504010	Engine\Content\Internationalization\icudt53l\coll\nb_NO.res	none
@@ -12038,9 +12038,9 @@ steam:527430	Videos\ENG\Subclasses\Hierophant_spell.webm	none
 steam:527430	Videos\ENG\SubSector2\Solar4\Planet2.webm	none
 steam:527430	Videos\ENG\SubSector4\Solar5.webm	none
 steam:527430	Videos\ENG\Tutorials\Aimed_shots.webm	none
-steam:527430	Videos\ES\chapter4_end_Assassin.srt	video
-steam:527430	Videos\KO\Campaign_Intro_Crusader.srt	video
-steam:527430	Videos\RU\Campaign_Intro_Assassin.srt	video
+steam:527430	Videos\ES\chapter4_end_Assassin.srt	text
+steam:527430	Videos\KO\Campaign_Intro_Crusader.srt	text
+steam:527430	Videos\RU\Campaign_Intro_Assassin.srt	text
 steam:537430	Engine\Content\Internationalization\icudt53l\ar_AE.res	none
 steam:537430	Engine\Content\Internationalization\icudt53l\brkitr\de.res	none
 steam:537430	Engine\Content\Internationalization\icudt53l\coll\el.res	none
@@ -13331,7 +13331,7 @@ steam:70300	lang\es_AR\numbers.xml	text
 steam:70300	lang\es_AR\strings_plural.xml	text
 steam:70300	lang\fr\graphics\sprites.png	unknown
 steam:70300	lang\fr\roomnames.xml	text
-steam:70300	lang\it\cutscenes.xml	video
+steam:70300	lang\it\cutscenes.xml	text
 steam:70300	lang\it\graphics\spritesmask.xml	text
 steam:70300	lang\it\roomnames_special.xml	text
 steam:70300	lang\ja\graphics\flipsprites.png	text
@@ -13342,7 +13342,7 @@ steam:70300	lang\ko\roomnames.xml	text
 steam:70300	lang\ko\strings_plural.xml	text
 steam:70300	lang\nl\graphics\spritesmask.xml	text
 steam:70300	lang\nl\roomnames_special.xml	text
-steam:70300	lang\pl\cutscenes.xml	video
+steam:70300	lang\pl\cutscenes.xml	text
 steam:70300	lang\pl\numbers.xml	text
 steam:70300	lang\pl\strings.xml	text
 steam:70300	lang\pt_BR\graphics\flipsprites.png	text
@@ -13350,7 +13350,7 @@ steam:70300	lang\pt_BR\roomnames.xml	text
 steam:70300	lang\pt_BR\strings_plural.xml	text
 steam:70300	lang\pt_PT\graphics\sprites.png	unknown
 steam:70300	lang\pt_PT\roomnames_special.xml	text
-steam:70300	lang\ru\cutscenes.xml	video
+steam:70300	lang\ru\cutscenes.xml	text
 steam:70300	lang\ru\meta.xml	text
 steam:70300	lang\ru\strings.xml	text
 steam:70300	lang\tr\graphics\flipsprites.png	text
@@ -13358,7 +13358,7 @@ steam:70300	lang\tr\numbers.xml	text
 steam:70300	lang\tr\strings_plural.xml	text
 steam:70300	lang\zh\graphics\sprites.png	unknown
 steam:70300	lang\zh\roomnames.xml	text
-steam:70300	lang\zh_TW\cutscenes.xml	video
+steam:70300	lang\zh_TW\cutscenes.xml	text
 steam:70300	lang\zh_TW\meta.xml	text
 steam:70300	lang\zh_TW\roomnames_special.xml	text
 steam:714070	Entropy Zero\EntropyZero\EntropyZero_german\materials\az\cache_scrawl_1.vtf	none
@@ -13714,9 +13714,9 @@ steam:762840	Maquette_Data\StreamingAssets\Activities-Names_RUS_RU.xml	unknown
 steam:762840	Maquette_Data\StreamingAssets\Closed-Captions_GER_DE.xml	unknown
 steam:762840	Maquette_Data\StreamingAssets\Closed-Captions_KOR_KO.xml	unknown
 steam:762840	Maquette_Data\StreamingAssets\Closed-Captions_POR_PO.xml	unknown
-steam:762840	Maquette_Data\StreamingAssets\Cutscenes_FRE_FR.xml	video
-steam:762840	Maquette_Data\StreamingAssets\Cutscenes_JAP_JA.xml	video
-steam:762840	Maquette_Data\StreamingAssets\Cutscenes_POL_PO.xml	video
+steam:762840	Maquette_Data\StreamingAssets\Cutscenes_FRE_FR.xml	text
+steam:762840	Maquette_Data\StreamingAssets\Cutscenes_JAP_JA.xml	text
+steam:762840	Maquette_Data\StreamingAssets\Cutscenes_POL_PO.xml	text
 steam:762840	Maquette_Data\StreamingAssets\Letter_ENG_US.xml	none
 steam:762840	Maquette_Data\StreamingAssets\Letter_ITA_IT.xml	unknown
 steam:762840	Maquette_Data\StreamingAssets\Letter_POL_PO.xml	unknown
@@ -14372,7 +14372,7 @@ steam:893180	data\puzzle\object\bg_door_01.kf	none
 steam:893180	data\test\nowatari\RAPUNZEL_bg_ps3sp2.sp2	none
 steam:900040	data\extern\assets\Loading_FR_DfA.ddsx	unknown
 steam:900040	data\extern\assets\Loading_PL_DfA.ddsx	unknown
-steam:900040	data\extern\videos\prologue.chinese.srt	video
+steam:900040	data\extern\videos\prologue.chinese.srt	text
 steam:900040	data\extern\videos\prologue.german.bik	video
 steam:900040	data\extern\videos\prologue.japanese.srt	text
 steam:900040	data\extern\videos\prologue.russian.srt	text
@@ -14380,7 +14380,7 @@ steam:900040	data\packed\c_0_pl.pak	unknown
 steam:900040	data\packed\c_1_pl.pak	unknown
 steam:900040	ELEX2DX11\data\extern\assets\Loading_FR_DfA.dds	unknown
 steam:900040	ELEX2DX11\data\extern\assets\Loading_PL_DfA.dds	unknown
-steam:900040	ELEX2DX11\data\extern\videos\prologue.chinese.srt	video
+steam:900040	ELEX2DX11\data\extern\videos\prologue.chinese.srt	text
 steam:900040	ELEX2DX11\data\extern\videos\prologue.german.bik	video
 steam:900040	ELEX2DX11\data\extern\videos\prologue.japanese.srt	text
 steam:900040	ELEX2DX11\data\extern\videos\prologue.russian.srt	text
