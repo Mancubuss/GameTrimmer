@@ -300,6 +300,26 @@ mod tests {
     }
 
     #[test]
+    fn classify_matches_legal_text_folders_without_an_extension() {
+        // Found by the 2026-07-26 corpus review: these were the only four
+        // rows it tagged as documentation that no rule reached. The files
+        // themselves are named after the language and carry no extension
+        // (`TermsOfService\de`), so only a folder rule with no extension
+        // filter can see them.
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        for path in [
+            "Siren\\Content\\Data\\TermsOfService\\de",
+            "Siren\\Content\\Data\\PrivacyPolicy\\pt",
+        ] {
+            let finding = engine
+                .classify(path)
+                .unwrap_or_else(|| panic!("{path} should be classified as documentation"));
+            assert_eq!(finding.category, Category::DocsFolder);
+        }
+    }
+
+    #[test]
     fn classify_returns_none_for_unremarkable_game_content() {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 

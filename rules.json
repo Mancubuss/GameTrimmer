@@ -253,6 +253,13 @@
     "max_depth": 2
   },
   {
+    "category": "docs_folder",
+    "pattern": "^(privacy\\s?policy|terms\\s?of\\s?service|terms\\s?of\\s?use)$",
+    "desc": "Юридичні тексти (політика приватності, умови користування)",
+    "confidence": 80,
+    "max_depth": 6
+  },
+  {
     "category": "dev_leftovers",
     "pattern": "^(thumbs\\.db|testapp.*\\.exe)$",
     "desc": "Залишки розробки (кеш Thumbs.db, тестові виконувані файли)",
