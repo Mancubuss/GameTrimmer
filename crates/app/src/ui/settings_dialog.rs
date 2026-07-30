@@ -1,5 +1,5 @@
 //! The settings dialog. Each change is applied and persisted immediately
-//! (see `GameTrimmerApp::set_delete_method`), so "Закрити" only dismisses
+//! (see `GameTrimmerApp::set_delete_method`), so "Close" only dismisses
 //! the dialog - there is no separate save step to forget.
 //!
 //! Sections are split into two tiers (GT-13): the choices a user actually
@@ -10,7 +10,7 @@
 //! touched. Everything else is a technical knob a newcomer doesn't need to
 //! see by default (scan-routing mode - see `gametrimmer_core::settings::ScanRouting`
 //! and `crate::worker::scan_route` -, database maintenance
-//! ("Стиснути базу даних"), analysis rule packs (export/import - see
+//! ("Compact database"), analysis rule packs (export/import - see
 //! docs/05_rules_pack_plan.md), and diagnostic logging), so it lives behind
 //! a collapsed-by-default "Advanced" section instead of competing for
 //! attention on first open.
@@ -382,7 +382,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     });
 
     // Esc (when this is the top modal and no popup is open) or a click on the
-    // backdrop dismisses the dialog, same as the "Закрити" button - closing is
+    // backdrop dismisses the dialog, same as the "Close" button - closing is
     // non-destructive because every setting is already applied and persisted
     // as it changes (see the module docs). `should_close` consumes the Escape
     // key press, so it never leaks to any other handler.

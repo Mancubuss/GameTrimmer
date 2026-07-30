@@ -207,8 +207,8 @@ fn show_column_headers(ui: &mut egui::Ui, lang: Lang) {
     );
 }
 
-/// Lays out one row as [flexible left part | Мова | Файлів | Розмір |
-/// Довіра], with the four fixed-width columns right-aligned against the
+/// Lays out one row as [flexible left part | Language | Files | Size |
+/// Confidence], with the four fixed-width columns right-aligned against the
 /// panel edge. Every row (headers and files alike) goes through this, which
 /// is what keeps the table aligned without a real grid widget.
 fn row_columns(
@@ -308,7 +308,7 @@ fn build_visible_rows(
     for (d, disk_group) in tree.iter().enumerate() {
         // Under a plan-card filter or a name search, a disk (and each game)
         // with nothing left to show is skipped entirely rather than shown as an
-        // empty header, so "Переглянути" lands on exactly that category's
+        // empty header, so the "View" action lands on exactly that category's
         // findings and a search shows only branches that contain a hit.
         if !disk_matches_filter(disk_group, filter) {
             continue;

@@ -1,4 +1,4 @@
-//! The "Стиснути базу даних" job: cheaply folds the WAL back into the main
+//! The "Compact database" job: cheaply folds the WAL back into the main
 //! file, then estimates the reclaimable share via
 //! `gametrimmer_core::db::free_page_fraction`. `VACUUM` (via
 //! `gametrimmer_core::db::compact_observed`) only runs when that share

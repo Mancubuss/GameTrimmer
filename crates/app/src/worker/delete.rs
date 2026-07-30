@@ -1,4 +1,4 @@
-//! The "Видалити вибране" job: removes the given files using the method
+//! The "Delete Selected" job: removes the given files using the method
 //! chosen in settings (permanent delete by default, or the Recycle Bin)
 //! and journals every attempt via `gametrimmer_core::ops`.
 

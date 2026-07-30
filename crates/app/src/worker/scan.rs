@@ -1,4 +1,4 @@
-//! The "Сканувати бібліотеки" job: discover Steam libraries, persist them,
+//! The "Scan Libraries" job: discover Steam libraries, persist them,
 //! then scan and classify every game's files. Runs entirely on a
 //! background thread; the only database connection used here is opened
 //! and dropped within this thread.
@@ -1718,7 +1718,7 @@ mod tests {
 
     /// `classify_game` itself must honor a pre-set cancel flag - this is the
     /// MFT branch's guarantee (it skips the walk and calls `classify_game`
-    /// directly), and the reason the "Аналіз" phase of a huge game (ARK) can
+    /// directly), and the reason the "Analysis" phase of a huge game (ARK) can
     /// now be stopped. With the flag already set, the first `collect_cancellable`
     /// checkpoint inside `analyze_game_cancellable` fires before any real work.
     #[test]

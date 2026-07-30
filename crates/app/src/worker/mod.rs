@@ -98,10 +98,10 @@ pub enum WorkerMsg {
     /// A non-fatal issue during scanning (one provider failed, or a manual
     /// library's folder is currently missing) - the scan continues.
     Warning { msg: String },
-    /// The background "Додати теку..." folder picker finished. `None` means
+    /// The background "Add Folder..." folder picker finished. `None` means
     /// the user cancelled the dialog.
     FolderPicked { path: Option<PathBuf> },
-    /// The background "Експортувати..." export finished. `path` is `None`
+    /// The background "Export..." export finished. `path` is `None`
     /// when the user cancelled the save dialog (in which case `error` is
     /// also `None`); `error` is set if the save dialog returned a path but
     /// writing the CSV failed.
@@ -109,21 +109,21 @@ pub enum WorkerMsg {
         path: Option<PathBuf>,
         error: Option<String>,
     },
-    /// The background «Експортувати правила» job finished. `path` is the
+    /// The background "Export Rules" job finished. `path` is the
     /// folder the two pack files were written into; `path` and `error` both
     /// `None` means the user cancelled the folder picker.
     RulesExportDone {
         path: Option<PathBuf>,
         error: Option<String>,
     },
-    /// The background «Імпортувати правила» job finished. `summary` is the
-    /// ready-to-show Ukrainian merge summary; `summary` and `error` both
+    /// The background "Import Rules" job finished. `summary` is the
+    /// ready-to-show merge summary; `summary` and `error` both
     /// `None` means the user cancelled the file picker.
     RulesImportDone {
         summary: Option<String>,
         error: Option<String>,
     },
-    /// The background "Стиснути базу даних" job finished.
+    /// The background "Compact database" job finished.
     CompactDone {
         error: Option<String>,
         /// The reclaimable share was below the worthwhile threshold, so
