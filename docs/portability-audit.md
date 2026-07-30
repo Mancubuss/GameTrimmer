@@ -172,7 +172,7 @@ resource.set_manifest_file("assets/gametrimmer.manifest");
 ```xml
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="GameTrimmer.GameTrimmer" version="1.1.0.0" processorArchitecture="*"/>
+  <assemblyIdentity type="win32" name="GameTrimmer.GameTrimmer" version="1.0.0.0" processorArchitecture="*"/>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
