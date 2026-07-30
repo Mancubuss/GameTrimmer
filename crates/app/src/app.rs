@@ -168,7 +168,7 @@ pub struct GameTrimmerApp {
     pub tree_viewport_height: f32,
     /// Active "plan of action" card filter (GT-03): when `Some`, the findings
     /// tree shows only that display category (the user clicked a card's
-    /// "Переглянути"). `None` = the full tree. UI-only; never persisted, and
+    /// "View" button). `None` = the full tree. UI-only; never persisted, and
     /// cleared whenever a fresh tree is built.
     pub tree_category_filter: Option<model::DisplayCategory>,
     /// Name search text (GT-18), as typed. UI-only, never persisted, and
@@ -182,10 +182,10 @@ pub struct GameTrimmerApp {
     /// Every registered library (all vendors), for the library management
     /// list. Refreshed after every add/remove and on startup.
     pub libraries: Vec<LibraryRow>,
-    /// True while the background "Додати теку..." folder-picker thread is
+    /// True while the background "Add Folder..." folder-picker thread is
     /// running, so the button can't be clicked twice concurrently.
     pub folder_picker_active: bool,
-    /// True while the background "Експортувати..." save-dialog thread is
+    /// True while the background "Export..." save-dialog thread is
     /// running, so the button can't be clicked twice concurrently.
     pub export_active: bool,
     /// True while a background rules export/import thread (its file dialog
@@ -224,7 +224,7 @@ pub struct GameTrimmerApp {
     /// after a delete (see `RemoveDone`), rather than triggered manually via
     /// the settings dialog (`start_compact`). Read (and reset) by the
     /// `CompactDone` arm to decide whether its status message should be
-    /// prefixed with a "Видалення завершено." note - a manual compaction
+    /// prefixed with a "Deletion complete" note - a manual compaction
     /// never gets that prefix.
     compact_after_delete: bool,
 
@@ -338,7 +338,7 @@ impl GameTrimmerApp {
 
         // Show the previous scan's results immediately rather than an empty
         // screen: if the database already holds at least one `findings` row
-        // (from an earlier "Сканувати бібліотеки" run), load and display it
+        // (from an earlier "Scan Libraries" run), load and display it
         // right away. A missing db_path, a database that fails to open, or
         // one with no saved findings yet all fall through unchanged - the
         // ordinary empty startup screen, waiting for the user to scan.
@@ -630,7 +630,7 @@ impl GameTrimmerApp {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// Selects every non-removed finding (the "Вибрати все" action).
+    /// Selects every non-removed finding (the "Select All" action).
     pub fn select_all(&mut self) {
         for item in &mut self.findings {
             if !item.removed {
@@ -639,7 +639,7 @@ impl GameTrimmerApp {
         }
     }
 
-    /// Deselects every finding (the "Зняти вибір" action).
+    /// Deselects every finding (the "Deselect All" action).
     pub fn deselect_all(&mut self) {
         for item in &mut self.findings {
             item.selected = false;
@@ -674,7 +674,7 @@ impl GameTrimmerApp {
     }
 
     /// Focuses the findings tree on a single display category (GT-03: a plan
-    /// card's "Переглянути"), or clears the filter with `None`. Resets the
+    /// card's "View" button), or clears the filter with `None`. Resets the
     /// keyboard cursor, since the set of visible rows changes.
     pub fn set_category_filter(&mut self, filter: Option<DisplayCategory>) {
         self.tree_category_filter = filter;
@@ -703,7 +703,7 @@ impl GameTrimmerApp {
     }
 
     /// Opens the delete confirmation for every non-removed finding in one
-    /// display category (GT-03: a plan card's "Прибрати"). Unlike
+    /// display category (GT-03: a plan card's "Remove" action). Unlike
     /// [`Self::request_delete_confirmation`], it acts on the whole category
     /// regardless of the current checkbox selection, so the card is a
     /// self-contained action. No-op if the category is empty.

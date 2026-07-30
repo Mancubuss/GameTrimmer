@@ -1,6 +1,6 @@
 //! The startup "load previous scan" job: reads whatever `games`/`files`/
-//! `findings` rows already exist in the database (from a prior "Сканувати
-//! бібліотеки" run) and turns them back into [`FindingRow`]s, so the app can
+//! `findings` rows already exist in the database (from a prior "Scan
+//! Libraries" run) and turns them back into [`FindingRow`]s, so the app can
 //! show results immediately instead of an empty screen. Runs on a background
 //! thread exactly like [`super::scan`], communicating back through the same
 //! [`WorkerMsg::Done`] the scan worker uses.

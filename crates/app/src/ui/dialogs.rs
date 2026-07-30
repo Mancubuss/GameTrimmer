@@ -311,7 +311,7 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     });
 
     // Esc / backdrop click dismisses this informational summary, same as the
-    // "Закрити" button - it reports an already-completed operation, so closing
+    // "Close" button - it reports an already-completed operation, so closing
     // it has no side effects. `should_close` consumes the Escape press.
     if modal.should_close() {
         close = true;
