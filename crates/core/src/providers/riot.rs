@@ -2,9 +2,21 @@
 //! `%ProgramData%\Riot Games\Metadata\<product>.<region>\
 //! <product>.<region>.product_settings.yaml`.
 //!
-//! Only the `product_install_full_path` line is needed, so the YAML is read
-//! with a targeted line scan rather than a full YAML parser (no extra
-//! dependency; the file is machine-written and flat).
+//! Two lines are needed, so the YAML is read with a targeted line scan rather
+//! than a full YAML parser (no extra dependency; the file is machine-written
+//! and flat):
+//!
+//! ```text
+//! product_install_full_path: "H:/Riot Games/VALORANT/live"
+//! product_install_root: "H:/Riot Games"
+//! ```
+//!
+//! The root matters because Riot installs games as `<root>\<game>\<channel>` -
+//! that trailing `live`/`pbe` channel folder *is* the install dir. Deriving the
+//! library from the install dir's parent (as every other provider does) would
+//! therefore name `H:\Riot Games\VALORANT` a library, one level too deep, and
+//! the vendor-folder scan's `H:\Riot Games` would not merge with it - Riot then
+//! shows up twice. Riot states the real root itself, so it is used verbatim.
 
 use std::path::{Path, PathBuf};
 
@@ -15,9 +27,24 @@ use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
 const METADATA_RELATIVE_PATH: &str = r"Riot Games\Metadata";
 const DEFAULT_PROGRAM_DATA: &str = r"C:\ProgramData";
 const INSTALL_PATH_KEY: &str = "product_install_full_path:";
+const INSTALL_ROOT_KEY: &str = "product_install_root:";
 
 /// Metadata entries that are launcher infrastructure, not games.
+///
+/// Riot is not consistent about how it names these directories: the client's
+/// own metadata folder is literally `Riot Client` (no region suffix, a space
+/// rather than an underscore), while game folders are `<slug>.<region>` with
+/// underscore-separated slugs. Comparison therefore normalizes spaces to
+/// underscores - matching only `riot_client` let the client itself through as
+/// a "game", so the launcher's own install showed up as a second library
+/// beside the real one.
 const NON_GAME_SLUGS: &[&str] = &["riot_client"];
+
+/// A metadata directory's slug, normalized for comparison against
+/// [`NON_GAME_SLUGS`]: lowercase, with spaces folded to underscores.
+fn normalized_slug(slug: &str) -> String {
+    slug.trim().to_ascii_lowercase().replace(' ', "_")
+}
 
 pub struct RiotProvider;
 
@@ -33,16 +60,56 @@ impl LibraryProvider for RiotProvider {
             return Ok(Vec::new());
         };
 
-        let games: Vec<GameInstall> = entries
+        let products: Vec<ProductEntry> = entries
             .flatten()
             .map(|entry| entry.path())
             .filter(|path| path.is_dir())
-            .filter_map(|product_dir| read_product_game(&product_dir))
-            .filter(|game| game.install_dir.is_dir())
+            .filter_map(|product_dir| read_product(&product_dir))
+            .filter(|product| product.game.install_dir.is_dir())
             .collect();
 
-        Ok(super::group_by_parent_dir("riot", games))
+        Ok(group_by_declared_root(products))
     }
+}
+
+/// One product's metadata: the game, plus the library root Riot itself declared
+/// for it (absent only if the settings file omitted the key).
+struct ProductEntry {
+    game: GameInstall,
+    root: Option<PathBuf>,
+}
+
+/// Groups products into libraries by the root Riot declared, falling back to
+/// the install dir's parent when a settings file has no `product_install_root`
+/// (never seen in practice - the fallback exists so a missing key degrades to
+/// the old behaviour rather than dropping the game).
+fn group_by_declared_root(products: Vec<ProductEntry>) -> Vec<DiscoveredLibrary> {
+    let mut libraries: Vec<DiscoveredLibrary> = Vec::new();
+
+    for product in products {
+        let root = match product.root {
+            Some(root) => root,
+            None => match product.game.install_dir.parent() {
+                Some(parent) => parent.to_path_buf(),
+                None => continue,
+            },
+        };
+
+        let existing = libraries.iter_mut().find(|library| {
+            library.path.to_string_lossy().to_lowercase() == root.to_string_lossy().to_lowercase()
+        });
+
+        match existing {
+            Some(library) => library.games.push(product.game),
+            None => libraries.push(DiscoveredLibrary {
+                vendor: "riot",
+                path: root,
+                games: vec![product.game],
+            }),
+        }
+    }
+
+    libraries
 }
 
 fn program_data_dir() -> PathBuf {
@@ -51,38 +118,42 @@ fn program_data_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_PROGRAM_DATA))
 }
 
-/// Reads one `Metadata\<product>.<region>` directory into a `GameInstall`,
+/// Reads one `Metadata\<product>.<region>` directory into a [`ProductEntry`],
 /// if it describes an installed game.
-fn read_product_game(product_dir: &Path) -> Option<GameInstall> {
+fn read_product(product_dir: &Path) -> Option<ProductEntry> {
     let dir_name = product_dir.file_name()?.to_string_lossy().into_owned();
     let slug = dir_name.split('.').next().unwrap_or(&dir_name);
 
+    let normalized = normalized_slug(slug);
     if NON_GAME_SLUGS
         .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(slug))
+        .any(|excluded| *excluded == normalized)
     {
         return None;
     }
 
     let settings_path = product_dir.join(format!("{dir_name}.product_settings.yaml"));
     let contents = std::fs::read_to_string(settings_path).ok()?;
-    let install_path = extract_install_path(&contents)?;
+    let install_path = extract_path(&contents, INSTALL_PATH_KEY)?;
     let path = PathBuf::from(install_path);
 
-    Some(GameInstall {
-        name: display_name_for(slug, &path),
-        install_dir: path,
-        app_id: Some(dir_name),
+    Some(ProductEntry {
+        game: GameInstall {
+            name: display_name_for(slug, &path),
+            install_dir: path,
+            app_id: Some(dir_name),
+        },
+        root: extract_path(&contents, INSTALL_ROOT_KEY).map(PathBuf::from),
     })
 }
 
-/// Extracts `product_install_full_path` from the settings YAML: a flat
-/// `key: "value"` line with forward slashes in the value.
-fn extract_install_path(yaml: &str) -> Option<String> {
+/// Extracts one `key: "value"` line from the settings YAML - a flat file whose
+/// path values use forward slashes.
+fn extract_path(yaml: &str, key: &str) -> Option<String> {
     let raw = yaml
         .lines()
         .map(str::trim)
-        .find_map(|line| line.strip_prefix(INSTALL_PATH_KEY))?
+        .find_map(|line| line.strip_prefix(key))?
         .trim()
         .trim_matches('"');
 
@@ -109,37 +180,117 @@ fn display_name_for(slug: &str, install_dir: &Path) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn extract_install_path_reads_quoted_forward_slash_path() {
-        let yaml = concat!(
-            "channel: live\n",
-            "product_install_full_path: \"F:/Riot Games/VALORANT/live\"\n",
-            "product_install_root: \"F:/Riot Games\"\n",
-        );
+    /// Verbatim shape of a real `valorant.live.product_settings.yaml`.
+    const VALORANT_YAML: &str = concat!(
+        "channel: live\n",
+        "product_install_full_path: \"H:/Riot Games/VALORANT/live\"\n",
+        "product_install_root: \"H:/Riot Games\"\n",
+    );
 
+    #[test]
+    fn extract_path_reads_quoted_forward_slash_path() {
         assert_eq!(
-            extract_install_path(yaml).as_deref(),
-            Some(r"F:\Riot Games\VALORANT\live")
+            extract_path(VALORANT_YAML, INSTALL_PATH_KEY).as_deref(),
+            Some(r"H:\Riot Games\VALORANT\live")
+        );
+    }
+
+    /// The line the provider used to ignore, which is why Riot appeared twice.
+    #[test]
+    fn extract_path_reads_the_declared_install_root() {
+        assert_eq!(
+            extract_path(VALORANT_YAML, INSTALL_ROOT_KEY).as_deref(),
+            Some(r"H:\Riot Games")
         );
     }
 
     #[test]
-    fn extract_install_path_reads_unquoted_value() {
+    fn extract_path_reads_unquoted_value() {
         let yaml = "product_install_full_path: C:/Riot Games/League of Legends\n";
         assert_eq!(
-            extract_install_path(yaml).as_deref(),
+            extract_path(yaml, INSTALL_PATH_KEY).as_deref(),
             Some(r"C:\Riot Games\League of Legends")
         );
     }
 
     #[test]
-    fn extract_install_path_returns_none_when_key_absent() {
-        assert!(extract_install_path("channel: live\n").is_none());
+    fn extract_path_returns_none_when_key_absent() {
+        assert!(extract_path("channel: live\n", INSTALL_PATH_KEY).is_none());
+        assert!(extract_path(VALORANT_YAML, "no_such_key:").is_none());
     }
 
     #[test]
-    fn extract_install_path_returns_none_for_empty_value() {
-        assert!(extract_install_path("product_install_full_path: \"\"\n").is_none());
+    fn extract_path_returns_none_for_empty_value() {
+        assert!(extract_path("product_install_full_path: \"\"\n", INSTALL_PATH_KEY).is_none());
+    }
+
+    fn product(name: &str, install_dir: &str, root: Option<&str>) -> ProductEntry {
+        ProductEntry {
+            game: GameInstall {
+                name: name.to_string(),
+                install_dir: PathBuf::from(install_dir),
+                app_id: None,
+            },
+            root: root.map(PathBuf::from),
+        }
+    }
+
+    /// The bug in one assertion: grouping by the install dir's parent gives
+    /// `H:\Riot Games\VALORANT`, which the vendor-folder scan's `H:\Riot Games`
+    /// then cannot merge with, so Riot is listed twice.
+    #[test]
+    fn group_by_declared_root_uses_the_root_not_the_channel_folders_parent() {
+        let libraries = group_by_declared_root(vec![product(
+            "VALORANT",
+            r"H:\Riot Games\VALORANT\live",
+            Some(r"H:\Riot Games"),
+        )]);
+
+        assert_eq!(libraries.len(), 1);
+        assert_eq!(libraries[0].path, PathBuf::from(r"H:\Riot Games"));
+        assert_eq!(libraries[0].games.len(), 1);
+    }
+
+    #[test]
+    fn group_by_declared_root_puts_several_games_of_one_root_together() {
+        let libraries = group_by_declared_root(vec![
+            product(
+                "VALORANT",
+                r"H:\Riot Games\VALORANT\live",
+                Some(r"H:\Riot Games"),
+            ),
+            product(
+                "League of Legends",
+                r"h:\riot games\League of Legends\live",
+                Some(r"h:\riot games"),
+            ),
+        ]);
+
+        assert_eq!(libraries.len(), 1, "same root, different case");
+        assert_eq!(libraries[0].games.len(), 2);
+    }
+
+    #[test]
+    fn group_by_declared_root_splits_distinct_roots() {
+        let libraries = group_by_declared_root(vec![
+            product("A", r"H:\Riot Games\A\live", Some(r"H:\Riot Games")),
+            product("B", r"F:\Riot\B\live", Some(r"F:\Riot")),
+        ]);
+
+        assert_eq!(libraries.len(), 2);
+    }
+
+    /// No declared root: fall back to the old behaviour rather than lose the
+    /// game entirely.
+    #[test]
+    fn group_by_declared_root_falls_back_to_the_install_dirs_parent() {
+        let libraries = group_by_declared_root(vec![product(
+            "VALORANT",
+            r"H:\Riot Games\VALORANT\live",
+            None,
+        )]);
+
+        assert_eq!(libraries[0].path, PathBuf::from(r"H:\Riot Games\VALORANT"));
     }
 
     #[test]
@@ -151,6 +302,22 @@ mod tests {
             "League of Legends"
         );
         assert_eq!(display_name_for("bacon", &dir), "Legends of Runeterra");
+    }
+
+    /// The shape actually on disk: `%ProgramData%\Riot Games\Metadata\
+    /// Riot Client` - a space, no region suffix - which an exact match against
+    /// `riot_client` misses, registering the launcher itself as a game.
+    #[test]
+    fn normalized_slug_folds_the_riot_client_folder_onto_its_slug() {
+        assert_eq!(normalized_slug("Riot Client"), "riot_client");
+        assert_eq!(normalized_slug("riot_client"), "riot_client");
+        assert_eq!(normalized_slug("RIOT CLIENT"), "riot_client");
+    }
+
+    #[test]
+    fn normalized_slug_leaves_game_slugs_alone() {
+        assert_eq!(normalized_slug("valorant"), "valorant");
+        assert_eq!(normalized_slug("league_of_legends"), "league_of_legends");
     }
 
     #[test]
