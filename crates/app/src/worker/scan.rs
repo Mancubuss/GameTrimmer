@@ -207,6 +207,10 @@ fn run_scan(
     // folder - e.g. the Epic manifests and the vendor-folder scan both find
     // F:\Epic. Merge them so persist_libraries sees each library once.
     let libraries = providers::merge_libraries_by_path(libraries);
+    // Two providers can also describe the same *game* under libraries whose
+    // roots differ (an EA-published game installed into a Steam library), which
+    // merging by root cannot catch.
+    let libraries = providers::dedupe_games_across_libraries(libraries);
 
     if libraries.is_empty() {
         send_error(notifier, i18n::no_libraries_found(lang));
