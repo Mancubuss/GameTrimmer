@@ -7,6 +7,7 @@ mod export;
 mod i18n;
 mod logger;
 mod model;
+mod search;
 mod ui;
 mod worker;
 

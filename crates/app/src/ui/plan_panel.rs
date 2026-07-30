@@ -26,6 +26,11 @@ use crate::model::{self, format_size, DisplayCategory};
 /// rebuilt to avoid.
 const SUMMARY_WIDTH_SHARE: f32 = 0.5;
 
+/// Width the name search field asks for. Capped against the space actually
+/// left on the row, so on a narrow window it shrinks instead of pushing the
+/// category controls off the edge.
+const SEARCH_WIDTH_PX: f32 = 220.0;
+
 /// Renders the plan summary row directly into `ui` (the caller owns the
 /// enclosing panel). A no-op when there are no findings, so nothing is drawn -
 /// and no separator - on the empty startup screen.
@@ -44,6 +49,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     // rendering, applied only after the widgets are laid out.
     let mut new_filter: Option<Option<DisplayCategory>> = None;
     let mut remove_category: Option<DisplayCategory> = None;
+    let mut new_search: Option<String> = None;
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -101,6 +107,25 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             }
             ui.small(i18n::plan_risk_label(lang, model::category_risk(category)));
         }
+
+        // Name search (GT-18) rides at the row's right edge rather than after
+        // the category controls: laid out right-to-left it keeps its own width
+        // as the window narrows, and the summary label to its left - which
+        // already truncates - is what gives way. Searching by name and
+        // filtering by category are separate axes, so both live in this one
+        // row instead of costing the tree another line of height.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut query = app.tree_search.clone();
+            let width = ui.available_width().min(SEARCH_WIDTH_PX);
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .desired_width(width)
+                    .hint_text(s.search_hint),
+            );
+            if response.changed() {
+                new_search = Some(query);
+            }
+        });
     });
     ui.add_space(4.0);
     // Divider between the summary row and the tree that follows in the same
@@ -112,5 +137,8 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     }
     if let Some(category) = remove_category {
         app.request_delete_for_category(category);
+    }
+    if let Some(query) = new_search {
+        app.set_search_query(query);
     }
 }

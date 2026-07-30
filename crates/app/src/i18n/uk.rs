@@ -25,6 +25,7 @@ pub(super) const STRINGS: Strings = Strings {
     plan_filter_label: "Показувати:",
     plan_filter_all: "усі категорії",
     btn_remove_category: "Прибрати всю категорію",
+    search_hint: "Пошук за назвою\u{2026}",
 
     elevation_heading: "Пришвидшити сканування?",
     elevation_body: "Швидке сканування читає файлову таблицю NTFS ($MFT) напряму, як інструмент \

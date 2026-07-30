@@ -20,6 +20,7 @@ use crate::export;
 use crate::i18n;
 use crate::logger;
 use crate::model::{self, DiskGroup, DisplayCategory, FindingItem};
+use crate::search;
 use crate::ui;
 use crate::worker::delete::DeleteItem;
 use crate::worker::manual::{self, LibraryRow};
@@ -170,6 +171,13 @@ pub struct GameTrimmerApp {
     /// "Переглянути"). `None` = the full tree. UI-only; never persisted, and
     /// cleared whenever a fresh tree is built.
     pub tree_category_filter: Option<model::DisplayCategory>,
+    /// Name search text (GT-18), as typed. UI-only, never persisted, and
+    /// cleared whenever a fresh tree is built - a query from the previous
+    /// result set would silently hide most of the new one.
+    pub tree_search: String,
+    /// Which findings `tree_search` matches. Rebuilt only when the query or
+    /// the findings change, never per frame - see `search::SearchIndex`.
+    pub tree_search_index: search::SearchIndex,
 
     /// Every registered library (all vendors), for the library management
     /// list. Refreshed after every add/remove and on startup.
@@ -311,6 +319,8 @@ impl GameTrimmerApp {
             tree_scroll_offset: 0.0,
             tree_viewport_height: 0.0,
             tree_category_filter: None,
+            tree_search: String::new(),
+            tree_search_index: search::SearchIndex::default(),
             libraries,
             folder_picker_active: false,
             export_active: false,
@@ -669,6 +679,27 @@ impl GameTrimmerApp {
     pub fn set_category_filter(&mut self, filter: Option<DisplayCategory>) {
         self.tree_category_filter = filter;
         self.tree_cursor = None;
+    }
+
+    /// Applies a new name-search query (GT-18), rebuilding the match index.
+    /// No-op when the text is unchanged, so the index is not rebuilt on frames
+    /// where the user merely clicked into the field. Resets the keyboard
+    /// cursor for the same reason [`Self::set_category_filter`] does: the set
+    /// of visible rows changes under it.
+    pub fn set_search_query(&mut self, query: String) {
+        if query == self.tree_search {
+            return;
+        }
+        self.tree_search_index = search::SearchIndex::build(&query, &self.findings);
+        self.tree_search = query;
+        self.tree_cursor = None;
+    }
+
+    /// Drops any active search - used when a fresh result set replaces the one
+    /// the query was built against.
+    fn clear_search(&mut self) {
+        self.tree_search.clear();
+        self.tree_search_index = search::SearchIndex::default();
     }
 
     /// Opens the delete confirmation for every non-removed finding in one
@@ -1070,6 +1101,9 @@ impl GameTrimmerApp {
                 // A fresh result set means the previous plan-card filter (if
                 // any) may no longer have matching findings - start unfiltered.
                 self.tree_category_filter = None;
+                // Same for the name search: its match index is keyed by
+                // position in the old findings list, so it is meaningless now.
+                self.clear_search();
                 self.status_message = i18n::scan_done_status(lang, &scan_summary, count);
             }
             WorkerMsg::FileRemoved { file_id } => {
@@ -1300,6 +1334,7 @@ impl GameTrimmerApp {
                         self.tree_dirty = false;
                         self.tree_toggles.clear();
                         self.tree_cursor = None;
+                        self.clear_search();
                         self.remove_summary = None;
                         self.last_scan_timing = None;
                         self.status_message = i18n::strings(lang).database_cleared.to_string();

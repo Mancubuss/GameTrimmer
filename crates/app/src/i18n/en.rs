@@ -26,6 +26,7 @@ pub(super) const STRINGS: Strings = Strings {
     plan_filter_label: "Show:",
     plan_filter_all: "all categories",
     btn_remove_category: "Clean up whole category",
+    search_hint: "Search by name\u{2026}",
 
     elevation_heading: "Speed up scanning?",
     elevation_body: "Fast scanning reads the NTFS file table ($MFT) directly, like the Everything \
