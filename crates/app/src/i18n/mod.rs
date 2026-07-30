@@ -51,6 +51,8 @@ pub struct Strings {
     /// Deletes every finding of the currently selected category. Only offered
     /// while a category is selected, so it can never mean "delete everything".
     pub btn_remove_category: &'static str,
+    /// Placeholder inside the empty name-search field (GT-18).
+    pub search_hint: &'static str,
 
     // -- dialogs --
     pub elevation_heading: &'static str,

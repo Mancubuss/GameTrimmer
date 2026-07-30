@@ -47,6 +47,7 @@ use crate::model::{
     is_orphan_branch, set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem,
     GameNode, TreeNode, AUTO_SELECT_CONFIDENCE_THRESHOLD,
 };
+use crate::search::SearchIndex;
 use crate::ui::row_actions;
 
 /// Horizontal indent per nesting level (disk = 0, game = 1, category = 2,
@@ -127,13 +128,23 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             || app.show_elevation_prompt;
         let mut scroll_override = None;
         if !modal_open {
-            let rows = build_visible_rows(&app.tree, &app.tree_toggles, app.tree_category_filter);
+            let rows = build_visible_rows(
+                &app.tree,
+                &app.tree_toggles,
+                app.tree_category_filter,
+                &app.tree_search_index,
+            );
             scroll_override = handle_keyboard(app, ui, &rows, row_stride);
         }
 
         // Rebuilt after key handling: expanding/collapsing above changes
         // which rows are visible.
-        let rows = build_visible_rows(&app.tree, &app.tree_toggles, app.tree_category_filter);
+        let rows = build_visible_rows(
+            &app.tree,
+            &app.tree_toggles,
+            app.tree_category_filter,
+            &app.tree_search_index,
+        );
         if let Some(cursor) = app.tree_cursor {
             if cursor >= rows.len() {
                 app.tree_cursor = rows.len().checked_sub(1);
@@ -268,18 +279,45 @@ fn disk_matches_filter(disk_group: &DiskGroup, filter: Option<DisplayCategory>) 
         .any(|game| game_matches_filter(game, filter))
 }
 
+/// Whether a game still has content under the active name search (GT-18).
+///
+/// Real games answer this in O(1) from the pre-built id set. The orphan branch
+/// cannot: every disk's branch shares the one [`is_orphan_branch`] sentinel id,
+/// so the id-keyed answer would light up every disk's branch as soon as any one
+/// of them matched. Its findings are the launcher-residue leftovers - few
+/// enough to scan directly.
+fn game_matches_search(game: &GameNode, search: &SearchIndex) -> bool {
+    if !search.is_active() {
+        return true;
+    }
+    if is_orphan_branch(game.game_id) {
+        search.any_matches(&game.all_indices)
+    } else {
+        search.game_matches(game.game_id)
+    }
+}
+
 fn build_visible_rows(
     tree: &[DiskGroup],
     toggles: &HashMap<String, bool>,
     filter: Option<DisplayCategory>,
+    search: &SearchIndex,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
 
     for (d, disk_group) in tree.iter().enumerate() {
-        // Under a plan-card filter, a disk (and each game) with nothing in the
-        // chosen category is skipped entirely rather than shown as an empty
-        // header, so "Переглянути" lands on exactly that category's findings.
+        // Under a plan-card filter or a name search, a disk (and each game)
+        // with nothing left to show is skipped entirely rather than shown as an
+        // empty header, so "Переглянути" lands on exactly that category's
+        // findings and a search shows only branches that contain a hit.
         if !disk_matches_filter(disk_group, filter) {
+            continue;
+        }
+        if !disk_group
+            .games
+            .iter()
+            .any(|game| game_matches_search(game, search))
+        {
             continue;
         }
         rows.push(Row::Disk { d });
@@ -288,7 +326,7 @@ fn build_visible_rows(
         }
 
         for (g, game) in disk_group.games.iter().enumerate() {
-            if !game_matches_filter(game, filter) {
+            if !game_matches_filter(game, filter) || !game_matches_search(game, search) {
                 continue;
             }
             rows.push(Row::Game { d, g });
@@ -298,6 +336,12 @@ fn build_visible_rows(
 
             for (c, category_node) in game.categories.iter().enumerate() {
                 if filter.is_some_and(|category| category_node.category != category) {
+                    continue;
+                }
+                // Only reached for an expanded game, so the per-item scans from
+                // here down are bounded by what the user has opened - never by
+                // the size of the whole result set.
+                if search.is_active() && !search.any_matches(&category_node.all_indices) {
                     continue;
                 }
                 rows.push(Row::Category { d, g, c });
@@ -313,6 +357,9 @@ fn build_visible_rows(
                             item_indices,
                             ..
                         } => {
+                            if search.is_active() && !search.any_matches(item_indices) {
+                                continue;
+                            }
                             rows.push(Row::Folder { d, g, c, n });
                             let folder_key = folder_key(
                                 &disk_group.disk,
@@ -323,7 +370,14 @@ fn build_visible_rows(
                             if !is_open(toggles, &folder_key, false) {
                                 continue;
                             }
-                            for member in 0..item_indices.len() {
+                            for (member, &index) in item_indices.iter().enumerate() {
+                                // A folder whose own name matched has every
+                                // member matched too (the query is a substring
+                                // of each member's path), so this only filters
+                                // when the hit was on individual files.
+                                if search.is_active() && !search.item_matches(index) {
+                                    continue;
+                                }
                                 rows.push(Row::File {
                                     d,
                                     g,
@@ -333,7 +387,10 @@ fn build_visible_rows(
                                 });
                             }
                         }
-                        TreeNode::File { .. } => {
+                        TreeNode::File { index } => {
+                            if search.is_active() && !search.item_matches(*index) {
+                                continue;
+                            }
                             rows.push(Row::File {
                                 d,
                                 g,
