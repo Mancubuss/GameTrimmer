@@ -12,14 +12,31 @@
 use std::path::Path;
 use std::process::Command;
 
-/// `path` as a Windows-native string, with any forward slashes converted to
-/// backslashes. Stored install dirs / relative paths occasionally use `/`, and
-/// while most Windows APIs accept it, Explorer's `/select` silently ignores a
-/// path that is not fully backslash-separated - so normalize before handing a
-/// path to any of the shell helpers below (and when copying it to the
-/// clipboard, so the user gets the canonical form).
+/// `path` as a Windows-native string: forward slashes converted to
+/// backslashes, and a leading drive letter upper-cased.
+///
+/// Stored install dirs / relative paths occasionally use `/`, and while most
+/// Windows APIs accept it, Explorer's `/select` silently ignores a path that is
+/// not fully backslash-separated - so normalize before handing a path to any of
+/// the shell helpers below (and when copying it to the clipboard, so the user
+/// gets the canonical form).
+///
+/// The drive letter is a display matter rather than a functional one (Windows
+/// paths are case-insensitive), but launchers do not agree on its case -
+/// Steam's `libraryfolders.vdf` can hand back `d:\portableapps\...` while every
+/// other source says `F:\`. Mixed case down a list of paths reads as a bug in
+/// the tool, so it is settled here, in the one place every user-visible path
+/// passes through. `model::disk_label` already does the same for disk rows.
 pub fn windows_path_string(path: &Path) -> String {
-    path.display().to_string().replace('/', "\\")
+    let text = path.display().to_string().replace('/', "\\");
+
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(drive), Some(':')) if drive.is_ascii_alphabetic() => {
+            format!("{}{}", drive.to_ascii_uppercase(), &text[1..])
+        }
+        _ => text,
+    }
 }
 
 /// Program + arguments to reveal `path` in Windows Explorer with the item
@@ -32,6 +49,14 @@ pub fn reveal_in_explorer_args(path: &Path) -> (&'static str, Vec<String>) {
         "explorer.exe",
         vec![format!("/select,{}", windows_path_string(path))],
     )
+}
+
+/// Program + arguments to open `path` itself as a folder in Windows Explorer
+/// (no `/select`). Used for a game's install dir, where the point is to land
+/// *inside* the folder and look around - unlike `reveal_in_explorer_args`,
+/// which opens the parent with the item highlighted.
+pub fn open_folder_args(path: &Path) -> (&'static str, Vec<String>) {
+    ("explorer.exe", vec![windows_path_string(path)])
 }
 
 /// Program + arguments for the Windows "Open with..." chooser dialog for
@@ -72,6 +97,26 @@ mod tests {
         );
     }
 
+    /// Steam's `libraryfolders.vdf` really does report a lowercase drive on
+    /// this machine; every other provider reports an uppercase one, and the
+    /// library list showed both.
+    #[test]
+    fn windows_path_string_upper_cases_the_drive_letter() {
+        assert_eq!(
+            windows_path_string(&PathBuf::from(r"d:\portableapps\portable\games\steam")),
+            r"D:\portableapps\portable\games\steam"
+        );
+    }
+
+    /// A UNC path has no drive letter to touch.
+    #[test]
+    fn windows_path_string_leaves_a_unc_path_alone() {
+        assert_eq!(
+            windows_path_string(&PathBuf::from(r"\\server\share\Games\Game")),
+            r"\\server\share\Games\Game"
+        );
+    }
+
     #[test]
     fn windows_path_string_leaves_backslash_paths_unchanged() {
         let p = PathBuf::from(r"C:\Games\My Game\docs\manual.pdf");
@@ -93,6 +138,23 @@ mod tests {
         let p = PathBuf::from("C:/Games/file.dll");
         let (_program, args) = reveal_in_explorer_args(&p);
         assert_eq!(args, vec![r"/select,C:\Games\file.dll".to_string()]);
+    }
+
+    #[test]
+    fn open_folder_passes_the_bare_path_without_select() {
+        let p = PathBuf::from(r"D:\Games\My Game");
+        let (program, args) = open_folder_args(&p);
+        assert_eq!(program, "explorer.exe");
+        // No `/select,` - that would open the parent with "My Game"
+        // highlighted instead of opening the folder itself.
+        assert_eq!(args, vec![r"D:\Games\My Game".to_string()]);
+    }
+
+    #[test]
+    fn open_folder_normalizes_forward_slashes() {
+        let p = PathBuf::from("D:/Games/My Game");
+        let (_program, args) = open_folder_args(&p);
+        assert_eq!(args, vec![r"D:\Games\My Game".to_string()]);
     }
 
     #[test]

@@ -37,7 +37,10 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             for library in &app.libraries {
                 ui.horizontal(|ui| {
                     ui.label(format!("[{}]", library.vendor));
-                    ui.label(library.path.display().to_string());
+                    // Same normalization as every path the tree shows, so the
+                    // list does not mix `d:\...` with `F:\...` depending on
+                    // which launcher reported the root.
+                    ui.label(crate::ui::row_actions::windows_path_string(&library.path));
                     ui.label(crate::model::format_size(
                         app.lang(),
                         app.occupancy.library_bytes(library.id),

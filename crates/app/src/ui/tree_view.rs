@@ -745,7 +745,9 @@ fn show_disk_row(
         name,
         lang,
     );
-    response.context_menu(|ui| {
+    let target = ShellTarget::Folder(disk_root_path(&disk_group.disk));
+    let response = response.on_hover_text(target.path().to_string());
+    row_context_menu(&response, lang, Some(target), |ui| {
         if ui
             .button(i18n::select_all_on_disk(lang, &disk_group.disk))
             .clicked()
@@ -802,7 +804,20 @@ fn show_game_row(
         name,
         lang,
     );
-    response.context_menu(|ui| {
+    // The game's install dir, taken from any of its findings (they all share
+    // it). Absent on the orphan branch (GT-02): its findings are residue from
+    // different games, so there is no one folder the row could stand for.
+    let target = if is_orphan_branch(game.game_id) {
+        None
+    } else {
+        install_dir_of(findings, &game.all_indices).map(ShellTarget::Folder)
+    };
+    let response = match &target {
+        Some(target) => response.on_hover_text(target.path().to_string()),
+        None => response,
+    };
+
+    row_context_menu(&response, lang, target, |ui| {
         if ui.button(i18n::select_all_in_game(lang, &label)).clicked() {
             set_group_selection(findings, &game.all_indices, true);
             ui.close();
@@ -875,7 +890,19 @@ fn show_category_row(
         name,
         lang,
     );
-    response.context_menu(|ui| {
+    // A category is a slice of one game, so it stands for that game's install
+    // dir - the same folder its parent row opens.
+    let target = if is_orphan_branch(game.game_id) {
+        None
+    } else {
+        install_dir_of(findings, &category_node.all_indices).map(ShellTarget::Folder)
+    };
+    let response = match &target {
+        Some(target) => response.on_hover_text(target.path().to_string()),
+        None => response,
+    };
+
+    row_context_menu(&response, lang, target, |ui| {
         let label = category_display(lang, category_node.category);
         if ui
             .button(i18n::select_category_on_disk(lang, label, &disk_group.disk))
@@ -949,13 +976,17 @@ fn show_folder_row(
 
     // The folder's absolute path comes from any member (they all share the
     // game's install dir); the same path drives the hover tooltip and the
-    // reveal/copy context-menu actions. "Open with..." is omitted - it is a
-    // file-only chooser.
+    // context-menu actions.
     if let Some(&first) = item_indices.first() {
         let abs_path =
             row_actions::windows_path_string(&findings[first].row.install_dir.join(group_dir));
         let response = response.on_hover_text(abs_path.clone());
-        row_context_menu(&response, lang, &abs_path, false);
+        row_context_menu(
+            &response,
+            lang,
+            Some(ShellTarget::Folder(abs_path)),
+            |_ui| {},
+        );
     }
 }
 
@@ -1027,40 +1058,101 @@ fn show_header_row(
     name_response.expect("row_columns always runs the left closure")
 }
 
-/// Attaches the shared right-click context menu to a file or folder row:
-/// reveal the item in Explorer, optionally the "Open with..." chooser (files
-/// only - it is meaningless for a directory), and copy the path. `abs_path` is
-/// the item's absolute path in Windows-native form. Launch failures are logged
-/// (the app's convention for non-fatal errors), never surfaced mid-menu.
+/// What a row's filesystem actions operate on. Every row in the tree stands
+/// for something on disk - a drive, a game's install dir, a folder, a file -
+/// so every row offers these actions; only the shape of "open it" differs.
+enum ShellTarget {
+    /// A directory (disk root, game install dir, folder): Explorer opens it.
+    Folder(String),
+    /// A file: Explorer opens the containing folder with the file highlighted
+    /// (there is nothing to "open" about a file in Explorer otherwise), and
+    /// the "Open with..." chooser applies - it is a file-only system dialog.
+    File(String),
+}
+
+impl ShellTarget {
+    /// The absolute path, in Windows-native form, either variant points at.
+    fn path(&self) -> &str {
+        match self {
+            Self::Folder(path) | Self::File(path) => path,
+        }
+    }
+}
+
+/// Emits the filesystem actions shared by every row: open in Explorer,
+/// "Open with..." for files, and copy the path. Called at the top of each
+/// row's context menu, above that row's own selection actions.
+///
+/// Launch failures are logged (the app's convention for non-fatal errors),
+/// never surfaced mid-menu.
+fn shell_actions(ui: &mut egui::Ui, lang: Lang, target: &ShellTarget) {
+    let s = i18n::strings(lang);
+    let path = Path::new(target.path());
+
+    if ui.button(s.ctx_reveal_in_explorer).clicked() {
+        let (program, args) = match target {
+            ShellTarget::Folder(_) => row_actions::open_folder_args(path),
+            ShellTarget::File(_) => row_actions::reveal_in_explorer_args(path),
+        };
+        if let Err(err) = row_actions::launch(program, &args) {
+            crate::logger::log(&format!("Не вдалося відкрити Провідник: {err}"));
+        }
+        ui.close();
+    }
+
+    if matches!(target, ShellTarget::File(_)) && ui.button(s.ctx_open_with).clicked() {
+        let (program, args) = row_actions::open_with_args(path);
+        if let Err(err) = row_actions::launch(program, &args) {
+            crate::logger::log(&format!(
+                "Не вдалося відкрити діалог «Відкрити за допомогою»: {err}"
+            ));
+        }
+        ui.close();
+    }
+
+    if ui.button(s.ctx_copy_path).clicked() {
+        ui.ctx().copy_text(target.path().to_string());
+        ui.close();
+    }
+}
+
+/// Attaches a row's right-click context menu: the shared filesystem actions
+/// for `target`, then - separated - whatever selection actions that row type
+/// adds via `own_actions`. A row with no path behind it (only the orphan
+/// branch, whose findings come from different games) passes `None` and shows
+/// just its own actions.
 fn row_context_menu(
     response: &egui::Response,
     lang: Lang,
-    abs_path: &str,
-    include_open_with: bool,
+    target: Option<ShellTarget>,
+    own_actions: impl FnOnce(&mut egui::Ui),
 ) {
-    let s = i18n::strings(lang);
     response.context_menu(|ui| {
-        if ui.button(s.ctx_reveal_in_explorer).clicked() {
-            let (program, args) = row_actions::reveal_in_explorer_args(Path::new(abs_path));
-            if let Err(err) = row_actions::launch(program, &args) {
-                crate::logger::log(&format!("Не вдалося відкрити Провідник: {err}"));
-            }
-            ui.close();
+        if let Some(target) = &target {
+            shell_actions(ui, lang, target);
+            ui.separator();
         }
-        if include_open_with && ui.button(s.ctx_open_with).clicked() {
-            let (program, args) = row_actions::open_with_args(Path::new(abs_path));
-            if let Err(err) = row_actions::launch(program, &args) {
-                crate::logger::log(&format!(
-                    "Не вдалося відкрити діалог «Відкрити за допомогою»: {err}"
-                ));
-            }
-            ui.close();
-        }
-        if ui.button(s.ctx_copy_path).clicked() {
-            ui.ctx().copy_text(abs_path.to_string());
-            ui.close();
-        }
+        own_actions(ui);
     });
+}
+
+/// The filesystem root a disk group stands for: a drive letter row (`F:`)
+/// means `F:\`, while a UNC group (`\\server\share`) already is a path.
+fn disk_root_path(disk: &str) -> String {
+    if disk.ends_with(':') {
+        format!("{disk}\\")
+    } else {
+        disk.to_string()
+    }
+}
+
+/// The install directory shared by `indices` (every finding of one game lives
+/// under the same one), in Windows-native form. `None` when the group is empty.
+fn install_dir_of(findings: &[FindingItem], indices: &[usize]) -> Option<String> {
+    let &first = indices.first()?;
+    Some(row_actions::windows_path_string(
+        &findings[first].row.install_dir,
+    ))
 }
 
 /// Renders one file row: checkbox, name, and the language/size/confidence
@@ -1156,7 +1248,12 @@ fn show_file_row(
             if response.clicked() {
                 *cursor = Some(row_index);
             }
-            row_context_menu(&response, lang, &abs_path, true);
+            row_context_menu(
+                &response,
+                lang,
+                Some(ShellTarget::File(abs_path.clone())),
+                |_ui| {},
+            );
         },
     );
 }
