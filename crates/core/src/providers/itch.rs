@@ -38,8 +38,35 @@ impl LibraryProvider for ItchProvider {
             .filter(|game| game.install_dir.is_dir())
             .collect();
 
-        Ok(super::group_by_parent_dir("itch", games))
+        let mut libraries = super::group_by_parent_dir("itch", games);
+        // `install_locations` is itch's own list of roots, independent of what
+        // is currently installed in them - so a location the user emptied is
+        // still reportable rather than silently vanishing. It is also exactly
+        // where `orphans::itch_spec` looks for `.itch` receipts, which is the
+        // case worth surfacing: every game removed, the folders left behind.
+        for root in read_install_locations(&conn)? {
+            if root.is_dir() {
+                super::register_root(&mut libraries, "itch", root);
+            }
+        }
+
+        Ok(libraries)
     }
+}
+
+/// Reads itch's configured install locations from an open `butler.db`.
+fn read_install_locations(conn: &Connection) -> rusqlite::Result<Vec<PathBuf>> {
+    let mut stmt = conn.prepare("SELECT path FROM install_locations")?;
+    let rows = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?;
+
+    // Two flattens, not one: the rows are `Result<Option<String>>` - the outer
+    // drops read errors, the inner drops SQL NULLs.
+    Ok(rows
+        .flatten()
+        .flatten()
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| PathBuf::from(path.trim().trim_end_matches(['\\', '/'])))
+        .collect())
 }
 
 fn database_path() -> Option<PathBuf> {
@@ -143,6 +170,37 @@ mod tests {
         .unwrap();
 
         assert!(read_games(&conn).unwrap().is_empty());
+    }
+
+    /// The case this exists for: itch is installed and configured, every game
+    /// removed. The location is still itch's, and still worth reporting.
+    #[test]
+    fn read_install_locations_returns_roots_with_no_caves_in_them() {
+        let conn = test_db();
+        conn.execute_batch(
+            "INSERT INTO install_locations VALUES ('loc-1', 'F:\\itch');
+             INSERT INTO install_locations VALUES ('loc-2', 'H:\\itch.io\\');",
+        )
+        .unwrap();
+
+        let roots = read_install_locations(&conn).unwrap();
+
+        assert_eq!(
+            roots,
+            vec![PathBuf::from(r"F:\itch"), PathBuf::from(r"H:\itch.io")]
+        );
+    }
+
+    #[test]
+    fn read_install_locations_skips_blank_and_null_paths() {
+        let conn = test_db();
+        conn.execute_batch(
+            "INSERT INTO install_locations VALUES ('loc-1', NULL);
+             INSERT INTO install_locations VALUES ('loc-2', '   ');",
+        )
+        .unwrap();
+
+        assert!(read_install_locations(&conn).unwrap().is_empty());
     }
 
     #[test]
