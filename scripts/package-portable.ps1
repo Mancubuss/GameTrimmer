@@ -8,7 +8,10 @@
 #       |                      для матеріалізації - ensure_rules_path()
 #       |                      усе одно її створить, якщо файл відсутній)
 #       |-- l10n_rules.json   (те саме для мовних правил)
-#       |-- README.md
+#       |-- README.md      (англійська - мова, якою читає більшість тих, хто
+#       |                   звантажив zip з релізу)
+#       |-- README.uk.md   (українська; обидва файли, бо в архіві немає
+#       |                   переходу за посиланням між ними)
 #       |-- LICENSE
 #       `-- THIRD-PARTY-NOTICES.md  (MIT-ліцензія TikiOne Steam Cleaner, чий
 #                                    перелік дистрибутивів став основою правил -
@@ -58,6 +61,7 @@ try {
     Copy-Item "$repoRoot\rules.json" (Join-Path $stageDir "rules.json")
     Copy-Item "$repoRoot\l10n_rules.json" (Join-Path $stageDir "l10n_rules.json")
     Copy-Item "$repoRoot\README.md" (Join-Path $stageDir "README.md")
+    Copy-Item "$repoRoot\README.uk.md" (Join-Path $stageDir "README.uk.md")
     Copy-Item "$repoRoot\LICENSE" (Join-Path $stageDir "LICENSE")
     Copy-Item "$repoRoot\THIRD-PARTY-NOTICES.md" (Join-Path $stageDir "THIRD-PARTY-NOTICES.md")
 
