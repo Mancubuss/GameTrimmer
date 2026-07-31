@@ -339,6 +339,22 @@ overloading the live one).
 
 What changes is **how it is built**.
 
+**Status (2026-07-31):** step 2.0 done, commit `6f3865d`. Steps 2.1–2.5 and
+2.6 remain.
+
+The scaffold is landed **dormant** — `app.rs` still renders
+`ui::settings_dialog`. Wiring an empty dialog up would make everything only
+the old one reaches (database maintenance, rules import/export, much of the
+string table) dead code, and would leave the branch with an unusable settings
+dialog if the series is interrupted — which is how the last attempt ended.
+`#[allow(dead_code)]` is scoped to `ui::settings`, the seven new string-table
+fields and `app.settings_section`; every one comes off in the commit that
+flips `app.rs` and deletes `settings_dialog.rs`.
+
+Consequence for sequencing: **the switch is the last commit of Phase 2, not
+the first.** Each section is ported into `ui::settings` while the old dialog
+keeps serving the user.
+
 ### 2.0. Scaffold first, sections second
 
 Land `mod.rs` with: the modal frame, the nav list, the `SettingsSection` enum
