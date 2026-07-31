@@ -90,6 +90,18 @@ pub struct Strings {
     /// broken checkbox rather than as a floor (audit §6.2).
     pub disabled_last_keep_language: &'static str,
     pub disabled_last_category: &'static str,
+    /// The keep-list's one dangerous edit (GT-59), which is why these live
+    /// inside a red frame rather than beside the other chips.
+    ///
+    /// The danger is *deferred* and the wording has to say so: taking English
+    /// off the list deletes nothing by itself, it changes what the next scan
+    /// proposes - including interface text, because findings are not yet
+    /// split by resource type (the spike "GT-62 - splitting localization by
+    /// resource type"). "This will delete files" would be false, and a
+    /// warning the user can catch lying is worth less than none.
+    pub keep_english_warning: &'static str,
+    pub keep_english_absent: &'static str,
+    pub btn_keep_english_again: &'static str,
 
     /// "Rules": the two analysis packs, each with a live validity readout.
     pub rules_pack_category_label: &'static str,
@@ -365,6 +377,9 @@ impl Strings {
                 self.disabled_last_keep_language,
             ),
             ("disabled_last_category", self.disabled_last_category),
+            ("keep_english_warning", self.keep_english_warning),
+            ("keep_english_absent", self.keep_english_absent),
+            ("btn_keep_english_again", self.btn_keep_english_again),
             ("rules_pack_category_label", self.rules_pack_category_label),
             ("rules_pack_lang_label", self.rules_pack_lang_label),
             ("rules_valid_label", self.rules_valid_label),

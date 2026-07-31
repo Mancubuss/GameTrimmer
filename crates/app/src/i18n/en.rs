@@ -44,6 +44,12 @@ pub(super) const STRINGS: Strings = Strings {
     profile_behavior_manual: "Never automatic",
     disabled_last_keep_language: "At least one language has to stay on the keep-list.",
     disabled_last_category: "At least one category has to stay enabled.",
+    keep_english_warning: "Taking English off the list deletes nothing by itself. It makes the \
+                           next scan propose English localization files - interface text among \
+                           them, which most games will not start without.",
+    keep_english_absent: "English is not on the keep-list: scans propose English localization \
+                          files, interface text among them.",
+    btn_keep_english_again: "Keep English again",
     rules_pack_category_label: "Category rules (rules.json)",
     rules_pack_lang_label: "Language pack (l10n_rules.json)",
     rules_valid_label: "Valid",

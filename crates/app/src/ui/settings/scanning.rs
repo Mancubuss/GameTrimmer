@@ -102,6 +102,11 @@ fn show_libraries(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     }
 }
 
+/// The language every game's interface falls back to, and the one edit on
+/// this screen that can leave a game unable to start - see
+/// [`show_english_danger`].
+const ENGLISH: &str = "en";
+
 /// The keep-list: a chip per kept language, plus a search box over every
 /// language the built-in pack knows.
 fn show_keep_languages(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
@@ -112,10 +117,17 @@ fn show_keep_languages(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     // The floor: the detector would flag every language including the
     // user's own if the list were empty.
     let is_last = kept.len() <= 1;
+    let busy = app.busy;
 
     ui.add_enabled_ui(!app.busy, |ui| {
         ui.horizontal_wrapped(|ui| {
             for code in kept.clone() {
+                // English is not an ordinary chip - it has its own block
+                // below, and leaving a second, unmarked way to remove it
+                // would make that block decorative (GT-59).
+                if code == ENGLISH {
+                    continue;
+                }
                 // The button *is* the chip: its own label already names the
                 // language (see `remove_chip_label`), so a label beside it
                 // drew every kept language twice - GT-58.
@@ -154,9 +166,59 @@ fn show_keep_languages(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     });
     ui.small(s.keep_languages_hint);
 
+    ui.add_space(10.0);
+    show_english_danger(ui, s, &mut kept, is_last, busy);
+
     if kept != app.settings.keep_languages {
         app.set_keep_languages(kept);
     }
+}
+
+/// English, alone inside a red frame directly under the chips (GT-59).
+///
+/// Why it is framed at all: localization findings are not split by resource
+/// type yet, so dropping English from the keep-list makes the scanner propose
+/// English *interface* files along with the voice-over and video that were
+/// the point - and most games will not start without them. Until the spike
+/// "GT-62 - splitting localization by resource type" answers whether rules
+/// can tell those apart, this is the most dangerous path in the app, and it
+/// used to be an ordinary cross indistinguishable from Spanish's.
+///
+/// Why it is framed *here* rather than in a global danger section: the rest
+/// of the keep-list lives on this screen. Moving one language elsewhere would
+/// mean managing languages in one place and English in another.
+///
+/// The block renders in both states on purpose. If it vanished once English
+/// was dropped, the screen would stop showing the riskier of the two states,
+/// and the only route back would be the search box - which is exactly where
+/// someone who did this by accident would not think to look.
+fn show_english_danger(
+    ui: &mut egui::Ui,
+    s: &i18n::Strings,
+    kept: &mut Vec<String>,
+    is_last: bool,
+    busy: bool,
+) {
+    super::danger_frame(ui, s.danger_zone_label, |ui| {
+        let is_kept = kept.iter().any(|code| code == ENGLISH);
+        ui.small(if is_kept {
+            s.keep_english_warning
+        } else {
+            s.keep_english_absent
+        });
+        ui.add_space(6.0);
+
+        ui.add_enabled_ui(!busy, |ui| {
+            if is_kept {
+                let blocked = is_last.then_some(s.disabled_last_keep_language);
+                if gated_button(ui, &remove_chip_label(ENGLISH), blocked).clicked() {
+                    kept.retain(|code| code != ENGLISH);
+                }
+            } else if ui.button(s.btn_keep_english_again).clicked() {
+                kept.push(ENGLISH.to_string());
+            }
+        });
+    });
 }
 
 /// The chip: a remove button carrying the language name. The name is on the
@@ -501,6 +563,98 @@ mod tests {
         // One language left: the remove button is still there, still says
         // what it is, and now refuses with a reason.
         test.click(&remove_chip_label("en"));
+        assert_eq!(test.app().settings.keep_languages, vec!["en".to_string()]);
+        test.hover(&remove_chip_label("en"));
+        test.assert_label(s.disabled_last_keep_language);
+    }
+
+    /// GT-59: English used to be an ordinary chip with an ordinary cross,
+    /// beside Spanish and German, though removing it is the one edit here
+    /// that can leave a game unable to start. The only way to take it off
+    /// has to be the framed one.
+    #[test]
+    fn english_can_be_dropped_only_from_inside_the_danger_frame() {
+        let mut test = open_scanning();
+        let s = test.strings();
+        test.app_mut()
+            .set_keep_languages(vec!["en".to_string(), "de".to_string()]);
+        test.run();
+
+        test.assert_label(s.danger_zone_label);
+        assert_eq!(
+            test.count_labels(&remove_chip_label("en")),
+            1,
+            "English is offered in more than one place",
+        );
+
+        // Geometry, because "inside the frame" is a claim about where the
+        // button is, not about which strings are on screen: English sits
+        // below the danger heading and every ordinary chip above it.
+        let heading = test.rect_of(s.danger_zone_label);
+        let english = test.rect_of(&remove_chip_label("en"));
+        let ordinary = test.rect_of(&remove_chip_label("de"));
+        assert!(
+            english.min.y > heading.min.y,
+            "the English control is not under the danger heading: {english:?} vs {heading:?}",
+        );
+        assert!(
+            ordinary.max.y < heading.min.y,
+            "an ordinary chip ({ordinary:?}) is inside the danger frame ({heading:?})",
+        );
+    }
+
+    /// The wording is the whole point of the block. The danger is deferred -
+    /// nothing is deleted by the click - so a warning that claims otherwise
+    /// is one the user can catch lying, and then the frame is worth nothing.
+    #[test]
+    fn the_warning_describes_the_deferred_danger() {
+        let mut test = open_scanning();
+        let s = test.strings();
+        test.app_mut()
+            .set_keep_languages(vec!["en".to_string(), "de".to_string()]);
+        test.run();
+
+        test.assert_label(s.keep_english_warning);
+    }
+
+    /// Both states render. If the block vanished with English, the screen
+    /// would stop showing the riskier of the two, and the way back would be
+    /// the search box - where someone who did this by accident will not look.
+    #[test]
+    fn the_block_still_says_so_once_english_is_gone_and_offers_the_way_back() {
+        let mut test = open_scanning();
+        let s = test.strings();
+        test.app_mut()
+            .set_keep_languages(vec!["en".to_string(), "de".to_string()]);
+        test.run();
+
+        test.click(&remove_chip_label("en"));
+        assert_eq!(test.app().settings.keep_languages, vec!["de".to_string()]);
+        test.assert_label(s.keep_english_absent);
+
+        test.click(s.btn_keep_english_again);
+        assert!(
+            test.app()
+                .settings
+                .keep_languages
+                .iter()
+                .any(|code| code == "en"),
+            "the way back did not put English on the keep-list",
+        );
+    }
+
+    /// The floor still applies inside the frame: English alone on the list is
+    /// still the last language, and the block has to refuse with the same
+    /// reason the ordinary chips give rather than silently accept the click.
+    #[test]
+    fn the_framed_control_still_honours_the_last_language_floor() {
+        let mut test = open_scanning();
+        let s = test.strings();
+        test.app_mut().set_keep_languages(vec!["en".to_string()]);
+        test.run();
+
+        test.click(&remove_chip_label("en"));
+
         assert_eq!(test.app().settings.keep_languages, vec!["en".to_string()]);
         test.hover(&remove_chip_label("en"));
         test.assert_label(s.disabled_last_keep_language);
