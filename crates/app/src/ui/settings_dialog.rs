@@ -418,3 +418,126 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         app.db_maint_result = None;
     }
 }
+
+/// Baseline coverage of the dialog **as it is today**, before the rebuild
+/// (GT-57). These assertions are what makes the rebuild reviewable: each one
+/// either survives untouched, or is changed deliberately in the commit that
+/// changes the behaviour it describes. See `ui::harness` for why.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::ui::harness::UiTest;
+
+    /// Opens the dialog and settles the UI.
+    fn open_dialog() -> UiTest {
+        let mut test = UiTest::new(show);
+        test.app_mut().show_settings = true;
+        test.run();
+        test
+    }
+
+    /// The dialog renders without panicking and every top-level section is on
+    /// screen at once. Round 1 of the abandoned attempt made the theme radios
+    /// invisible with no scrollbar, and round 3 lost the entire "App language"
+    /// section - both would fail here.
+    #[test]
+    fn every_top_level_section_is_present_when_the_dialog_opens() {
+        let test = open_dialog();
+        let s = test.strings();
+
+        test.assert_label(s.settings_heading);
+        test.assert_label(s.delete_method_permanent_label);
+        test.assert_label(s.delete_method_recycle_label);
+        test.assert_label(s.lang_name_en);
+        test.assert_label(s.lang_name_uk);
+        test.assert_label(s.theme_system_label);
+        test.assert_label(s.theme_light_label);
+        test.assert_label(s.theme_dark_label);
+        test.assert_label(s.btn_close);
+    }
+
+    /// A closed dialog renders nothing at all - `show` returns early. Worth
+    /// pinning because the rebuild moves the early return into a new module.
+    #[test]
+    fn nothing_renders_while_the_dialog_is_closed() {
+        let mut test = UiTest::new(show);
+        test.run();
+
+        let s = test.strings();
+        test.assert_no_label(s.settings_heading);
+        test.assert_no_label(s.btn_close);
+    }
+
+    /// The technical knobs sit behind a collapsed "Advanced" header (GT-13),
+    /// and open on demand. The rebuild replaces this with left-hand nav, so
+    /// this test is expected to be rewritten then - deliberately, in that
+    /// commit.
+    #[test]
+    fn advanced_section_is_collapsed_until_it_is_opened() {
+        let mut test = open_dialog();
+        let s = test.strings();
+
+        test.assert_label(s.advanced_section);
+        test.assert_no_label(s.scan_routing_auto_label);
+        test.assert_no_label(s.btn_compact_database);
+
+        test.click(s.advanced_section);
+
+        test.assert_label(s.scan_routing_auto_label);
+        test.assert_label(s.scan_routing_force_mft_label);
+        test.assert_label(s.btn_compact_database);
+        test.assert_label(s.btn_clear_database);
+    }
+
+    /// Pins the *current* behaviour the audit complains about (§6.5):
+    /// unchecking the last remaining keep-language is silently ignored and the
+    /// checkbox snaps back next frame, which reads as a bug rather than as a
+    /// rule. GT-57 replaces this with a disabled control plus an explanation -
+    /// when it does, this test must be rewritten in the same commit, which is
+    /// the point of pinning it now.
+    #[test]
+    fn unchecking_the_last_keep_language_is_currently_ignored_without_explanation() {
+        let mut test = open_dialog();
+        test.app_mut().settings.keep_languages = vec!["en".to_string()];
+        test.run();
+
+        let only_language = i18n::lang_display_name("en");
+        test.click(&only_language);
+
+        assert_eq!(
+            test.app().settings.keep_languages,
+            vec!["en".to_string()],
+            "the last keep-language must not be removable",
+        );
+    }
+
+    /// Two keep-languages, on the other hand, means either one can go. This
+    /// separates "the rule is enforced" from "the checkbox is dead".
+    #[test]
+    fn a_keep_language_can_be_unchecked_while_another_remains() {
+        let mut test = open_dialog();
+        test.app_mut().settings.keep_languages = vec!["uk".to_string(), "en".to_string()];
+        test.run();
+
+        test.click(&i18n::lang_display_name("en"));
+
+        assert_eq!(
+            test.app().settings.keep_languages,
+            vec!["uk".to_string()],
+            "unchecking one of two keep-languages should take effect",
+        );
+    }
+
+    /// "Close" is the only way out other than Escape, and it must actually
+    /// close - the rebuild moves this button into a persistent footer.
+    #[test]
+    fn the_close_button_dismisses_the_dialog() {
+        let mut test = open_dialog();
+        let s = test.strings();
+
+        test.click(s.btn_close);
+
+        assert!(!test.app().show_settings, "Close should dismiss the dialog");
+    }
+}

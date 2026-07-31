@@ -1457,6 +1457,12 @@ impl GameTrimmerApp {
             false,
         )
     }
+
+    /// Read access to the otherwise-private database path, so tests outside
+    /// this module (the `ui::harness` ones) can assert isolation.
+    pub fn db_path(&self) -> Option<&std::path::Path> {
+        self.db_path.as_deref()
+    }
 }
 
 #[cfg(test)]
