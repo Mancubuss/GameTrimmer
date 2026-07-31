@@ -94,20 +94,10 @@ Mitigating detail: `load_libraries(None)` returns an empty vec
 a temp-database app naturally starts with no libraries, no elevation prompt
 and no spawned worker — deterministic, as long as the path is per-test.
 
-### 2.4. The panic will be diagnosed in a debug build
+### 2.4. The panic is diagnosed — see §2A
 
-The panic was seen in *release*. Harness tests run in *debug* by default,
-where egui's `debug_assert!`s are live. Two outcomes, both useful:
-
-- it reproduces in debug, probably as a named egui assert → root cause in one
-  run, which is the point;
-- it does not reproduce → run the same test with `cargo test --release`
-  before concluding anything. This is the fallback the handoff's hypothesis
-  list implies but never states.
-
-Note `panic = "unwind"` is deliberate in the release profile and must stay —
-`catch_unwind` isolation in the scan code depends on it. It also means a
-release-mode harness run can actually report the panic instead of aborting.
+Resolved on the first harness run. Full write-up below; the release fallback
+was not needed.
 
 ### 2.5. Two Stage-1 items are already confirmed present in the code
 
@@ -124,10 +114,98 @@ Not hypotheses from the audit — verified now:
 
 ---
 
+## 2A. Panic diagnosis (resolved 2026-07-31)
+
+**Verdict: `Ui::indent` called inside a horizontal layout.** Reproduced on the
+first debug run of the harness against round 4. Evidence preserved on branch
+`wip/panic-repro`, commit `7ce2c6a` (harness from `06debbc` applied on top of
+`397d878`, plus the two tests below).
+
+```
+egui-0.35.0/src/ui.rs:2246
+You can only indent vertical layouts, found
+Layout { main_dir: LeftToRight, main_wrap: false, main_align: Center, ... }
+```
+
+### Mechanism
+
+`settings/mod.rs` allocates one row for nav + divider + viewport with
+
+```rust
+ui.allocate_ui_with_layout(
+    egui::vec2(target_width, viewport_height),
+    egui::Layout::left_to_right(egui::Align::Min),
+    |ui| { ... },
+)
+```
+
+`ScrollArea::show` renders its content with **the parent's layout**, so every
+section body inside that row runs left-to-right. `Ui::indent` asserts on
+`self.layout().is_vertical()` and blows up.
+
+Only `scanning.rs` and `selection.rs` call `indent` (three routing hints, two
+delete-method hints). `General` — the default section — does not. That is
+precisely why the dialog opened fine and died on the first click to Scanning
+or Selection: *"panics on tab switch."*
+
+### Two things this settles
+
+**It is an `assert!`, not a `debug_assert!`.** It fires in release exactly as
+in debug, so the handoff's hypothesis 2 ("a debug_assert compiled out in
+release turning into a real failure downstream") is out, and the release
+fallback run was unnecessary. Hypotheses 1 (`set_min_height` + `auto_shrink`
+producing a degenerate rect) and 3 (id collision) are also out — none of the
+three was right, which is the argument for reproducing rather than reasoning.
+
+**Round 4's shape is proven, not believed.** The fix is a single
+`ui.vertical(|ui| ...)` wrap around the scroll area's content. With only that
+change, both repro tests pass — including
+
+```
+the_modal_does_not_move_between_sections
+```
+
+which asserts the modal's heading lands at identical coordinates across all
+five sections. So the fixed-viewport approach handled handoff facts 1, 2 and
+4 correctly the whole time; the layout kind was the only defect.
+
+### Consequence for §5
+
+`settings/` can be cherry-picked from `397d878` rather than rebuilt from
+scratch, and §5.0's scaffold gate starts from a known-good geometry. The
+scaffold test is still written first — it is what keeps the geometry good
+through five section commits.
+
+### New egui 0.35 fact, for the list in the handoff
+
+> **A `ScrollArea` renders its content in the parent `Ui`'s layout.** Nesting
+> one inside `allocate_ui_with_layout(.., Layout::left_to_right(..), ..)`
+> silently gives every child a horizontal layout. `Ui::indent`, `Ui::separator`
+> and anything else that assumes a column will misbehave or assert. Wrap the
+> content in `ui.vertical` at the top of the scroll area.
+
+---
+
 ## 3. Phase 0 — the seam and the harness
 
-Nothing in Phase 1 or 2 starts until Phase 0 is green. Estimated: one
-sitting.
+**Status: done (2026-07-31).** Commits `002c26e` (seam), `06debbc` (harness +
+baseline), `7ce2c6a` on `wip/panic-repro` (diagnosis). 226 app tests, up from
+212; 351 core; clippy clean. Steps below kept as the record of what was built
+and why.
+
+One thing the harness taught that is not in §2 and matters for every test
+written from here on:
+
+> **`Node::click` is a synthetic pointer event at the node's centre, and egui
+> discards pointer events outside a `ScrollArea`'s clip rect.** Clicking a
+> widget that is in the accessibility tree but scrolled out of view therefore
+> does *nothing*, silently — two of the six baseline tests initially passed for
+> that reason rather than on merit. `UiTest::click` scrolls the target into
+> view, re-queries it (scrolling invalidates the rect) and only then clicks.
+> Deliberately not `Node::click_accesskit`, which activates unreachable
+> controls too and would hide exactly the bug round 1 shipped.
+
+Nothing in Phase 1 or 2 starts until Phase 0 is green.
 
 ### 0.1. Test-safe construction seam
 
@@ -206,18 +284,19 @@ wrong, not the dialog.
 
 ### 0.5. Reproduce the panic
 
+A file-level checkout does not work: round 4's `settings/` depends on i18n
+keys, `Settings` fields and `app.rs` state that only exist on that branch. Use
+a worktree and carry the harness over instead:
+
 ```bash
-git checkout wip/ui-redesign-stage-1-2 -- crates/app/src/ui/settings/
+git worktree add -b wip/panic-repro <scratch> wip/ui-redesign-stage-1-2
 ```
 
-Point the 0.4 test at the round-4 dialog and run debug, then release. Record
-the stack trace in this file under a new "§Panic diagnosis" heading before
-changing a single line of layout code.
+then cherry-pick the seam commit and copy `ui/harness.rs` in.
 
-**Acceptance:** either a stack trace written down, or an explicit note that
-neither debug nor release reproduces it under the harness — in which case the
-round-4 shape is rebuilt from scratch in Phase 2 rather than cherry-picked,
-and the unexplained panic is treated as a reason to distrust that code.
+**Done — see §2A.** `Ui::indent` inside the horizontal layout that
+`allocate_ui_with_layout` establishes and `ScrollArea` propagates. One
+`ui.vertical` wrap fixes it, and round 4's geometry is proven correct.
 
 ---
 
@@ -284,19 +363,22 @@ allocating `min_rect`, and `Modal`'s `CENTER_CENTER` anchor re-centering on
 every height change. Rounds 1–4 each fixed one of those and shipped the
 others.
 
-Fixed-viewport approach (round 4's shape) is still believed correct:
+Fixed-viewport approach (round 4's shape) is **verified correct** — §2A ran
+this exact assertion against `397d878` plus a one-line fix and it passed for
+all five sections:
 
-- one row of fixed height for nav + divider + content viewport;
+- one row of fixed height for nav + divider + content viewport, allocated with
+  `allocate_ui_with_layout`;
+- `ui.vertical` wrapping the scroll area's content — the §2A fix, without
+  which every section body inherits the row's horizontal layout;
 - `auto_shrink([false; 2])` on the content scroll area;
 - per-section `id_salt` (`("gt_settings_scroll", section)`) so a long
   section's scroll offset cannot leak into a short one (handoff fact 6);
-- `Separator` given an explicit height rather than inheriting the row's
-  (handoff fact 3);
+- `set_min_height(viewport_height)` **inside** the allocation closure — kept,
+  since it is not what caused the panic. `Separator` gets its full height from
+  the allocated row (handoff fact 3);
 - no `set_min_height` on the modal's own `Ui` (handoff fact 5, tried and
   rejected).
-
-Whether `set_min_height` inside the allocation closure survives depends
-entirely on §0.5's answer. Do not re-add it blind.
 
 **Gate:** the scaffold test must be green with placeholder content before any
 real section is written. If the geometry cannot be made stable with five
@@ -372,12 +454,14 @@ Run after every numbered item above, not per phase.
 
 ## 8. Risks
 
-| Risk | Mitigation |
+| Risk | Status / mitigation |
 |---|---|
-| §0.5 does not reproduce the panic in either profile | Rebuild the Phase-2 scaffold from scratch instead of cherry-picking round 4; treat the undiagnosed panic as a reason to distrust that specific code |
+| ~~§0.5 does not reproduce the panic~~ | **Closed.** Reproduced and fixed on the first debug run — §2A |
+| ~~The fixed-viewport shape cannot hold a stable rect~~ | **Closed.** §2A proved it holds across all five sections |
+| ~~`new_with` seam changes production startup by accident~~ | **Closed.** `new()` passes exactly `worker::db_path().ok()` and `true`; 216 pre-existing app tests unchanged |
+| A test passes because a click silently missed a clipped widget | Real, and already hit twice — see the note in §3. `UiTest::click` scrolls first; never reach for `click_accesskit` to make a red test green |
 | kittest label queries depend on AccessKit output that egui does not emit for some widget | Fall back to asserting on app *state* after a simulated click rather than on node presence; note the gap in this file |
-| The fixed-viewport shape cannot hold a stable rect even with placeholders | Fall back to a non-modal `egui::Window` with a fixed size, which sidesteps handoff fact 4 (`CENTER_CENTER`) entirely. Costs the modal backdrop; ask the user before taking it |
-| `new_with` seam changes production startup behaviour by accident | The delegating `new()` must pass exactly `worker::db_path().ok()` and `true`; diff it explicitly |
+| Cherry-picking round 4 also carries its unreviewed content changes | Section commits are per-file and each lands with its own test; treat `397d878` as a source of diffs to read, not a source of truth |
 | Scope creep into Stage 3/4 | Anything not in §4 or §5 goes to the board, not into this branch |
 
 ---
@@ -385,7 +469,8 @@ Run after every numbered item above, not per phase.
 ## 9. Exit criteria
 
 Phase 0 done when the baseline test is green on the unmodified dialog and the
-panic has a written verdict.
+panic has a written verdict. **Met 2026-07-31** — see the status note in §3
+and the verdict in §2A.
 
 Phase 1 done when all seven items are on the branch, each with its test, and
 the audit §12 "Головне вікно" checklist items covered by Stage 1 pass.
