@@ -21,6 +21,7 @@ pub(super) const STRINGS: Strings = Strings {
     settings_section_data: "Data & diagnostics",
     btn_done: "Done",
     btn_restore_defaults: "Restore defaults",
+    badge_immediately: "Immediately",
 
     disabled_busy: "A background operation is running",
     disabled_no_findings: "Scan your libraries first",
