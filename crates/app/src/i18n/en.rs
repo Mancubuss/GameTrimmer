@@ -162,6 +162,23 @@ pub(super) const STRINGS: Strings = Strings {
     no_libraries_registered: "No libraries registered yet.",
     btn_remove: "Remove",
 
+    onboarding_heading: "Free up space without uninstalling games",
+    onboarding_step_scan: "1. Scan. GameTrimmer reads your game libraries and lists what can \
+         go: localizations you do not use, leftovers of deleted games, redistributables, \
+         bonus material.",
+    onboarding_step_review: "2. Look through it. Findings are grouped by disk and game. \
+         Nothing is hidden - every file is there to inspect, with its full path.",
+    onboarding_step_remove: "3. Remove what you ticked. You choose whether files go \
+         permanently or to the Recycle Bin.",
+    onboarding_profile: "Profile is how boldly the app ticks things for you. \
+         \u{201c}Cautious\u{201d} only ticks what a launcher will not bring back on its own; \
+         \u{201c}Aggressive\u{201d} ticks more. You can always tick and untick by hand.",
+    onboarding_confidence: "Confidence is how sure the app is that a file is what it says it \
+         is. Anything below 80% is marked with a warning sign and is worth a look before you \
+         remove it.",
+    onboarding_safety: "Scanning changes nothing on disk. Nothing is deleted until you tick \
+         it and confirm.",
+
     scanning_in_progress: "Scanning...",
     no_findings_hint: "No findings. Click \u{201c}Scan libraries\u{201d} to begin.",
     col_language: "Language",
