@@ -112,7 +112,7 @@ fn show_content(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     show_logging_offer(app, ui, s);
 
     separate(ui);
-    show_credits(ui, s);
+    crate::ui::credits(ui, s);
     ui.add_space(16.0);
 }
 
@@ -161,17 +161,6 @@ fn show_logging_offer(app: &mut GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::Str
 
     if enabled != app.settings.logging_enabled {
         app.set_logging_enabled(enabled);
-    }
-}
-
-/// Who this is built on. Small text at the foot of the screen: an
-/// acknowledgement, not a banner.
-fn show_credits(ui: &mut egui::Ui, s: &i18n::Strings) {
-    ui.strong(s.credits_heading);
-    ui.add_space(6.0);
-    for line in [s.credits_anthropic, s.credits_karpathy, s.credits_tikione] {
-        ui.small(line);
-        ui.add_space(4.0);
     }
 }
 

@@ -14,6 +14,26 @@ pub mod tree_view;
 
 use eframe::egui;
 
+use crate::i18n;
+
+/// Who this is built on. Small text, an acknowledgement rather than a banner.
+///
+/// Shared rather than copied because it is drawn in two places now, and they
+/// have to stay the same list: the first-run screen, where most users read it
+/// once, and "General" in the settings, which is where it can still be found
+/// afterwards. The first-run screen retires itself for good after one scan,
+/// so without the second copy a thank-you becomes unreachable - and a
+/// thank-you nobody can find is one written on the assumption that nobody
+/// will look.
+pub fn credits(ui: &mut egui::Ui, s: &i18n::Strings) {
+    ui.strong(s.credits_heading);
+    ui.add_space(6.0);
+    for line in [s.credits_anthropic, s.credits_karpathy, s.credits_tikione] {
+        ui.small(line);
+        ui.add_space(4.0);
+    }
+}
+
 /// A button that says why it is unavailable.
 ///
 /// `blocked_by` is `None` when the action can run, or the reason it cannot -

@@ -1,4 +1,4 @@
-//! "General": app language and theme.
+//! "General": app language, theme, and the acknowledgements.
 //!
 //! Both are applied and persisted the moment they change - `set_language`
 //! writes the setting and every render call reads `app.lang()` fresh, and
@@ -55,6 +55,16 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.radio_value(&mut picked_theme, Theme::Light, s.theme_light_label);
         ui.radio_value(&mut picked_theme, Theme::Dark, s.theme_dark_label);
     });
+
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(8.0);
+
+    // The acknowledgements' second home. They are read on the first-run
+    // screen, which never comes back once the user has scanned - so this is
+    // where anyone who wants to look again can. No badge on this block: it is
+    // the one thing in the dialog that is not a setting.
+    crate::ui::credits(ui, s);
 
     // Both setters no-op when the value is unchanged, so this runs every
     // frame without writing to the database every frame.
@@ -121,6 +131,23 @@ mod tests {
                 1,
                 "{label:?} labels more than one control in this section",
             );
+        }
+    }
+
+    /// GT-68's tail: the first-run screen retires itself for good after one
+    /// scan, so without a second home the acknowledgements become unreachable
+    /// the moment the user does the thing the app exists for.
+    ///
+    /// Line by line rather than by the heading: a heading over an empty block
+    /// is exactly the failure a presence check on the heading would miss.
+    #[test]
+    fn the_section_carries_the_acknowledgements() {
+        let test = open_general();
+        let s = test.strings();
+
+        test.assert_label(s.credits_heading);
+        for line in [s.credits_anthropic, s.credits_karpathy, s.credits_tikione] {
+            test.assert_label(line);
         }
     }
 
