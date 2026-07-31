@@ -131,29 +131,23 @@ fn show_maintenance_progress(app: &GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::
     }
 }
 
-/// The one place in Settings that uses red - see the module docs. The click
-/// still only opens the confirmation modal; nothing is destroyed from here.
+/// The red frame around the wipe. The click still only opens the
+/// confirmation modal; nothing is destroyed from here.
 fn show_danger_zone(
     app: &GameTrimmerApp,
     ui: &mut egui::Ui,
     s: &i18n::Strings,
     clear_clicked: &mut bool,
 ) {
-    egui::Frame::new()
-        .stroke(egui::Stroke::new(1.5, ui.visuals().error_fg_color))
-        .inner_margin(egui::Margin::same(10))
-        .corner_radius(4)
-        .show(ui, |ui| {
-            ui.colored_label(ui.visuals().error_fg_color, s.danger_zone_label);
-            ui.add_space(6.0);
-            if ui
-                .add_enabled(!app.busy, egui::Button::new(s.btn_clear_database))
-                .clicked()
-            {
-                *clear_clicked = true;
-            }
-            ui.small(s.clear_hint);
-        });
+    super::danger_frame(ui, s.danger_zone_label, |ui| {
+        if ui
+            .add_enabled(!app.busy, egui::Button::new(s.btn_clear_database))
+            .clicked()
+        {
+            *clear_clicked = true;
+        }
+        ui.small(s.clear_hint);
+    });
 }
 
 #[cfg(test)]

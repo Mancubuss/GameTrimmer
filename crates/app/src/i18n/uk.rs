@@ -43,6 +43,12 @@ pub(super) const STRINGS: Strings = Strings {
     profile_behavior_manual: "Ніколи автоматично",
     disabled_last_keep_language: "Щонайменше одна мова має лишатися у списку збереження.",
     disabled_last_category: "Щонайменше одна категорія має лишатися увімкненою.",
+    keep_english_warning: "Зняття англійської саме собою нічого не видаляє. Воно змушує \
+                           наступне сканування пропонувати англійські файли локалізації, \
+                           зокрема інтерфейсні, без яких більшість ігор не запускається.",
+    keep_english_absent: "Англійської немає у списку збереження: сканування пропонує \
+                          англійські файли локалізації, зокрема інтерфейсні.",
+    btn_keep_english_again: "Знову берегти англійську",
     rules_pack_category_label: "Правила категорій (rules.json)",
     rules_pack_lang_label: "Мовний пакет (l10n_rules.json)",
     rules_valid_label: "Справний",
