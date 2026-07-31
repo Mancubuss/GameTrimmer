@@ -248,7 +248,29 @@ impl GameTrimmerApp {
     /// `ctx` is `cc.egui_ctx` from `eframe::run_native`'s creation callback -
     /// see `worker::Notifier` for why every background worker needs it.
     pub fn new(ctx: egui::Context) -> Self {
-        let db_path = worker::db_path().ok();
+        Self::new_with(ctx, worker::db_path().ok(), true)
+    }
+
+    /// The real constructor, with the two pieces of ambient state that make
+    /// [`Self::new`] unusable from a test taken as parameters instead:
+    ///
+    /// * `db_path`: where the database lives. Production passes
+    ///   `worker::db_path().ok()`, i.e. `gametrimmer.db` next to the
+    ///   executable. Under `cargo test` that would resolve to
+    ///   `target/debug/deps/`, so every test in the binary would open, create
+    ///   and mutate one shared file - tests pass a path inside their own
+    ///   `TempDir` instead.
+    /// * `autoload`: whether to spawn the background worker that reloads the
+    ///   previous scan's findings. A test wants a deterministic widget tree,
+    ///   not a thread racing its assertions, so it passes `false`.
+    ///
+    /// Everything else (`elevation::is_elevated`, the per-volume media probe
+    /// behind `show_elevation_prompt`) is left alone deliberately: with a
+    /// fresh database `load_libraries` returns an empty list, and
+    /// `compute_show_elevation_prompt` over no libraries probes no volumes
+    /// and answers `false`. So a temp-database app is already deterministic
+    /// without stubbing those out.
+    fn new_with(ctx: egui::Context, db_path: Option<PathBuf>, autoload: bool) -> Self {
         // Settings (and thus the UI language) aren't known until the
         // database opens - startup errors before that point use the default
         // language's text, same as any other place with no settings yet.
@@ -272,7 +294,9 @@ impl GameTrimmerApp {
             ),
         };
         let libraries = Self::load_libraries(db_path.as_deref());
-        let has_saved_findings = Self::has_saved_findings(db_path.as_deref());
+        // Short-circuits when `autoload` is off, so a test does not even pay
+        // the database open for a question whose answer it would ignore.
+        let has_saved_findings = autoload && Self::has_saved_findings(db_path.as_deref());
         let elevated = elevation::is_elevated();
         // Only worth computing when not already elevated - the modal is
         // never shown otherwise, so there is nothing this decision could
@@ -341,7 +365,9 @@ impl GameTrimmerApp {
         // (from an earlier "Scan Libraries" run), load and display it
         // right away. A missing db_path, a database that fails to open, or
         // one with no saved findings yet all fall through unchanged - the
-        // ordinary empty startup screen, waiting for the user to scan.
+        // ordinary empty startup screen, waiting for the user to scan. So
+        // does `autoload = false`, which is how a test keeps this thread
+        // from racing its own assertions.
         if has_saved_findings {
             if let Some(db_path) = db_path {
                 app.busy = true;
@@ -1415,5 +1441,108 @@ impl eframe::App for GameTrimmerApp {
         ui::tree_view::show(self, ui);
         ui::dialogs::show(self, ui);
         ui::settings_dialog::show(self, ui);
+    }
+}
+
+#[cfg(test)]
+impl GameTrimmerApp {
+    /// Builds an app for a test: its own throwaway database inside `dir`,
+    /// and no previous-scan autoload thread. See [`Self::new_with`] for why
+    /// both matter. The caller keeps the `TempDir` alive for as long as the
+    /// app is used - dropping it deletes the database out from under it.
+    pub fn new_for_test(dir: &std::path::Path) -> Self {
+        Self::new_with(
+            egui::Context::default(),
+            Some(dir.join("gametrimmer.db")),
+            false,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of the `new_with` seam: a test app must not touch the
+    /// database `new()` would resolve to. Under `cargo test` that path is
+    /// `target/debug/deps/gametrimmer.db`, shared by every test in this
+    /// binary and surviving between runs.
+    #[test]
+    fn test_app_uses_its_own_database_and_leaves_the_production_path_alone() {
+        let production_path = worker::db_path().expect("resolve production db path");
+        let existed_before = production_path.exists();
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let app = GameTrimmerApp::new_for_test(dir.path());
+
+        assert_eq!(
+            app.db_path.as_deref(),
+            Some(dir.path().join("gametrimmer.db").as_path()),
+            "the test app should read and write inside its own temp dir",
+        );
+        assert_eq!(
+            production_path.exists(),
+            existed_before,
+            "building a test app must not create {}",
+            production_path.display(),
+        );
+    }
+
+    /// Two apps built at the same time must not share a file. If they did,
+    /// tests would pass or fail depending on which one won the race.
+    #[test]
+    fn concurrently_built_test_apps_do_not_share_a_database() {
+        let dirs: Vec<tempfile::TempDir> = (0..4)
+            .map(|_| tempfile::tempdir().expect("create temp dir"))
+            .collect();
+
+        let paths: Vec<Option<PathBuf>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = dirs
+                .iter()
+                .map(|dir| scope.spawn(|| GameTrimmerApp::new_for_test(dir.path()).db_path))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("build app on worker thread"))
+                .collect()
+        });
+
+        let unique: std::collections::HashSet<&PathBuf> = paths.iter().flatten().collect();
+        assert_eq!(unique.len(), dirs.len(), "each app needs its own database");
+    }
+
+    /// `autoload = false` is what keeps the widget tree deterministic: with
+    /// the loader thread running, an assertion can land before or after
+    /// `WorkerMsg::Done` swaps the findings in.
+    #[test]
+    fn test_app_does_not_spawn_the_previous_scan_loader() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let app = GameTrimmerApp::new_for_test(dir.path());
+
+        assert!(
+            app._worker.is_none(),
+            "no background worker should be spawned"
+        );
+        assert!(!app.busy, "a freshly built test app should be idle");
+        assert!(app.findings.is_empty(), "a fresh database has no findings");
+    }
+
+    /// A fresh temp database must open cleanly - otherwise every harness
+    /// test would silently be asserting against a dialog showing a database
+    /// error banner instead of the real thing.
+    #[test]
+    fn test_app_opens_its_database_without_error() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let app = GameTrimmerApp::new_for_test(dir.path());
+
+        assert_eq!(app.db_error, None, "temp database should open cleanly");
+        assert!(
+            app.libraries.is_empty(),
+            "a fresh database has no libraries, so no volume probe runs",
+        );
+        assert!(
+            !app.show_elevation_prompt,
+            "with no libraries there is nothing to offer elevation for",
+        );
     }
 }
