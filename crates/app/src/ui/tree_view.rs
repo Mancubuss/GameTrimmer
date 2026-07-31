@@ -122,12 +122,12 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
         // Keyboard input is handled before rendering so the resulting
         // cursor/toggle/scroll changes are visible the same frame. Modals
-        // own the keyboard while open.
-        let modal_open = app.confirm_delete.is_some()
-            || app.remove_summary.is_some()
-            || app.show_elevation_prompt;
+        // own the keyboard while open - see `GameTrimmerApp::any_modal_open`,
+        // which is the single list of them (this used to enumerate three of
+        // the five here and silently kept handling keys behind the settings
+        // dialog and the clear-database confirmation).
         let mut scroll_override = None;
-        if !modal_open {
+        if !app.any_modal_open() {
             let rows = build_visible_rows(
                 &app.tree,
                 &app.tree_toggles,
@@ -1256,4 +1256,108 @@ fn show_file_row(
             );
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::ui::harness::UiTest;
+
+    /// A tree with a cursor parked on the first row, ready for an arrow key.
+    fn tree_with_cursor() -> UiTest {
+        let mut test = UiTest::new(show);
+        test.seed_findings();
+        test.app_mut().tree_cursor = Some(0);
+        test.run();
+        test
+    }
+
+    /// The control: with nothing modal open, the tree owns the keyboard.
+    /// Without this, the assertions below would also pass if arrow keys had
+    /// simply stopped working altogether.
+    #[test]
+    fn arrow_keys_move_the_cursor_when_no_dialog_is_open() {
+        let mut test = tree_with_cursor();
+
+        test.press(egui::Key::ArrowDown);
+
+        assert_eq!(
+            test.app().tree_cursor,
+            Some(1),
+            "the tree should handle arrow keys when nothing is modal",
+        );
+    }
+
+    /// The bug (audit §6.12): the tree's own modal list named three of the
+    /// five dialogs, so keys still reached it behind Settings and behind the
+    /// clear-database confirmation. Every modal is checked here, not just the
+    /// two that were missing - the point of routing through
+    /// `any_modal_open` is that this list cannot drift again.
+    /// One modal, named for the failure message, and how to open it.
+    type OpenModal = (&'static str, fn(&mut GameTrimmerApp));
+
+    #[test]
+    fn no_modal_lets_arrow_keys_reach_the_tree() {
+        let modals: [OpenModal; 5] = [
+            ("show_settings", |app| app.show_settings = true),
+            ("confirm_clear_database", |app| {
+                app.confirm_clear_database = true
+            }),
+            ("show_elevation_prompt", |app| {
+                app.show_elevation_prompt = true
+            }),
+            ("confirm_delete", |app| {
+                app.confirm_delete = Some(crate::app::ConfirmDelete {
+                    indices: vec![0],
+                    method: gametrimmer_core::settings::DeleteMethod::RecycleBin,
+                    remember: false,
+                })
+            }),
+            ("remove_summary", |app| {
+                app.remove_summary = Some(crate::app::RemoveSummary {
+                    succeeded: 1,
+                    nuked: 0,
+                    failed: Vec::new(),
+                    method: gametrimmer_core::settings::DeleteMethod::RecycleBin,
+                    expected_bytes: 0,
+                    freed_bytes: 0,
+                    recycled_pending_bytes: 0,
+                })
+            }),
+        ];
+
+        for (name, open) in modals {
+            let mut test = tree_with_cursor();
+            open(test.app_mut());
+            test.run();
+
+            test.press(egui::Key::ArrowDown);
+
+            assert_eq!(
+                test.app().tree_cursor,
+                Some(0),
+                "the tree handled ArrowDown while {name} was open",
+            );
+        }
+    }
+
+    /// Space toggles the selection of the row under the cursor, so it is the
+    /// destructive half of the same gap: a keystroke behind a dialog could
+    /// change what a pending delete is about to remove.
+    #[test]
+    fn space_does_not_toggle_selection_behind_a_dialog() {
+        let mut test = tree_with_cursor();
+        test.app_mut().show_settings = true;
+        test.run();
+        let before: Vec<bool> = test.app().findings.iter().map(|f| f.selected).collect();
+
+        test.press(egui::Key::Space);
+
+        let after: Vec<bool> = test.app().findings.iter().map(|f| f.selected).collect();
+        assert_eq!(
+            before, after,
+            "Space changed the selection while the settings dialog was open",
+        );
+    }
 }

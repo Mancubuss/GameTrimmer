@@ -391,6 +391,26 @@ impl GameTrimmerApp {
         self.settings.app_language
     }
 
+    /// Whether any modal dialog is on screen.
+    ///
+    /// One source of truth for "the user is inside a dialog", so background
+    /// keyboard handling can be switched off in a single place (see
+    /// `ui::tree_view`). Previously each caller listed the modals it happened
+    /// to know about, and the tree's list was missing `show_settings` and
+    /// `confirm_clear_database` - so arrow keys and Space still moved the
+    /// cursor and toggled selection behind an open settings dialog.
+    ///
+    /// Every arm corresponds to one `egui::Modal` in `ui::dialogs` or
+    /// `ui::settings_dialog`; adding a modal without adding it here is the
+    /// mistake this method exists to make harder.
+    pub fn any_modal_open(&self) -> bool {
+        self.confirm_delete.is_some()
+            || self.remove_summary.is_some()
+            || self.show_elevation_prompt
+            || self.show_settings
+            || self.confirm_clear_database
+    }
+
     /// Applies a new UI language and persists it immediately, mirroring
     /// `set_delete_method`. Called from the settings dialog's language
     /// selector; takes effect the same frame since every render call reads

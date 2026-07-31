@@ -127,6 +127,46 @@ impl UiTest {
         self.node(label).rect()
     }
 
+    /// Gives the app a small synthetic result set and builds its tree, for
+    /// the panels that render nothing at all without findings.
+    ///
+    /// Two games on one disk so the tree has more than one row to move a
+    /// keyboard cursor between, and everything pre-selected so the actions
+    /// gated on a non-empty selection are enabled.
+    pub fn seed_findings(&mut self) {
+        let app = self.app_mut();
+        app.findings = (0..2)
+            .map(|i| crate::model::FindingItem {
+                row: crate::model::FindingRow {
+                    file_id: i,
+                    game_id: i,
+                    game_name: format!("Test Game {i}"),
+                    install_dir: std::path::PathBuf::from("C:\\Games\\Test"),
+                    rel_path: format!("data/loc_{i}.pak"),
+                    size: 1024 * 1024,
+                    size_on_disk: 1024 * 1024,
+                    source: crate::model::FindingSource::Loc(
+                        gametrimmer_core::langdetect::LangKind::Text,
+                    ),
+                    rule_desc: "test rule".to_string(),
+                    confidence: 90,
+                    lang_tag: Some("de".to_string()),
+                    group_dir: None,
+                },
+                selected: true,
+                removed: false,
+            })
+            .collect();
+        app.tree = crate::model::build_tree(&app.findings);
+        self.run();
+    }
+
+    /// Sends a key press and runs until the UI settles.
+    pub fn press(&mut self, key: egui::Key) {
+        self.harness.key_press(key);
+        self.run();
+    }
+
     /// Clicks the widget with this label, the way a user would: scroll it
     /// into view first, then click where it ended up.
     ///
