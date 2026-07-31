@@ -28,10 +28,8 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.add_space(4.0);
 
         ui.horizontal(|ui| {
-            let scan_clicked = ui
-                .add_enabled(!app.busy, egui::Button::new(s.btn_scan_libraries))
-                .clicked();
-            if scan_clicked {
+            let scan_blocked = app.busy.then_some(s.disabled_busy);
+            if crate::ui::gated_button(ui, s.btn_scan_libraries, scan_blocked).clicked() {
                 app.start_scan();
             }
 
@@ -43,13 +41,16 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 app.cancel_scan();
             }
 
-            let export_clicked = ui
-                .add_enabled(
-                    !app.busy && !app.export_active && !app.findings.is_empty(),
-                    egui::Button::new(s.btn_export),
-                )
-                .clicked();
-            if export_clicked {
+            let export_blocked = if app.busy {
+                Some(s.disabled_busy)
+            } else if app.export_active {
+                Some(s.disabled_export_running)
+            } else if app.findings.is_empty() {
+                Some(s.disabled_no_findings)
+            } else {
+                None
+            };
+            if crate::ui::gated_button(ui, s.btn_export, export_blocked).clicked() {
                 app.start_export();
             }
 
