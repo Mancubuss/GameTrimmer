@@ -33,7 +33,24 @@
 //! `PgUp`/`PgDn` (page; plain scrolling when no cursor is active),
 //! `Home`/`End`, `→`/`←` (expand/collapse; `←` on a collapsed node jumps to
 //! its parent), and `Space`/`Enter` (toggle selection of the cursor row).
-//! The cursor row is highlighted; clicking a row's name places the cursor.
+//! The cursor row is highlighted; clicking anywhere on a row places the
+//! cursor there (GT-32).
+//!
+//! # Why the row is one click target
+//!
+//! Placing the cursor used to require hitting the name label itself - a few
+//! dozen pixels on a row that spans the whole panel, with the rest of the
+//! width inert. Every row therefore registers a full-width background
+//! [`egui::Ui::interact`] rect *before* its own widgets, so the checkbox, the
+//! expand arrow and the name still win the click where they are (egui
+//! hit-tests later-registered widgets as being on top) while everything
+//! between and around them lands on the row.
+//!
+//! Note what a row click deliberately does *not* do: it moves the cursor, it
+//! never ticks the row's checkbox. In a tool that deletes files those are two
+//! different things, and a stray click on a wide target must not be able to
+//! mark anything for removal - marking stays on the checkbox and on the
+//! explicit `Space`/`Enter` toggle.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -705,17 +722,38 @@ fn show_row(
     row_index: usize,
     lang: Lang,
 ) {
-    // Highlight the keyboard-cursor row behind its widgets.
+    let row_rect = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+    );
+
+    // GT-32: the whole row is a click target. Registered here, before the
+    // row's own widgets, so those stay on top and keep their own clicks -
+    // see this module's "Why the row is one click target".
+    let background = ui.interact(
+        row_rect,
+        ui.id().with(("tree_row", row_index)),
+        egui::Sense::click(),
+    );
+
+    // Highlight the keyboard-cursor row behind its widgets, and give the
+    // row a hover tint so the widened target is visible before it is used.
+    // `contains_pointer` rather than `hovered`: the pointer sitting on the
+    // row's own checkbox or name makes those the hovered widget, and the
+    // row underneath must not blink out from under them.
     if *cursor == Some(row_index) {
-        let rect = egui::Rect::from_min_size(
-            ui.cursor().min,
-            egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
-        );
         ui.painter().rect_filled(
-            rect,
+            row_rect,
             2.0,
             ui.visuals().selection.bg_fill.gamma_multiply(0.35),
         );
+    } else if background.contains_pointer() {
+        ui.painter()
+            .rect_filled(row_rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+
+    if background.clicked() {
+        *cursor = Some(row_index);
     }
 
     match row {
@@ -1425,6 +1463,98 @@ mod tests {
             test.app().settings.selection_profile,
             SelectionProfile::Cautious,
             "applying a profile is not a hand-edit",
+        );
+    }
+
+    /// A tree seeded with two games on one disk, giving three collapsed rows
+    /// in a known order: disk, "Test Game 0", "Test Game 1" (games sort by
+    /// size, then by name - the two are the same size).
+    fn tree_of_three_rows() -> UiTest {
+        let mut test = UiTest::new(show);
+        test.seed_findings();
+        test.run();
+        test
+    }
+
+    /// A point inside `row` that is past the row's name and short of the
+    /// right-aligned columns - the dead width GT-32 is about.
+    fn empty_space_right_of(name_rect: egui::Rect) -> egui::Pos2 {
+        egui::pos2(name_rect.max.x + 24.0, name_rect.center().y)
+    }
+
+    /// GT-32: the row, not just its name, is the click target.
+    #[test]
+    fn a_click_beside_the_name_places_the_cursor_on_that_row() {
+        let mut test = tree_of_three_rows();
+        let name = i18n::quoted(test.app().lang(), "Test Game 1");
+        let target = empty_space_right_of(test.rect_of(&name));
+
+        test.click_at(target);
+
+        assert_eq!(
+            test.app().tree_cursor,
+            Some(2),
+            "clicking the blank part of the third row did not select it",
+        );
+    }
+
+    /// The control: the widened target is per row, not one target for the
+    /// whole list. Without this, the test above would also pass if any click
+    /// anywhere parked the cursor on a fixed row.
+    #[test]
+    fn each_row_claims_only_its_own_width() {
+        let mut test = tree_of_three_rows();
+        let disk = i18n::disk_label(test.app().lang(), "C:");
+        let target = empty_space_right_of(test.rect_of(&disk));
+
+        test.click_at(target);
+
+        assert_eq!(
+            test.app().tree_cursor,
+            Some(0),
+            "clicking beside the disk name selected some other row",
+        );
+    }
+
+    /// The safety half of GT-32: a wide, easily-hit target moves the cursor
+    /// and nothing else. If a row click also ticked the row's checkbox, a
+    /// stray click anywhere on the panel would mark files for deletion.
+    #[test]
+    fn a_row_click_never_marks_anything_for_deletion() {
+        let mut test = tree_of_three_rows();
+        let before: Vec<bool> = test.app().findings.iter().map(|f| f.selected).collect();
+        let name = i18n::quoted(test.app().lang(), "Test Game 1");
+        let target = empty_space_right_of(test.rect_of(&name));
+
+        test.click_at(target);
+
+        let after: Vec<bool> = test.app().findings.iter().map(|f| f.selected).collect();
+        assert_eq!(
+            before, after,
+            "clicking a row changed what is marked for deletion",
+        );
+    }
+
+    /// The regression the full-width rect could cause: it is registered
+    /// before the row's own widgets precisely so they keep their clicks. If
+    /// that ordering ever inverts, the checkboxes go dead while every test
+    /// above still passes.
+    #[test]
+    fn the_row_background_does_not_swallow_a_checkbox_click() {
+        let mut test = tree_of_three_rows();
+        assert!(
+            test.app().findings.iter().all(|f| f.selected),
+            "the seeded findings should start fully selected",
+        );
+
+        // Checkboxes render in row order; index 1 is the first game row.
+        let checkbox = test.nth_checkbox_rect(1);
+        test.click_at(checkbox.center());
+
+        assert_eq!(
+            test.app().findings.iter().filter(|f| f.selected).count(),
+            1,
+            "the game row's checkbox no longer unticks its own findings",
         );
     }
 
