@@ -34,6 +34,10 @@ pub(super) const STRINGS: Strings = Strings {
     selection_independent_switches_hint: "Що сканується (розділ «Сканування»), що позначається \
          автоматично (профіль вище) і як воно видаляється (метод вище) — три незалежні \
          перемикачі: зміна одного не чіпає двох інших.",
+    rules_pack_category_label: "Правила категорій (rules.json)",
+    rules_pack_lang_label: "Мовний пакет (l10n_rules.json)",
+    rules_valid_label: "Справний",
+    rules_invalid_label: "Не читається",
     db_path_label: "Файл бази даних:",
     btn_copy: "Копіювати",
     btn_open_folder: "Відкрити теку",

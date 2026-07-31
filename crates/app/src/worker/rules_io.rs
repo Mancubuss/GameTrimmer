@@ -25,6 +25,76 @@ pub fn export_packs_to(lang: Lang, dir: &Path) -> Result<(), String> {
     write_text(lang, &dir.join(L10N_RULES_FILE_NAME), &l10n_text)
 }
 
+/// The path the scanner actually loads a pack of `kind` from, materializing
+/// the embedded default next to the executable if it is not there yet.
+///
+/// Public because the settings dialog shows it: when a pack reads "does not
+/// parse", the next question is where the file is.
+pub fn pack_path(kind: PackKind) -> std::io::Result<PathBuf> {
+    match kind {
+        PackKind::CategoryRules => ensure_rules_path(),
+        PackKind::LangPack => ensure_l10n_rules_path(),
+    }
+}
+
+/// The embedded default text for a pack of `kind`.
+fn builtin_text(kind: PackKind) -> Result<String, String> {
+    match kind {
+        PackKind::CategoryRules => Ok(gametrimmer_core::rules::BUILTIN_RULES_JSON.to_string()),
+        PackKind::LangPack => gametrimmer_core::langdetect::LangPack::builtin()
+            .to_json_pretty()
+            .map_err(|err| err.to_string()),
+    }
+}
+
+/// Whether the pack file on disk still parses.
+///
+/// Shown live in the settings dialog rather than only as a toast after an
+/// import: a hand-edited `rules.json` that no longer compiles otherwise
+/// fails silently at scan time, with the app quietly running on fewer rules
+/// than the user thinks (audit §6.6). A pack that cannot even be read counts
+/// as invalid - from the user's side the effect is the same.
+pub fn pack_is_valid(kind: PackKind) -> bool {
+    let Ok(path) = pack_path(kind) else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    pack_text_is_valid(kind, &text)
+}
+
+/// The parse half of [`pack_is_valid`], split out so it can be tested
+/// against text instead of against whatever happens to sit next to the test
+/// binary.
+fn pack_text_is_valid(kind: PackKind, text: &str) -> bool {
+    match kind {
+        PackKind::CategoryRules => gametrimmer_core::rules::RuleEngine::from_json(text).is_ok(),
+        PackKind::LangPack => gametrimmer_core::langdetect::LangPack::from_json(text).is_ok(),
+    }
+}
+
+/// Overwrites a pack with the embedded default, keeping the previous file as
+/// `*.bak`.
+///
+/// The way out of an invalid pack: without it a broken hand edit can only be
+/// fixed by finding the file and deleting it, which is exactly the knowledge
+/// a user in that position does not have. Purely a filesystem operation, so
+/// it runs synchronously rather than on a worker thread like export/import.
+pub fn restore_builtin(lang: Lang, kind: PackKind) -> Result<String, String> {
+    let target = pack_path(kind).map_err(|err| i18n::prepare_rules_file_failed(lang, err))?;
+    restore_builtin_at(lang, kind, &target)
+}
+
+/// The path-taking half of [`restore_builtin`], so a test can restore into a
+/// temp directory instead of over the packs next to the test binary.
+fn restore_builtin_at(lang: Lang, kind: PackKind, target: &Path) -> Result<String, String> {
+    let text = builtin_text(kind)?;
+    backup(lang, target)?;
+    write_text(lang, target, &text)?;
+    Ok(i18n::rules_restored(lang, target.display()))
+}
+
 /// Unwraps an `ensure_*` result and reads the materialized file.
 fn read_ensured(lang: Lang, ensured: std::io::Result<PathBuf>) -> Result<String, String> {
     let path = ensured.map_err(|err| i18n::prepare_rules_file_failed(lang, err))?;
@@ -212,6 +282,73 @@ mod tests {
         backup(Lang::En, &target).expect("existing target is backed up");
         let bak = dir.path().join("rules.json.bak");
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), "[]");
+    }
+
+    /// Both directions matter: the built-in packs must pass their own check,
+    /// or the dialog would show "Syntax error" on a fresh install; and text
+    /// that does not parse must fail it, or the check reports nothing.
+    #[test]
+    fn validity_accepts_the_builtin_packs_and_rejects_broken_text() {
+        for kind in [PackKind::CategoryRules, PackKind::LangPack] {
+            let builtin = builtin_text(kind).expect("builtin pack serializes");
+            assert!(
+                pack_text_is_valid(kind, &builtin),
+                "{kind:?}: the built-in pack fails its own validity check",
+            );
+            assert!(!pack_text_is_valid(kind, "{ not json"), "{kind:?}");
+            assert!(!pack_text_is_valid(kind, ""), "{kind:?}: empty");
+        }
+    }
+
+    /// A pack of the wrong shape is not merely unparseable JSON - the two
+    /// kinds must not accept each other's file.
+    #[test]
+    fn validity_does_not_accept_the_other_kind_of_pack() {
+        let rules = builtin_text(PackKind::CategoryRules).expect("builtin rules");
+        let lang_pack = builtin_text(PackKind::LangPack).expect("builtin lang pack");
+
+        assert!(!pack_text_is_valid(PackKind::LangPack, &rules));
+        assert!(!pack_text_is_valid(PackKind::CategoryRules, &lang_pack));
+    }
+
+    /// The way out of a broken hand edit: restoring must produce a pack that
+    /// passes the check, and must not throw the broken file away - the user
+    /// may want whatever they were trying to write back.
+    #[test]
+    fn restoring_replaces_a_broken_pack_and_keeps_it_as_a_backup() {
+        for (kind, name) in [
+            (PackKind::CategoryRules, RULES_FILE_NAME),
+            (PackKind::LangPack, L10N_RULES_FILE_NAME),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join(name);
+            std::fs::write(&target, "{ broken").unwrap();
+
+            restore_builtin_at(Lang::En, kind, &target).expect("restore succeeds");
+
+            let restored = std::fs::read_to_string(&target).unwrap();
+            assert!(
+                pack_text_is_valid(kind, &restored),
+                "{kind:?}: the restored pack is not valid",
+            );
+            let backup = std::fs::read_to_string(target.with_extension("json.bak")).unwrap();
+            assert_eq!(backup, "{ broken", "{kind:?}: the broken file was lost");
+        }
+    }
+
+    /// Restoring over a pack that is not there yet is the first-run case; it
+    /// must still produce a valid file rather than failing on the missing
+    /// backup source.
+    #[test]
+    fn restoring_works_when_there_is_no_pack_file_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(RULES_FILE_NAME);
+
+        restore_builtin_at(Lang::En, PackKind::CategoryRules, &target).expect("restore succeeds");
+
+        let restored = std::fs::read_to_string(&target).unwrap();
+        assert!(pack_text_is_valid(PackKind::CategoryRules, &restored));
+        assert!(!target.with_extension("json.bak").exists());
     }
 
     #[test]

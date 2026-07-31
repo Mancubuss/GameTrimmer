@@ -35,6 +35,10 @@ pub(super) const STRINGS: Strings = Strings {
     selection_independent_switches_hint: "What is scanned (the Scanning section), what is \
          pre-selected (the profile above) and how it is deleted (the method above) are three \
          independent switches - changing one leaves the other two alone.",
+    rules_pack_category_label: "Category rules (rules.json)",
+    rules_pack_lang_label: "Language pack (l10n_rules.json)",
+    rules_valid_label: "Valid",
+    rules_invalid_label: "Does not parse",
     db_path_label: "Database file:",
     btn_copy: "Copy",
     btn_open_folder: "Open folder",

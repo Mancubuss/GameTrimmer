@@ -18,10 +18,7 @@ use crate::i18n;
 use crate::model::format_size;
 use crate::ui::row_actions;
 
-/// Success green for a finished maintenance job, matching the old dialog.
-/// Not `visuals().hyperlink_color` or similar: this has to read as "done",
-/// not as "clickable", in both themes.
-const SUCCESS_GREEN: egui::Color32 = egui::Color32::from_rgb(0x4c, 0xaf, 0x50);
+use super::SUCCESS_GREEN;
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
