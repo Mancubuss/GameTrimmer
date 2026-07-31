@@ -22,6 +22,19 @@ pub(super) const STRINGS: Strings = Strings {
     btn_done: "Done",
     btn_restore_defaults: "Restore defaults",
     badge_immediately: "Immediately",
+    badge_next_scan: "From the next scan",
+    badge_next_delete: "From the next deletion",
+    default_profile_label: "Profile a new scan starts from",
+    default_profile_hint: "Does not change what is currently checked in the tree - only \
+         where the next scan begins.",
+    confirm_behavior_label: "Ask before deleting",
+    confirm_always_label: "Always",
+    confirm_only_1gb_label: "Only above 1 GB",
+    confirm_never_label: "Never",
+    confirm_behavior_hint: "When to show the confirmation before a deletion runs.",
+    selection_independent_switches_hint: "What is scanned (the Scanning section), what is \
+         pre-selected (the profile above) and how it is deleted (the method above) are three \
+         independent switches - changing one leaves the other two alone.",
     db_path_label: "Database file:",
     btn_copy: "Copy",
     btn_open_folder: "Open folder",

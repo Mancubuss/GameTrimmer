@@ -63,6 +63,35 @@ pub struct Strings {
     #[allow(dead_code)]
     pub badge_immediately: &'static str,
 
+    /// When a setting takes effect only on the next run of something. The
+    /// counterpart to [`Self::badge_immediately`]; the audit's complaint was
+    /// precisely that the old dialog mixed the two without saying so.
+    #[allow(dead_code)]
+    pub badge_next_scan: &'static str,
+    #[allow(dead_code)]
+    pub badge_next_delete: &'static str,
+
+    /// "Selection & deletion": three switches the old dialog conflated.
+    #[allow(dead_code)]
+    pub default_profile_label: &'static str,
+    #[allow(dead_code)]
+    pub default_profile_hint: &'static str,
+    #[allow(dead_code)]
+    pub confirm_behavior_label: &'static str,
+    #[allow(dead_code)]
+    pub confirm_always_label: &'static str,
+    #[allow(dead_code)]
+    pub confirm_only_1gb_label: &'static str,
+    #[allow(dead_code)]
+    pub confirm_never_label: &'static str,
+    #[allow(dead_code)]
+    pub confirm_behavior_hint: &'static str,
+    /// Spells out that scanning, auto-selection and deletion are three
+    /// separate decisions - the section is arranged around that, but the
+    /// audit found users read the three groups as one pipeline.
+    #[allow(dead_code)]
+    pub selection_independent_switches_hint: &'static str,
+
     /// "Data & diagnostics": the database file and the irreversible wipe.
     #[allow(dead_code)]
     pub db_path_label: &'static str,
@@ -299,6 +328,19 @@ impl Strings {
             ("btn_done", self.btn_done),
             ("btn_restore_defaults", self.btn_restore_defaults),
             ("badge_immediately", self.badge_immediately),
+            ("badge_next_scan", self.badge_next_scan),
+            ("badge_next_delete", self.badge_next_delete),
+            ("default_profile_label", self.default_profile_label),
+            ("default_profile_hint", self.default_profile_hint),
+            ("confirm_behavior_label", self.confirm_behavior_label),
+            ("confirm_always_label", self.confirm_always_label),
+            ("confirm_only_1gb_label", self.confirm_only_1gb_label),
+            ("confirm_never_label", self.confirm_never_label),
+            ("confirm_behavior_hint", self.confirm_behavior_hint),
+            (
+                "selection_independent_switches_hint",
+                self.selection_independent_switches_hint,
+            ),
             ("db_path_label", self.db_path_label),
             ("btn_copy", self.btn_copy),
             ("btn_open_folder", self.btn_open_folder),

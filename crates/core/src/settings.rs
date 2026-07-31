@@ -216,6 +216,64 @@ impl SelectionProfile {
     }
 }
 
+/// When the delete confirmation modal is shown before a removal runs.
+///
+/// One of the three independent switches in the settings dialog's "Selection
+/// & deletion" section, alongside [`Settings::default_selection_profile`]
+/// (what a scan pre-checks) and [`DeleteMethod`] (how a file is disposed of).
+/// The audit found the old dialog blurred the three together; none of them
+/// affects the others.
+///
+/// [`Always`](Self::Always) is the default - skipping the confirmation is a
+/// choice a user should have to make deliberately, not one an accidental
+/// click can leave them in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConfirmBehavior {
+    /// Always show the confirmation modal before deleting.
+    #[default]
+    Always,
+    /// Only ask when the batch is at least [`ConfirmBehavior::ONE_GB`];
+    /// smaller batches delete straight away.
+    OnlyAboveOneGb,
+    /// Never ask - the delete starts as soon as the button is clicked.
+    Never,
+}
+
+impl ConfirmBehavior {
+    /// The threshold [`ConfirmBehavior::OnlyAboveOneGb`] compares against.
+    pub const ONE_GB: u64 = 1024 * 1024 * 1024;
+
+    /// Stable string form persisted into the `settings` table.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConfirmBehavior::Always => "always",
+            ConfirmBehavior::OnlyAboveOneGb => "only_above_1gb",
+            ConfirmBehavior::Never => "never",
+        }
+    }
+
+    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values (e.g.
+    /// written by a future version) - callers fall back to the default.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "always" => Some(ConfirmBehavior::Always),
+            "only_above_1gb" => Some(ConfirmBehavior::OnlyAboveOneGb),
+            "never" => Some(ConfirmBehavior::Never),
+            _ => None,
+        }
+    }
+
+    /// Whether a batch totalling `total_bytes` on disk needs confirming
+    /// under this policy.
+    pub fn should_confirm(self, total_bytes: u64) -> bool {
+        match self {
+            ConfirmBehavior::Always => true,
+            ConfirmBehavior::OnlyAboveOneGb => total_bytes >= Self::ONE_GB,
+            ConfirmBehavior::Never => false,
+        }
+    }
+}
+
 /// The keep-list used when the database has no stored value (or an empty
 /// one): the user's own language plus English are never flagged.
 pub fn default_keep_languages() -> Vec<String> {
@@ -319,11 +377,23 @@ pub struct Settings {
     /// settings dialog) are responsible for never letting the *last*
     /// checked category be unchecked - see `ui::settings_dialog`.
     pub enabled_categories: Vec<String>,
-    /// Which findings a scan pre-selects for deletion - see
-    /// [`SelectionProfile`]. Orthogonal to [`Self::enabled_categories`]:
-    /// that decides what is scanned, this decides what is pre-checked among
-    /// what was scanned.
+    /// The profile the **currently displayed** findings follow. Orthogonal to
+    /// [`Self::enabled_categories`]: that decides what is scanned, this
+    /// decides what is checked among what was scanned. The main-screen picker
+    /// reads and writes it, re-applying it to the tree on the spot, and any
+    /// hand-edited checkbox drops it to [`SelectionProfile::Custom`] so the
+    /// label stops claiming a policy the selection no longer follows.
     pub selection_profile: SelectionProfile,
+    /// The profile a **fresh scan** pre-selects with.
+    ///
+    /// Deliberately separate from [`Self::selection_profile`]: the settings
+    /// dialog edits only this one, so changing it can never silently
+    /// re-check the tree the user is looking at. It takes effect the next
+    /// time a scan finishes, which is also when the live profile is reset to
+    /// match it.
+    pub default_selection_profile: SelectionProfile,
+    /// When the delete confirmation modal is shown - see [`ConfirmBehavior`].
+    pub confirm_behavior: ConfirmBehavior,
     /// Whether the app writes a `gametrimmer.log` file next to the
     /// executable with diagnostics (errors and scan lifecycle events) - see
     /// the `logger` module in the `app` crate. Opt-in and off by default:
@@ -342,6 +412,8 @@ impl Default for Settings {
             theme: Theme::default(),
             enabled_categories: Vec::new(),
             selection_profile: SelectionProfile::default(),
+            default_selection_profile: SelectionProfile::default(),
+            confirm_behavior: ConfirmBehavior::default(),
             logging_enabled: false,
         }
     }
@@ -354,6 +426,8 @@ const SCAN_ROUTING_KEY: &str = "scan_routing";
 const THEME_KEY: &str = "theme";
 const ENABLED_CATEGORIES_KEY: &str = "enabled_categories";
 const SELECTION_PROFILE_KEY: &str = "selection_profile";
+const DEFAULT_SELECTION_PROFILE_KEY: &str = "default_selection_profile";
+const CONFIRM_BEHAVIOR_KEY: &str = "confirm_behavior";
 const LOGGING_ENABLED_KEY: &str = "logging_enabled";
 
 /// Reads one raw value from the `settings` table.
@@ -400,6 +474,12 @@ pub fn load(conn: &Connection) -> Result<Settings> {
     let selection_profile = read_value(conn, SELECTION_PROFILE_KEY)?
         .and_then(|value| SelectionProfile::parse(&value))
         .unwrap_or_default();
+    let default_selection_profile = read_value(conn, DEFAULT_SELECTION_PROFILE_KEY)?
+        .and_then(|value| SelectionProfile::parse(&value))
+        .unwrap_or_default();
+    let confirm_behavior = read_value(conn, CONFIRM_BEHAVIOR_KEY)?
+        .and_then(|value| ConfirmBehavior::parse(&value))
+        .unwrap_or_default();
     let logging_enabled = read_value(conn, LOGGING_ENABLED_KEY)?
         .and_then(|value| parse_bool(&value))
         .unwrap_or_default();
@@ -411,6 +491,8 @@ pub fn load(conn: &Connection) -> Result<Settings> {
         theme,
         enabled_categories,
         selection_profile,
+        default_selection_profile,
+        confirm_behavior,
         logging_enabled,
     })
 }
@@ -435,6 +517,16 @@ pub fn save(conn: &Connection, settings: &Settings) -> Result<()> {
         conn,
         SELECTION_PROFILE_KEY,
         settings.selection_profile.as_str(),
+    )?;
+    write_value(
+        conn,
+        DEFAULT_SELECTION_PROFILE_KEY,
+        settings.default_selection_profile.as_str(),
+    )?;
+    write_value(
+        conn,
+        CONFIRM_BEHAVIOR_KEY,
+        settings.confirm_behavior.as_str(),
     )?;
     write_value(
         conn,
@@ -803,6 +895,98 @@ mod tests {
             SelectionProfile::Balanced,
             "a value written by a future version must not break loading"
         );
+    }
+
+    #[test]
+    fn save_then_load_round_trips_every_default_selection_profile() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        for profile in [
+            SelectionProfile::Cautious,
+            SelectionProfile::Balanced,
+            SelectionProfile::Aggressive,
+            SelectionProfile::Custom,
+        ] {
+            let settings = Settings {
+                default_selection_profile: profile,
+                ..Settings::default()
+            };
+            save(&conn, &settings).expect("save settings");
+            let loaded = load(&conn).expect("load settings");
+            assert_eq!(loaded.default_selection_profile, profile);
+        }
+    }
+
+    /// The whole reason the field exists: editing the scan default in
+    /// Settings must not disturb the profile the visible tree is following.
+    #[test]
+    fn the_scan_default_is_stored_apart_from_the_live_profile() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        let settings = Settings {
+            selection_profile: SelectionProfile::Custom,
+            default_selection_profile: SelectionProfile::Aggressive,
+            ..Settings::default()
+        };
+        save(&conn, &settings).expect("save settings");
+
+        let loaded = load(&conn).expect("load settings");
+        assert_eq!(loaded.selection_profile, SelectionProfile::Custom);
+        assert_eq!(
+            loaded.default_selection_profile,
+            SelectionProfile::Aggressive
+        );
+    }
+
+    #[test]
+    fn save_then_load_round_trips_every_confirm_behavior() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        for behavior in [
+            ConfirmBehavior::Always,
+            ConfirmBehavior::OnlyAboveOneGb,
+            ConfirmBehavior::Never,
+        ] {
+            let settings = Settings {
+                confirm_behavior: behavior,
+                ..Settings::default()
+            };
+            save(&conn, &settings).expect("save settings");
+            let loaded = load(&conn).expect("load settings");
+            assert_eq!(loaded.confirm_behavior, behavior);
+        }
+    }
+
+    #[test]
+    fn confirm_behavior_round_trips_through_as_str_and_parse() {
+        for behavior in [
+            ConfirmBehavior::Always,
+            ConfirmBehavior::OnlyAboveOneGb,
+            ConfirmBehavior::Never,
+        ] {
+            assert_eq!(ConfirmBehavior::parse(behavior.as_str()), Some(behavior));
+        }
+        assert_eq!(ConfirmBehavior::parse("nonsense"), None);
+    }
+
+    /// A value written by a future version must not break loading, and the
+    /// fallback has to be the *safe* end of this particular setting.
+    #[test]
+    fn an_unreadable_stored_confirm_behavior_falls_back_to_always_asking() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('confirm_behavior', 'sometimes')",
+            [],
+        )
+        .expect("insert unknown value");
+
+        let settings = load(&conn).expect("load settings");
+        assert_eq!(settings.confirm_behavior, ConfirmBehavior::Always);
+    }
+
+    #[test]
+    fn should_confirm_matches_the_one_gb_threshold() {
+        assert!(ConfirmBehavior::Always.should_confirm(0));
+        assert!(!ConfirmBehavior::Never.should_confirm(u64::MAX));
+        assert!(!ConfirmBehavior::OnlyAboveOneGb.should_confirm(ConfirmBehavior::ONE_GB - 1));
+        assert!(ConfirmBehavior::OnlyAboveOneGb.should_confirm(ConfirmBehavior::ONE_GB));
     }
 
     #[test]

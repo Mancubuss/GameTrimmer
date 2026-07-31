@@ -38,6 +38,7 @@
 
 mod data;
 mod general;
+mod selection;
 
 use eframe::egui;
 
@@ -233,6 +234,7 @@ fn placeholder_body(section: SettingsSection, s: &i18n::Strings) -> String {
 fn show_section(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     match app.settings_section {
         SettingsSection::General => general::show(app, ui),
+        SettingsSection::Selection => selection::show(app, ui),
         SettingsSection::Data => data::show(app, ui),
         section => {
             let s = i18n::strings(app.lang());
@@ -255,6 +257,7 @@ mod tests {
     fn body_marker(section: SettingsSection, s: &i18n::Strings) -> String {
         match section {
             SettingsSection::General => s.app_language_label.to_owned(),
+            SettingsSection::Selection => s.default_profile_label.to_owned(),
             SettingsSection::Data => s.db_path_label.to_owned(),
             other => placeholder_body(other, s),
         }
