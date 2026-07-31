@@ -617,6 +617,19 @@ impl GameTrimmerApp {
         });
     }
 
+    /// Overwrites one rule pack with the embedded defaults, keeping the
+    /// previous file as `*.bak` (see `worker::rules_io::restore_builtin`).
+    ///
+    /// Runs synchronously: unlike export/import it opens no file picker and
+    /// touches no database - it writes one small file, so a worker thread
+    /// and a round trip through [`WorkerMsg`] would buy nothing.
+    pub fn restore_rules_builtin(&mut self, kind: gametrimmer_core::packs::PackKind) {
+        if self.busy || self.rules_io_active {
+            return;
+        }
+        self.rules_io_result = Some(worker::rules_io::restore_builtin(self.lang(), kind));
+    }
+
     /// Spawns the «Export rules» flow: a blocking folder picker on
     /// a background thread, then writing both pack files there (see
     /// `worker::rules_io::export_packs_to`). Result comes back as

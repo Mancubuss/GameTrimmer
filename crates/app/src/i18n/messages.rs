@@ -419,6 +419,19 @@ pub fn write_failed(
     }
 }
 
+pub fn rules_restored(lang: Lang, path: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => format!(
+            "Built-in rules restored ({path}); the previous file was kept as *.bak. \
+             Changes take effect from the next scan."
+        ),
+        Lang::Uk => format!(
+            "Вбудовані правила відновлено ({path}); попередній файл збережено як *.bak. \
+             Зміни діятимуть з наступного сканування."
+        ),
+    }
+}
+
 pub fn summary_categories_part(lang: Lang, added: usize, updated: usize) -> String {
     match lang {
         Lang::En => format!("categories - {added} new, {updated} updated"),

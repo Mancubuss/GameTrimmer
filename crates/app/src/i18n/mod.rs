@@ -92,6 +92,16 @@ pub struct Strings {
     #[allow(dead_code)]
     pub selection_independent_switches_hint: &'static str,
 
+    /// "Rules": the two analysis packs, each with a live validity readout.
+    #[allow(dead_code)]
+    pub rules_pack_category_label: &'static str,
+    #[allow(dead_code)]
+    pub rules_pack_lang_label: &'static str,
+    #[allow(dead_code)]
+    pub rules_valid_label: &'static str,
+    #[allow(dead_code)]
+    pub rules_invalid_label: &'static str,
+
     /// "Data & diagnostics": the database file and the irreversible wipe.
     #[allow(dead_code)]
     pub db_path_label: &'static str,
@@ -341,6 +351,10 @@ impl Strings {
                 "selection_independent_switches_hint",
                 self.selection_independent_switches_hint,
             ),
+            ("rules_pack_category_label", self.rules_pack_category_label),
+            ("rules_pack_lang_label", self.rules_pack_lang_label),
+            ("rules_valid_label", self.rules_valid_label),
+            ("rules_invalid_label", self.rules_invalid_label),
             ("db_path_label", self.db_path_label),
             ("btn_copy", self.btn_copy),
             ("btn_open_folder", self.btn_open_folder),
