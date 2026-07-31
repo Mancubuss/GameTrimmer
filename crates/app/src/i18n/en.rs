@@ -151,6 +151,7 @@ pub(super) const STRINGS: Strings = Strings {
          folders, even on hard drives where the MFT index is normally faster. Takes effect on \
          the next scan.",
     app_language_label: "App language:",
+    lang_name_system: "Follow Windows",
     lang_name_en: "English",
     lang_name_uk: "Ukrainian",
     theme_label: "Theme:",

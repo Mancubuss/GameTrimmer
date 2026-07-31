@@ -74,6 +74,69 @@ impl Lang {
     }
 }
 
+/// What the user picked for the UI language: a specific one, or "whatever
+/// Windows is set to".
+///
+/// A separate type from [`Lang`] on purpose, and the same shape [`Theme`]
+/// already uses for the light/dark question. `Lang` answers "which language
+/// is being rendered right now" and has to stay a plain two-valued answer -
+/// every `i18n::strings` call takes one. This answers "what did the user
+/// choose", which has a third state that is not a language at all. Folding
+/// the two together would mean threading "...unless it is System" through
+/// every call site that only ever wanted to look up a string.
+///
+/// Resolved once at startup rather than per call - see [`Self::resolve`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LanguagePreference {
+    /// Follow the OS UI language, falling back to [`Lang::En`] when Windows
+    /// prefers something this app does not speak.
+    ///
+    /// The default, and the reason it is: a Windows set to Ukrainian used to
+    /// get an English interface until the user found the switch. Defaulting
+    /// to the machine's own language is not a preference this app is entitled
+    /// to have an opinion about.
+    #[default]
+    System,
+    /// An explicit choice, which never yields to the OS.
+    Fixed(Lang),
+}
+
+impl LanguagePreference {
+    /// Stable string form persisted into the `settings` table.
+    ///
+    /// Shares the `app_language` key with the plain [`Lang`] values written
+    /// by earlier versions: `"en"` and `"uk"` still parse, and still mean an
+    /// explicit choice, so upgrading never silently overrides a language the
+    /// user picked by hand.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LanguagePreference::System => "system",
+            LanguagePreference::Fixed(lang) => lang.as_str(),
+        }
+    }
+
+    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values (e.g.
+    /// written by a future version) - callers fall back to the default.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(LanguagePreference::System),
+            other => Lang::parse(other).map(LanguagePreference::Fixed),
+        }
+    }
+
+    /// The language to actually render in, given what the OS reports.
+    ///
+    /// `system` is passed in rather than detected here: this crate has no
+    /// business calling Win32, and a pure function is what lets the whole
+    /// policy be tested without a machine set to the right locale.
+    pub fn resolve(self, system: Lang) -> Lang {
+        match self {
+            LanguagePreference::System => system,
+            LanguagePreference::Fixed(lang) => lang,
+        }
+    }
+}
+
 /// How game-library scanning chooses its file-enumeration path.
 ///
 /// `Auto` is the default: HDD volumes use the NTFS MFT index, SSD volumes
@@ -358,7 +421,10 @@ fn bool_as_str(value: bool) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub delete_method: DeleteMethod,
-    pub app_language: Lang,
+    /// What the user picked for the UI language - see [`LanguagePreference`].
+    /// Not a [`Lang`]: the stored answer has a third state ("follow Windows")
+    /// that the rendered answer does not.
+    pub app_language: LanguagePreference,
     /// Language keys (normalized: trimmed, lowercased, deduplicated) that
     /// the localization detector never flags for deletion. Always
     /// non-empty - see [`default_keep_languages`].
@@ -424,7 +490,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             delete_method: DeleteMethod::default(),
-            app_language: Lang::default(),
+            app_language: LanguagePreference::default(),
             keep_languages: default_keep_languages(),
             scan_routing: ScanRouting::default(),
             theme: Theme::default(),
@@ -479,7 +545,7 @@ pub fn load(conn: &Connection) -> Result<Settings> {
         .and_then(|value| DeleteMethod::parse(&value))
         .unwrap_or_default();
     let app_language = read_value(conn, APP_LANGUAGE_KEY)?
-        .and_then(|value| Lang::parse(&value))
+        .and_then(|value| LanguagePreference::parse(&value))
         .unwrap_or_default();
     let keep_languages = read_value(conn, KEEP_LANGUAGES_KEY)?
         .map(|value| parse_keep_languages(&value))
@@ -582,11 +648,14 @@ mod tests {
         assert_eq!(settings.delete_method, DeleteMethod::Permanent);
     }
 
+    /// The default is "follow Windows", not English. What that resolves to
+    /// is a separate question, answered by `resolve` and tested below - this
+    /// one is about what an empty database means.
     #[test]
-    fn defaults_to_english_on_empty_database() {
+    fn defaults_to_following_the_system_language_on_empty_database() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
         let settings = load(&conn).expect("load settings");
-        assert_eq!(settings.app_language, Lang::En);
+        assert_eq!(settings.app_language, LanguagePreference::System);
     }
 
     #[test]
@@ -605,17 +674,58 @@ mod tests {
     }
 
     #[test]
-    fn save_then_load_round_trips_every_language() {
+    fn save_then_load_round_trips_every_language_preference() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
 
-        for lang in [Lang::En, Lang::Uk] {
+        for preference in [
+            LanguagePreference::System,
+            LanguagePreference::Fixed(Lang::En),
+            LanguagePreference::Fixed(Lang::Uk),
+        ] {
             let settings = Settings {
-                app_language: lang,
+                app_language: preference,
                 ..Settings::default()
             };
             save(&conn, &settings).expect("save settings");
             let loaded = load(&conn).expect("load settings");
-            assert_eq!(loaded.app_language, lang);
+            assert_eq!(loaded.app_language, preference);
+        }
+    }
+
+    /// The compatibility clause. Versions before the System option wrote a
+    /// bare "en"/"uk" under the same key, and that has to keep meaning an
+    /// explicit choice - otherwise upgrading would quietly hand a user who
+    /// picked English a Ukrainian interface because Windows says so.
+    #[test]
+    fn a_language_stored_by_an_older_version_stays_an_explicit_choice() {
+        for (stored, expected) in [("en", Lang::En), ("uk", Lang::Uk)] {
+            let conn = crate::db::open_in_memory().expect("open in-memory db");
+            write_value(&conn, APP_LANGUAGE_KEY, stored).expect("write legacy value");
+
+            let loaded = load(&conn).expect("load settings");
+
+            assert_eq!(loaded.app_language, LanguagePreference::Fixed(expected));
+            // The other language as the "system" answer, so a preference that
+            // yielded to the OS would be visible rather than coincidentally
+            // equal.
+            let other = if expected == Lang::En {
+                Lang::Uk
+            } else {
+                Lang::En
+            };
+            assert_eq!(loaded.app_language.resolve(other), expected);
+        }
+    }
+
+    /// The whole policy, as plain logic: System defers to whatever the OS
+    /// reported, a fixed choice never does.
+    #[test]
+    fn only_the_system_preference_yields_to_the_operating_system() {
+        for system in [Lang::En, Lang::Uk] {
+            assert_eq!(LanguagePreference::System.resolve(system), system);
+            for fixed in [Lang::En, Lang::Uk] {
+                assert_eq!(LanguagePreference::Fixed(fixed).resolve(system), fixed);
+            }
         }
     }
 
@@ -648,7 +758,7 @@ mod tests {
         let settings = load(&conn).expect("load settings");
         assert_eq!(
             settings.app_language,
-            Lang::En,
+            LanguagePreference::System,
             "a value written by a future version must not break loading"
         );
     }
