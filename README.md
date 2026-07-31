@@ -237,6 +237,22 @@ cargo test --workspace
 Попередні спроби збережено в архівних гілках: `legacy/cpp-qt` (C++20 + Qt 6.8),
 `legacy/winapi-cpp` (C++/WinAPI), `legacy/python` (перший прототип).
 
+## Подяки
+
+- **Anthropic** — за Claude Code, яким написано цю програму.
+- **Andrej Karpathy** — за натхнення.
+- **Авторові [TikiOne Steam Cleaner](https://github.com/jonathanlermitage/tikione-steam-cleaner)**
+  — за ідею й за перший перелік дистрибутивів, з якого виріс `rules.json`.
+
+Ті самі три рядки видно в самій програмі: на стартовому екрані й у
+«Налаштування → Загальні».
+
 ## Ліцензія
 
-MIT License
+MIT License.
+
+TikiOne Steam Cleaner теж роздається під MIT, і MIT просить, щоб її текст
+супроводжував копії. Він лежить у
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) — разом із розбором того,
+що саме звідти взято (перелік цілей, не текст правил), — і їде в
+портабельному zip поруч із `LICENSE`.

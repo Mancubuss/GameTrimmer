@@ -9,7 +9,10 @@
 #       |                      усе одно її створить, якщо файл відсутній)
 #       |-- l10n_rules.json   (те саме для мовних правил)
 #       |-- README.md
-#       `-- LICENSE
+#       |-- LICENSE
+#       `-- THIRD-PARTY-NOTICES.md  (MIT-ліцензія TikiOne Steam Cleaner, чий
+#                                    перелік дистрибутивів став основою правил -
+#                                    MIT вимагає, щоб її текст їхав із копіями)
 #
 # Шлях до зібраного exe обчислюється через `cargo metadata`, а не
 # `target/release/...` напряму, бо `.cargo/config.toml` виносить target-dir
@@ -56,6 +59,7 @@ try {
     Copy-Item "$repoRoot\l10n_rules.json" (Join-Path $stageDir "l10n_rules.json")
     Copy-Item "$repoRoot\README.md" (Join-Path $stageDir "README.md")
     Copy-Item "$repoRoot\LICENSE" (Join-Path $stageDir "LICENSE")
+    Copy-Item "$repoRoot\THIRD-PARTY-NOTICES.md" (Join-Path $stageDir "THIRD-PARTY-NOTICES.md")
 
     # 5. Zip - через .NET ZipFile, а не Compress-Archive: командлет не дає
     # рівня стиснення вище Optimal, тоді як SmallestSize (deflate з
