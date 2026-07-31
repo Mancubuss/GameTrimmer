@@ -40,6 +40,11 @@ pub const NARROW_VIEWPORT: egui::Vec2 = egui::vec2(760.0, 600.0);
 /// a repaint loop, which the failure from [`UiTest::run`] names as such.
 const MAX_STEPS: u64 = 16;
 
+/// Frames [`UiTest::run_animated`] draws. Enough for a layout to reach its
+/// final size, which is all these tests read; the animation itself is not
+/// under assertion.
+const ANIMATED_STEPS: usize = 4;
+
 /// One `ui::*::show` entry point. A plain `fn` pointer rather than a closure
 /// so the harness stays `'static` and the app is reachable through
 /// [`UiTest::app`] while the harness is alive.
@@ -82,6 +87,17 @@ impl UiTest {
                  not a slow layout: {err}"
             );
         }
+    }
+
+    /// Runs a fixed number of frames instead of waiting for the UI to settle.
+    ///
+    /// For states that never settle *by design*: a spinner asks for a repaint
+    /// every frame, so [`Self::run`] would report it as a repaint loop - and
+    /// rightly so, since that check is what catches the accidental ones. An
+    /// animated state gets its own entry point rather than loosening `run`
+    /// for every test.
+    pub fn run_animated(&mut self) {
+        self.harness.run_steps(ANIMATED_STEPS);
     }
 
     pub fn app(&self) -> &GameTrimmerApp {

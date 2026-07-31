@@ -22,6 +22,10 @@ pub(super) const STRINGS: Strings = Strings {
     btn_done: "Done",
     btn_restore_defaults: "Restore defaults",
     badge_immediately: "Immediately",
+    db_path_label: "Database file:",
+    btn_copy: "Copy",
+    btn_open_folder: "Open folder",
+    danger_zone_label: "DANGER ZONE",
 
     disabled_busy: "A background operation is running",
     disabled_no_findings: "Scan your libraries first",
