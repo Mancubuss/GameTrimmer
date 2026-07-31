@@ -375,6 +375,9 @@ fn run_scan(
         ));
     }
 
+    let routing_breakdown =
+        scan_route::format_walkdir_breakdown(lang, total, &mft_pass.walkdir_reasons);
+
     let scan_summary = scan_route::format_scan_summary(
         lang,
         total,
@@ -411,6 +414,7 @@ fn run_scan(
         scan_summary,
         occupancy,
         timing: Some(timing),
+        routing_breakdown,
     });
 }
 
@@ -569,6 +573,11 @@ struct MftPassOutcome {
     entries: HashMap<i64, Vec<FileEntry>>,
     mft_count: usize,
     walkdir_count: usize,
+    /// Why each walked root was walked, one entry per root. Kept rather
+    /// than discarded so the settings dialog can tell a user who turned on
+    /// "prefer the MFT index" and saw no speed-up what actually happened -
+    /// see `scan_route::format_walkdir_breakdown`.
+    walkdir_reasons: Vec<scan_route::WalkdirReason>,
 }
 
 /// Runs the (single, non-cancellable) MFT index pass ahead of the per-game
@@ -602,10 +611,19 @@ fn run_mft_pass(
     let total = games.len();
 
     if !elevated {
+        // The one early exit: no volume can be opened for raw MFT reads at
+        // all, so every root walks for the same reason.
+        let forced = scan_routing == ScanRouting::ForceWalkdir;
+        let reason = if forced {
+            scan_route::WalkdirReason::ForcedBySetting
+        } else {
+            scan_route::WalkdirReason::NotElevated
+        };
         return MftPassOutcome {
             entries: HashMap::new(),
             mft_count: 0,
             walkdir_count: total,
+            walkdir_reasons: vec![reason; total],
         };
     }
 
@@ -647,15 +665,16 @@ fn run_mft_pass(
     // affect another volume's already-decided-good results - each volume
     // gets its own `mftscan::scan_roots` call.
     let mut candidates_by_volume: HashMap<char, Vec<(i64, PathBuf)>> = HashMap::new();
+    let mut walkdir_reasons: Vec<scan_route::WalkdirReason> = Vec::new();
     for check in &checks {
-        if scan_route::initial_route(
+        if let ScanRoute::Walkdir(reason) = scan_route::initial_route(
             elevated,
             scan_routing,
             check,
             &volume_available,
             &volume_ssd,
-        ) != ScanRoute::Mft
-        {
+        ) {
+            walkdir_reasons.push(reason);
             continue;
         }
         let Some(letter) = check.volume_letter else {
@@ -701,10 +720,14 @@ fn run_mft_pass(
                     .get(&game_id)
                     .is_some_and(|dir| root_nonempty_on_disk(dir));
 
-            if let ScanRoute::Mft =
-                scan_route::finalize_mft_result(mft_ok, entries_empty, nonempty_on_disk)
-            {
-                entries_by_id.insert(game_id, entries);
+            match scan_route::finalize_mft_result(mft_ok, entries_empty, nonempty_on_disk) {
+                ScanRoute::Mft => {
+                    entries_by_id.insert(game_id, entries);
+                }
+                // A candidate the pass itself rejected: `dispatch_scans`
+                // falls back to a walk for it, so it belongs in the
+                // breakdown alongside the roots never tried at all.
+                ScanRoute::Walkdir(reason) => walkdir_reasons.push(reason),
             }
         }
     }
@@ -714,6 +737,7 @@ fn run_mft_pass(
         entries: entries_by_id,
         mft_count,
         walkdir_count: total - mft_count,
+        walkdir_reasons,
     }
 }
 
@@ -2491,6 +2515,11 @@ mod tests {
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
         assert_eq!(outcome.walkdir_count, 2);
+        assert_eq!(
+            outcome.walkdir_reasons,
+            vec![scan_route::WalkdirReason::NotElevated; 2],
+            "the diagnostics line has to name the reason, not just the count",
+        );
     }
 
     /// Games with no drive letter (e.g. a UNC path) must never end up in the
@@ -2518,6 +2547,10 @@ mod tests {
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
         assert_eq!(outcome.walkdir_count, 1);
+        assert_eq!(
+            outcome.walkdir_reasons,
+            vec![scan_route::WalkdirReason::NoVolumeLetter],
+        );
     }
 
     /// `ScanRouting::ForceWalkdir` must route every game to walkdir even
@@ -2547,6 +2580,11 @@ mod tests {
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
         assert_eq!(outcome.walkdir_count, 2);
+        assert_eq!(
+            outcome.walkdir_reasons,
+            vec![scan_route::WalkdirReason::ForcedBySetting; 2],
+            "a setting the user can undo has to be named as the cause",
+        );
     }
 
     #[test]
