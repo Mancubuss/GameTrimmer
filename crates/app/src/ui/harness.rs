@@ -232,6 +232,41 @@ impl UiTest {
         self.run();
     }
 
+    /// Clicks at an absolute position instead of on a named widget - for the
+    /// claims that are about *space* rather than about a control: "the empty
+    /// part of this row is still the row" (GT-32).
+    ///
+    /// Mirrors what [`egui_kittest::Node::click`] does at a node's centre:
+    /// move the pointer there first, then press and release. egui resolves a
+    /// click against the position it last saw, so the move is not optional.
+    pub fn click_at(&mut self, pos: egui::Pos2) {
+        self.harness.event(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            self.harness.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        self.run();
+    }
+
+    /// Clicks the `n`-th checkbox on screen, counting in render order.
+    ///
+    /// Checkboxes here are deliberately label-less (the row's name is next to
+    /// them, and repeating it would read twice to a screen reader), so they
+    /// cannot be reached by [`Self::click`]. Looked up by accessibility role
+    /// and clicked by position, which is also what makes it a real test of
+    /// hit-testing rather than of the accessibility tree.
+    pub fn nth_checkbox_rect(&self, n: usize) -> egui::Rect {
+        self.harness
+            .query_all_by_role(egui::accesskit::Role::CheckBox)
+            .nth(n)
+            .unwrap_or_else(|| panic!("fewer than {} checkboxes on screen", n + 1))
+            .rect()
+    }
+
     #[track_caller]
     fn node<'s>(&'s self, label: &'s str) -> egui_kittest::Node<'s> {
         match self.harness.query_by_label(label) {
