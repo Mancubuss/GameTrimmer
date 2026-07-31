@@ -130,6 +130,13 @@ impl UiTest {
         self.harness.query_all_by_label(label).count()
     }
 
+    /// How many widgets carry this text anywhere in their label - for the
+    /// claims about a name being drawn once when the widget that draws it
+    /// surrounds it with something else ("\u{2715} Ukrainian (uk)").
+    pub fn count_labels_containing(&self, text: &str) -> usize {
+        self.harness.query_all_by_label_contains(text).count()
+    }
+
     /// Asserts the label is present, naming what was expected on failure.
     #[track_caller]
     pub fn assert_label(&self, label: &str) {
