@@ -242,8 +242,13 @@ pub struct Strings {
     pub col_language: &'static str,
     pub col_files: &'static str,
     pub col_size: &'static str,
-    pub col_confidence: &'static str,
     pub col_name: &'static str,
+    /// Tooltip on the \u{26a0} that marks a file the detector is less sure
+    /// about. The mark replaced a per-row "Confidence" percentage: the number
+    /// was the app's internal scale and told the user nothing actionable,
+    /// while the one thing it decided - "this was not ticked for you, look at
+    /// it" - is exactly what the mark now says.
+    pub review_mark_hint: &'static str,
 
     // -- tree_view.rs: row right-click context menu --
     pub ctx_reveal_in_explorer: &'static str,
@@ -515,8 +520,8 @@ impl Strings {
             ("col_language", self.col_language),
             ("col_files", self.col_files),
             ("col_size", self.col_size),
-            ("col_confidence", self.col_confidence),
             ("col_name", self.col_name),
+            ("review_mark_hint", self.review_mark_hint),
             ("ctx_reveal_in_explorer", self.ctx_reveal_in_explorer),
             ("ctx_open_with", self.ctx_open_with),
             ("ctx_copy_path", self.ctx_copy_path),

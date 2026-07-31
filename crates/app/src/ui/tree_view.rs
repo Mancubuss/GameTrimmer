@@ -60,9 +60,9 @@ use eframe::egui;
 use crate::app::GameTrimmerApp;
 use crate::i18n::{self, Lang};
 use crate::model::{
-    self, category_display, category_ui_key, format_size, group_min_confidence,
-    group_selection_state, is_orphan_branch, set_group_selection, toggle_group, DiskGroup,
-    DisplayCategory, FindingItem, GameNode, TreeNode, AUTO_SELECT_CONFIDENCE_THRESHOLD,
+    self, category_display, category_ui_key, format_size, group_selection_state, is_orphan_branch,
+    set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem, GameNode, TreeNode,
+    AUTO_SELECT_CONFIDENCE_THRESHOLD,
 };
 use crate::search::SearchIndex;
 use crate::ui::row_actions;
@@ -75,7 +75,18 @@ const INDENT_PX: f32 = 18.0;
 const LANG_COLUMN_PX: f32 = 48.0;
 const COUNT_COLUMN_PX: f32 = 64.0;
 const SIZE_COLUMN_PX: f32 = 92.0;
-const CONFIDENCE_COLUMN_PX: f32 = 72.0;
+
+/// Width held before every file name for the "look at this one" mark, so the
+/// names of marked and unmarked rows still line up in one column.
+///
+/// There used to be a fifth right-hand column here, "Confidence", carrying a
+/// percentage per row and the weakest percentage per group. It was the
+/// detector's own scale leaking onto the screen: a user cannot weigh a
+/// decision against "72%", and the one decision the number actually drove -
+/// whether the row was ticked for them - is a yes/no. So the number is gone
+/// from the tree (it survives in the row's tooltip, beside the rule that
+/// produced it, and in the CSV export) and what is left is the mark.
+const REVIEW_MARK_PX: f32 = 18.0;
 
 /// One visible row in the flattened tree, referencing the source tree only
 /// by index - cheap to push into a per-frame `Vec` for tens of thousands of
@@ -242,7 +253,6 @@ fn show_column_headers(ui: &mut egui::Ui, lang: Lang) {
         egui::RichText::new(s.col_language).strong(),
         egui::RichText::new(s.col_files).strong(),
         egui::RichText::new(s.col_size).strong(),
-        egui::RichText::new(s.col_confidence).strong(),
         |ui| {
             ui.add_space(4.0);
             ui.strong(s.col_name);
@@ -250,21 +260,19 @@ fn show_column_headers(ui: &mut egui::Ui, lang: Lang) {
     );
 }
 
-/// Lays out one row as [flexible left part | Language | Files | Size |
-/// Confidence], with the four fixed-width columns right-aligned against the
-/// panel edge. Every row (headers and files alike) goes through this, which
-/// is what keeps the table aligned without a real grid widget.
+/// Lays out one row as [flexible left part | Language | Files | Size], with
+/// the three fixed-width columns right-aligned against the panel edge. Every
+/// row (headers and files alike) goes through this, which is what keeps the
+/// table aligned without a real grid widget.
 fn row_columns(
     ui: &mut egui::Ui,
     lang: egui::RichText,
     count: egui::RichText,
     size: egui::RichText,
-    confidence: egui::RichText,
     left: impl FnOnce(&mut egui::Ui),
 ) {
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            right_cell(ui, CONFIDENCE_COLUMN_PX, confidence);
             right_cell(ui, SIZE_COLUMN_PX, size);
             right_cell(ui, COUNT_COLUMN_PX, count);
             right_cell(ui, LANG_COLUMN_PX, lang);
@@ -285,20 +293,27 @@ fn right_cell(ui: &mut egui::Ui, width: f32, text: egui::RichText) {
     );
 }
 
-/// The confidence-column text for a group of findings: empty when every
-/// member is at or above the auto-select threshold (nothing to double-check),
-/// otherwise a warning with the group's weakest confidence.
-fn group_confidence_text(
-    ui: &egui::Ui,
-    findings: &[FindingItem],
-    indices: &[usize],
-) -> egui::RichText {
-    let min = group_min_confidence(findings, indices);
-    if min < AUTO_SELECT_CONFIDENCE_THRESHOLD {
-        egui::RichText::new(format!("\u{26a0} {min}%")).color(ui.visuals().warn_fg_color)
-    } else {
-        egui::RichText::new("")
-    }
+/// The leading cell that carries a file row's "look at this one" mark.
+///
+/// Always allocated, marked or not, so the file names below a folder header
+/// stay in one column instead of stepping sideways row by row.
+///
+/// The mark is the whole of what the removed confidence column used to say
+/// that a user could act on: this file was left unticked on purpose. The
+/// tooltip spells that out - a bare \u{26a0} with no explanation is how the
+/// percentage got its reputation in the first place.
+fn show_review_mark(ui: &mut egui::Ui, needs_review: bool, hint: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(REVIEW_MARK_PX, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(REVIEW_MARK_PX);
+            if needs_review {
+                ui.label(egui::RichText::new("\u{26a0}").color(ui.visuals().warn_fg_color))
+                    .on_hover_text(hint);
+            }
+        },
+    );
 }
 
 /// Walks the tree once, skipping the children of any closed
@@ -1056,8 +1071,7 @@ fn show_folder_row(
 
 /// Renders one expandable header row shared by disk/game/category/folder
 /// rows: an expand/collapse arrow button, a tri-state checkbox over
-/// `indices`, the name, and the fixed columns (count, size, and a
-/// weakest-confidence warning when the group needs a closer look).
+/// `indices`, the name, and the fixed columns (count and size).
 /// Returns the name label's response so callers can attach a context menu.
 #[allow(clippy::too_many_arguments)]
 fn show_header_row(
@@ -1074,7 +1088,6 @@ fn show_header_row(
     name: egui::RichText,
     lang: Lang,
 ) -> egui::Response {
-    let confidence = group_confidence_text(ui, findings, indices);
     let mut name_response = None;
 
     row_columns(
@@ -1082,7 +1095,6 @@ fn show_header_row(
         egui::RichText::new(""),
         egui::RichText::new(indices.len().to_string()),
         egui::RichText::new(format_size(lang, total_bytes)),
-        confidence,
         |ui| {
             ui.add_space(INDENT_PX * level as f32);
 
@@ -1219,10 +1231,11 @@ fn install_dir_of(findings: &[FindingItem], indices: &[usize]) -> Option<String>
     ))
 }
 
-/// Renders one file row: checkbox, name, and the language/size/confidence
+/// Renders one file row: checkbox, review mark, name, and the language/size
 /// columns. The classification reason lives in the name's hover tooltip
 /// rather than inline - being under a category header already explains the
-/// row, and the extra text would just be noise (details on demand).
+/// row, and the extra text would just be noise (details on demand). The raw
+/// confidence figure went the same way, for the same reason.
 #[allow(clippy::too_many_arguments)]
 fn show_file_row(
     ui: &mut egui::Ui,
@@ -1267,12 +1280,10 @@ fn show_file_row(
         Some(lang_tag) => egui::RichText::new(format!("[{lang_tag}]")),
         None => egui::RichText::new(""),
     };
-    let confidence = if item.row.confidence < AUTO_SELECT_CONFIDENCE_THRESHOLD {
-        egui::RichText::new(format!("\u{26a0} {}%", item.row.confidence))
-            .color(ui.visuals().warn_fg_color)
-    } else {
-        egui::RichText::new(format!("{}%", item.row.confidence))
-    };
+    // The same threshold that decided whether this row was ticked for the
+    // user after the scan - so the mark and the checkbox never disagree.
+    let needs_review = item.row.confidence < AUTO_SELECT_CONFIDENCE_THRESHOLD;
+    let review_hint = i18n::strings(lang).review_mark_hint;
 
     // Absolute path (Windows-native separators): the tooltip's first line, the
     // clipboard payload, and the argument to every context-menu shell action.
@@ -1298,10 +1309,10 @@ fn show_file_row(
         lang_col,
         egui::RichText::new(""),
         egui::RichText::new(format_size(lang, item.row.size_on_disk)),
-        confidence,
         |ui| {
             ui.add_space(INDENT_PX * level as f32);
             ui.checkbox(&mut item.selected, "");
+            show_review_mark(ui, needs_review, review_hint);
             let response = ui
                 .add(
                     egui::Label::new(display_name)
@@ -1329,6 +1340,133 @@ mod tests {
     use gametrimmer_core::settings::SelectionProfile;
 
     use crate::ui::harness::UiTest;
+
+    /// The name of the first seeded finding's row, as the tree draws it.
+    const SEEDED_FILE_NAME: &str = "data/loc_0.pak";
+
+    /// Seeded findings with every branch opened and one confidence per
+    /// finding, in seed order.
+    ///
+    /// The opening is not optional: games and categories are collapsed by
+    /// default, so a test that only calls `seed_findings` sees three header
+    /// rows and no file rows at all - and every claim below is about a file
+    /// row.
+    fn tree_of_files(confidences: [u8; 2]) -> UiTest {
+        let mut test = UiTest::new(show);
+        test.seed_findings();
+        assert_eq!(
+            test.app().findings.len(),
+            confidences.len(),
+            "the seed no longer produces one finding per confidence given here",
+        );
+        for (item, confidence) in test.app_mut().findings.iter_mut().zip(confidences) {
+            item.row.confidence = confidence;
+        }
+
+        let mut keys = Vec::new();
+        for disk_group in &test.app().tree {
+            keys.push(disk_key(&disk_group.disk));
+            for game in &disk_group.games {
+                keys.push(game_key(&disk_group.disk, game.game_id));
+                for category_node in &game.categories {
+                    keys.push(category_key(
+                        &disk_group.disk,
+                        game.game_id,
+                        category_node.category,
+                    ));
+                }
+            }
+        }
+        for key in keys {
+            test.app_mut().tree_toggles.insert(key, true);
+        }
+        test.run();
+
+        test.assert_label(SEEDED_FILE_NAME);
+        test
+    }
+
+    /// The confidence percentage is gone from the tree - header and rows
+    /// alike. It was the detector's internal scale, unactionable on its own,
+    /// and it cost a fixed 72pt column on every row of the densest screen in
+    /// the app.
+    ///
+    /// Both sides of the threshold, because the old column printed a figure
+    /// either way - plain above it, warning-coloured below.
+    #[test]
+    fn no_row_shows_a_confidence_percentage() {
+        for confidence in [
+            AUTO_SELECT_CONFIDENCE_THRESHOLD - 1,
+            AUTO_SELECT_CONFIDENCE_THRESHOLD,
+        ] {
+            let test = tree_of_files([confidence; 2]);
+
+            assert_eq!(
+                test.count_labels_containing(&format!("{confidence}%")),
+                0,
+                "a row still reports its confidence as {confidence}%",
+            );
+            // The header lost the column too. Literals rather than a
+            // `strings()` lookup on purpose: the field they used to name is
+            // gone, which is exactly the claim.
+            for heading in ["Confidence", "\u{414}\u{43e}\u{432}\u{456}\u{440}\u{430}"] {
+                test.assert_no_label(heading);
+            }
+        }
+    }
+
+    /// What replaced it. A finding below the auto-select threshold is the one
+    /// the scan deliberately left unticked, so the row has to say so - and
+    /// say why, rather than leaving a bare \u{26a0} to be guessed at.
+    ///
+    /// One marked finding beside one confident one, so the hover lands on a
+    /// single mark and the mark is visibly per row rather than per tree.
+    #[test]
+    fn a_finding_left_unticked_carries_a_mark_that_explains_itself() {
+        let mut test = tree_of_files([
+            AUTO_SELECT_CONFIDENCE_THRESHOLD - 1,
+            AUTO_SELECT_CONFIDENCE_THRESHOLD,
+        ]);
+        assert_eq!(test.count_labels("\u{26a0}"), 1, "one row is below the bar");
+
+        test.hover("\u{26a0}");
+
+        test.assert_label(test.strings().review_mark_hint);
+    }
+
+    /// The control: a confident finding gets no mark. Without this the
+    /// assertion above would pass just as well if every row were marked,
+    /// which would make the mark furniture.
+    #[test]
+    fn a_confident_finding_carries_no_mark() {
+        let test = tree_of_files([AUTO_SELECT_CONFIDENCE_THRESHOLD; 2]);
+
+        assert_eq!(
+            test.count_labels("\u{26a0}"),
+            0,
+            "a finding at the auto-select threshold was still marked for review",
+        );
+    }
+
+    /// The mark sits in a cell of its own width, held whether or not it is
+    /// drawn, so a marked row does not push its name sideways out of the
+    /// column its neighbours line up in.
+    #[test]
+    fn the_mark_does_not_shift_the_name_column() {
+        let marked = tree_of_files([AUTO_SELECT_CONFIDENCE_THRESHOLD - 1; 2])
+            .rect_of(SEEDED_FILE_NAME)
+            .min
+            .x;
+        let unmarked = tree_of_files([AUTO_SELECT_CONFIDENCE_THRESHOLD; 2])
+            .rect_of(SEEDED_FILE_NAME)
+            .min
+            .x;
+
+        assert_eq!(
+            marked, unmarked,
+            "the review mark moved the file name: {marked} vs {unmarked}",
+        );
+    }
 
     /// A tree with a cursor parked on the first row, ready for an arrow key.
     fn tree_with_cursor() -> UiTest {
