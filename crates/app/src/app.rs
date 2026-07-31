@@ -100,6 +100,11 @@ pub struct GameTrimmerApp {
     pub settings: Settings,
     /// Whether the settings dialog is currently open.
     pub show_settings: bool,
+    /// Which section of the rebuilt settings dialog is showing. UI-only and
+    /// never persisted - reopening the dialog starts at General. Unread until
+    /// `ui::settings` replaces `ui::settings_dialog`.
+    #[allow(dead_code)]
+    pub settings_section: ui::settings::SettingsSection,
 
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
@@ -335,6 +340,7 @@ impl GameTrimmerApp {
             db_error,
             settings,
             show_settings: false,
+            settings_section: ui::settings::SettingsSection::General,
             tx: tx.clone(),
             rx,
             egui_ctx: ctx,

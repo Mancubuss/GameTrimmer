@@ -14,6 +14,14 @@ pub(super) const STRINGS: Strings = Strings {
     btn_deselect_all: "Deselect all",
     btn_delete_selected: "Delete selected",
 
+    settings_section_general: "General",
+    settings_section_scanning: "Scanning",
+    settings_section_selection: "Selection & deletion",
+    settings_section_rules: "Rules",
+    settings_section_data: "Data & diagnostics",
+    btn_done: "Done",
+    btn_restore_defaults: "Restore defaults",
+
     disabled_busy: "A background operation is running",
     disabled_no_findings: "Scan your libraries first",
     disabled_no_selection: "Nothing is selected",

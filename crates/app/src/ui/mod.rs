@@ -8,6 +8,15 @@ pub mod harness;
 pub mod libraries_panel;
 pub mod plan_panel;
 pub mod row_actions;
+// The rebuilt settings dialog (GT-57). Dormant: the app still renders
+// `settings_dialog`, and this module takes over only once all five sections
+// are ported. Landing it wired but empty would make everything the old dialog
+// reaches - database maintenance, rules import/export, half the string table -
+// dead instead, so the branch stays fully functional and this stays unused
+// until the switch. Remove the attribute and delete `settings_dialog` in the
+// same commit that flips `app.rs`.
+#[allow(dead_code)]
+pub mod settings;
 pub mod settings_dialog;
 pub mod top_bar;
 pub mod tree_view;
