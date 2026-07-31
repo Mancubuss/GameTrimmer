@@ -39,6 +39,7 @@
 mod data;
 mod general;
 mod rules;
+mod scanning;
 mod selection;
 
 use eframe::egui;
@@ -225,28 +226,15 @@ fn row_heading(ui: &mut egui::Ui, label: &str, badge: &str) {
     ui.add_space(4.0);
 }
 
-/// Marker text for a section's placeholder body.
-///
-/// Deliberately not the section's own nav label: an exact-match widget query
-/// would then find two nodes and could not tell "the nav entry exists" from
-/// "the body rendered".
-fn placeholder_body(section: SettingsSection, s: &i18n::Strings) -> String {
-    format!("{} \u{2014} \u{2026}", section.label(s))
-}
-
-/// The active section's body. Sections are ported one per commit (plan
-/// §5.1-5.5) onto a frame the geometry test below already holds stable; the
-/// ones still to come render a placeholder.
+/// The active section's body. One module each, ported one per commit (plan
+/// §5.1-5.5) onto a frame the geometry test below already held stable.
 fn show_section(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     match app.settings_section {
         SettingsSection::General => general::show(app, ui),
+        SettingsSection::Scanning => scanning::show(app, ui),
         SettingsSection::Selection => selection::show(app, ui),
         SettingsSection::Rules => rules::show(app, ui),
         SettingsSection::Data => data::show(app, ui),
-        section => {
-            let s = i18n::strings(app.lang());
-            ui.label(placeholder_body(section, s));
-        }
     }
 }
 
@@ -256,18 +244,16 @@ mod tests {
 
     use crate::ui::harness::UiTest;
 
-    /// A label that appears only when this section's body is on screen.
-    ///
-    /// Ported sections name a real widget of their own; the rest still answer
-    /// with their placeholder. The match shrinks by one per commit until the
-    /// placeholder arm is gone.
-    fn body_marker(section: SettingsSection, s: &i18n::Strings) -> String {
+    /// A label that appears only when this section's body is on screen -
+    /// deliberately not the nav entry's own text, which is there either way
+    /// and so cannot tell "the entry exists" from "the body rendered".
+    fn body_marker(section: SettingsSection, s: &i18n::Strings) -> &'static str {
         match section {
-            SettingsSection::General => s.app_language_label.to_owned(),
-            SettingsSection::Selection => s.default_profile_label.to_owned(),
-            SettingsSection::Rules => s.rules_pack_category_label.to_owned(),
-            SettingsSection::Data => s.db_path_label.to_owned(),
-            other => placeholder_body(other, s),
+            SettingsSection::General => s.app_language_label,
+            SettingsSection::Scanning => s.libraries_header,
+            SettingsSection::Selection => s.default_profile_label,
+            SettingsSection::Rules => s.rules_pack_category_label,
+            SettingsSection::Data => s.db_path_label,
         }
     }
 
@@ -325,10 +311,10 @@ mod tests {
 
             // The active section's body rendered, and no other section's did:
             // the nav is a switch, not an accordion.
-            test.assert_label(&body_marker(section, s));
+            test.assert_label(body_marker(section, s));
             for other in SettingsSection::ORDER {
                 if other != section {
-                    test.assert_no_label(&body_marker(other, s));
+                    test.assert_no_label(body_marker(other, s));
                 }
             }
         }

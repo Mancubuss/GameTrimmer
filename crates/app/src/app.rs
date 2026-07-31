@@ -105,6 +105,13 @@ pub struct GameTrimmerApp {
     /// `ui::settings` replaces `ui::settings_dialog`.
     #[allow(dead_code)]
     pub settings_section: ui::settings::SettingsSection,
+    /// Filter text for the "Scanning" section's keep-language search box.
+    /// UI-only, never persisted - and deliberately app state rather than
+    /// egui memory, so the section stays a plain `show(app, ui)` function
+    /// the harness can drive. Unread until `ui::settings` replaces
+    /// `ui::settings_dialog`.
+    #[allow(dead_code)]
+    pub keep_language_query: String,
 
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
@@ -341,6 +348,7 @@ impl GameTrimmerApp {
             settings,
             show_settings: false,
             settings_section: ui::settings::SettingsSection::General,
+            keep_language_query: String::new(),
             tx: tx.clone(),
             rx,
             egui_ctx: ctx,

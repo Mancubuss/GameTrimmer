@@ -34,6 +34,14 @@ pub(super) const STRINGS: Strings = Strings {
     selection_independent_switches_hint: "Що сканується (розділ «Сканування»), що позначається \
          автоматично (профіль вище) і як воно видаляється (метод вище) — три незалежні \
          перемикачі: зміна одного не чіпає двох інших.",
+    keep_languages_add_placeholder: "Додати мову\u{2026}",
+    categories_table_header_category: "Категорія",
+    categories_table_header_risk: "Ризик",
+    categories_table_header_profile_behavior: "Типовий профіль",
+    profile_behavior_auto: "Позначає",
+    profile_behavior_manual: "Ніколи автоматично",
+    disabled_last_keep_language: "Щонайменше одна мова має лишатися у списку збереження.",
+    disabled_last_category: "Щонайменше одна категорія має лишатися увімкненою.",
     rules_pack_category_label: "Правила категорій (rules.json)",
     rules_pack_lang_label: "Мовний пакет (l10n_rules.json)",
     rules_valid_label: "Справний",
