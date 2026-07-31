@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use crate::app::{GameTrimmerApp, APP_TITLE};
+use crate::app::GameTrimmerApp;
 use crate::i18n;
 
 /// One frame of a textual spinner for the given animation-clock time (seconds),
@@ -23,8 +23,9 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
     let s = i18n::strings(lang);
     egui::Panel::top("top_panel").show(ui, |ui| {
-        ui.add_space(4.0);
-        ui.heading(APP_TITLE);
+        // No app-name heading here: the window's own title bar already says
+        // "GameTrimmer" a few points above, and a second copy spent a whole
+        // row of the top panel restating it to a user who is looking at it.
         ui.add_space(4.0);
 
         ui.horizontal(|ui| {
@@ -158,6 +159,17 @@ mod tests {
     use crate::app::{GameTrimmerApp, ProgressState};
     use crate::i18n;
     use crate::ui::harness::UiTest;
+
+    /// The window's own title bar already says "GameTrimmer"; a heading here
+    /// restated it one row below, spending a line of the most crowded panel
+    /// in the app on something the user is already looking at.
+    #[test]
+    fn the_panel_does_not_repeat_the_window_title() {
+        let mut test = UiTest::new(show);
+        test.run();
+
+        test.assert_no_label(crate::app::APP_TITLE);
+    }
 
     /// Idle: nothing to cancel, so no button.
     #[test]
