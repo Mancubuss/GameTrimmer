@@ -35,7 +35,11 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 app.start_scan();
             }
 
-            if app.busy && ui.button(s.btn_cancel).clicked() {
+            // Only for a job that actually stops when asked - `cancel_scan`
+            // sets the scan's token and nothing else reads it, so during a
+            // delete, compaction, database clear or rules import this button
+            // used to look actionable and do nothing (audit §5.4).
+            if app.can_cancel() && ui.button(s.btn_cancel).clicked() {
                 app.cancel_scan();
             }
 
@@ -150,7 +154,99 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
 #[cfg(test)]
 mod tests {
-    use super::spinner_frame;
+    use super::{show, spinner_frame};
+
+    use crate::app::{GameTrimmerApp, ProgressState};
+    use crate::i18n;
+    use crate::ui::harness::UiTest;
+
+    /// Idle: nothing to cancel, so no button.
+    #[test]
+    fn no_cancel_button_while_idle() {
+        let mut test = UiTest::new(show);
+        test.run();
+
+        let s = test.strings();
+        test.assert_no_label(s.btn_cancel);
+        assert!(!test.app().can_cancel());
+    }
+
+    /// A scan is the one job `cancel_scan` can actually stop.
+    #[test]
+    fn cancel_is_offered_during_a_scan() {
+        let mut test = UiTest::new(show);
+        test.app_mut().begin_job(true);
+        test.run();
+
+        let s = test.strings();
+        test.assert_label(s.btn_cancel);
+    }
+
+    /// The regression this fix is really about: `start_scan` clears
+    /// `progress`, and the scan's first phase can run 15-20s before the first
+    /// `Progress` message arrives. Gating on `progress.verb` instead of on
+    /// the job would hide Cancel for exactly that stretch.
+    #[test]
+    fn cancel_is_offered_before_the_first_progress_message() {
+        let mut test = UiTest::new(show);
+        test.app_mut().begin_job(true);
+        test.app_mut().progress = None;
+        test.run();
+
+        let s = test.strings();
+        test.assert_label(s.btn_cancel);
+    }
+
+    /// Delete, compaction, clear, import, export: busy, but nothing reads the
+    /// cancel token, so the button must not be there to be clicked.
+    #[test]
+    fn no_cancel_button_for_a_job_that_cannot_be_stopped() {
+        for verb in [i18n::Verb::Delete, i18n::Verb::Compact, i18n::Verb::Clear] {
+            let mut test = UiTest::new(show);
+            test.app_mut().begin_job(false);
+            test.app_mut().progress = Some(ProgressState {
+                verb,
+                current: 1,
+                total: 10,
+                detail: String::new(),
+            });
+            test.run();
+
+            let s = test.strings();
+            assert!(
+                !test.has_label(s.btn_cancel),
+                "Cancel was offered during {verb:?}, which cannot be cancelled",
+            );
+        }
+    }
+
+    /// `begin_job`/`end_job` are the only writers of `busy`, which is what
+    /// stops the two flags from drifting apart. Pin the pairing.
+    #[test]
+    fn ending_a_job_clears_both_busy_and_cancellability() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut app = GameTrimmerApp::new_for_test(dir.path());
+
+        app.begin_job(true);
+        assert!(app.busy && app.can_cancel());
+
+        app.end_job();
+        assert!(!app.busy, "end_job should clear busy");
+        assert!(!app.can_cancel(), "an ended job is not cancellable");
+    }
+
+    /// A non-cancellable job must never report itself as cancellable just
+    /// because something is running.
+    #[test]
+    fn a_non_cancellable_job_is_busy_but_not_cancellable() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut app = GameTrimmerApp::new_for_test(dir.path());
+
+        app.begin_job(false);
+
+        assert!(app.busy);
+        assert!(!app.can_cancel());
+    }
 
     // At 8 fps each frame lasts 0.125s; sample the middle of each slot.
     fn frame_at_slot(slot: i64) -> char {

@@ -114,7 +114,20 @@ pub struct GameTrimmerApp {
     /// never awaited from the UI thread.
     _worker: Option<JoinHandle<()>>,
 
+    /// Whether any background job is running. Read all over the UI to
+    /// disable controls; **write only** through [`GameTrimmerApp::begin_job`]
+    /// and [`GameTrimmerApp::end_job`], which keep it in step with
+    /// `cancellable_job`.
     pub busy: bool,
+    /// Whether the running job can actually be stopped - true only for a
+    /// scan, the sole worker that reads the cancel token (`worker::scan`).
+    ///
+    /// Recorded when the job starts rather than derived from
+    /// `progress.verb`, because `start_scan` clears `progress` and the scan's
+    /// first phase can run 15-20s before the first `Progress` message. A verb
+    /// gate would hide "Cancel" for exactly that stretch - the part of a scan
+    /// a user is most likely to want to abort.
+    cancellable_job: bool,
     pub progress: Option<ProgressState>,
     pub status_message: String,
     /// UI-only animation state for the progress line: the `progress.detail`
@@ -328,6 +341,7 @@ impl GameTrimmerApp {
             cancel: Arc::new(AtomicBool::new(false)),
             _worker: None,
             busy: false,
+            cancellable_job: false,
             progress: None,
             status_message: String::new(),
             last_progress_detail: String::new(),
@@ -370,7 +384,7 @@ impl GameTrimmerApp {
         // from racing its own assertions.
         if has_saved_findings {
             if let Some(db_path) = db_path {
-                app.busy = true;
+                app.begin_job(false);
                 app.status_message = i18n::strings(app.lang()).loading_previous_scan.to_string();
                 app._worker = Some(worker::load::spawn_load(
                     db_path,
@@ -389,6 +403,34 @@ impl GameTrimmerApp {
     /// a language switch (see `set_language`) takes effect immediately.
     pub fn lang(&self) -> Lang {
         self.settings.app_language
+    }
+
+    /// Marks a background job as started. `cancellable` is true only when the
+    /// spawned worker is handed the cancel token and actually polls it.
+    ///
+    /// The only way to set `busy`, so the "is it cancellable" answer cannot
+    /// drift away from "is something running" the way two independently
+    /// assigned flags would.
+    pub(crate) fn begin_job(&mut self, cancellable: bool) {
+        self.busy = true;
+        self.cancellable_job = cancellable;
+    }
+
+    /// Marks the running job as finished. The counterpart to [`Self::begin_job`]
+    /// and the only way to clear `busy`.
+    pub(crate) fn end_job(&mut self) {
+        self.busy = false;
+        self.cancellable_job = false;
+    }
+
+    /// Whether to offer "Cancel" right now.
+    ///
+    /// The button used to appear for any `busy`, but `cancel_scan` only sets
+    /// the scan's cancel token - during a delete, compaction, database clear,
+    /// rules import or export it looked actionable and did nothing (audit
+    /// §5.4).
+    pub fn can_cancel(&self) -> bool {
+        self.busy && self.cancellable_job
     }
 
     /// Whether any modal dialog is on screen.
@@ -633,7 +675,7 @@ impl GameTrimmerApp {
         };
 
         self.cancel.store(false, Ordering::Relaxed);
-        self.busy = true;
+        self.begin_job(true);
         self.progress = None;
         self.status_message.clear();
         self.warnings.clear();
@@ -807,7 +849,7 @@ impl GameTrimmerApp {
             })
             .collect();
 
-        self.busy = true;
+        self.begin_job(false);
         self.status_message = i18n::strings(self.lang())
             .deleting_selected_files
             .to_string();
@@ -847,7 +889,7 @@ impl GameTrimmerApp {
     /// callers are responsible for that; the post-delete chain deliberately
     /// keeps `busy` set from the delete job straight through to compaction.
     fn spawn_compact_job(&mut self, db_path: PathBuf, status_message: String) {
-        self.busy = true;
+        self.begin_job(false);
         self.status_message = status_message;
         let handle = worker::compact::spawn_compact(
             db_path,
@@ -886,7 +928,7 @@ impl GameTrimmerApp {
             self.status_message = i18n::strings(self.lang()).no_db_path.to_string();
             return;
         };
-        self.busy = true;
+        self.begin_job(false);
         self.progress = None;
         self.db_maint_active = true;
         self.db_maint_result = None;
@@ -1112,7 +1154,7 @@ impl GameTrimmerApp {
                 occupancy,
                 timing,
             } => {
-                self.busy = false;
+                self.end_job();
                 self.progress = None;
                 self._worker = None;
                 self.last_scan_timing = timing;
@@ -1247,20 +1289,20 @@ impl GameTrimmerApp {
                         let status = format!("{} {}", s.deletion_completed, s.compacting_database);
                         self.spawn_compact_job(db_path, status);
                     } else {
-                        self.busy = false;
+                        self.end_job();
                     }
                 } else {
-                    self.busy = false;
+                    self.end_job();
                 }
             }
             WorkerMsg::Cancelled => {
-                self.busy = false;
+                self.end_job();
                 self.progress = None;
                 self._worker = None;
                 self.status_message = i18n::strings(lang).scan_cancelled.to_string();
             }
             WorkerMsg::Error { msg } => {
-                self.busy = false;
+                self.end_job();
                 self.progress = None;
                 self._worker = None;
                 self.status_message = i18n::error_prefixed(lang, msg);
@@ -1310,7 +1352,7 @@ impl GameTrimmerApp {
                 // Both `None`: the file picker was cancelled.
             }
             WorkerMsg::CompactDone { error, skipped } => {
-                self.busy = false;
+                self.end_job();
                 self._worker = None;
                 // Compaction now drives the progress bar (see
                 // `worker::compact`) - it must not linger once the job is
@@ -1353,7 +1395,7 @@ impl GameTrimmerApp {
                 }
             }
             WorkerMsg::ClearDone { error } => {
-                self.busy = false;
+                self.end_job();
                 self._worker = None;
                 self.progress = None;
                 // Show the outcome inside the settings dialog (where the
