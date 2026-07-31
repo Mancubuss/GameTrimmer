@@ -163,7 +163,12 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     // An explicit --profile wins; otherwise the persisted profile decides, just
     // as it does for the GUI's post-scan selection.
     let profile = config.profile.unwrap_or(settings.selection_profile);
-    let lang = settings.app_language;
+    // Same resolution the GUI does: an explicit choice wins, "follow Windows"
+    // asks Windows. A CLI run reports its findings in text too, and there is
+    // no reason for it to answer in a different language than the window.
+    let lang = settings
+        .app_language
+        .resolve(crate::i18n::detect_system_language());
 
     crate::logger::log(&format!(
         "CLI run: mode={:?}, profile={}, elevated={elevated}",

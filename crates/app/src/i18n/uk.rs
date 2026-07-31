@@ -150,6 +150,7 @@ pub(super) const STRINGS: Strings = Strings {
          навіть на жорстких дисках, де MFT-індекс зазвичай швидший. Діятиме з наступного \
          сканування.",
     app_language_label: "Мова застосунку:",
+    lang_name_system: "За мовою Windows",
     lang_name_en: "Англійська",
     lang_name_uk: "Українська",
     theme_label: "Тема:",

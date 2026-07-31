@@ -12,7 +12,8 @@ use eframe::egui;
 
 use gametrimmer_core::mftscan;
 use gametrimmer_core::settings::{
-    ConfirmBehavior, DeleteMethod, Lang, ScanRouting, SelectionProfile, Settings, Theme,
+    ConfirmBehavior, DeleteMethod, Lang, LanguagePreference, ScanRouting, SelectionProfile,
+    Settings, Theme,
 };
 
 use crate::elevation;
@@ -98,6 +99,11 @@ pub struct GameTrimmerApp {
     /// Persisted user settings (deletion method, ...), loaded from the
     /// database at startup and saved on every change in the settings dialog.
     pub settings: Settings,
+    /// What Windows reported as the user's preferred UI language at startup,
+    /// already narrowed to one this app speaks. Read once and kept, not
+    /// re-detected - see [`Self::lang`], which resolves the persisted
+    /// preference against it.
+    system_lang: Lang,
     /// Whether the settings dialog is currently open.
     pub show_settings: bool,
     /// Which section of the rebuilt settings dialog is showing. UI-only and
@@ -309,10 +315,16 @@ impl GameTrimmerApp {
     /// and answers `false`. So a temp-database app is already deterministic
     /// without stubbing those out.
     fn new_with(ctx: egui::Context, db_path: Option<PathBuf>, autoload: bool) -> Self {
+        // One Win32 call, before anything can need a string: the default
+        // preference is "follow Windows", so even the pre-database errors
+        // below are worded in the machine's own language rather than in
+        // English on a Ukrainian desktop.
+        let system_lang = i18n::detect_system_language();
+
         // Settings (and thus the UI language) aren't known until the
         // database opens - startup errors before that point use the default
-        // language's text, same as any other place with no settings yet.
-        let startup_lang = Settings::default().app_language;
+        // preference's text, same as any other place with no settings yet.
+        let startup_lang = Settings::default().app_language.resolve(system_lang);
         let (db_error, settings) = match &db_path {
             Some(path) => match gametrimmer_core::db::open(path) {
                 Ok(conn) => {
@@ -359,6 +371,7 @@ impl GameTrimmerApp {
             db_path: db_path.clone(),
             db_error,
             settings,
+            system_lang,
             show_settings: false,
             settings_section: ui::settings::SettingsSection::General,
             keep_language_query: String::new(),
@@ -428,11 +441,18 @@ impl GameTrimmerApp {
         app
     }
 
-    /// The active UI language, read from persisted settings. Render code and
-    /// worker spawns call this each frame/action rather than caching it, so
-    /// a language switch (see `set_language`) takes effect immediately.
+    /// The active UI language: the persisted preference, resolved against
+    /// what Windows was reporting at startup. Render code and worker spawns
+    /// call this each frame/action rather than caching it, so a language
+    /// switch (see `set_language`) takes effect immediately.
+    ///
+    /// The *system* half is deliberately not re-read here. It is one Win32
+    /// call, but this runs several times per frame, and a user changing their
+    /// Windows UI language mid-session is a case Windows itself resolves by
+    /// sign-out - so a value that could change under a running app would only
+    /// buy inconsistency between one widget and the next.
     pub fn lang(&self) -> Lang {
-        self.settings.app_language
+        self.settings.app_language.resolve(self.system_lang)
     }
 
     /// Read access to the otherwise-private database path: the settings
@@ -491,16 +511,19 @@ impl GameTrimmerApp {
             || self.confirm_clear_database
     }
 
-    /// Applies a new UI language and persists it immediately, mirroring
-    /// `set_delete_method`. Called from the settings dialog's language
+    /// Applies a new UI language preference and persists it immediately,
+    /// mirroring `set_theme`. Called from the settings dialog's language
     /// selector; takes effect the same frame since every render call reads
     /// `self.lang()` fresh rather than caching it.
-    pub fn set_language(&mut self, lang: Lang) {
-        if self.settings.app_language == lang {
+    ///
+    /// Takes the *preference*, not a [`Lang`]: "follow Windows" is one of the
+    /// three things the picker offers, and it is not a language.
+    pub fn set_language(&mut self, preference: LanguagePreference) {
+        if self.settings.app_language == preference {
             return;
         }
         self.settings = Settings {
-            app_language: lang,
+            app_language: preference,
             ..self.settings.clone()
         };
         self.persist_settings();
@@ -1765,11 +1788,25 @@ impl GameTrimmerApp {
     /// both matter. The caller keeps the `TempDir` alive for as long as the
     /// app is used - dropping it deletes the database out from under it.
     pub fn new_for_test(dir: &std::path::Path) -> Self {
-        Self::new_with(
+        let mut app = Self::new_with(
             egui::Context::default(),
             Some(dir.join("gametrimmer.db")),
             false,
-        )
+        );
+        // Pin the machine's answer. The default preference is "follow
+        // Windows", so without this every assertion about UI text would
+        // depend on the developer's own Windows language - green here, red on
+        // a Ukrainian desktop, for no reason to do with the code. Tests that
+        // are *about* the system language set this themselves.
+        app.system_lang = Lang::En;
+        app
+    }
+
+    /// Overrides what "the system language" is, for the tests that are about
+    /// exactly that. Everything else keeps the pinned default from
+    /// [`Self::new_for_test`].
+    pub fn set_system_language_for_test(&mut self, lang: Lang) {
+        self.system_lang = lang;
     }
 }
 

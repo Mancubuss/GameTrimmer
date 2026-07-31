@@ -13,10 +13,12 @@
 
 mod en;
 mod messages;
+mod system;
 mod uk;
 
 pub use gametrimmer_core::settings::Lang;
 pub use messages::*;
+pub use system::detect as detect_system_language;
 
 /// One `&'static str` per plain (non-interpolated) UI string, mirrored for
 /// every [`Lang`] variant. Compile-time exhaustive: adding a field here
@@ -207,6 +209,14 @@ pub struct Strings {
     pub scan_routing_force_walkdir_label: &'static str,
     pub scan_routing_force_walkdir_hint: &'static str,
     pub app_language_label: &'static str,
+    /// The "follow Windows" language option.
+    ///
+    /// Deliberately *not* worded like the theme row's system option, which it
+    /// shares a dialog with: the two started out as the same "System (follow
+    /// Windows)" string, which put two identically-labelled radio buttons on
+    /// one screen - ambiguous to read, and genuinely unresolvable for a
+    /// screen reader or anything else addressing a control by its name.
+    pub lang_name_system: &'static str,
     pub lang_name_en: &'static str,
     pub lang_name_uk: &'static str,
     pub theme_label: &'static str,
@@ -521,6 +531,7 @@ impl Strings {
                 self.scan_routing_force_walkdir_hint,
             ),
             ("app_language_label", self.app_language_label),
+            ("lang_name_system", self.lang_name_system),
             ("lang_name_en", self.lang_name_en),
             ("lang_name_uk", self.lang_name_uk),
             ("theme_label", self.theme_label),
