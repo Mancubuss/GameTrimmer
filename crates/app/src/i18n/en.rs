@@ -111,8 +111,8 @@ pub(super) const STRINGS: Strings = Strings {
     compact_hint: "Frees space the database no longer uses after deletions. Only runs if \
          at least 25% of the space would be reclaimed.",
     btn_clear_database: "Clear database",
-    clear_hint: "Permanently removes all scan results and the operations journal from the \
-         database. Files on disk are not touched; libraries and settings are kept.",
+    clear_hint: "Removes all scan results from the database. Files on disk are not touched; \
+         libraries and settings are kept. The only cost is scanning again.",
     rules_label: "Analysis rules:",
     btn_export_rules: "Export rules",
     btn_import_rules: "Import rules",
