@@ -983,7 +983,7 @@ impl GameTrimmerApp {
         // startup-only path-resolution edge cases and move on.
         match worker::log_path() {
             Ok(path) => logger::set_enabled(enabled, self.elevated, &path),
-            Err(err) => eprintln!("Не вдалося визначити шлях до журналу діагностики: {err}"),
+            Err(err) => eprintln!("Failed to resolve the diagnostic log path: {err}"),
         }
     }
 

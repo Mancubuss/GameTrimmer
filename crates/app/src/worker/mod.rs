@@ -205,7 +205,7 @@ pub(crate) fn occupancy_or_default(conn: &rusqlite::Connection) -> crate::model:
         Ok(by_library) => crate::model::Occupancy::from_by_library(by_library),
         Err(err) => {
             crate::logger::log(&format!(
-                "Не вдалося порахувати зайнятий обсяг за бібліотеками: {err}"
+                "Failed to compute occupied space per library: {err}"
             ));
             crate::model::Occupancy::default()
         }
@@ -217,7 +217,7 @@ fn exe_dir() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let dir = exe
         .parent()
-        .ok_or_else(|| io::Error::other("не вдалося визначити директорію виконуваного файлу"))?;
+        .ok_or_else(|| io::Error::other("failed to resolve the executable's directory"))?;
     Ok(dir.to_path_buf())
 }
 

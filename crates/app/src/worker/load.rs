@@ -117,7 +117,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         let file_id: i64 = row.get(3)?;
         let Some(source) = parse_source_key(&category) else {
             crate::logger::log(&format!(
-                "Пропущено findings-рядок з невідомою категорією \"{category}\" (file_id={file_id})"
+                "Skipped a findings row with an unknown category \"{category}\" (file_id={file_id})"
             ));
             continue;
         };
@@ -155,7 +155,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
             // A non-orphan finding whose game row is missing - impossible under
             // foreign-key enforcement, but skip rather than fabricate a game.
             crate::logger::log(&format!(
-                "Пропущено findings-рядок без гри (категорія \"{category}\", file_id={file_id})"
+                "Skipped a findings row with no game (category \"{category}\", file_id={file_id})"
             ));
             continue;
         };

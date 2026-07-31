@@ -1095,7 +1095,7 @@ fn shell_actions(ui: &mut egui::Ui, lang: Lang, target: &ShellTarget) {
             ShellTarget::File(_) => row_actions::reveal_in_explorer_args(path),
         };
         if let Err(err) = row_actions::launch(program, &args) {
-            crate::logger::log(&format!("Не вдалося відкрити Провідник: {err}"));
+            crate::logger::log(&format!("Failed to open Explorer: {err}"));
         }
         ui.close();
     }
@@ -1104,7 +1104,7 @@ fn shell_actions(ui: &mut egui::Ui, lang: Lang, target: &ShellTarget) {
         let (program, args) = row_actions::open_with_args(path);
         if let Err(err) = row_actions::launch(program, &args) {
             crate::logger::log(&format!(
-                "Не вдалося відкрити діалог «Відкрити за допомогою»: {err}"
+                "Failed to open the \"Open with...\" dialog: {err}"
             ));
         }
         ui.close();

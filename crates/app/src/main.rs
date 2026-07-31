@@ -94,7 +94,7 @@ fn window_icon() -> Option<egui::IconData> {
             })
         }
         Err(err) => {
-            eprintln!("Не вдалося декодувати іконку вікна: {err}");
+            eprintln!("Failed to decode the window icon: {err}");
             None
         }
     }
@@ -154,7 +154,7 @@ fn add_font(fonts: &mut egui::FontDefinitions, name: &str, path: &str, face_inde
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => {
-            eprintln!("Не вдалося завантажити шрифт {name} ({path}): {err}");
+            eprintln!("Failed to load font {name} ({path}): {err}");
             return false;
         }
     };
