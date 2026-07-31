@@ -339,21 +339,52 @@ overloading the live one).
 
 What changes is **how it is built**.
 
-**Status (2026-07-31):** step 2.0 done, commit `6f3865d`. Steps 2.1–2.5 and
-2.6 remain.
+**Status (2026-07-31): Phase 2 complete.** Eight commits:
 
-The scaffold is landed **dormant** — `app.rs` still renders
-`ui::settings_dialog`. Wiring an empty dialog up would make everything only
-the old one reaches (database maintenance, rules import/export, much of the
-string table) dead code, and would leave the branch with an unusable settings
-dialog if the series is interrupted — which is how the last attempt ended.
-`#[allow(dead_code)]` is scoped to `ui::settings`, the seven new string-table
-fields and `app.settings_section`; every one comes off in the commit that
-flips `app.rs` and deletes `settings_dialog.rs`.
+| Step | Commit | Notes |
+|---|---|---|
+| 2.0 scaffold | `6f3865d` | landed dormant |
+| 2.1 `general` | `8c10d1b` | + the "Immediately" badge |
+| 2.2 `data` | `8e7b9f4` | + database path, danger zone |
+| 2.3 `selection` | `a836ce7` | + two persisted settings |
+| 2.4 `rules` | `c9c3088` | + live pack validity, restore |
+| 2.5 `scanning` | `428ab17` | keep-list chips, category table |
+| routing line | `b7082da` | deferred out of 2.5, worker plumbing |
+| 2.6 + switch | `df0e3da` | save state, `settings_dialog.rs` deleted |
 
-Consequence for sequencing: **the switch is the last commit of Phase 2, not
-the first.** Each section is ported into `ui::settings` while the old dialog
-keeps serving the user.
+The scaffold was landed **dormant** — `app.rs` kept rendering
+`ui::settings_dialog` until the last commit. Wiring an empty dialog up would
+have made everything only the old one reached (database maintenance, rules
+import/export, much of the string table) dead code, and would have left the
+branch with an unusable settings dialog if the series were interrupted —
+which is how the last attempt ended. `#[allow(dead_code)]` was scoped to
+`ui::settings`, the new string-table fields and the new app fields; all 40
+came off in the final commit, which also deleted `settings_dialog.rs` and
+`libraries_panel.rs` (the library list *moved* into `scanning`).
+
+Consequence for sequencing, and it held: **the switch was the last commit of
+Phase 2, not the first.** Each section was ported into `ui::settings` while
+the old dialog kept serving the user, and the branch stayed shippable at
+every commit.
+
+**What the discipline caught.** Every section's tests were confirmed red
+before the code that satisfies them; where a test was written alongside new
+code and passed first time, the code was mutated to prove the test bites
+(the confirmation-policy gate, the scan-default setter, the profile
+propagation, the rules backup). Four real defects surfaced this way that no
+amount of reading would have:
+
+1. Two identical "Immediately" badges made `query_by_label` panic —
+   `has_label` now counts instead of querying, and `count_labels` exists for
+   the cases where the repetition is the claim.
+2. A spinner keeps repainting by design, which `run`'s repaint-loop check
+   correctly rejects — hence `run_animated`.
+3. The keep-list search was matching English names against native ones
+   ("German" vs "Deutsch"), and was listing all 36 languages on an empty
+   query — the wall of checkboxes the audit objected to, as buttons.
+4. A timed "Saved" fade drove a repaint every 250ms; the harness advanced
+   its clock past the window and failed. The fade was dropped rather than
+   the test weakened.
 
 ### 2.0. Scaffold first, sections second
 
@@ -427,10 +458,17 @@ disabled with an explanatory tooltip" — a deliberate, reviewed test edit.
 
 ### 2.6. Save state
 
-Transient "Збережено" next to the section heading, inline error if a setter's
-persistence fails. Check first whether `persist_settings()` is fallible today;
-if it is infallible, ship the success indicator and leave the error branch out
-rather than fabricating error handling for a path that cannot occur.
+**Done, with one deliberate deviation.** `persist_settings()` *is* fallible,
+so both branches shipped — and the error branch turned out to be the
+important one: a failed write pushed a warning onto the main window's list,
+which is behind this very modal, so a setting that did not save looked
+exactly like one that did.
+
+The deviation is "transient". A timed fade drove a repaint every 250ms and
+the harness caught it by advancing its own clock past the fade window. The
+indicator now simply describes the most recent write: a failure stays until
+something saves, a success stays until the next change or until the dialog
+closes. Both are legible, neither needs a clock, and both are testable.
 
 ---
 
@@ -497,7 +535,20 @@ are visible without scrolling; the last mandatory checkbox explains itself
 instead of jumping; save state is visible; the danger zone is visually
 separated; and the tree ignores keyboard input behind every modal.
 
+**Met 2026-07-31.** Every clause has a test behind it rather than a reading
+of the diff: `the_modal_does_not_move_or_resize_between_sections`,
+`every_section_is_one_click_away_from_every_other`,
+`only_the_kept_languages_are_on_screen_until_a_search`,
+`the_last_keep_language_cannot_be_removed_and_explains_itself`,
+`the_last_enabled_category_cannot_be_switched_off`,
+`a_successful_change_acknowledges_itself` /
+`a_failed_save_is_reported_in_the_dialog`,
+`the_wipe_sits_under_its_own_danger_heading`, and the modal-gate test in
+`ui::tree_view`. There is exactly one `ScrollArea` in the section frame, by
+construction.
+
 Then, and only then, a build goes to the user — for the aesthetic call.
+**That is where this now stands.**
 
 ---
 
