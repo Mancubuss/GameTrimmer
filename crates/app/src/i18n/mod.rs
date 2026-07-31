@@ -33,6 +33,15 @@ pub struct Strings {
     pub btn_select_all: &'static str,
     pub btn_deselect_all: &'static str,
     pub btn_delete_selected: &'static str,
+
+    /// Why a greyed-out action is unavailable, shown on hover. A disabled
+    /// control that gives no reason reads as broken rather than as gated -
+    /// see `ui::gated_button`.
+    pub disabled_busy: &'static str,
+    pub disabled_no_findings: &'static str,
+    pub disabled_no_selection: &'static str,
+    pub disabled_export_running: &'static str,
+
     /// Label preceding the selection-profile picker (GT-04).
     pub profile_label: &'static str,
     pub profile_cautious: &'static str,
@@ -237,6 +246,10 @@ impl Strings {
             ("btn_select_all", self.btn_select_all),
             ("btn_deselect_all", self.btn_deselect_all),
             ("btn_delete_selected", self.btn_delete_selected),
+            ("disabled_busy", self.disabled_busy),
+            ("disabled_no_findings", self.disabled_no_findings),
+            ("disabled_no_selection", self.disabled_no_selection),
+            ("disabled_export_running", self.disabled_export_running),
             ("elevation_heading", self.elevation_heading),
             ("elevation_body", self.elevation_body),
             (

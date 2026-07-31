@@ -13,6 +13,12 @@ pub(super) const STRINGS: Strings = Strings {
     btn_select_all: "Select all",
     btn_deselect_all: "Deselect all",
     btn_delete_selected: "Delete selected",
+
+    disabled_busy: "A background operation is running",
+    disabled_no_findings: "Scan your libraries first",
+    disabled_no_selection: "Nothing is selected",
+    disabled_export_running: "An export is already running",
+
     profile_label: "Profile:",
     profile_cautious: "Cautious",
     profile_balanced: "Balanced",

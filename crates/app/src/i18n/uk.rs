@@ -12,6 +12,12 @@ pub(super) const STRINGS: Strings = Strings {
     btn_select_all: "Вибрати все",
     btn_deselect_all: "Зняти вибір",
     btn_delete_selected: "Видалити вибране",
+
+    disabled_busy: "Триває фонова операція",
+    disabled_no_findings: "Спершу проскануйте бібліотеки",
+    disabled_no_selection: "Нічого не вибрано",
+    disabled_export_running: "Експорт уже виконується",
+
     profile_label: "Профіль:",
     profile_cautious: "Обережний",
     profile_balanced: "Збалансований",

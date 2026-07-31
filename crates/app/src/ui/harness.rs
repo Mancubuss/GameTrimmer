@@ -31,6 +31,10 @@ use crate::i18n;
 /// they measure the layout the user actually gets, not an arbitrary viewport.
 pub const STANDARD_VIEWPORT: egui::Vec2 = egui::vec2(900.0, 600.0);
 
+/// Narrower than the standard window, for asserting that a layout reflows
+/// instead of pushing its primary action off the edge.
+pub const NARROW_VIEWPORT: egui::Vec2 = egui::vec2(760.0, 600.0);
+
 /// egui_kittest defaults to 4 steps per `run`. A modal opening a scroll area
 /// can legitimately need a few more before it settles; anything past this is
 /// a repaint loop, which the failure from [`UiTest::run`] names as such.
@@ -158,6 +162,14 @@ impl UiTest {
             })
             .collect();
         app.tree = crate::model::build_tree(&app.findings);
+        self.run();
+    }
+
+    /// Moves the pointer over the widget with this label and settles, so a
+    /// tooltip (including `on_disabled_hover_text`) has a frame to appear in.
+    #[track_caller]
+    pub fn hover(&mut self, label: &str) {
+        self.node(label).hover();
         self.run();
     }
 
