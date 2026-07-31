@@ -1,0 +1,76 @@
+name: Bug report
+description: Something crashed, hung, or did not do what it said it would
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a file was **falsely flagged** for deletion, use the
+        "Falsely flagged file" template instead — it asks for different things.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Scan libraries
+        2. Switch the profile to Aggressive
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: GameTrimmer version
+      description: "`gametrimmer --version`, or the version in the zip name."
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 Pro 24H2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: elevated
+    attributes:
+      label: Was it running as administrator?
+      options:
+        - "No"
+        - "Yes"
+        - "Do not remember"
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Where the program folder lives
+      description: >
+        Local disk, USB stick, network share — and the file system if you know
+        it (NTFS / exFAT / FAT32). Several known limits depend on this.
+      placeholder: USB stick, exFAT
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Diagnostic log
+      description: >
+        Settings → Data and diagnostics → enable the log, reproduce the
+        problem, then attach `gametrimmer.log` from next to the exe. The log
+        stays on your machine until you attach it here — the program sends
+        nothing anywhere.
+      render: text

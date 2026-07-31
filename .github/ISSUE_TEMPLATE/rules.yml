@@ -1,0 +1,58 @@
+name: Rule pack suggestion
+description: A pattern, language or launcher the rule packs should know about
+title: "[rules] "
+labels: ["rules"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `rules.json` and `l10n_rules.json` are plain data, not code — this is
+        the easiest way to contribute. A pull request against those files is
+        even more welcome than an issue; see
+        [CONTRIBUTING.md](../blob/master/CONTRIBUTING.md).
+
+  - type: dropdown
+    id: which
+    attributes:
+      label: Which pack
+      options:
+        - "rules.json — category rules"
+        - "l10n_rules.json — languages and markers"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Real paths this should match
+      description: >
+        At least two from actual games, with the game name. Rules written
+        against imagined paths are how false positives are born.
+      placeholder: |
+        D:\SteamLibrary\steamapps\common\Some Game\Redist\UE4PrereqSetup_x64.exe
+        D:\SteamLibrary\steamapps\common\Another Game\Engine\Extras\Redist\...
+    validations:
+      required: true
+
+  - type: textarea
+    id: must-not-match
+    attributes:
+      label: What must NOT match
+      description: >
+        The nearest path that looks similar but has to stay. This is the more
+        valuable half of the report.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Proposed category
+      options:
+        - Redistributables
+        - Documentation and reference material
+        - Bonus material
+        - Localization files
+        - Other
+        - Not applicable (language dictionary entry)
