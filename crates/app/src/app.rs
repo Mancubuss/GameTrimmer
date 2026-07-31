@@ -12,7 +12,7 @@ use eframe::egui;
 
 use gametrimmer_core::mftscan;
 use gametrimmer_core::settings::{
-    DeleteMethod, Lang, ScanRouting, SelectionProfile, Settings, Theme,
+    ConfirmBehavior, DeleteMethod, Lang, ScanRouting, SelectionProfile, Settings, Theme,
 };
 
 use crate::elevation;
@@ -762,10 +762,9 @@ impl GameTrimmerApp {
     /// is already `Custom`, so only the first hand-edit after a profile
     /// switch touches the database.
     ///
-    /// This moves the one `selection_profile` field, which is read both as
-    /// "what a fresh scan pre-checks" and as "the current policy". Splitting
-    /// those two meanings apart is GT-57's `default_selection_profile`; until
-    /// then, a label that stops lying is the honest minimum.
+    /// Only the live profile moves. What a *fresh scan* pre-checks lives in
+    /// `default_selection_profile` and is untouched here, so hand-editing the
+    /// tree does not quietly rewrite the setting for the next scan.
     pub fn mark_selection_custom(&mut self) {
         if self.settings.selection_profile == SelectionProfile::Custom {
             return;
@@ -788,9 +787,32 @@ impl GameTrimmerApp {
             .map(|(index, _)| index)
             .collect();
 
+        self.open_delete_confirmation(indices);
+    }
+
+    /// Whether a batch has to be confirmed before it is deleted, under the
+    /// current [`ConfirmBehavior`].
+    ///
+    /// Split out from the two request paths so the policy can be exercised
+    /// as plain logic - the alternative is a test that has to let a real
+    /// delete run in order to observe the decision not to ask.
+    pub(crate) fn needs_delete_confirmation(&self, indices: &[usize]) -> bool {
+        let total_bytes = model::group_size_bytes(&self.findings, indices);
+        self.settings.confirm_behavior.should_confirm(total_bytes)
+    }
+
+    /// Shared tail of both delete request paths: build the modal state, then
+    /// either show it or - when the policy says this batch does not need
+    /// asking about - confirm it on the spot.
+    ///
+    /// Going through the modal state either way keeps this the only place
+    /// that decides *whether* to ask, and `confirm_delete_now` the only place
+    /// that starts a delete. No-op on an empty batch.
+    fn open_delete_confirmation(&mut self, indices: Vec<usize>) {
         if indices.is_empty() {
             return;
         }
+        let skip = !self.needs_delete_confirmation(&indices);
         // The persisted setting is the starting point, not a lock: the modal
         // lets the user pick a different method for this delete alone.
         self.confirm_delete = Some(ConfirmDelete {
@@ -798,6 +820,9 @@ impl GameTrimmerApp {
             method: self.settings.delete_method,
             remember: false,
         });
+        if skip {
+            self.confirm_delete_now();
+        }
     }
 
     pub fn cancel_delete_confirmation(&mut self) {
@@ -847,14 +872,7 @@ impl GameTrimmerApp {
             .map(|(index, _)| index)
             .collect();
 
-        if indices.is_empty() {
-            return;
-        }
-        self.confirm_delete = Some(ConfirmDelete {
-            indices,
-            method: self.settings.delete_method,
-            remember: false,
-        });
+        self.open_delete_confirmation(indices);
     }
 
     /// Runs after the user confirms the modal: builds full paths and hands
@@ -1071,12 +1089,22 @@ impl GameTrimmerApp {
     /// one-click policy). Removed items are left alone - they are already gone.
     /// The tree is not rebuilt: its shape is independent of selection, which is
     /// per-item state the tree reads live.
+    ///
+    /// Also becomes the scan default. Picking a profile from the main screen
+    /// is a deliberate policy choice, and before the two fields were split it
+    /// was the *only* thing a scan read - carrying it forward is what keeps
+    /// that behaviour. Hand-editing a checkbox does not
+    /// ([`Self::mark_selection_custom`] touches the live field alone): that
+    /// says something about these findings, not about the next scan.
     pub fn set_selection_profile(&mut self, profile: SelectionProfile) {
-        if self.settings.selection_profile == profile {
+        if self.settings.selection_profile == profile
+            && self.settings.default_selection_profile == profile
+        {
             return;
         }
         self.settings = Settings {
             selection_profile: profile,
+            default_selection_profile: profile,
             ..self.settings.clone()
         };
         self.persist_settings();
@@ -1090,6 +1118,53 @@ impl GameTrimmerApp {
                 item.row.confidence,
             );
         }
+    }
+
+    /// Records the profile the freshly arrived findings already follow.
+    ///
+    /// Separate from [`Self::set_selection_profile`] because that one also
+    /// re-applies the profile to `self.findings`; here the caller has just
+    /// built them from this very profile, so re-applying would be a wasted
+    /// pass over the whole result set.
+    fn set_live_selection_profile_silently(&mut self, profile: SelectionProfile) {
+        if self.settings.selection_profile == profile {
+            return;
+        }
+        self.settings = Settings {
+            selection_profile: profile,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Sets the profile a **future** scan pre-selects with.
+    ///
+    /// Deliberately persist-only: unlike [`Self::set_selection_profile`] it
+    /// never touches `self.findings`, so changing it in Settings cannot look
+    /// as though it silently rewrote the checkboxes the user is looking at.
+    /// See [`Settings::default_selection_profile`].
+    pub fn set_default_selection_profile(&mut self, profile: SelectionProfile) {
+        if self.settings.default_selection_profile == profile {
+            return;
+        }
+        self.settings = Settings {
+            default_selection_profile: profile,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Sets when the delete confirmation is shown - see [`ConfirmBehavior`]
+    /// and [`Self::needs_delete_confirmation`].
+    pub fn set_confirm_behavior(&mut self, behavior: ConfirmBehavior) {
+        if self.settings.confirm_behavior == behavior {
+            return;
+        }
+        self.settings = Settings {
+            confirm_behavior: behavior,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
     }
 
     /// Applies the diagnostic-logging toggle and persists it immediately,
@@ -1202,10 +1277,16 @@ impl GameTrimmerApp {
                 self._worker = None;
                 self.last_scan_timing = timing;
                 let count = findings.len();
-                // GT-04: the persisted selection profile decides which findings
-                // arrive pre-checked (see `model::profile_auto_selects`), not a
-                // bare confidence threshold.
-                let profile = self.settings.selection_profile;
+                // GT-04: a persisted profile decides which findings arrive
+                // pre-checked (see `model::profile_auto_selects`), not a bare
+                // confidence threshold. The *default* profile is the one that
+                // applies here - `selection_profile` describes the tree being
+                // replaced, and may well have drifted to `Custom` through
+                // hand-edits that say nothing about the new results.
+                let profile = self.settings.default_selection_profile;
+                // ... so the live profile is reset to match what was just
+                // applied, rather than left claiming the previous scan's.
+                self.set_live_selection_profile_silently(profile);
                 self.findings = findings
                     .into_iter()
                     .map(|row| {
@@ -1648,6 +1729,127 @@ mod tests {
         assert!(
             !app.show_elevation_prompt,
             "with no libraries there is nothing to offer elevation for",
+        );
+    }
+
+    /// One finding of `size` bytes, selected and not yet removed.
+    fn app_with_one_selected_finding(dir: &std::path::Path, size: u64) -> GameTrimmerApp {
+        let mut app = GameTrimmerApp::new_for_test(dir);
+        app.findings = vec![FindingItem {
+            row: model::FindingRow {
+                file_id: 1,
+                game_id: 1,
+                game_name: "Test Game".to_string(),
+                install_dir: PathBuf::from("C:\\Games\\Test"),
+                rel_path: "data/loc.pak".to_string(),
+                size,
+                size_on_disk: size,
+                source: model::FindingSource::Loc(gametrimmer_core::langdetect::LangKind::Text),
+                rule_desc: "test rule".to_string(),
+                confidence: 90,
+                lang_tag: Some("de".to_string()),
+                group_dir: None,
+            },
+            selected: true,
+            removed: false,
+        }];
+        app
+    }
+
+    /// The confirmation policy, exercised without letting a delete run - the
+    /// decision and the consequence are separate on purpose (see
+    /// `needs_delete_confirmation`).
+    #[test]
+    fn the_confirmation_policy_decides_per_batch_size() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let one_gb = ConfirmBehavior::ONE_GB;
+
+        for (behavior, size, expected) in [
+            (ConfirmBehavior::Always, 1_u64, true),
+            (ConfirmBehavior::Always, one_gb, true),
+            (ConfirmBehavior::Never, 1, false),
+            (ConfirmBehavior::Never, one_gb, false),
+            (ConfirmBehavior::OnlyAboveOneGb, one_gb - 1, false),
+            (ConfirmBehavior::OnlyAboveOneGb, one_gb, true),
+        ] {
+            let mut app = app_with_one_selected_finding(dir.path(), size);
+            app.set_confirm_behavior(behavior);
+
+            assert_eq!(
+                app.needs_delete_confirmation(&[0]),
+                expected,
+                "{behavior:?} on a {size}-byte batch",
+            );
+        }
+    }
+
+    /// The default policy must still be the one that asks - a delete is not
+    /// something to leave one accidental click away from silent.
+    #[test]
+    fn a_fresh_app_asks_before_deleting() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut app = app_with_one_selected_finding(dir.path(), 1);
+
+        app.request_delete_confirmation();
+
+        assert!(
+            app.confirm_delete.is_some(),
+            "the default policy skipped the confirmation",
+        );
+    }
+
+    /// The other direction of the split. Before the two fields existed, the
+    /// main-screen picker was the only thing a scan read; that has to keep
+    /// working, or picking a profile silently stops affecting the next scan.
+    #[test]
+    fn picking_a_profile_on_the_main_screen_becomes_the_scan_default() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut app = app_with_one_selected_finding(dir.path(), 1);
+
+        app.set_selection_profile(SelectionProfile::Aggressive);
+
+        assert_eq!(
+            app.settings.default_selection_profile,
+            SelectionProfile::Aggressive,
+        );
+    }
+
+    /// But a hand-edited checkbox says nothing about the next scan, so it
+    /// must not drag the default to `Custom` with it.
+    #[test]
+    fn hand_editing_the_tree_leaves_the_scan_default_alone() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut app = app_with_one_selected_finding(dir.path(), 1);
+        app.set_selection_profile(SelectionProfile::Balanced);
+
+        app.mark_selection_custom();
+
+        assert_eq!(app.settings.selection_profile, SelectionProfile::Custom);
+        assert_eq!(
+            app.settings.default_selection_profile,
+            SelectionProfile::Balanced,
+        );
+    }
+
+    /// Editing the scan default must not disturb the tree on screen: that
+    /// silent re-check is what the split into two fields exists to prevent.
+    #[test]
+    fn changing_the_scan_default_leaves_the_current_selection_alone() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut app = app_with_one_selected_finding(dir.path(), 1);
+        app.mark_selection_custom();
+
+        app.set_default_selection_profile(SelectionProfile::Aggressive);
+
+        assert!(app.findings[0].selected, "the tree's checkbox moved");
+        assert_eq!(
+            app.settings.selection_profile,
+            SelectionProfile::Custom,
+            "the live profile followed the scan default",
+        );
+        assert_eq!(
+            app.settings.default_selection_profile,
+            SelectionProfile::Aggressive,
         );
     }
 }

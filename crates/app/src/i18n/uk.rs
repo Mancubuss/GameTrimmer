@@ -21,6 +21,19 @@ pub(super) const STRINGS: Strings = Strings {
     btn_done: "Готово",
     btn_restore_defaults: "Відновити типові",
     badge_immediately: "Одразу",
+    badge_next_scan: "З наступного сканування",
+    badge_next_delete: "З наступного видалення",
+    default_profile_label: "Профіль, з якого починає нове сканування",
+    default_profile_hint: "Не змінює того, що зараз позначено в дереві, — лише те, з чого \
+         почнеться наступне сканування.",
+    confirm_behavior_label: "Питати перед видаленням",
+    confirm_always_label: "Завжди",
+    confirm_only_1gb_label: "Лише понад 1 ГБ",
+    confirm_never_label: "Ніколи",
+    confirm_behavior_hint: "Коли показувати підтвердження перед видаленням.",
+    selection_independent_switches_hint: "Що сканується (розділ «Сканування»), що позначається \
+         автоматично (профіль вище) і як воно видаляється (метод вище) — три незалежні \
+         перемикачі: зміна одного не чіпає двох інших.",
     db_path_label: "Файл бази даних:",
     btn_copy: "Копіювати",
     btn_open_folder: "Відкрити теку",
