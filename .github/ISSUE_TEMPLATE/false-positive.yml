@@ -1,0 +1,85 @@
+name: Falsely flagged file
+description: GameTrimmer proposed a file that should never have been proposed
+title: "[false positive] "
+labels: ["false positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most important report this project can receive.
+
+        The engine is built around one invariant: **better to miss something
+        than to delete something needed.** A missed file is expected and not a
+        bug — see the README. A falsely flagged one is a bug, and it is the
+        one we want to hear about.
+
+  - type: textarea
+    id: path
+    attributes:
+      label: Full path of the file
+      description: >
+        Right-click the row → "Copy path". Paste it as-is; the game name and
+        folder layout are the useful part.
+      placeholder: D:\SteamLibrary\steamapps\common\Some Game\data\cs_intro.pak
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Which category did it land in?
+      options:
+        - Orphaned
+        - Redistributables
+        - Documentation and reference material
+        - Bonus material
+        - Localization files
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: tooltip
+    attributes:
+      label: What the row's tooltip says
+      description: >
+        Hover the file name. The tooltip carries the rule (or language) that
+        produced the finding and the confidence number — that pair is what
+        points at the broken rule.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why the file must not be deleted
+      description: >
+        For example: the game will not start without it; it is a texture, not
+        a localization; it belongs to a language you do play in.
+    validations:
+      required: true
+
+  - type: input
+    id: keep-list
+    attributes:
+      label: Your language keep-list
+      description: Settings → Scanning → languages that are never flagged.
+      placeholder: uk, en
+
+  - type: checkboxes
+    id: not-deleted
+    attributes:
+      label: Confirmation
+      options:
+        - label: >
+            The file was **flagged**, not deleted — or if it was deleted, I can
+            still describe what it was.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: GameTrimmer version
+      description: "`gametrimmer --version`, or the version in the zip name."
+    validations:
+      required: true
