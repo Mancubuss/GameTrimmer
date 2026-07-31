@@ -29,7 +29,12 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.add_space(4.0);
 
         ui.horizontal(|ui| {
-            let scan_blocked = app.busy.then_some(s.disabled_busy);
+            // The running job first: it is the blocker the user has to wait
+            // out, and it outranks a gate they can clear in one click.
+            let scan_blocked = app
+                .busy
+                .then_some(s.disabled_busy)
+                .or_else(|| app.blocked_by_disclaimer());
             if crate::ui::gated_button(ui, s.btn_scan_libraries, scan_blocked).clicked() {
                 app.start_scan();
             }

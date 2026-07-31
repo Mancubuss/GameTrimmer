@@ -72,6 +72,7 @@ pub(super) const STRINGS: Strings = Strings {
     disabled_no_findings: "Scan your libraries first",
     disabled_no_selection: "Nothing is selected",
     disabled_export_running: "An export is already running",
+    disabled_disclaimer: "Read and accept the disclaimer on the start screen first",
 
     profile_label: "Profile:",
     profile_cautious: "Cautious",
@@ -178,14 +179,53 @@ pub(super) const STRINGS: Strings = Strings {
          Nothing is hidden - every file is there to inspect, with its full path.",
     onboarding_step_remove: "3. Remove what you ticked. You choose whether files go \
          permanently or to the Recycle Bin.",
+    onboarding_how_heading: "How it decides",
+    onboarding_how_body: "Nothing is judged by a file's size or age. Three detectors run over \
+         your libraries: a rule pack matches file and folder names against known patterns \
+         (rules.json), a language detector identifies localization files by their language \
+         markers (l10n_rules.json), and an orphan check compares what each launcher still \
+         has a manifest for against what is actually on disk. Both rule files sit next to \
+         the program - you can read them, edit them, or replace them with your own.",
+    onboarding_filters_body: "Two filters decide what a scan looks at at all, both under \
+         Settings \u{2192} Scanning. Categories - orphaned residue, redistributables, \
+         documentation, bonus content, localization files, other developer leftovers: \
+         anything switched off is never analyzed, listed or saved. The keep-list of \
+         languages: whatever the detector finds, a language on that list is never proposed \
+         for deletion.",
     onboarding_profile: "Profile is how boldly the app ticks things for you. \
          \u{201c}Cautious\u{201d} only ticks what a launcher will not bring back on its own; \
          \u{201c}Aggressive\u{201d} ticks more. You can always tick and untick by hand.",
-    onboarding_confidence: "Confidence is how sure the app is that a file is what it says it \
-         is. Anything below 80% is marked with a warning sign and is worth a look before you \
-         remove it.",
+    onboarding_review_mark: "A \u{26a0} beside a file means the app is less sure that file is \
+         what it looks like. Nothing marked that way is ever ticked for you - look at it \
+         first, then decide.",
     onboarding_safety: "Scanning changes nothing on disk. Nothing is deleted until you tick \
          it and confirm.",
+    onboarding_logging_body: "With this on, the program writes gametrimmer.log next to \
+         itself: errors, and what the scan did on which volume. The file stays on your \
+         machine - nothing is sent anywhere, and there is no telemetry in this program. \
+         But if you ever hit a wrong finding or a scan that fails, that file is the \
+         difference between a fixable report and guesswork, so turning it on now costs you \
+         nothing and may spare you repeating the problem later. You can switch it off any \
+         time under Settings \u{2192} Data & diagnostics.",
+
+    disclaimer_heading: "USE AT YOUR OWN RISK",
+    disclaimer_body: "GameTrimmer deletes the files you tick - permanently, or to the \
+         Recycle Bin, as you choose. Detection is heuristic: a file can be misidentified, \
+         and removing the wrong one can leave a game unable to start. The program is \
+         provided \u{201c}as is\u{201d}, without warranty of any kind, and its authors are \
+         not liable for lost data, broken installations, or anything else arising from its \
+         use (see LICENSE, shipped beside the program). What you delete is your decision \
+         and your responsibility - keep backups of anything you cannot re-download. Game \
+         files themselves can normally be restored by verifying or reinstalling from the \
+         store, and that is the safety net this tool is designed around.",
+    disclaimer_accept_checkbox: "I have read the above. I accept the risk and take \
+         responsibility for what I delete.",
+
+    credits_heading: "Thanks",
+    credits_anthropic: "Anthropic - for Claude Code, with which this program was written.",
+    credits_karpathy: "Andrej Karpathy - for the inspiration.",
+    credits_tikione: "The author of TikiOne Steam Cleaner - for the idea, and for the first \
+         set of filters it started from.",
 
     scanning_in_progress: "Scanning...",
     no_findings_hint: "No findings. Click \u{201c}Scan libraries\u{201d} to begin.",

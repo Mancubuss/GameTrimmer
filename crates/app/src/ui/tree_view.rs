@@ -137,6 +137,20 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let selection_before = model::selection_fingerprint(&app.findings);
 
     egui::CentralPanel::default().show(ui, |ui| {
+        // Before the first scan - and before the disclaimer is accepted -
+        // this space carries the introduction (GT-34) rather than one line of
+        // hint text. See `ui::onboarding` for why it lives here and not in a
+        // screen of its own.
+        //
+        // Ahead of the plan cards and of the empty-tree branch alike, because
+        // it now also covers the upgrade case, where findings from a previous
+        // version are already loaded: cards summarising a tree the user
+        // cannot act on yet would be an invitation to a refusal.
+        if crate::ui::onboarding::applies(app) {
+            crate::ui::onboarding::show(app, ui);
+            return;
+        }
+
         // GT-03 plan cards ride at the top of this panel, directly above the
         // tree, so the summary and the drill-down live in one always-visible
         // region (a no-op with no findings). The tree's own scroll area below
@@ -144,14 +158,6 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         crate::ui::plan_panel::show(app, ui);
 
         if app.tree.is_empty() {
-            // Before the first scan this space carries the introduction
-            // (GT-34) rather than one line of hint text - see
-            // `ui::onboarding` for why it lives here and not in a screen of
-            // its own.
-            if crate::ui::onboarding::applies(app) {
-                crate::ui::onboarding::show(app, ui);
-                return;
-            }
             let s = i18n::strings(lang);
             ui.add_space(16.0);
             ui.label(if app.busy {

@@ -253,27 +253,10 @@ fn row_heading(ui: &mut egui::Ui, label: &str, badge: &str) {
     ui.add_space(4.0);
 }
 
-/// A red-framed block under a danger heading.
-///
-/// Danger is a *treatment*, not a place (GT-59): the control that earns the
-/// frame is the one that has to sit next to the rest of its own setting, and
-/// moving it into a single global "danger" section would split one mental
-/// model across two screens. So the frame travels to the control instead.
-///
-/// Shared rather than copied because red only works while it is scarce - the
-/// frame has to mean the same thing in every section that draws one, and
-/// there has to be exactly one style of it to keep that true.
-fn danger_frame(ui: &mut egui::Ui, label: &str, contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .stroke(egui::Stroke::new(1.5, ui.visuals().error_fg_color))
-        .inner_margin(egui::Margin::same(10))
-        .corner_radius(4)
-        .show(ui, |ui| {
-            ui.colored_label(ui.visuals().error_fg_color, label);
-            ui.add_space(6.0);
-            contents(ui);
-        });
-}
+/// Re-exported so sections keep saying `super::danger_frame`. The frame
+/// itself moved up to `crate::ui` once the first-run screen needed one too -
+/// see its docs for why there is exactly one.
+use crate::ui::danger_frame;
 
 /// The active section's body. One module each, ported one per commit (plan
 /// §5.1-5.5) onto a frame the geometry test below already held stable.
