@@ -1,15 +1,31 @@
-//! "Data & diagnostics": the database file (where it is, how big, compaction)
-//! and the danger zone, plus the diagnostic-logging toggle.
+//! "Data & diagnostics": the database file - where it is, how big, and the
+//! two ways to maintain it - plus the diagnostic-logging toggle.
 //!
-//! Two changes over the old dialog, both from the audit:
+//! The database path is shown at all, which is the audit's §6.5: it used to
+//! be findable only by guessing where the exe lives, making "attach your
+//! database" an unanswerable request in a bug report.
 //!
-//! * The database path is shown at all. It used to be findable only by
-//!   guessing where the exe lives, which made "attach your database" an
-//!   unanswerable request in a bug report (§6.5).
-//! * "Clear database" is inside a red frame under its own heading instead of
-//!   sitting inline beside "Compact database". The two were one tab-stop
-//!   apart and looked identical, though one is a recoverable maintenance job
-//!   and the other wipes every scan result on the machine.
+//! # Why "Clear database" is not in a danger frame
+//!
+//! It was, and the frame was wrong (GT-60). `clear_scan_data` wipes
+//! findings, files, games and the operations journal and keeps libraries and
+//! settings; of those, only the journal does not come back from a rescan -
+//! and nothing reads it. Every `SELECT ... FROM operations` in the repository
+//! is inside `#[cfg(test)]`, and restoring a deleted file goes through the
+//! Recycle Bin itself (`trash::os_limited::list`), not through the journal.
+//! So the price of the button is time, and time is not what red is for: red
+//! has to mean "you can lose something you will not get back", or it means
+//! nothing.
+//!
+//! That distinction stopped being academic with GT-59, which puts a red frame
+//! around dropping English from the keep-list. A frame that cries wolf next
+//! to it would devalue the one warning in this release that has to be
+//! believed. The modal confirmation stays - the click is still worth a
+//! deliberate second step - and only the frame goes.
+//!
+//! If an operations-history screen ever ships, the journal stops being dead
+//! and the frame comes back, earned. The point is that it should not already
+//! be spent by then.
 
 use eframe::egui;
 
@@ -40,6 +56,18 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         compact_clicked = true;
     }
     ui.small(s.compact_hint);
+
+    // Siblings, not a maintenance job next to a catastrophe: both act on the
+    // same database file and both cost only time - see the module docs.
+    ui.add_space(8.0);
+    if ui
+        .add_enabled(!app.busy, egui::Button::new(s.btn_clear_database))
+        .clicked()
+    {
+        clear_clicked = true;
+    }
+    ui.small(s.clear_hint);
+
     show_maintenance_progress(app, ui, s);
 
     ui.add_space(12.0);
@@ -49,9 +77,6 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     super::row_heading(ui, s.logging_label, s.badge_immediately);
     ui.checkbox(&mut picked_logging_enabled, s.logging_checkbox);
     ui.small(s.logging_hint);
-
-    ui.add_space(16.0);
-    show_danger_zone(app, ui, s, &mut clear_clicked);
 
     if compact_clicked {
         app.start_compact();
@@ -131,25 +156,6 @@ fn show_maintenance_progress(app: &GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::
     }
 }
 
-/// The red frame around the wipe. The click still only opens the
-/// confirmation modal; nothing is destroyed from here.
-fn show_danger_zone(
-    app: &GameTrimmerApp,
-    ui: &mut egui::Ui,
-    s: &i18n::Strings,
-    clear_clicked: &mut bool,
-) {
-    super::danger_frame(ui, s.danger_zone_label, |ui| {
-        if ui
-            .add_enabled(!app.busy, egui::Button::new(s.btn_clear_database))
-            .clicked()
-        {
-            *clear_clicked = true;
-        }
-        ui.small(s.clear_hint);
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,27 +193,45 @@ mod tests {
         test.assert_label(&shown);
     }
 
-    /// The audit's §6.5 complaint: the wipe used to be a plain button beside
-    /// a recoverable one. It must be inside the labelled danger zone.
+    /// GT-60, and the reverse of what this section asserted before it: the
+    /// clear button belongs with "Compact", in ordinary maintenance, because
+    /// what it costs is a rescan and nothing else. Red is spent on the one
+    /// warning in this release that has to be believed - the English block in
+    /// "Scanning" - and a frame that cries wolf beside it devalues it.
     #[test]
-    fn the_wipe_sits_under_its_own_danger_heading() {
+    fn clearing_the_database_is_ordinary_maintenance_not_a_danger_zone() {
         let test = open_data();
         let s = test.strings();
 
-        test.assert_label(s.danger_zone_label);
+        test.assert_no_label(s.danger_zone_label);
 
-        let heading = test.rect_of(s.danger_zone_label);
-        let button = test.rect_of(s.btn_clear_database);
-        assert!(
-            button.min.y >= heading.min.y,
-            "the wipe button ({button:?}) is not under its heading ({heading:?})",
-        );
-        // And not beside the recoverable action it used to be confused with.
+        // In the database block with its sibling, above the section's next
+        // heading - not parked at the bottom in a frame of its own.
         let compact = test.rect_of(s.btn_compact_database);
+        let clear = test.rect_of(s.btn_clear_database);
+        let next_block = test.rect_of(s.logging_label);
         assert!(
-            button.min.y > compact.max.y,
-            "the wipe still shares a row with Compact: {button:?} vs {compact:?}",
+            clear.min.y > compact.min.y && clear.max.y < next_block.min.y,
+            "the wipe ({clear:?}) is not between Compact ({compact:?}) and \
+             the logging row ({next_block:?})",
         );
+    }
+
+    /// The hint used to promise permanence the button does not deliver: the
+    /// only thing it removes that a rescan cannot rebuild is the operations
+    /// journal, which nothing reads. Saying "permanently" there is the same
+    /// overstatement as the frame was.
+    #[test]
+    fn the_hint_prices_the_wipe_in_time_rather_than_in_loss() {
+        for lang in [i18n::Lang::En, i18n::Lang::Uk] {
+            let hint = i18n::strings(lang).clear_hint.to_lowercase();
+            for overstatement in ["permanent", "безповоротн"] {
+                assert!(
+                    !hint.contains(overstatement),
+                    "{lang:?} clear_hint still claims {overstatement:?}: {hint:?}",
+                );
+            }
+        }
     }
 
     /// Clicking never wipes anything on its own - the confirmation modal is

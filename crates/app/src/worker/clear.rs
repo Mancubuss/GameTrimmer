@@ -91,7 +91,7 @@ fn run_clear(db_path: &Path, notifier: &Notifier, lang: Lang) {
                 // file untouched on failure, so nothing was lost - but surface
                 // the real cause in the log rather than discarding it silently.
                 crate::logger::log(&format!(
-                    "Не вдалося перебудувати пошкоджену базу даних: {rebuild_err}"
+                    "Failed to rebuild the corrupted database: {rebuild_err}"
                 ));
                 Some(i18n::clear_failed(lang, err))
             }
