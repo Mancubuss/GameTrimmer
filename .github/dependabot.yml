@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # Monthly, grouped into one PR: this is a desktop app with a pinned
+  # Cargo.lock and a release pipeline that rebuilds from it, so a stream of
+  # single-crate PRs would be noise. Security updates still arrive separately
+  # and immediately.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

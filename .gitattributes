@@ -4,3 +4,12 @@
 # JSON rule packs are embedded via include_str! and compared byte-for-byte
 # against their canonical LF serialization in tests - never CRLF-convert them.
 *.json text eol=lf
+
+# Language statistics on the repository page. Without this the two rule packs
+# (~18 KB of JSON) and the docs outweigh the Rust source and GitHub labels the
+# project "JSON". The rule packs are genuinely source, not generated - they are
+# marked as documentation-free data rather than hidden, so they still show up
+# in diffs and reviews normally.
+*.json linguist-detectable=false
+docs/** linguist-documentation
+*.md linguist-documentation
