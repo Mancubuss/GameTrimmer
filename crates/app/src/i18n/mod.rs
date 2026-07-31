@@ -384,6 +384,36 @@ mod tests {
         }
     }
 
+    /// `ForceMft` is not absolute: `worker::scan_route` still falls back to a
+    /// folder walk without elevation, on a volume with no drive letter, on a
+    /// network path, and when the canonical path check fails. A label
+    /// promising "always" is a promise the scanner does not keep (audit §6.8).
+    ///
+    /// `ForceWalkdir` is the control: it genuinely has no fallback, so it is
+    /// allowed to say "always" and this test would be vacuous without it.
+    #[test]
+    fn the_mft_routing_label_does_not_promise_what_it_cannot_deliver() {
+        const ABSOLUTES: [(Lang, &str); 2] = [(Lang::En, "always"), (Lang::Uk, "завжди")];
+
+        for (lang, absolute) in ABSOLUTES {
+            let s = strings(lang);
+
+            assert!(
+                !s.scan_routing_force_mft_label
+                    .to_lowercase()
+                    .contains(absolute),
+                "{lang:?} MFT label promises {absolute:?} but the scanner falls back: {:?}",
+                s.scan_routing_force_mft_label,
+            );
+            assert!(
+                s.scan_routing_force_walkdir_label
+                    .to_lowercase()
+                    .contains(absolute),
+                "{lang:?} walkdir label should still say {absolute:?} - it has no fallback",
+            );
+        }
+    }
+
     #[test]
     fn every_verb_has_a_label_in_both_languages() {
         for lang in [Lang::En, Lang::Uk] {
