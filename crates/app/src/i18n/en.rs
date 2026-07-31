@@ -35,6 +35,14 @@ pub(super) const STRINGS: Strings = Strings {
     selection_independent_switches_hint: "What is scanned (the Scanning section), what is \
          pre-selected (the profile above) and how it is deleted (the method above) are three \
          independent switches - changing one leaves the other two alone.",
+    keep_languages_add_placeholder: "Add a language\u{2026}",
+    categories_table_header_category: "Category",
+    categories_table_header_risk: "Risk",
+    categories_table_header_profile_behavior: "Default profile",
+    profile_behavior_auto: "Pre-selected",
+    profile_behavior_manual: "Never automatic",
+    disabled_last_keep_language: "At least one language has to stay on the keep-list.",
+    disabled_last_category: "At least one category has to stay enabled.",
     rules_pack_category_label: "Category rules (rules.json)",
     rules_pack_lang_label: "Language pack (l10n_rules.json)",
     rules_valid_label: "Valid",

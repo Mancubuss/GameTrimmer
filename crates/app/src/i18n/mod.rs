@@ -92,6 +92,30 @@ pub struct Strings {
     #[allow(dead_code)]
     pub selection_independent_switches_hint: &'static str,
 
+    /// "Scanning": the keep-list search box and the category table's
+    /// headings. The table replaces a wall of 36 bare checkboxes with rows
+    /// that say what each category costs to remove and whether the default
+    /// profile would pick it up (audit §6.2).
+    #[allow(dead_code)]
+    pub keep_languages_add_placeholder: &'static str,
+    #[allow(dead_code)]
+    pub categories_table_header_category: &'static str,
+    #[allow(dead_code)]
+    pub categories_table_header_risk: &'static str,
+    #[allow(dead_code)]
+    pub categories_table_header_profile_behavior: &'static str,
+    #[allow(dead_code)]
+    pub profile_behavior_auto: &'static str,
+    #[allow(dead_code)]
+    pub profile_behavior_manual: &'static str,
+    /// Why the last remaining keep-language or category cannot be switched
+    /// off. The old dialog silently reverted the click, which reads as a
+    /// broken checkbox rather than as a floor (audit §6.2).
+    #[allow(dead_code)]
+    pub disabled_last_keep_language: &'static str,
+    #[allow(dead_code)]
+    pub disabled_last_category: &'static str,
+
     /// "Rules": the two analysis packs, each with a live validity readout.
     #[allow(dead_code)]
     pub rules_pack_category_label: &'static str,
@@ -351,6 +375,29 @@ impl Strings {
                 "selection_independent_switches_hint",
                 self.selection_independent_switches_hint,
             ),
+            (
+                "keep_languages_add_placeholder",
+                self.keep_languages_add_placeholder,
+            ),
+            (
+                "categories_table_header_category",
+                self.categories_table_header_category,
+            ),
+            (
+                "categories_table_header_risk",
+                self.categories_table_header_risk,
+            ),
+            (
+                "categories_table_header_profile_behavior",
+                self.categories_table_header_profile_behavior,
+            ),
+            ("profile_behavior_auto", self.profile_behavior_auto),
+            ("profile_behavior_manual", self.profile_behavior_manual),
+            (
+                "disabled_last_keep_language",
+                self.disabled_last_keep_language,
+            ),
+            ("disabled_last_category", self.disabled_last_category),
             ("rules_pack_category_label", self.rules_pack_category_label),
             ("rules_pack_lang_label", self.rules_pack_lang_label),
             ("rules_valid_label", self.rules_valid_label),

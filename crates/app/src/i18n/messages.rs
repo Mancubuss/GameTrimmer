@@ -8,6 +8,20 @@ use super::Lang;
 use crate::model::RiskLevel;
 
 /// Localized risk badge for a plan card (GT-03): "Risk: none/low/medium".
+/// The risk word on its own, for a table that already has a "Risk" column
+/// heading. [`plan_risk_label`] prefixes it, which reads as a stutter once
+/// the column says so too.
+pub fn risk_level_bare_label(lang: Lang, risk: RiskLevel) -> &'static str {
+    match (lang, risk) {
+        (Lang::En, RiskLevel::None) => "none",
+        (Lang::En, RiskLevel::Low) => "low",
+        (Lang::En, RiskLevel::Medium) => "medium",
+        (Lang::Uk, RiskLevel::None) => "нульовий",
+        (Lang::Uk, RiskLevel::Low) => "низький",
+        (Lang::Uk, RiskLevel::Medium) => "середній",
+    }
+}
+
 pub fn plan_risk_label(lang: Lang, risk: RiskLevel) -> &'static str {
     match (lang, risk) {
         (Lang::En, RiskLevel::None) => "Risk: none",
