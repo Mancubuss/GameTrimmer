@@ -116,13 +116,13 @@ fn show_keep_languages(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     ui.add_enabled_ui(!app.busy, |ui| {
         ui.horizontal_wrapped(|ui| {
             for code in kept.clone() {
-                ui.horizontal(|ui| {
-                    ui.label(i18n::lang_display_name(&code));
-                    let blocked = is_last.then_some(s.disabled_last_keep_language);
-                    if gated_button(ui, &remove_chip_label(&code), blocked).clicked() {
-                        kept.retain(|kept_code| kept_code != &code);
-                    }
-                });
+                // The button *is* the chip: its own label already names the
+                // language (see `remove_chip_label`), so a label beside it
+                // drew every kept language twice - GT-58.
+                let blocked = is_last.then_some(s.disabled_last_keep_language);
+                if gated_button(ui, &remove_chip_label(&code), blocked).clicked() {
+                    kept.retain(|kept_code| kept_code != &code);
+                }
             }
         });
 
@@ -159,9 +159,10 @@ fn show_keep_languages(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     }
 }
 
-/// Label of a chip's remove button. Carries the language so the buttons are
-/// distinguishable - a row of identical crosses says nothing about which
-/// one removes what, on screen or to a screen reader.
+/// The chip: a remove button carrying the language name. The name is on the
+/// button rather than beside it so a row of chips stays distinguishable - a
+/// column of identical crosses says nothing about which one removes what, on
+/// screen or to a screen reader - and so the name is drawn once (GT-58).
 fn remove_chip_label(code: &str) -> String {
     format!("\u{2715} {}", i18n::lang_display_name(code))
 }
@@ -406,6 +407,10 @@ mod tests {
     }
 
     /// The keep-list shows what is kept, not all 36 languages at once.
+    ///
+    /// Kept languages are looked up by their chip (the remove button, which
+    /// carries the name) and offered ones by the bare name their candidate
+    /// button uses, so the two states cannot be confused for one another.
     #[test]
     fn only_the_kept_languages_are_on_screen_until_a_search() {
         let mut test = open_scanning();
@@ -413,22 +418,40 @@ mod tests {
         assert!(kept.len() >= 2, "the default keep-list has more than one");
 
         for code in &kept {
-            test.assert_label(&i18n::lang_display_name(code));
+            test.assert_label(&remove_chip_label(code));
         }
-        let shown = LangData::builtin()
+        let offered = LangData::builtin()
             .language_keys()
             .iter()
             .filter(|code| test.has_label(&i18n::lang_display_name(code)))
             .count();
         assert_eq!(
-            shown,
-            kept.len(),
-            "languages outside the keep-list are on screen before any search",
+            offered, 0,
+            "languages are offered for adding before anything was searched for",
         );
 
         test.app_mut().keep_language_query = "fran".to_string();
         test.run();
         test.assert_label(&i18n::lang_display_name("fr"));
+    }
+
+    /// GT-58: the chip drew its language twice - once as a plain label, then
+    /// again inside the remove button whose label already names it, so the
+    /// screen read "Ukrainian (uk)  \u{2715} Ukrainian (uk)".
+    #[test]
+    fn a_kept_language_is_named_once_per_chip() {
+        let mut test = open_scanning();
+        test.app_mut()
+            .set_keep_languages(vec!["en".to_string(), "uk".to_string()]);
+        test.run();
+
+        for code in ["en", "uk"] {
+            assert_eq!(
+                test.count_labels_containing(&i18n::lang_display_name(code)),
+                1,
+                "the {code} chip names its language more than once",
+            );
+        }
     }
 
     /// Languages are listed under their own native name with the code in
