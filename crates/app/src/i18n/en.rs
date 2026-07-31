@@ -28,6 +28,15 @@ pub(super) const STRINGS: Strings = Strings {
     default_profile_label: "Profile a new scan starts from",
     default_profile_hint: "Does not change what is currently checked in the tree - only \
          where the next scan begins.",
+    profile_cautious_hint: "Ticks only what a launcher will not bring back on its own: \
+         leftovers of deleted games, bonus material, documentation.",
+    profile_balanced_hint: "The same, plus localization files for languages outside your \
+         keep-list.",
+    profile_aggressive_hint: "The same, plus everything else the app is reasonably sure \
+         about - redistributables and installer leftovers among them. Worth a look before \
+         you delete.",
+    profile_custom_hint: "Ticks nothing by category - only the individual findings the app \
+         is most certain about. Everything else you tick by hand.",
     confirm_behavior_label: "Ask before deleting",
     confirm_always_label: "Always",
     confirm_only_1gb_label: "Only above 1 GB",
@@ -69,10 +78,9 @@ pub(super) const STRINGS: Strings = Strings {
     profile_balanced: "Balanced",
     profile_aggressive: "Aggressive",
     profile_custom: "Custom",
-    profile_hint: "Which findings are pre-checked. Cautious: only what a launcher won't restore \
-         (orphaned residue, bonus material, documentation). Balanced: + languages outside your \
-         keep-list. Aggressive: + everything at 70% confidence or higher. Custom: the plain 85% \
-         threshold — hand-pick the rest. Switching re-checks the current findings.",
+    profile_hint: "Which findings arrive pre-ticked. Switching re-ticks the current findings - \
+         nothing is re-scanned and nothing is deleted. Each profile is described under \
+         Settings \u{2192} Selection & deletion.",
 
     plan_filter_label: "Show:",
     plan_filter_all: "all categories",
