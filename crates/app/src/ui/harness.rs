@@ -173,6 +173,12 @@ impl UiTest {
     /// gated on a non-empty selection are enabled.
     pub fn seed_findings(&mut self) {
         let app = self.app_mut();
+        // Findings on screen mean a user who is past the first-run screen:
+        // they scanned once, and the disclaimer that gates scanning is
+        // accepted. Without both, `ui::onboarding` takes over the central
+        // panel and every tree assertion below is about the wrong screen.
+        app.accept_disclaimer();
+        app.mark_scan_started();
         app.findings = (0..2)
             .map(|i| crate::model::FindingItem {
                 row: crate::model::FindingRow {
@@ -201,8 +207,15 @@ impl UiTest {
 
     /// Moves the pointer over the widget with this label and settles, so a
     /// tooltip (including `on_disabled_hover_text`) has a frame to appear in.
+    ///
+    /// Scrolls the widget into view first, for the same reason [`Self::click`]
+    /// does: egui discards pointer events outside a scroll area's clip rect,
+    /// so hovering a widget that is in the accessibility tree but below the
+    /// fold produces no tooltip and a failure that blames the tooltip.
     #[track_caller]
     pub fn hover(&mut self, label: &str) {
+        self.node(label).scroll_to_me();
+        self.run();
         self.node(label).hover();
         self.run();
     }

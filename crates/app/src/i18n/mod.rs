@@ -125,6 +125,9 @@ pub struct Strings {
     pub disabled_no_findings: &'static str,
     pub disabled_no_selection: &'static str,
     pub disabled_export_running: &'static str,
+    /// Why scanning and deleting are unavailable before the first-run
+    /// disclaimer is accepted - see `GameTrimmerApp::blocked_by_disclaimer`.
+    pub disabled_disclaimer: &'static str,
 
     /// Label preceding the selection-profile picker (GT-04).
     pub profile_label: &'static str,
@@ -225,16 +228,41 @@ pub struct Strings {
 
     // -- onboarding (GT-34) --
     /// The first-run explanation, shown in the empty tree area until the user
-    /// has started a scan once. Covers the order of operations and the two
-    /// words the main screen otherwise uses without defining - "profile" and
-    /// "confidence" - plus the promise that scanning is not deleting.
+    /// has started a scan once. Covers the order of operations, the one word
+    /// the main screen otherwise uses without defining ("profile") and the
+    /// one mark it draws without explaining (\u{26a0}), plus the promise that
+    /// scanning is not deleting.
     pub onboarding_heading: &'static str,
     pub onboarding_step_scan: &'static str,
     pub onboarding_step_review: &'static str,
     pub onboarding_step_remove: &'static str,
+    /// How a finding is arrived at, and what narrows the search. Both were
+    /// reachable before only by reading the README shipped beside the exe -
+    /// which is not where someone deciding whether to trust a delete button
+    /// looks.
+    pub onboarding_how_heading: &'static str,
+    pub onboarding_how_body: &'static str,
+    pub onboarding_filters_body: &'static str,
     pub onboarding_profile: &'static str,
-    pub onboarding_confidence: &'static str,
+    pub onboarding_review_mark: &'static str,
     pub onboarding_safety: &'static str,
+    /// Why turning the diagnostic log on is worth it, offered where the
+    /// decision is cheap. The same setting as the one in "Data &
+    /// diagnostics", never a second flag.
+    pub onboarding_logging_body: &'static str,
+
+    // -- onboarding: the liability disclaimer and its gate --
+    /// Heading of the red-framed block. The frame is the app's one danger
+    /// treatment - see `ui::danger_frame`.
+    pub disclaimer_heading: &'static str,
+    pub disclaimer_body: &'static str,
+    pub disclaimer_accept_checkbox: &'static str,
+
+    // -- onboarding: acknowledgements --
+    pub credits_heading: &'static str,
+    pub credits_anthropic: &'static str,
+    pub credits_karpathy: &'static str,
+    pub credits_tikione: &'static str,
 
     // -- tree_view --
     pub scanning_in_progress: &'static str,
@@ -426,6 +454,7 @@ impl Strings {
             ("disabled_no_findings", self.disabled_no_findings),
             ("disabled_no_selection", self.disabled_no_selection),
             ("disabled_export_running", self.disabled_export_running),
+            ("disabled_disclaimer", self.disabled_disclaimer),
             ("elevation_heading", self.elevation_heading),
             ("elevation_body", self.elevation_body),
             (
@@ -512,9 +541,23 @@ impl Strings {
             ("onboarding_step_scan", self.onboarding_step_scan),
             ("onboarding_step_review", self.onboarding_step_review),
             ("onboarding_step_remove", self.onboarding_step_remove),
+            ("onboarding_how_heading", self.onboarding_how_heading),
+            ("onboarding_how_body", self.onboarding_how_body),
+            ("onboarding_filters_body", self.onboarding_filters_body),
             ("onboarding_profile", self.onboarding_profile),
-            ("onboarding_confidence", self.onboarding_confidence),
+            ("onboarding_review_mark", self.onboarding_review_mark),
             ("onboarding_safety", self.onboarding_safety),
+            ("onboarding_logging_body", self.onboarding_logging_body),
+            ("disclaimer_heading", self.disclaimer_heading),
+            ("disclaimer_body", self.disclaimer_body),
+            (
+                "disclaimer_accept_checkbox",
+                self.disclaimer_accept_checkbox,
+            ),
+            ("credits_heading", self.credits_heading),
+            ("credits_anthropic", self.credits_anthropic),
+            ("credits_karpathy", self.credits_karpathy),
+            ("credits_tikione", self.credits_tikione),
             ("scanning_in_progress", self.scanning_in_progress),
             ("no_findings_hint", self.no_findings_hint),
             ("col_language", self.col_language),

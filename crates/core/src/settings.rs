@@ -409,6 +409,15 @@ pub struct Settings {
     /// nothing or fails would otherwise put the whole introduction back on
     /// screen as if the click had never happened.
     pub has_scanned: bool,
+    /// Whether the user has accepted the liability disclaimer shown on the
+    /// first-run screen. Until they have, the app starts no scan and deletes
+    /// nothing - a disclaimer that can be scrolled past is not one.
+    ///
+    /// Separate from [`Self::has_scanned`] rather than folded into it: a
+    /// database written by an earlier version has `has_scanned = true` and no
+    /// acceptance on record, and that user has to be shown the disclaimer
+    /// once, not locked out of a tool they were already using.
+    pub disclaimer_accepted: bool,
 }
 
 impl Default for Settings {
@@ -425,6 +434,7 @@ impl Default for Settings {
             confirm_behavior: ConfirmBehavior::default(),
             logging_enabled: false,
             has_scanned: false,
+            disclaimer_accepted: false,
         }
     }
 }
@@ -440,6 +450,7 @@ const DEFAULT_SELECTION_PROFILE_KEY: &str = "default_selection_profile";
 const CONFIRM_BEHAVIOR_KEY: &str = "confirm_behavior";
 const LOGGING_ENABLED_KEY: &str = "logging_enabled";
 const HAS_SCANNED_KEY: &str = "has_scanned";
+const DISCLAIMER_ACCEPTED_KEY: &str = "disclaimer_accepted";
 
 /// Reads one raw value from the `settings` table.
 fn read_value(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -497,6 +508,9 @@ pub fn load(conn: &Connection) -> Result<Settings> {
     let has_scanned = read_value(conn, HAS_SCANNED_KEY)?
         .and_then(|value| parse_bool(&value))
         .unwrap_or_default();
+    let disclaimer_accepted = read_value(conn, DISCLAIMER_ACCEPTED_KEY)?
+        .and_then(|value| parse_bool(&value))
+        .unwrap_or_default();
     Ok(Settings {
         delete_method,
         app_language,
@@ -509,6 +523,7 @@ pub fn load(conn: &Connection) -> Result<Settings> {
         confirm_behavior,
         logging_enabled,
         has_scanned,
+        disclaimer_accepted,
     })
 }
 
@@ -548,7 +563,12 @@ pub fn save(conn: &Connection, settings: &Settings) -> Result<()> {
         LOGGING_ENABLED_KEY,
         bool_as_str(settings.logging_enabled),
     )?;
-    write_value(conn, HAS_SCANNED_KEY, bool_as_str(settings.has_scanned))
+    write_value(conn, HAS_SCANNED_KEY, bool_as_str(settings.has_scanned))?;
+    write_value(
+        conn,
+        DISCLAIMER_ACCEPTED_KEY,
+        bool_as_str(settings.disclaimer_accepted),
+    )
 }
 
 #[cfg(test)]
@@ -1048,6 +1068,40 @@ mod tests {
             let loaded = load(&conn).expect("load settings");
             assert_eq!(loaded.has_scanned, scanned);
         }
+    }
+
+    /// The gate in front of every scan and every deletion. The default is the
+    /// load-bearing half: a database written before this key existed must
+    /// read as "not accepted", so an upgrading user is asked once rather than
+    /// silently treated as having agreed to something never shown to them.
+    #[test]
+    fn save_then_load_round_trips_disclaimer_acceptance_and_defaults_to_false() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        assert!(!load(&conn).expect("load settings").disclaimer_accepted);
+
+        for accepted in [true, false] {
+            let settings = Settings {
+                disclaimer_accepted: accepted,
+                ..Settings::default()
+            };
+            save(&conn, &settings).expect("save settings");
+            let loaded = load(&conn).expect("load settings");
+            assert_eq!(loaded.disclaimer_accepted, accepted);
+        }
+    }
+
+    /// An older database has `has_scanned` set and no acceptance on record.
+    /// The two must not be conflated: that user has to see the disclaimer
+    /// once, and must not be locked out of a tool they were already using.
+    #[test]
+    fn a_database_from_before_the_disclaimer_reads_as_scanned_but_not_accepted() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        write_value(&conn, HAS_SCANNED_KEY, bool_as_str(true)).expect("write legacy key");
+
+        let loaded = load(&conn).expect("load settings");
+
+        assert!(loaded.has_scanned);
+        assert!(!loaded.disclaimer_accepted);
     }
 
     #[test]

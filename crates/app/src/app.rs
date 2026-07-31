@@ -734,8 +734,44 @@ impl GameTrimmerApp {
         self.persist_settings();
     }
 
+    /// Records that the user accepted the liability disclaimer, which is what
+    /// unblocks scanning and deletion (see [`Self::blocked_by_disclaimer`]).
+    ///
+    /// One-way on purpose. The checkbox that drives it renders only on the
+    /// first-run screen, and that screen is gone the moment it is ticked -
+    /// so there is no second state to return to, and un-accepting would mean
+    /// an agreement the app remembers the user withdrawing while it keeps
+    /// their scan results.
+    pub fn accept_disclaimer(&mut self) {
+        if self.settings.disclaimer_accepted {
+            return;
+        }
+        self.settings = Settings {
+            disclaimer_accepted: true,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// The reason scanning and deleting are unavailable before the disclaimer
+    /// is accepted, or `None` once it is.
+    ///
+    /// Returned as the `gated_button` reason rather than checked at each call
+    /// site, so the button says why it is grey instead of merely being grey -
+    /// the app's standing convention for a gated action.
+    pub fn blocked_by_disclaimer(&self) -> Option<&'static str> {
+        (!self.settings.disclaimer_accepted)
+            .then_some(i18n::strings(self.lang()).disabled_disclaimer)
+    }
+
     pub fn start_scan(&mut self) {
         if self.busy {
+            return;
+        }
+        // Belt to the button's braces: the gate has to hold at the action,
+        // not only on the one control that happens to be greyed out. Both
+        // entry points (top bar and the first-run screen) route here.
+        if self.blocked_by_disclaimer().is_some() {
             return;
         }
         let Some(db_path) = self.db_path.clone() else {
@@ -867,6 +903,14 @@ impl GameTrimmerApp {
     /// that starts a delete. No-op on an empty batch.
     fn open_delete_confirmation(&mut self, indices: Vec<usize>) {
         if indices.is_empty() {
+            return;
+        }
+        // The single funnel both delete paths reach, so the disclaimer gate
+        // is stated once here rather than at each button. It matters for the
+        // upgrade case specifically: a database from before the disclaimer
+        // already holds findings, so the tree is populated and its checkboxes
+        // are live before anything has been agreed to.
+        if self.blocked_by_disclaimer().is_some() {
             return;
         }
         let skip = !self.needs_delete_confirmation(&indices);
@@ -1819,6 +1863,11 @@ mod tests {
     /// One finding of `size` bytes, selected and not yet removed.
     fn app_with_one_selected_finding(dir: &std::path::Path, size: u64) -> GameTrimmerApp {
         let mut app = GameTrimmerApp::new_for_test(dir);
+        // A user who already has findings is one who got past the first-run
+        // screen; without this every delete path here would be testing the
+        // disclaimer gate instead of the policy it is about. The gate has its
+        // own test below.
+        app.accept_disclaimer();
         app.findings = vec![FindingItem {
             row: model::FindingRow {
                 file_id: 1,
@@ -1879,6 +1928,45 @@ mod tests {
         assert!(
             app.confirm_delete.is_some(),
             "the default policy skipped the confirmation",
+        );
+    }
+
+    /// The disclaimer gate, asserted at the action rather than at the button.
+    /// A greyed-out control is the polite half of this; the half that has to
+    /// hold is the one a keyboard shortcut or a future call site cannot walk
+    /// around.
+    #[test]
+    fn nothing_is_scanned_or_deleted_before_the_disclaimer_is_accepted() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut app = app_with_one_selected_finding(dir.path(), 1);
+        // Back to a user who has not agreed to anything - the fixture accepts
+        // for the benefit of every other test in this module.
+        app.settings = Settings {
+            disclaimer_accepted: false,
+            ..app.settings.clone()
+        };
+
+        app.request_delete_confirmation();
+        assert!(
+            app.confirm_delete.is_none(),
+            "a delete was offered before the disclaimer was accepted",
+        );
+
+        app.start_scan();
+        assert!(
+            !app.busy,
+            "a scan started before the disclaimer was accepted"
+        );
+        assert!(
+            !app.settings.has_scanned,
+            "the refused scan still counted as a first run",
+        );
+
+        app.accept_disclaimer();
+        app.request_delete_confirmation();
+        assert!(
+            app.confirm_delete.is_some(),
+            "accepting the disclaimer did not unblock the delete",
         );
     }
 

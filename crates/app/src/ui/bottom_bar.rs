@@ -68,8 +68,13 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 .sum();
 
             let busy = app.busy.then_some(s.disabled_busy);
-            let needs_selection =
-                busy.or_else(|| (selected_count == 0).then_some(s.disabled_no_selection));
+            let needs_selection = busy
+                .or_else(|| (selected_count == 0).then_some(s.disabled_no_selection))
+                // Only reachable with findings already on screen, which after
+                // this release means a database from before the disclaimer -
+                // see `ui::onboarding`. Cheap to state, and the alternative
+                // is a Delete button that quietly does nothing.
+                .or_else(|| app.blocked_by_disclaimer());
             let mut delete_clicked = false;
             let mut select_all_clicked = false;
             let mut deselect_all_clicked = false;
