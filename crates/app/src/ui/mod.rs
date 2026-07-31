@@ -3,6 +3,8 @@
 
 pub mod bottom_bar;
 pub mod dialogs;
+#[cfg(test)]
+pub mod harness;
 pub mod libraries_panel;
 pub mod plan_panel;
 pub mod row_actions;
