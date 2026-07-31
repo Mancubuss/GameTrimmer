@@ -400,6 +400,15 @@ pub struct Settings {
     /// this is strictly a troubleshooting aid, not something every user
     /// needs a file written for.
     pub logging_enabled: bool,
+    /// Whether the user has ever started a scan. The only thing it drives is
+    /// the first-run explanation (GT-34), which occupies the empty tree area
+    /// until then and never comes back afterwards.
+    ///
+    /// Set when a scan *starts*, not when one finishes: the explanation has
+    /// done its job the moment the user acts on it, and a scan that finds
+    /// nothing or fails would otherwise put the whole introduction back on
+    /// screen as if the click had never happened.
+    pub has_scanned: bool,
 }
 
 impl Default for Settings {
@@ -415,6 +424,7 @@ impl Default for Settings {
             default_selection_profile: SelectionProfile::default(),
             confirm_behavior: ConfirmBehavior::default(),
             logging_enabled: false,
+            has_scanned: false,
         }
     }
 }
@@ -429,6 +439,7 @@ const SELECTION_PROFILE_KEY: &str = "selection_profile";
 const DEFAULT_SELECTION_PROFILE_KEY: &str = "default_selection_profile";
 const CONFIRM_BEHAVIOR_KEY: &str = "confirm_behavior";
 const LOGGING_ENABLED_KEY: &str = "logging_enabled";
+const HAS_SCANNED_KEY: &str = "has_scanned";
 
 /// Reads one raw value from the `settings` table.
 fn read_value(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -483,6 +494,9 @@ pub fn load(conn: &Connection) -> Result<Settings> {
     let logging_enabled = read_value(conn, LOGGING_ENABLED_KEY)?
         .and_then(|value| parse_bool(&value))
         .unwrap_or_default();
+    let has_scanned = read_value(conn, HAS_SCANNED_KEY)?
+        .and_then(|value| parse_bool(&value))
+        .unwrap_or_default();
     Ok(Settings {
         delete_method,
         app_language,
@@ -494,6 +508,7 @@ pub fn load(conn: &Connection) -> Result<Settings> {
         default_selection_profile,
         confirm_behavior,
         logging_enabled,
+        has_scanned,
     })
 }
 
@@ -532,7 +547,8 @@ pub fn save(conn: &Connection, settings: &Settings) -> Result<()> {
         conn,
         LOGGING_ENABLED_KEY,
         bool_as_str(settings.logging_enabled),
-    )
+    )?;
+    write_value(conn, HAS_SCANNED_KEY, bool_as_str(settings.has_scanned))
 }
 
 #[cfg(test)]
@@ -1011,6 +1027,26 @@ mod tests {
             save(&conn, &settings).expect("save settings");
             let loaded = load(&conn).expect("load settings");
             assert_eq!(loaded.logging_enabled, enabled);
+        }
+    }
+
+    /// GT-34's flag. The default matters as much as the round-trip: a
+    /// database written before this key existed has to read as "never
+    /// scanned" so an upgrading user is not shown a first-run introduction,
+    /// nor - the other direction - denied it on a genuinely fresh install.
+    #[test]
+    fn save_then_load_round_trips_has_scanned_and_defaults_to_false() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        assert!(!load(&conn).expect("load settings").has_scanned);
+
+        for scanned in [true, false] {
+            let settings = Settings {
+                has_scanned: scanned,
+                ..Settings::default()
+            };
+            save(&conn, &settings).expect("save settings");
+            let loaded = load(&conn).expect("load settings");
+            assert_eq!(loaded.has_scanned, scanned);
         }
     }
 

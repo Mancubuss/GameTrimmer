@@ -716,6 +716,24 @@ impl GameTrimmerApp {
         });
     }
 
+    /// Records that the user has started a scan at least once, which is what
+    /// retires the first-run explanation (GT-34, `ui::onboarding`).
+    ///
+    /// Its own method rather than three lines inside [`Self::start_scan`]:
+    /// that one spawns a worker that walks the machine's real libraries, so a
+    /// test cannot call it, and the bookkeeping would otherwise be reachable
+    /// only by scanning for real.
+    pub fn mark_scan_started(&mut self) {
+        if self.settings.has_scanned {
+            return;
+        }
+        self.settings = Settings {
+            has_scanned: true,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
     pub fn start_scan(&mut self) {
         if self.busy {
             return;
@@ -724,6 +742,8 @@ impl GameTrimmerApp {
             self.status_message = i18n::strings(self.lang()).no_db_path.to_string();
             return;
         };
+
+        self.mark_scan_started();
 
         self.cancel.store(false, Ordering::Relaxed);
         self.begin_job(true);

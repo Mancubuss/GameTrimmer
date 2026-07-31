@@ -211,6 +211,19 @@ pub struct Strings {
     pub no_libraries_registered: &'static str,
     pub btn_remove: &'static str,
 
+    // -- onboarding (GT-34) --
+    /// The first-run explanation, shown in the empty tree area until the user
+    /// has started a scan once. Covers the order of operations and the two
+    /// words the main screen otherwise uses without defining - "profile" and
+    /// "confidence" - plus the promise that scanning is not deleting.
+    pub onboarding_heading: &'static str,
+    pub onboarding_step_scan: &'static str,
+    pub onboarding_step_review: &'static str,
+    pub onboarding_step_remove: &'static str,
+    pub onboarding_profile: &'static str,
+    pub onboarding_confidence: &'static str,
+    pub onboarding_safety: &'static str,
+
     // -- tree_view --
     pub scanning_in_progress: &'static str,
     pub no_findings_hint: &'static str,
@@ -474,6 +487,13 @@ impl Strings {
             ("picking_folder", self.picking_folder),
             ("no_libraries_registered", self.no_libraries_registered),
             ("btn_remove", self.btn_remove),
+            ("onboarding_heading", self.onboarding_heading),
+            ("onboarding_step_scan", self.onboarding_step_scan),
+            ("onboarding_step_review", self.onboarding_step_review),
+            ("onboarding_step_remove", self.onboarding_step_remove),
+            ("onboarding_profile", self.onboarding_profile),
+            ("onboarding_confidence", self.onboarding_confidence),
+            ("onboarding_safety", self.onboarding_safety),
             ("scanning_in_progress", self.scanning_in_progress),
             ("no_findings_hint", self.no_findings_hint),
             ("col_language", self.col_language),

@@ -133,6 +133,14 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         crate::ui::plan_panel::show(app, ui);
 
         if app.tree.is_empty() {
+            // Before the first scan this space carries the introduction
+            // (GT-34) rather than one line of hint text - see
+            // `ui::onboarding` for why it lives here and not in a screen of
+            // its own.
+            if crate::ui::onboarding::applies(app) {
+                crate::ui::onboarding::show(app, ui);
+                return;
+            }
             let s = i18n::strings(lang);
             ui.add_space(16.0);
             ui.label(if app.busy {

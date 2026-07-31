@@ -5,6 +5,7 @@ pub mod bottom_bar;
 pub mod dialogs;
 #[cfg(test)]
 pub mod harness;
+pub mod onboarding;
 pub mod plan_panel;
 pub mod row_actions;
 pub mod settings;
