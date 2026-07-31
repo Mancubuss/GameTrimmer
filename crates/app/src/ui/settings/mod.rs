@@ -36,6 +36,8 @@
 //! on tab switch that killed the first attempt at this dialog; it took four
 //! rounds of guessing and one harness run to find. See the plan's §2A.
 
+mod general;
+
 use eframe::egui;
 
 use crate::app::GameTrimmerApp;
@@ -210,11 +212,17 @@ fn placeholder_body(section: SettingsSection, s: &i18n::Strings) -> String {
     format!("{} \u{2014} \u{2026}", section.label(s))
 }
 
-/// Placeholder bodies. Each is replaced by its own module in its own commit
-/// (plan §5.1-5.5), on a frame the geometry test below already holds stable.
+/// The active section's body. Sections are ported one per commit (plan
+/// §5.1-5.5) onto a frame the geometry test below already holds stable; the
+/// ones still to come render a placeholder.
 fn show_section(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
-    let s = i18n::strings(app.lang());
-    ui.label(placeholder_body(app.settings_section, s));
+    match app.settings_section {
+        SettingsSection::General => general::show(app, ui),
+        section => {
+            let s = i18n::strings(app.lang());
+            ui.label(placeholder_body(section, s));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +230,18 @@ mod tests {
     use super::*;
 
     use crate::ui::harness::UiTest;
+
+    /// A label that appears only when this section's body is on screen.
+    ///
+    /// Ported sections name a real widget of their own; the rest still answer
+    /// with their placeholder. The match shrinks by one per commit until the
+    /// placeholder arm is gone.
+    fn body_marker(section: SettingsSection, s: &i18n::Strings) -> String {
+        match section {
+            SettingsSection::General => s.app_language_label.to_owned(),
+            other => placeholder_body(other, s),
+        }
+    }
 
     fn open_dialog() -> UiTest {
         let mut test = UiTest::new(show);
@@ -277,10 +297,10 @@ mod tests {
 
             // The active section's body rendered, and no other section's did:
             // the nav is a switch, not an accordion.
-            test.assert_label(&placeholder_body(section, s));
+            test.assert_label(&body_marker(section, s));
             for other in SettingsSection::ORDER {
                 if other != section {
-                    test.assert_no_label(&placeholder_body(other, s));
+                    test.assert_no_label(&body_marker(other, s));
                 }
             }
         }

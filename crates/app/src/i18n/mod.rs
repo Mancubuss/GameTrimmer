@@ -56,6 +56,12 @@ pub struct Strings {
     pub btn_done: &'static str,
     #[allow(dead_code)]
     pub btn_restore_defaults: &'static str,
+    /// When a setting takes effect, shown beside the control it belongs to.
+    /// The old dialog left this implicit and the audit (§6.4) found users
+    /// could not tell an immediate switch from one that only applies to the
+    /// next scan. Sections that persist on change tag their rows with this.
+    #[allow(dead_code)]
+    pub badge_immediately: &'static str,
 
     /// Why a greyed-out action is unavailable, shown on hover. A disabled
     /// control that gives no reason reads as broken rather than as gated -
@@ -279,6 +285,7 @@ impl Strings {
             ("settings_section_data", self.settings_section_data),
             ("btn_done", self.btn_done),
             ("btn_restore_defaults", self.btn_restore_defaults),
+            ("badge_immediately", self.badge_immediately),
             ("disabled_busy", self.disabled_busy),
             ("disabled_no_findings", self.disabled_no_findings),
             ("disabled_no_selection", self.disabled_no_selection),

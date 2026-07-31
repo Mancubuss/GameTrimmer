@@ -99,8 +99,19 @@ impl UiTest {
     }
 
     /// Whether a widget with exactly this accessibility label is on screen.
+    ///
+    /// Counts rather than queries for a single node: a repeated label is
+    /// normal in this UI (every immediate setting carries the same "applies
+    /// now" badge), and `query_by_label` *panics* when more than one matches.
+    /// A presence check has no business caring how many there are.
     pub fn has_label(&self, label: &str) -> bool {
-        self.harness.query_by_label(label).is_some()
+        self.count_labels(label) > 0
+    }
+
+    /// How many widgets carry exactly this label - for the cases where the
+    /// repetition is the claim, such as "every row states when it applies".
+    pub fn count_labels(&self, label: &str) -> usize {
+        self.harness.query_all_by_label(label).count()
     }
 
     /// Asserts the label is present, naming what was expected on failure.

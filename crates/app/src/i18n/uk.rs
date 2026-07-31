@@ -20,6 +20,7 @@ pub(super) const STRINGS: Strings = Strings {
     settings_section_data: "Дані й діагностика",
     btn_done: "Готово",
     btn_restore_defaults: "Відновити типові",
+    badge_immediately: "Одразу",
 
     disabled_busy: "Триває фонова операція",
     disabled_no_findings: "Спершу проскануйте бібліотеки",
