@@ -411,6 +411,14 @@ impl GameTrimmerApp {
         self.settings.app_language
     }
 
+    /// Read access to the otherwise-private database path: the settings
+    /// dialog shows it (and offers to open its folder) so a user filing a
+    /// bug can find the file, and the harness tests assert that each test
+    /// app has its own.
+    pub fn db_path(&self) -> Option<&std::path::Path> {
+        self.db_path.as_deref()
+    }
+
     /// Marks a background job as started. `cancellable` is true only when the
     /// spawned worker is handed the cancel token and actually polls it.
     ///
@@ -1553,12 +1561,6 @@ impl GameTrimmerApp {
             Some(dir.join("gametrimmer.db")),
             false,
         )
-    }
-
-    /// Read access to the otherwise-private database path, so tests outside
-    /// this module (the `ui::harness` ones) can assert isolation.
-    pub fn db_path(&self) -> Option<&std::path::Path> {
-        self.db_path.as_deref()
     }
 }
 

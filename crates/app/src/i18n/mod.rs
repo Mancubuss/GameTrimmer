@@ -63,6 +63,19 @@ pub struct Strings {
     #[allow(dead_code)]
     pub badge_immediately: &'static str,
 
+    /// "Data & diagnostics": the database file and the irreversible wipe.
+    #[allow(dead_code)]
+    pub db_path_label: &'static str,
+    #[allow(dead_code)]
+    pub btn_copy: &'static str,
+    #[allow(dead_code)]
+    pub btn_open_folder: &'static str,
+    /// Heading of the red-framed block around "Clear database". The audit
+    /// (§6.5) found it sitting inline beside "Compact", one tab-stop away and
+    /// visually identical to a recoverable action.
+    #[allow(dead_code)]
+    pub danger_zone_label: &'static str,
+
     /// Why a greyed-out action is unavailable, shown on hover. A disabled
     /// control that gives no reason reads as broken rather than as gated -
     /// see `ui::gated_button`.
@@ -286,6 +299,10 @@ impl Strings {
             ("btn_done", self.btn_done),
             ("btn_restore_defaults", self.btn_restore_defaults),
             ("badge_immediately", self.badge_immediately),
+            ("db_path_label", self.db_path_label),
+            ("btn_copy", self.btn_copy),
+            ("btn_open_folder", self.btn_open_folder),
+            ("danger_zone_label", self.danger_zone_label),
             ("disabled_busy", self.disabled_busy),
             ("disabled_no_findings", self.disabled_no_findings),
             ("disabled_no_selection", self.disabled_no_selection),

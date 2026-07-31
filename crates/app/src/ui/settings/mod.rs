@@ -36,6 +36,7 @@
 //! on tab switch that killed the first attempt at this dialog; it took four
 //! rounds of guessing and one harness run to find. See the plan's §2A.
 
+mod data;
 mod general;
 
 use eframe::egui;
@@ -203,6 +204,20 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     }
 }
 
+/// A setting's label with its "when does this take effect" badge beside it.
+///
+/// The badge is what the audit (§6.4) asked for: the old dialog applied some
+/// switches the instant they changed and others only on the next scan, and
+/// gave the user no way to tell which was which. Shared by every section so
+/// the badge always sits in the same place relative to its control.
+fn row_heading(ui: &mut egui::Ui, label: &str, badge: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.small(badge);
+    });
+    ui.add_space(4.0);
+}
+
 /// Marker text for a section's placeholder body.
 ///
 /// Deliberately not the section's own nav label: an exact-match widget query
@@ -218,6 +233,7 @@ fn placeholder_body(section: SettingsSection, s: &i18n::Strings) -> String {
 fn show_section(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     match app.settings_section {
         SettingsSection::General => general::show(app, ui),
+        SettingsSection::Data => data::show(app, ui),
         section => {
             let s = i18n::strings(app.lang());
             ui.label(placeholder_body(section, s));
@@ -239,6 +255,7 @@ mod tests {
     fn body_marker(section: SettingsSection, s: &i18n::Strings) -> String {
         match section {
             SettingsSection::General => s.app_language_label.to_owned(),
+            SettingsSection::Data => s.db_path_label.to_owned(),
             other => placeholder_body(other, s),
         }
     }

@@ -18,7 +18,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let mut picked_lang = app.lang();
     let mut picked_theme = app.settings.theme;
 
-    row_heading(ui, s.app_language_label, s.badge_immediately);
+    super::row_heading(ui, s.app_language_label, s.badge_immediately);
     // Persisting opens a fresh database connection, so the controls are
     // gated behind `!app.busy` rather than racing an in-flight worker's own
     // connection - the same gate the pre-rebuild dialog used.
@@ -31,7 +31,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.add_space(8.0);
 
-    row_heading(ui, s.theme_label, s.badge_immediately);
+    super::row_heading(ui, s.theme_label, s.badge_immediately);
     ui.add_enabled_ui(!app.busy, |ui| {
         ui.radio_value(&mut picked_theme, Theme::System, s.theme_system_label);
         ui.radio_value(&mut picked_theme, Theme::Light, s.theme_light_label);
@@ -46,19 +46,6 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     if picked_theme != app.settings.theme {
         app.set_theme(picked_theme);
     }
-}
-
-/// A setting's label with its "when does this take effect" badge beside it.
-///
-/// The badge is what the audit (§6.4) asked for: the old dialog applied some
-/// switches instantly and others only on the next scan, and gave the user no
-/// way to tell which was which.
-fn row_heading(ui: &mut egui::Ui, label: &str, badge: &str) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.small(badge);
-    });
-    ui.add_space(4.0);
 }
 
 #[cfg(test)]

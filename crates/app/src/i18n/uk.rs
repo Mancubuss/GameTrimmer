@@ -21,6 +21,10 @@ pub(super) const STRINGS: Strings = Strings {
     btn_done: "Готово",
     btn_restore_defaults: "Відновити типові",
     badge_immediately: "Одразу",
+    db_path_label: "Файл бази даних:",
+    btn_copy: "Копіювати",
+    btn_open_folder: "Відкрити теку",
+    danger_zone_label: "НЕБЕЗПЕЧНА ЗОНА",
 
     disabled_busy: "Триває фонова операція",
     disabled_no_findings: "Спершу проскануйте бібліотеки",
