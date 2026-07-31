@@ -112,6 +112,14 @@ pub struct GameTrimmerApp {
     /// `ui::settings_dialog`.
     #[allow(dead_code)]
     pub keep_language_query: String,
+    /// Why the last scan walked the roots it did not read from the MFT
+    /// index, already localized (see
+    /// `worker::scan_route::format_walkdir_breakdown`). Empty before any
+    /// scan this session, and whenever every root took the MFT path.
+    /// Shown in the "Scanning" section, because "prefer the MFT index"
+    /// cannot promise the MFT will be used.
+    #[allow(dead_code)]
+    pub last_routing_breakdown: String,
 
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
@@ -349,6 +357,7 @@ impl GameTrimmerApp {
             show_settings: false,
             settings_section: ui::settings::SettingsSection::General,
             keep_language_query: String::new(),
+            last_routing_breakdown: String::new(),
             tx: tx.clone(),
             rx,
             egui_ctx: ctx,
@@ -1292,11 +1301,13 @@ impl GameTrimmerApp {
                 scan_summary,
                 occupancy,
                 timing,
+                routing_breakdown,
             } => {
                 self.end_job();
                 self.progress = None;
                 self._worker = None;
                 self.last_scan_timing = timing;
+                self.last_routing_breakdown = routing_breakdown;
                 let count = findings.len();
                 // GT-04: a persisted profile decides which findings arrive
                 // pre-checked (see `model::profile_auto_selects`), not a bare

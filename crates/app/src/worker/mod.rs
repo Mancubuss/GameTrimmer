@@ -72,6 +72,12 @@ pub enum WorkerMsg {
         /// when these results were loaded from a previous scan instead (see
         /// `worker::load`) - no scan happened, so there is nothing to time.
         timing: Option<crate::model::ScanTiming>,
+        /// Why roots that did not go through the MFT index were walked
+        /// instead, already localized and ready to show - see
+        /// `worker::scan_route::format_walkdir_breakdown`. Empty when every
+        /// root took the MFT path, and when these results were loaded from a
+        /// previous scan rather than produced by one.
+        routing_breakdown: String,
     },
     /// A delete operation finished (possibly with some per-file failures).
     /// `occupancy` is recomputed after the deleted files' rows are purged

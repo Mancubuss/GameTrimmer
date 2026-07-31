@@ -340,6 +340,16 @@ fn show_routing(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         }
     });
 
+    // What actually happened last time. "Prefer the MFT index" is a
+    // preference, not a promise - without this a user who turned it on and
+    // saw no speed-up had no way to learn that the app is not elevated, or
+    // that their library sits on an SSD where walking is the faster route
+    // anyway (audit §5.2).
+    if !app.last_routing_breakdown.is_empty() {
+        ui.add_space(6.0);
+        ui.small(&app.last_routing_breakdown);
+    }
+
     if picked != app.settings.scan_routing {
         app.set_scan_routing(picked);
     }
@@ -522,6 +532,20 @@ mod tests {
         test.click(s.scan_routing_force_walkdir_label);
 
         assert_eq!(test.app().settings.scan_routing, ScanRouting::ForceWalkdir);
+    }
+
+    /// Nothing to report is reported as nothing: a "0 roots walked" line
+    /// after every clean scan would be noise.
+    #[test]
+    fn the_routing_diagnostics_appear_only_once_there_is_something_to_say() {
+        let mut test = open_scanning();
+        assert!(test.app().last_routing_breakdown.is_empty());
+        test.assert_no_label("gt_routing_probe");
+
+        test.app_mut().last_routing_breakdown = "gt_routing_probe".to_string();
+        test.run();
+
+        test.assert_label("gt_routing_probe");
     }
 
     /// The routing hints are `Ui::indent` calls - the construct that

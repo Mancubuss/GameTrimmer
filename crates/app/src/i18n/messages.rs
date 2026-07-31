@@ -7,7 +7,46 @@
 use super::Lang;
 use crate::model::RiskLevel;
 
-/// Localized risk badge for a plan card (GT-03): "Risk: none/low/medium".
+/// Why one root was walked instead of read from the MFT index, in the
+/// settings dialog's routing diagnostics (see
+/// `worker::scan_route::format_walkdir_breakdown`). Phrased as a cause, not
+/// as an error: most of these are correct decisions, not failures.
+pub fn walkdir_reason_label(
+    lang: Lang,
+    reason: crate::worker::scan_route::WalkdirReason,
+) -> &'static str {
+    use crate::worker::scan_route::WalkdirReason as R;
+    match (lang, reason) {
+        (Lang::En, R::NotElevated) => "not running as administrator",
+        (Lang::En, R::NoVolumeLetter) => "not on a lettered local drive",
+        (Lang::En, R::VolumeUnavailable) => "volume could not be opened",
+        (Lang::En, R::SsdVolume) => "SSD, where walking is faster",
+        (Lang::En, R::CanonicalMismatch) => "junction, symlink or subst drive",
+        (Lang::En, R::MftFailed) => "the MFT read failed",
+        (Lang::En, R::MftEmptyOnNonEmptyDisk) => "the MFT returned nothing for a non-empty folder",
+        (Lang::En, R::ForcedBySetting) => "the directory walk is forced in Settings",
+        (Lang::Uk, R::NotElevated) => "запущено не від імені адміністратора",
+        (Lang::Uk, R::NoVolumeLetter) => "не на локальному диску з літерою",
+        (Lang::Uk, R::VolumeUnavailable) => "не вдалося відкрити том",
+        (Lang::Uk, R::SsdVolume) => "SSD, де обхід тек швидший",
+        (Lang::Uk, R::CanonicalMismatch) => "з'єднання, символьне посилання або subst-диск",
+        (Lang::Uk, R::MftFailed) => "читання MFT не вдалося",
+        (Lang::Uk, R::MftEmptyOnNonEmptyDisk) => "MFT нічого не повернув для непорожньої теки",
+        (Lang::Uk, R::ForcedBySetting) => "обхід тек примусово увімкнено в налаштуваннях",
+    }
+}
+
+pub fn walkdir_breakdown(lang: Lang, walked: usize, total: usize, parts: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "Last scan: {walked} of {total} roots walked instead of read from the MFT - {parts}."
+        ),
+        Lang::Uk => format!(
+            "Останнє сканування: {walked} з {total} коренів обійдено теками замість MFT — {parts}."
+        ),
+    }
+}
+
 /// The risk word on its own, for a table that already has a "Risk" column
 /// heading. [`plan_risk_label`] prefixes it, which reads as a stutter once
 /// the column says so too.
@@ -22,6 +61,7 @@ pub fn risk_level_bare_label(lang: Lang, risk: RiskLevel) -> &'static str {
     }
 }
 
+/// Localized risk badge for a plan card (GT-03): "Risk: none/low/medium".
 pub fn plan_risk_label(lang: Lang, risk: RiskLevel) -> &'static str {
     match (lang, risk) {
         (Lang::En, RiskLevel::None) => "Risk: none",

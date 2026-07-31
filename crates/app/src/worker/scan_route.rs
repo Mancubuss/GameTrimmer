@@ -33,8 +33,11 @@ pub struct RootCheck {
 }
 
 /// Why a root is being scanned with `walkdir` instead of the MFT index.
-/// Carried only for diagnostics/tests right now - callers don't currently
-/// need to distinguish these beyond "not MFT".
+///
+/// Reported back to the user in the settings dialog's "Scanning" section:
+/// "Prefer the MFT index" cannot promise the MFT will be used, and without
+/// the reasons a user who turned it on and saw no speed-up had no way to
+/// find out that, say, the app is not elevated (audit §5.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalkdirReason {
     /// The process is not running elevated, so no volume can be opened for
@@ -233,9 +236,121 @@ pub fn format_scan_summary(
     crate::i18n::format_scan_summary(lang, total, mft, walkdir, elapsed_secs)
 }
 
+/// Every reason, in the order the breakdown lists them: most actionable
+/// first. "Not elevated" and "forced by setting" are things the user can
+/// change; an SSD volume or a junction is not.
+const REASON_ORDER: [WalkdirReason; 8] = [
+    WalkdirReason::ForcedBySetting,
+    WalkdirReason::NotElevated,
+    WalkdirReason::SsdVolume,
+    WalkdirReason::MftFailed,
+    WalkdirReason::MftEmptyOnNonEmptyDisk,
+    WalkdirReason::VolumeUnavailable,
+    WalkdirReason::NoVolumeLetter,
+    WalkdirReason::CanonicalMismatch,
+];
+
+/// One line naming how many roots took the directory walk and why, e.g.
+/// "Walked 4 of 7 roots: not elevated - 3; SSD volume - 1".
+///
+/// Empty when nothing was walked: a line saying "0 roots" every time the
+/// MFT worked would be noise where silence already means "as configured".
+pub fn format_walkdir_breakdown(
+    lang: crate::i18n::Lang,
+    total: usize,
+    reasons: &[WalkdirReason],
+) -> String {
+    if reasons.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = REASON_ORDER
+        .iter()
+        .filter_map(|&reason| {
+            let count = reasons.iter().filter(|&&r| r == reason).count();
+            (count > 0).then(|| {
+                format!(
+                    "{} \u{2014} {count}",
+                    crate::i18n::walkdir_reason_label(lang, reason)
+                )
+            })
+        })
+        .collect();
+    crate::i18n::walkdir_breakdown(lang, reasons.len(), total, &parts.join("; "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Silence when the MFT did its job: a line reading "0 roots walked"
+    /// after every scan would be noise.
+    #[test]
+    fn the_breakdown_is_empty_when_nothing_was_walked() {
+        assert_eq!(format_walkdir_breakdown(crate::i18n::Lang::En, 7, &[]), "",);
+    }
+
+    /// The point of the line: the reasons are named, counted, and the
+    /// actionable one comes first.
+    #[test]
+    fn the_breakdown_counts_each_reason_and_leads_with_the_actionable_one() {
+        let reasons = [
+            WalkdirReason::SsdVolume,
+            WalkdirReason::NotElevated,
+            WalkdirReason::NotElevated,
+        ];
+
+        let line = format_walkdir_breakdown(crate::i18n::Lang::En, 7, &reasons);
+
+        assert!(line.contains("3 of 7"), "{line}");
+        assert!(
+            line.contains("not running as administrator \u{2014} 2"),
+            "{line}"
+        );
+        assert!(
+            line.contains("SSD, where walking is faster \u{2014} 1"),
+            "{line}"
+        );
+        let elevation_at = line
+            .find("administrator")
+            .expect("elevation reason present");
+        let ssd_at = line.find("SSD").expect("ssd reason present");
+        assert!(
+            elevation_at < ssd_at,
+            "the reason the user can act on should come first: {line}",
+        );
+    }
+
+    /// A reason with no roots behind it must not appear at all.
+    #[test]
+    fn the_breakdown_names_only_the_reasons_that_occurred() {
+        let line =
+            format_walkdir_breakdown(crate::i18n::Lang::En, 2, &[WalkdirReason::ForcedBySetting]);
+
+        assert!(line.contains("forced in Settings"), "{line}");
+        assert!(!line.contains("administrator"), "{line}");
+        assert!(!line.contains("SSD"), "{line}");
+    }
+
+    /// Every variant has to be listed, or a root walked for a missing
+    /// reason would vanish from a breakdown whose counts claim to add up.
+    #[test]
+    fn every_reason_is_in_the_listed_order() {
+        for reason in [
+            WalkdirReason::NotElevated,
+            WalkdirReason::NoVolumeLetter,
+            WalkdirReason::VolumeUnavailable,
+            WalkdirReason::SsdVolume,
+            WalkdirReason::CanonicalMismatch,
+            WalkdirReason::MftFailed,
+            WalkdirReason::MftEmptyOnNonEmptyDisk,
+            WalkdirReason::ForcedBySetting,
+        ] {
+            assert!(
+                REASON_ORDER.contains(&reason),
+                "{reason:?} is missing from REASON_ORDER",
+            );
+        }
+    }
 
     fn check(letter: Option<char>, canonical_mismatch: bool) -> RootCheck {
         RootCheck {

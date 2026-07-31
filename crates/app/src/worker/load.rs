@@ -55,8 +55,10 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
                 scan_summary: i18n::loaded_saved_results(lang),
                 occupancy,
                 // Loading a previous snapshot did not scan anything this
-                // session - there is no fresh timing to show.
+                // session - there is no fresh timing to show, and no
+                // routing decisions were made either.
                 timing: None,
+                routing_breakdown: String::new(),
             });
         }
         Err(err) => {
