@@ -85,6 +85,12 @@ impl SettingsSection {
     }
 }
 
+/// The close button's glyph. A multiplication sign rather than the letter x
+/// or a box-drawing cross: it is the shape Windows uses, and it is inside the
+/// bundled UI font's coverage (only the CJK/symbol fallbacks reach further -
+/// see `ui::top_bar`'s note on the spinner).
+const CLOSE_GLYPH: &str = "\u{2715}";
+
 /// Width the left nav column claims, fixed regardless of dialog width - the
 /// section labels are short and translated text stays well under this even
 /// with the +30% length headroom the audit calls for.
@@ -130,7 +136,19 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         let target_width = 640.0_f32.min((content_rect.width() - 40.0).max(280.0));
         ui.set_min_width(target_width);
 
-        ui.heading(s.settings_heading);
+        // The heading row carries the close affordance every other window on
+        // this desktop puts in the same corner. "Done" in the footer already
+        // dismissed the dialog, but a modal with no visible way out at the
+        // top-right reads as one you are stuck in - and the two Escape/
+        // backdrop routes out of it are invisible by nature.
+        ui.horizontal(|ui| {
+            ui.heading(s.settings_heading);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(CLOSE_GLYPH).on_hover_text(s.btn_close).clicked() {
+                    close = true;
+                }
+            });
+        });
         ui.add_space(8.0);
 
         // Nav column, divider and section viewport share one row of exactly
@@ -394,6 +412,56 @@ mod tests {
         test.click(s.btn_done);
 
         assert!(!test.app().show_settings);
+    }
+
+    /// The close button in the corner every window on this desktop puts one
+    /// in. Asserted through the same state "Done" is asserted through, so the
+    /// two are provably the same exit rather than two similar-looking ones.
+    #[test]
+    fn the_corner_close_button_dismisses_the_dialog() {
+        let mut test = open_dialog();
+
+        test.click(CLOSE_GLYPH);
+
+        assert!(!test.app().show_settings);
+    }
+
+    /// It has to be in the *corner*, not merely on screen: above the nav
+    /// column, and to the right of the heading it shares a row with.
+    #[test]
+    fn the_close_button_sits_in_the_top_right_corner() {
+        let test = open_dialog();
+        let s = test.strings();
+
+        let close = test.rect_of(CLOSE_GLYPH);
+        let heading = test.rect_of(s.settings_heading);
+        let first_section = test.rect_of(SettingsSection::ORDER[0].label(s));
+
+        assert!(
+            close.min.x > heading.max.x,
+            "the close button ({close:?}) is not right of the heading ({heading:?})",
+        );
+        assert!(
+            close.max.y < first_section.min.y,
+            "the close button ({close:?}) is not above the nav ({first_section:?})",
+        );
+    }
+
+    /// Closing from the corner has to clear the same transient state "Done"
+    /// clears, or a stale save indicator greets the user on the next open.
+    #[test]
+    fn the_corner_close_button_clears_the_transient_state_too() {
+        let mut test = open_dialog();
+        let s = test.strings();
+        test.click(s.settings_section_data);
+        test.click(s.logging_checkbox);
+        test.assert_label(s.label_saved);
+
+        test.click(CLOSE_GLYPH);
+        test.app_mut().show_settings = true;
+        test.run();
+
+        test.assert_no_label(s.label_saved);
     }
 
     /// A write that failed has to be visible where the change was made. It
