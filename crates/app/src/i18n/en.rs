@@ -80,7 +80,9 @@ pub(super) const STRINGS: Strings = Strings {
     scan_routing_auto_label: "Auto (recommended)",
     scan_routing_auto_hint: "Uses the fast MFT index on hard drives and a regular folder walk \
          on SSDs/NVMe, whichever is faster for that drive type.",
-    scan_routing_force_mft_label: "Always use the MFT index",
+    // Not "Always": elevation, volume-letter and canonical-path gates all
+    // still send a game to the folder walk under this mode (audit §6.8).
+    scan_routing_force_mft_label: "Prefer the MFT index where available",
     scan_routing_force_mft_hint: "Uses the MFT index even on SSDs/NVMe, where a folder walk is \
          normally faster. Requires administrator rights; volumes that can't be read this way \
          (not elevated, network drives, junctions/symlinks) still fall back to a folder walk. \

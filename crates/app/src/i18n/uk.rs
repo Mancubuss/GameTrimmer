@@ -16,10 +16,12 @@ pub(super) const STRINGS: Strings = Strings {
     profile_cautious: "Обережний",
     profile_balanced: "Збалансований",
     profile_aggressive: "Агресивний",
-    profile_custom: "Налаштувати",
+    // The name of a state, not a command. "Налаштувати" read as an
+    // instruction to open an editor (audit §5.6).
+    profile_custom: "Власний",
     profile_hint: "Що позначається наперед. Обережний: лише те, чого лаунчер не поверне \
          (осиротілі рештки, бонуси, документація). Збалансований: + мови поза вашим keep-list. \
-         Агресивний: + усе з довірою від 70%. Налаштувати: звичайний поріг 85% — решту обираєте \
+         Агресивний: + усе з довірою від 70%. Власний: звичайний поріг 85% — решту обираєте \
          вручну. Перемикання перепозначає поточні знахідки.",
 
     plan_filter_label: "Показувати:",
@@ -78,7 +80,9 @@ pub(super) const STRINGS: Strings = Strings {
     scan_routing_auto_label: "Автоматично (рекомендовано)",
     scan_routing_auto_hint: "Використовує швидкий MFT-індекс на жорстких дисках і звичайний \
          обхід тек на SSD/NVMe — залежно від того, що швидше для конкретного носія.",
-    scan_routing_force_mft_label: "Завжди використовувати MFT-індекс",
+    // Not "Завжди": elevation, volume-letter and canonical-path gates all
+    // still send a game to the folder walk under this mode (audit §6.8).
+    scan_routing_force_mft_label: "Надавати перевагу MFT, де доступно",
     scan_routing_force_mft_hint: "Використовує MFT-індекс навіть на SSD/NVMe, де обхід тек \
          зазвичай швидший. Потребує прав адміністратора; томи, які неможливо прочитати цим \
          способом (без підвищення прав, мережеві диски, junction/symlink), усе одно \

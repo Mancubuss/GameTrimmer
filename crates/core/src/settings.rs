@@ -88,9 +88,16 @@ pub enum ScanRouting {
     /// volume type.
     #[default]
     Auto,
-    /// Always use the MFT index where possible.
+    /// Prefer the MFT index wherever it is usable, including on SSD/NVMe
+    /// where a directory walk would normally be faster.
+    ///
+    /// Not a guarantee, despite the `Force` name: without elevation, on a
+    /// volume with no drive letter, on a network path, or when the canonical
+    /// path check fails, the scan still falls back to a directory walk. The
+    /// user-facing label says "prefer", not "always", for that reason.
     ForceMft,
-    /// Always use directory walking.
+    /// Always use directory walking. Unlike [`Self::ForceMft`] this one has
+    /// no fallback, so it really is unconditional.
     ForceWalkdir,
 }
 
