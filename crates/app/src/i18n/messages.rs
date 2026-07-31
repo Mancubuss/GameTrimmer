@@ -782,7 +782,7 @@ pub fn hover_logical_size_suffix(lang: Lang, logical: &str) -> String {
     }
 }
 
-// -- ui::settings_dialog --
+// -- ui::settings --
 
 /// Human-readable display name for a language code shown in the keep-list
 /// checkboxes, e.g. `"uk"` -> `"Українська (uk)"`, `"en"` -> `"English

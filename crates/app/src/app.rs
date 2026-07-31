@@ -101,16 +101,12 @@ pub struct GameTrimmerApp {
     /// Whether the settings dialog is currently open.
     pub show_settings: bool,
     /// Which section of the rebuilt settings dialog is showing. UI-only and
-    /// never persisted - reopening the dialog starts at General. Unread until
-    /// `ui::settings` replaces `ui::settings_dialog`.
-    #[allow(dead_code)]
+    /// never persisted - reopening the dialog starts at General.
     pub settings_section: ui::settings::SettingsSection,
     /// Filter text for the "Scanning" section's keep-language search box.
     /// UI-only, never persisted - and deliberately app state rather than
     /// egui memory, so the section stays a plain `show(app, ui)` function
-    /// the harness can drive. Unread until `ui::settings` replaces
-    /// `ui::settings_dialog`.
-    #[allow(dead_code)]
+    /// the harness can drive.
     pub keep_language_query: String,
     /// Why the last scan walked the roots it did not read from the MFT
     /// index, already localized (see
@@ -118,8 +114,17 @@ pub struct GameTrimmerApp {
     /// scan this session, and whenever every root took the MFT path.
     /// Shown in the "Scanning" section, because "prefer the MFT index"
     /// cannot promise the MFT will be used.
-    #[allow(dead_code)]
     pub last_routing_breakdown: String,
+
+    /// Why the last settings write failed, already localized, or `None` if
+    /// it succeeded. Shown in the dialog's footer, where the change was
+    /// made - the warnings list it also lands in is on the main window,
+    /// behind the modal.
+    pub settings_save_error: Option<String>,
+    /// Whether the most recent settings write succeeded. Drives the
+    /// dialog's "Saved" indicator; cleared when the dialog closes, so it
+    /// always describes a change made in the session the user can see.
+    pub settings_saved: bool,
 
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
@@ -358,6 +363,8 @@ impl GameTrimmerApp {
             settings_section: ui::settings::SettingsSection::General,
             keep_language_query: String::new(),
             last_routing_breakdown: String::new(),
+            settings_save_error: None,
+            settings_saved: false,
             tx: tx.clone(),
             rx,
             egui_ctx: ctx,
@@ -474,7 +481,7 @@ impl GameTrimmerApp {
     /// cursor and toggled selection behind an open settings dialog.
     ///
     /// Every arm corresponds to one `egui::Modal` in `ui::dialogs` or
-    /// `ui::settings_dialog`; adding a modal without adding it here is the
+    /// `ui::settings`; adding a modal without adding it here is the
     /// mistake this method exists to make harder.
     pub fn any_modal_open(&self) -> bool {
         self.confirm_delete.is_some()
@@ -1052,7 +1059,7 @@ impl GameTrimmerApp {
     /// `set_delete_method`. Takes effect on the *next* scan - the currently
     /// displayed findings (if any) are left untouched. Callers (the settings
     /// dialog) are responsible for never producing an empty list - see
-    /// `ui::settings_dialog`'s "at least one language stays checked" rule.
+    /// the "at least one language stays checked" rule in `ui::settings`.
     pub fn set_keep_languages(&mut self, keep_languages: Vec<String>) {
         if self.settings.keep_languages == keep_languages {
             return;
@@ -1098,7 +1105,7 @@ impl GameTrimmerApp {
     /// *next* scan - the currently displayed findings (if any) are left
     /// untouched. Callers (the settings dialog) are responsible for never
     /// letting the *last* checked category be unchecked - see
-    /// `ui::settings_dialog`. An empty list is otherwise a perfectly valid
+    /// `ui::settings::scanning`. An empty list is otherwise a perfectly valid
     /// value here (it means "every category enabled" - see
     /// `gametrimmer_core::settings::Settings::enabled_categories`).
     pub fn set_enabled_categories(&mut self, enabled_categories: Vec<String>) {
@@ -1226,14 +1233,39 @@ impl GameTrimmerApp {
     fn persist_settings(&mut self) {
         let lang = self.lang();
         let Some(db_path) = self.db_path.clone() else {
-            self.warnings
-                .push(i18n::strings(lang).settings_not_saved_no_db.to_string());
+            let message = i18n::strings(lang).settings_not_saved_no_db.to_string();
+            self.warnings.push(message.clone());
+            self.record_settings_save(Err(message));
             return;
         };
         let result = gametrimmer_core::db::open(&db_path)
             .and_then(|conn| gametrimmer_core::settings::save(&conn, &self.settings));
-        if let Err(err) = result {
-            self.warnings.push(i18n::settings_save_failed(lang, err));
+        match result {
+            Ok(()) => self.record_settings_save(Ok(())),
+            Err(err) => {
+                let message = i18n::settings_save_failed(lang, err);
+                self.warnings.push(message.clone());
+                self.record_settings_save(Err(message));
+            }
+        }
+    }
+
+    /// Records how the last settings write went, for the dialog to report.
+    ///
+    /// The warnings list it also goes into is on the main window, behind the
+    /// modal - so before this, a setting that failed to save inside the
+    /// dialog looked exactly like one that saved fine, and the explanation
+    /// was waiting on a surface the user could not see.
+    fn record_settings_save(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.settings_save_error = None;
+                self.settings_saved = true;
+            }
+            Err(message) => {
+                self.settings_save_error = Some(message);
+                self.settings_saved = false;
+            }
         }
     }
 
@@ -1658,7 +1690,7 @@ impl eframe::App for GameTrimmerApp {
         // height, hiding the tree entirely (the GT-03 regression this fixes).
         ui::tree_view::show(self, ui);
         ui::dialogs::show(self, ui);
-        ui::settings_dialog::show(self, ui);
+        ui::settings::show(self, ui);
     }
 }
 

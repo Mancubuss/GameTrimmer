@@ -27,8 +27,9 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let mut clear_clicked = false;
     let mut picked_logging_enabled = app.settings.logging_enabled;
 
-    ui.label(s.db_path_label);
+    ui.strong(s.database_label);
     ui.add_space(4.0);
+    ui.label(s.db_path_label);
     show_database_file(app, ui, s, lang);
 
     ui.add_space(8.0);

@@ -148,8 +148,6 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         }
 
         ui.add_space(4.0);
-        crate::ui::libraries_panel::show(app, ui);
-        ui.add_space(4.0);
     });
 }
 

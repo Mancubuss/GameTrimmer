@@ -375,7 +375,7 @@ pub struct Settings {
     /// that would make every scan silently come back with zero findings,
     /// which is worse than any category being stuck on. Callers (the
     /// settings dialog) are responsible for never letting the *last*
-    /// checked category be unchecked - see `ui::settings_dialog`.
+    /// checked category be unchecked - see `ui::settings::scanning`.
     pub enabled_categories: Vec<String>,
     /// The profile the **currently displayed** findings follow. Orthogonal to
     /// [`Self::enabled_categories`]: that decides what is scanned, this

@@ -350,7 +350,7 @@ impl LangData {
     /// Every canonical language key the pack defines (e.g. `["de", "en",
     /// "es", "fr", "uk", ...]`), sorted for a stable listing order. Used by
     /// the settings UI to enumerate the keep-list checkboxes - see
-    /// `crates/app/src/ui/settings_dialog.rs`.
+    /// `crates/app/src/ui/settings/scanning.rs`.
     pub fn language_keys(&self) -> &[&'static str] {
         &self.language_keys
     }
