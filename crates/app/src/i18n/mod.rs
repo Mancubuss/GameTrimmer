@@ -35,108 +35,75 @@ pub struct Strings {
     pub btn_delete_selected: &'static str,
 
     // Left-hand navigation of the rebuilt settings dialog, in listed order,
-    // plus its footer. `ui::settings` is the only reader and is still dormant
-    // (`ui::settings_dialog` is what the app renders until the five sections
-    // are ported), so each is `dead_code` in a non-test build for now. Every
-    // one of these attributes comes off in the commit that wires the new
-    // dialog up - see `ui/mod.rs`.
-    #[allow(dead_code)]
+    // plus its footer.
     pub settings_section_general: &'static str,
-    #[allow(dead_code)]
     pub settings_section_scanning: &'static str,
-    #[allow(dead_code)]
     pub settings_section_selection: &'static str,
-    #[allow(dead_code)]
     pub settings_section_rules: &'static str,
-    #[allow(dead_code)]
     pub settings_section_data: &'static str,
     /// "Done" rather than "Close": every setting is already applied and
     /// persisted, so there is nothing left to discard.
-    #[allow(dead_code)]
     pub btn_done: &'static str,
-    #[allow(dead_code)]
     pub btn_restore_defaults: &'static str,
+    /// Confirmation that a change reached the database. Transient, unlike
+    /// the failure case: a save that worked needs acknowledging once, a
+    /// save that did not has to stay on screen.
+    pub label_saved: &'static str,
+
     /// When a setting takes effect, shown beside the control it belongs to.
     /// The old dialog left this implicit and the audit (§6.4) found users
     /// could not tell an immediate switch from one that only applies to the
     /// next scan. Sections that persist on change tag their rows with this.
-    #[allow(dead_code)]
     pub badge_immediately: &'static str,
 
     /// When a setting takes effect only on the next run of something. The
     /// counterpart to [`Self::badge_immediately`]; the audit's complaint was
     /// precisely that the old dialog mixed the two without saying so.
-    #[allow(dead_code)]
     pub badge_next_scan: &'static str,
-    #[allow(dead_code)]
     pub badge_next_delete: &'static str,
 
     /// "Selection & deletion": three switches the old dialog conflated.
-    #[allow(dead_code)]
     pub default_profile_label: &'static str,
-    #[allow(dead_code)]
     pub default_profile_hint: &'static str,
-    #[allow(dead_code)]
     pub confirm_behavior_label: &'static str,
-    #[allow(dead_code)]
     pub confirm_always_label: &'static str,
-    #[allow(dead_code)]
     pub confirm_only_1gb_label: &'static str,
-    #[allow(dead_code)]
     pub confirm_never_label: &'static str,
-    #[allow(dead_code)]
     pub confirm_behavior_hint: &'static str,
     /// Spells out that scanning, auto-selection and deletion are three
     /// separate decisions - the section is arranged around that, but the
     /// audit found users read the three groups as one pipeline.
-    #[allow(dead_code)]
     pub selection_independent_switches_hint: &'static str,
 
     /// "Scanning": the keep-list search box and the category table's
     /// headings. The table replaces a wall of 36 bare checkboxes with rows
     /// that say what each category costs to remove and whether the default
     /// profile would pick it up (audit §6.2).
-    #[allow(dead_code)]
     pub keep_languages_add_placeholder: &'static str,
-    #[allow(dead_code)]
     pub categories_table_header_category: &'static str,
-    #[allow(dead_code)]
     pub categories_table_header_risk: &'static str,
-    #[allow(dead_code)]
     pub categories_table_header_profile_behavior: &'static str,
-    #[allow(dead_code)]
     pub profile_behavior_auto: &'static str,
-    #[allow(dead_code)]
     pub profile_behavior_manual: &'static str,
     /// Why the last remaining keep-language or category cannot be switched
     /// off. The old dialog silently reverted the click, which reads as a
     /// broken checkbox rather than as a floor (audit §6.2).
-    #[allow(dead_code)]
     pub disabled_last_keep_language: &'static str,
-    #[allow(dead_code)]
     pub disabled_last_category: &'static str,
 
     /// "Rules": the two analysis packs, each with a live validity readout.
-    #[allow(dead_code)]
     pub rules_pack_category_label: &'static str,
-    #[allow(dead_code)]
     pub rules_pack_lang_label: &'static str,
-    #[allow(dead_code)]
     pub rules_valid_label: &'static str,
-    #[allow(dead_code)]
     pub rules_invalid_label: &'static str,
 
     /// "Data & diagnostics": the database file and the irreversible wipe.
-    #[allow(dead_code)]
     pub db_path_label: &'static str,
-    #[allow(dead_code)]
     pub btn_copy: &'static str,
-    #[allow(dead_code)]
     pub btn_open_folder: &'static str,
     /// Heading of the red-framed block around "Clear database". The audit
     /// (§6.5) found it sitting inline beside "Compact", one tab-stop away and
     /// visually identical to a recoverable action.
-    #[allow(dead_code)]
     pub danger_zone_label: &'static str,
 
     /// Why a greyed-out action is unavailable, shown on hover. A disabled
@@ -180,12 +147,11 @@ pub struct Strings {
     pub remove_summary_heading: &'static str,
     pub btn_close: &'static str,
 
-    // -- settings_dialog --
+    // -- settings --
     pub settings_heading: &'static str,
     /// Collapsed-by-default section heading (GT-13) gathering the technical
     /// knobs (scan routing, database maintenance, rule packs, logging) that
     /// aren't decisions a user makes on every visit.
-    pub advanced_section: &'static str,
     pub delete_method_label: &'static str,
     pub delete_method_permanent_label: &'static str,
     pub delete_method_permanent_hint: &'static str,
@@ -361,6 +327,7 @@ impl Strings {
             ("settings_section_data", self.settings_section_data),
             ("btn_done", self.btn_done),
             ("btn_restore_defaults", self.btn_restore_defaults),
+            ("label_saved", self.label_saved),
             ("badge_immediately", self.badge_immediately),
             ("badge_next_scan", self.badge_next_scan),
             ("badge_next_delete", self.badge_next_delete),
@@ -424,7 +391,6 @@ impl Strings {
             ("remove_summary_heading", self.remove_summary_heading),
             ("btn_close", self.btn_close),
             ("settings_heading", self.settings_heading),
-            ("advanced_section", self.advanced_section),
             ("delete_method_label", self.delete_method_label),
             (
                 "delete_method_permanent_label",

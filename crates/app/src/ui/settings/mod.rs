@@ -3,10 +3,13 @@
 //! another `ScrollArea` and a collapsed "Advanced" page (audit §6.2, §6.3).
 //! Every change is applied and persisted immediately by the section that owns
 //! it, so "Done" only dismisses the dialog - there is no save step to forget.
+//! The footer says whether the last write actually landed, because the
+//! warnings list that would otherwise report a failure is behind this modal.
 //!
-//! This commit lands the frame only; the five sections are placeholders,
-//! ported one per commit on top of a geometry that is already proven stable.
-//! See `docs/ui-redesign-plan-2026-07-31.md` §5.
+//! One module per section, each a plain `show(app, ui)` the harness can drive
+//! directly. They were ported one per commit onto this frame, in ascending
+//! order of risk, so the largest landed on geometry four others had already
+//! held stable. See `docs/ui-redesign-plan-2026-07-31.md` §5.
 //!
 //! # Why the section viewport has a fixed height
 //!
@@ -187,6 +190,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             if ui.button(s.btn_done).clicked() {
                 close = true;
             }
+            show_save_state(app, ui, s);
         });
     });
 
@@ -201,9 +205,12 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         app.show_settings = false;
         // A stale export/import or database-maintenance result must not greet
         // the user on the next open; the top-bar status line keeps the last
-        // success anyway.
+        // success anyway. Same for the save indicator: reopening the dialog
+        // must not claim to have just saved something.
         app.rules_io_result = None;
         app.db_maint_result = None;
+        app.settings_saved = false;
+        app.settings_save_error = None;
     }
 }
 
@@ -211,6 +218,26 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 /// the old dialog used. Not one of `visuals()`'s own colours: this has to
 /// read as "done", not as "clickable", in both themes.
 const SUCCESS_GREEN: egui::Color32 = egui::Color32::from_rgb(0x4c, 0xaf, 0x50);
+
+/// The footer's report on the last settings write.
+///
+/// A failure stays until something saves; a success stays until the next
+/// change replaces it or the dialog closes. Neither fades on a timer: an
+/// indicator that erases itself while the user is still reading it is worse
+/// than one that simply describes the most recent write, and a self-driving
+/// fade would keep the whole dialog repainting for no other reason.
+///
+/// The asymmetry that does matter is which one is loud. The dialog persists
+/// every change as it is made, so the interesting case is the one where
+/// that did not work - and the warnings list it also goes into sits on the
+/// main window, behind this very modal.
+fn show_save_state(app: &GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::Strings) {
+    if let Some(error) = &app.settings_save_error {
+        ui.colored_label(ui.visuals().error_fg_color, error);
+    } else if app.settings_saved {
+        ui.colored_label(SUCCESS_GREEN, s.label_saved);
+    }
+}
 
 /// A setting's label with its "when does this take effect" badge beside it.
 ///
@@ -362,6 +389,52 @@ mod tests {
         test.click(s.btn_done);
 
         assert!(!test.app().show_settings);
+    }
+
+    /// A write that failed has to be visible where the change was made. It
+    /// also lands in the warnings list, but that is on the main window,
+    /// behind this modal.
+    #[test]
+    fn a_failed_save_is_reported_in_the_dialog() {
+        let mut test = open_dialog();
+        test.app_mut().settings_save_error = Some("gt_save_failed_probe".to_string());
+        test.run();
+
+        test.assert_label("gt_save_failed_probe");
+    }
+
+    /// Changing a setting says so. Before this the dialog looked identical
+    /// whether the write reached the database or not.
+    #[test]
+    fn a_successful_change_acknowledges_itself() {
+        let mut test = open_dialog();
+        let s = test.strings();
+        test.assert_no_label(s.label_saved);
+
+        test.click(s.settings_section_data);
+        test.click(s.logging_checkbox);
+
+        test.assert_label(s.label_saved);
+        assert!(
+            test.app().settings_save_error.is_none(),
+            "the temp database should accept the write",
+        );
+    }
+
+    /// Reopening the dialog must not claim to have just saved something.
+    #[test]
+    fn the_save_indicator_does_not_survive_a_reopen() {
+        let mut test = open_dialog();
+        let s = test.strings();
+        test.click(s.settings_section_data);
+        test.click(s.logging_checkbox);
+        test.assert_label(s.label_saved);
+
+        test.click(s.btn_done);
+        test.app_mut().show_settings = true;
+        test.run();
+
+        test.assert_no_label(s.label_saved);
     }
 
     /// Mirrors `CHROME_PX` - the budget the viewport leaves for everything

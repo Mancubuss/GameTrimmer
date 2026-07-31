@@ -20,6 +20,7 @@ pub(super) const STRINGS: Strings = Strings {
     settings_section_data: "Дані й діагностика",
     btn_done: "Готово",
     btn_restore_defaults: "Відновити типові",
+    label_saved: "Збережено",
     badge_immediately: "Одразу",
     badge_next_scan: "З наступного сканування",
     badge_next_delete: "З наступного видалення",
@@ -93,7 +94,6 @@ pub(super) const STRINGS: Strings = Strings {
     btn_confirm_clear: "Очистити базу даних",
 
     settings_heading: "Налаштування",
-    advanced_section: "Додатково",
     delete_method_label: "Спосіб видалення файлів:",
     delete_method_permanent_label: "Остаточне видалення (найшвидше)",
     delete_method_permanent_hint:

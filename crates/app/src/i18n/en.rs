@@ -21,6 +21,7 @@ pub(super) const STRINGS: Strings = Strings {
     settings_section_data: "Data & diagnostics",
     btn_done: "Done",
     btn_restore_defaults: "Restore defaults",
+    label_saved: "Saved",
     badge_immediately: "Immediately",
     badge_next_scan: "From the next scan",
     badge_next_delete: "From the next deletion",
@@ -92,7 +93,6 @@ pub(super) const STRINGS: Strings = Strings {
     btn_confirm_clear: "Clear database",
 
     settings_heading: "Settings",
-    advanced_section: "Advanced",
     delete_method_label: "File deletion method:",
     delete_method_permanent_label: "Permanent deletion (fastest)",
     delete_method_permanent_hint:
