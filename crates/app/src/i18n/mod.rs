@@ -132,8 +132,20 @@ pub struct Strings {
     pub profile_balanced: &'static str,
     pub profile_aggressive: &'static str,
     pub profile_custom: &'static str,
-    /// Tooltip explaining what the selection profile changes.
+    /// Tooltip explaining what the selection profile changes. Deliberately
+    /// short: it names the switch and points at the settings section that
+    /// describes each profile, rather than trying to fit four definitions
+    /// into a tooltip on the busiest row of the app.
     pub profile_hint: &'static str,
+    /// One line per profile, shown under its radio button in "Selection &
+    /// deletion". The picker used to offer four bare names - "Cautious",
+    /// "Balanced", "Aggressive", "Custom" - with nothing on the screen saying
+    /// what any of them ticks, in a dialog whose whole subject is what gets
+    /// deleted.
+    pub profile_cautious_hint: &'static str,
+    pub profile_balanced_hint: &'static str,
+    pub profile_aggressive_hint: &'static str,
+    pub profile_custom_hint: &'static str,
 
     // -- plan_panel (GT-12) --
     /// Label in front of the category selector on the summary row above the
@@ -358,6 +370,10 @@ impl Strings {
             ("badge_next_delete", self.badge_next_delete),
             ("default_profile_label", self.default_profile_label),
             ("default_profile_hint", self.default_profile_hint),
+            ("profile_cautious_hint", self.profile_cautious_hint),
+            ("profile_balanced_hint", self.profile_balanced_hint),
+            ("profile_aggressive_hint", self.profile_aggressive_hint),
+            ("profile_custom_hint", self.profile_custom_hint),
             ("confirm_behavior_label", self.confirm_behavior_label),
             ("confirm_always_label", self.confirm_always_label),
             ("confirm_only_1gb_label", self.confirm_only_1gb_label),
