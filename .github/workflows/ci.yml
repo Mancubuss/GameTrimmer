@@ -1,0 +1,52 @@
+name: CI
+
+# Windows-only on purpose: the app links Win32 directly (elevation, MFT
+# reader, Recycle Bin, registry providers), so a Linux job would not compile
+# and a green Linux badge would say nothing about the only platform shipped.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Deliberately no `RUSTFLAGS: -D warnings`: it applies to dependencies too,
+  # so a future-incompat warning in a crate we do not own (binrw, today) would
+  # turn CI red for a reason no change here can fix. Warnings are denied where
+  # they are ours - the clippy step below.
+
+jobs:
+  test:
+    name: build, lint and test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The whole suite, including the 15,000-row localization corpus in
+      # crates/core/tests and the egui_kittest UI tests (no window, no GPU -
+      # the snapshot/wgpu features are deliberately off, see ui::harness).
+      - name: Tests
+        run: cargo test --workspace --locked
+
+      # The apply path is compiled but switched off in release builds. It must
+      # keep compiling, otherwise it rots silently until someone re-enables it.
+      - name: Tests with the cli-apply feature
+        run: cargo test -p gametrimmer --features cli-apply --locked
+
+      - name: Release build
+        run: cargo build --release --locked
