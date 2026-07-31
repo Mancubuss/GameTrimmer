@@ -43,9 +43,9 @@ use eframe::egui;
 use crate::app::GameTrimmerApp;
 use crate::i18n::{self, Lang};
 use crate::model::{
-    category_display, category_ui_key, format_size, group_min_confidence, group_selection_state,
-    is_orphan_branch, set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem,
-    GameNode, TreeNode, AUTO_SELECT_CONFIDENCE_THRESHOLD,
+    self, category_display, category_ui_key, format_size, group_min_confidence,
+    group_selection_state, is_orphan_branch, set_group_selection, toggle_group, DiskGroup,
+    DisplayCategory, FindingItem, GameNode, TreeNode, AUTO_SELECT_CONFIDENCE_THRESHOLD,
 };
 use crate::search::SearchIndex;
 use crate::ui::row_actions;
@@ -96,6 +96,18 @@ enum Row {
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
+
+    // Every selection edit reachable from this panel - per-file checkbox,
+    // tri-state group checkboxes, keyboard toggle, context-menu actions -
+    // happens through a disjoint `&mut app.findings` borrow with no way to
+    // call back into `app`. Rather than hooking each site and hoping the list
+    // stays complete, take a fingerprint around the whole pass and compare.
+    // Worker messages that also touch `findings` (a fresh scan applying the
+    // profile, files disappearing mid-delete) are handled in
+    // `drain_messages`, outside this window, so they cannot be mistaken for a
+    // hand-edit.
+    let selection_before = model::selection_fingerprint(&app.findings);
+
     egui::CentralPanel::default().show(ui, |ui| {
         // GT-03 plan cards ride at the top of this panel, directly above the
         // tree, so the summary and the drill-down live in one always-visible
@@ -188,6 +200,12 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         app.tree_scroll_offset = output.state.offset.y;
         app.tree_viewport_height = output.inner_rect.height();
     });
+
+    // The profile picker claims to describe what is checked. Once the user
+    // has hand-edited any of it, only "Custom" is still true (audit §5.5).
+    if model::selection_fingerprint(&app.findings) != selection_before {
+        app.mark_selection_custom();
+    }
 }
 
 /// The header row naming the fixed columns, laid out with the same widths
@@ -1262,6 +1280,8 @@ fn show_file_row(
 mod tests {
     use super::*;
 
+    use gametrimmer_core::settings::SelectionProfile;
+
     use crate::ui::harness::UiTest;
 
     /// A tree with a cursor parked on the first row, ready for an arrow key.
@@ -1340,6 +1360,72 @@ mod tests {
                 "the tree handled ArrowDown while {name} was open",
             );
         }
+    }
+
+    /// A tree with everything checked under a named profile, so any edit is
+    /// visibly a departure from it.
+    fn tree_under_profile(profile: SelectionProfile) -> UiTest {
+        let mut test = tree_with_cursor();
+        test.app_mut().settings.selection_profile = profile;
+        test.run();
+        test
+    }
+
+    /// The audit's §5.5: the picker said "Balanced" while the checkboxes had
+    /// been hand-edited into something else. `SelectionProfile::Custom` was
+    /// documented as the state for exactly this and nothing ever set it.
+    ///
+    /// Driven through the keyboard toggle specifically, because that is one
+    /// of the paths a per-call-site hook is most likely to miss - it mutates
+    /// `findings` from `handle_keyboard`, nowhere near the checkbox code.
+    #[test]
+    fn a_keyboard_toggle_moves_the_profile_to_custom() {
+        let mut test = tree_under_profile(SelectionProfile::Balanced);
+
+        test.press(egui::Key::Space);
+
+        assert_eq!(
+            test.app().settings.selection_profile,
+            SelectionProfile::Custom,
+            "hand-editing the selection must stop the picker claiming a policy",
+        );
+    }
+
+    /// The control: merely looking at the tree is not an edit. Without this,
+    /// the test above would also pass if the profile flipped to Custom on
+    /// every frame.
+    #[test]
+    fn navigating_without_editing_leaves_the_profile_alone() {
+        let mut test = tree_under_profile(SelectionProfile::Balanced);
+
+        test.press(egui::Key::ArrowDown);
+        test.press(egui::Key::ArrowUp);
+        test.run();
+
+        assert_eq!(
+            test.app().settings.selection_profile,
+            SelectionProfile::Balanced,
+            "moving the cursor is not a selection edit",
+        );
+    }
+
+    /// Switching the profile re-checks the findings on purpose, and that must
+    /// not immediately read back as a hand-edit - otherwise picking
+    /// "Cautious" would snap straight to "Custom" on the next frame.
+    #[test]
+    fn choosing_a_profile_does_not_read_back_as_a_hand_edit() {
+        let mut test = tree_under_profile(SelectionProfile::Balanced);
+
+        test.app_mut()
+            .set_selection_profile(SelectionProfile::Cautious);
+        test.run();
+        test.run();
+
+        assert_eq!(
+            test.app().settings.selection_profile,
+            SelectionProfile::Cautious,
+            "applying a profile is not a hand-edit",
+        );
     }
 
     /// Space toggles the selection of the row under the cursor, so it is the

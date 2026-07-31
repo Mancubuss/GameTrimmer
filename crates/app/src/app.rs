@@ -725,6 +725,7 @@ impl GameTrimmerApp {
                 item.selected = true;
             }
         }
+        self.mark_selection_custom();
     }
 
     /// Deselects every finding (the "Deselect All" action).
@@ -732,6 +733,34 @@ impl GameTrimmerApp {
         for item in &mut self.findings {
             item.selected = false;
         }
+        self.mark_selection_custom();
+    }
+
+    /// Records that the user hand-edited the selection, so the profile stops
+    /// claiming a policy the checkboxes no longer follow.
+    ///
+    /// `SelectionProfile::Custom`'s own doc comment already described it as
+    /// the state "entered when the user hand-edits the selection", but
+    /// nothing ever set it: the picker could read "Balanced" while the actual
+    /// selection had been edited row by row into something else (audit §5.5).
+    ///
+    /// Cheap to call on every edit - it returns immediately once the profile
+    /// is already `Custom`, so only the first hand-edit after a profile
+    /// switch touches the database.
+    ///
+    /// This moves the one `selection_profile` field, which is read both as
+    /// "what a fresh scan pre-checks" and as "the current policy". Splitting
+    /// those two meanings apart is GT-57's `default_selection_profile`; until
+    /// then, a label that stops lying is the honest minimum.
+    pub fn mark_selection_custom(&mut self) {
+        if self.settings.selection_profile == SelectionProfile::Custom {
+            return;
+        }
+        self.settings = Settings {
+            selection_profile: SelectionProfile::Custom,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
     }
 
     /// Selects the currently-checked, non-removed findings and opens the

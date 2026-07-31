@@ -698,6 +698,33 @@ fn build_game_categories(items: &[FindingItem], bucket: GameBucket) -> Vec<Categ
 /// own display category. Within a category, folders precede individual
 /// files (see `build_game_categories`); within a folder, member files are
 /// ordered by path (see `path_cmp`).
+/// Order-sensitive fingerprint of which findings are currently checked.
+///
+/// Used to notice that the user edited the selection without having to hook
+/// every place that can edit it. The tree mutates `findings` through a
+/// disjoint borrow in a dozen places - per-file checkbox, tri-state group
+/// checkboxes at four levels, keyboard toggle, four context-menu actions -
+/// none of which has `&mut GameTrimmerApp` to call a setter on. Enumerating
+/// them is exactly the kind of hand-maintained list that goes stale (see
+/// `GameTrimmerApp::any_modal_open` for the same lesson), so `ui::tree_view`
+/// compares this before and after its own rendering pass instead.
+///
+/// FNV-1a over one byte per finding: one cheap pass, and the tree already
+/// walks every finding each frame to flatten its visible rows.
+///
+/// `removed` is folded in as its own bit so a mid-delete `FileRemoved` is not
+/// mistaken for a hand-edit - though in practice those arrive in
+/// `drain_messages`, outside the window this is compared across.
+pub fn selection_fingerprint(items: &[FindingItem]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    items.iter().fold(FNV_OFFSET, |hash, item| {
+        let bits = u64::from(item.selected) | (u64::from(item.removed) << 1);
+        (hash ^ bits).wrapping_mul(FNV_PRIME)
+    })
+}
+
 pub fn build_tree(items: &[FindingItem]) -> Vec<DiskGroup> {
     let mut game_buckets: HashMap<(String, i64), GameBucket> = HashMap::new();
 
@@ -2323,6 +2350,62 @@ mod tests {
         assert_eq!(
             format_duration(std::time::Duration::from_millis(3999)),
             "3s"
+        );
+    }
+
+    /// The fingerprint exists to tell a hand-edit from everything else, so it
+    /// has to move when a checkbox moves and stay put when nothing does.
+    #[test]
+    fn selection_fingerprint_tracks_checkbox_state() {
+        let mut items = vec![
+            item(1, "A", FindingSource::Rule(Category::RedistFolder), 90, 10),
+            item(2, "B", FindingSource::Rule(Category::RedistFolder), 90, 20),
+        ];
+        let baseline = selection_fingerprint(&items);
+
+        assert_eq!(selection_fingerprint(&items), baseline, "pure function");
+
+        items[0].selected = !items[0].selected;
+        let after_toggle = selection_fingerprint(&items);
+        assert_ne!(after_toggle, baseline, "a toggled checkbox must show up");
+
+        items[0].selected = !items[0].selected;
+        assert_eq!(
+            selection_fingerprint(&items),
+            baseline,
+            "toggling back must return to the same fingerprint",
+        );
+    }
+
+    /// Deletion marks findings `removed`, which must not read as a hand-edit
+    /// of the selection - it is folded in as its own bit rather than sharing
+    /// one with `selected`.
+    #[test]
+    fn selection_fingerprint_separates_removal_from_deselection() {
+        let mut removed = vec![item(
+            1,
+            "A",
+            FindingSource::Rule(Category::RedistFolder),
+            90,
+            10,
+        )];
+        removed[0].selected = true;
+        removed[0].removed = true;
+
+        let mut deselected = vec![item(
+            1,
+            "A",
+            FindingSource::Rule(Category::RedistFolder),
+            90,
+            10,
+        )];
+        deselected[0].selected = false;
+        deselected[0].removed = false;
+
+        assert_ne!(
+            selection_fingerprint(&removed),
+            selection_fingerprint(&deselected),
+            "a removed-but-checked finding is not the same as an unchecked one",
         );
     }
 }
