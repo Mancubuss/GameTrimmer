@@ -13,6 +13,14 @@ pub(super) const STRINGS: Strings = Strings {
     btn_deselect_all: "Зняти вибір",
     btn_delete_selected: "Видалити вибране",
 
+    settings_section_general: "Загальні",
+    settings_section_scanning: "Сканування",
+    settings_section_selection: "Вибір і видалення",
+    settings_section_rules: "Правила",
+    settings_section_data: "Дані й діагностика",
+    btn_done: "Готово",
+    btn_restore_defaults: "Відновити типові",
+
     disabled_busy: "Триває фонова операція",
     disabled_no_findings: "Спершу проскануйте бібліотеки",
     disabled_no_selection: "Нічого не вибрано",

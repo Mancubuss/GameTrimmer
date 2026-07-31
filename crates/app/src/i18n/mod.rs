@@ -34,6 +34,29 @@ pub struct Strings {
     pub btn_deselect_all: &'static str,
     pub btn_delete_selected: &'static str,
 
+    // Left-hand navigation of the rebuilt settings dialog, in listed order,
+    // plus its footer. `ui::settings` is the only reader and is still dormant
+    // (`ui::settings_dialog` is what the app renders until the five sections
+    // are ported), so each is `dead_code` in a non-test build for now. Every
+    // one of these attributes comes off in the commit that wires the new
+    // dialog up - see `ui/mod.rs`.
+    #[allow(dead_code)]
+    pub settings_section_general: &'static str,
+    #[allow(dead_code)]
+    pub settings_section_scanning: &'static str,
+    #[allow(dead_code)]
+    pub settings_section_selection: &'static str,
+    #[allow(dead_code)]
+    pub settings_section_rules: &'static str,
+    #[allow(dead_code)]
+    pub settings_section_data: &'static str,
+    /// "Done" rather than "Close": every setting is already applied and
+    /// persisted, so there is nothing left to discard.
+    #[allow(dead_code)]
+    pub btn_done: &'static str,
+    #[allow(dead_code)]
+    pub btn_restore_defaults: &'static str,
+
     /// Why a greyed-out action is unavailable, shown on hover. A disabled
     /// control that gives no reason reads as broken rather than as gated -
     /// see `ui::gated_button`.
@@ -246,6 +269,16 @@ impl Strings {
             ("btn_select_all", self.btn_select_all),
             ("btn_deselect_all", self.btn_deselect_all),
             ("btn_delete_selected", self.btn_delete_selected),
+            ("settings_section_general", self.settings_section_general),
+            ("settings_section_scanning", self.settings_section_scanning),
+            (
+                "settings_section_selection",
+                self.settings_section_selection,
+            ),
+            ("settings_section_rules", self.settings_section_rules),
+            ("settings_section_data", self.settings_section_data),
+            ("btn_done", self.btn_done),
+            ("btn_restore_defaults", self.btn_restore_defaults),
             ("disabled_busy", self.disabled_busy),
             ("disabled_no_findings", self.disabled_no_findings),
             ("disabled_no_selection", self.disabled_no_selection),
