@@ -4,7 +4,7 @@
 use eframe::egui;
 use gametrimmer_core::settings::SelectionProfile;
 
-use crate::model::{self, format_duration, format_size, AUTO_SELECT_CONFIDENCE_THRESHOLD};
+use crate::model::{self, format_duration, format_size};
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
@@ -93,10 +93,8 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                             ))
                             .truncate(),
                         );
-                        ui.label("\u{2139}").on_hover_text(i18n::selection_hint(
-                            lang,
-                            AUTO_SELECT_CONFIDENCE_THRESHOLD,
-                        ));
+                        ui.label("\u{2139}")
+                            .on_hover_text(i18n::selection_hint(lang));
                     },
                 );
 

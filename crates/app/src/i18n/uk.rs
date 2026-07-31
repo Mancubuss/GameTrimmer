@@ -192,8 +192,10 @@ pub(super) const STRINGS: Strings = Strings {
     col_language: "Мова",
     col_files: "Файлів",
     col_size: "Розмір",
-    col_confidence: "Довіра",
     col_name: "Назва",
+    review_mark_hint: "Застосунок менш упевнений щодо цього файла, тому не позначив його за \
+         вас. Перевірте, що це — підказка на назві показує шлях і причину — перш ніж \
+         видаляти.",
 
     ctx_reveal_in_explorer: "Відкрити в Провіднику",
     ctx_open_with: "Відкрити за допомогою\u{2026}",

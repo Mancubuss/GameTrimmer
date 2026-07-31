@@ -815,17 +815,6 @@ pub fn set_group_selection(items: &mut [FindingItem], indices: &[usize], selecte
     }
 }
 
-/// The lowest confidence among `indices` - the group's "weakest link",
-/// shown as a warning on group headers so the user knows the group needs a
-/// closer look before deleting. 100 for an empty group.
-pub fn group_min_confidence(items: &[FindingItem], indices: &[usize]) -> u8 {
-    indices
-        .iter()
-        .map(|&index| items[index].row.confidence)
-        .min()
-        .unwrap_or(100)
-}
-
 /// Total size in bytes of the selected, non-removed items in `indices`.
 pub fn group_size_bytes(items: &[FindingItem], indices: &[usize]) -> u64 {
     indices.iter().map(|&i| items[i].row.size).sum()

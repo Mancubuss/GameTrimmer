@@ -634,28 +634,31 @@ pub fn more_errors_line(lang: Lang, remaining: usize) -> String {
 
 // -- ui::bottom_bar --
 
-pub fn selection_hint(lang: Lang, threshold: u8) -> String {
+/// The \u{2139} tooltip beside the selection summary.
+///
+/// It used to open by defining the auto-selection confidence threshold in
+/// percent, which is how the tree used to report it too. The number is gone
+/// from both: what the user can act on is that a file the app is unsure about
+/// carries a \u{26a0} and was left unticked on purpose.
+pub fn selection_hint(lang: Lang) -> String {
     match lang {
-        Lang::En => format!(
-            "Only findings with confidence of at least {threshold}% are automatically \
-             selected after a scan. Findings with lower confidence are marked \u{26a0} and left \
-             unselected - review them manually.\n\n\
+        Lang::En => "Files the app is not sure enough about are marked \u{26a0} and are never \
+             ticked for you after a scan - look at them before deleting.\n\n\
              Checkboxes on tree rows select a whole disk, game, category, or folder. \
              Right-clicking a disk, game, or category opens bulk selection actions \
              (including a category across the whole disk).\n\n\
              Keyboard: \u{2191}\u{2193} - cursor, PgUp/PgDn - page, \
              \u{2192}/\u{2190} - expand/collapse, Space - select."
-        ),
-        Lang::Uk => format!(
-            "Після сканування автоматично вибираються лише знахідки з упевненістю \
-             не нижче {threshold}%. Знахідки з нижчою упевненістю \
-             позначені \u{26a0} і залишаються невибраними — перегляньте їх вручну.\n\n\
+            .to_string(),
+        Lang::Uk => "Файли, щодо яких застосунок недостатньо впевнений, позначені \u{26a0} і \
+             ніколи не обираються за вас після сканування — гляньте на них перед \
+             видаленням.\n\n\
              Прапорці на рядках дерева вибирають цілий диск, гру, категорію чи теку. \
              Права кнопка миші на диску, грі або категорії відкриває дії масового вибору \
              (зокрема категорію на всьому диску).\n\n\
              Клавіатура: \u{2191}\u{2193} — курсор, PgUp/PgDn — сторінка, \
              \u{2192}/\u{2190} — розгорнути/згорнути, Space — вибрати."
-        ),
+            .to_string(),
     }
 }
 
