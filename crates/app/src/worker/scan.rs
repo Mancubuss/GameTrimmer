@@ -355,9 +355,7 @@ fn run_scan(
             }
         }
     } else if let Err(err) = persist_orphans(&mut conn, &[], lang) {
-        crate::logger::log(&format!(
-            "Не вдалося очистити застарілі осиротілі рядки: {err}"
-        ));
+        crate::logger::log(&format!("Failed to clear stale orphan rows: {err}"));
     }
 
     // Fold this connection's own WAL into the main file and truncate it
@@ -371,7 +369,7 @@ fn run_scan(
     // housekeeping checkpoint didn't take.
     if let Err(err) = db::checkpoint_truncate(&conn) {
         crate::logger::log(&format!(
-            "Не вдалося виконати checkpoint WAL після сканування: {err}"
+            "Failed to checkpoint the WAL after the scan: {err}"
         ));
     }
 
@@ -797,7 +795,7 @@ fn scan_volume_catching_panics(
         Ok(Ok(results)) => results,
         Ok(Err(err)) => volume_failure_results(game_ids, err.to_string()),
         Err(_) => {
-            volume_failure_results(game_ids, "паніка під час MFT-сканування тому".to_string())
+            volume_failure_results(game_ids, "panic during the volume's MFT scan".to_string())
         }
     }
 }
@@ -861,7 +859,7 @@ fn run_writer(
                 // so it is not logged as an error.
                 if error.to_string() != "cancelled" {
                     crate::logger::log(&format!(
-                        "Помилка сканування \"{name}\" ({}): {error}",
+                        "Failed to scan \"{name}\" ({}): {error}",
                         install_dir.display()
                     ));
                 }
@@ -906,19 +904,19 @@ fn flush_batch(
                 match persist_prepared_game(&db_tx, &prepared) {
                     Ok(mut rows) => findings.append(&mut rows),
                     Err(err) => crate::logger::log(&format!(
-                        "Помилка запису \"{}\" у базу даних: {err}",
+                        "Failed to write \"{}\" to the database: {err}",
                         prepared.name
                     )),
                 }
             }
             if let Err(err) = db_tx.commit() {
                 crate::logger::log(&format!(
-                    "Помилка збереження пакету ігор у базу даних: {err}"
+                    "Failed to commit the game batch to the database: {err}"
                 ));
             }
         }
         Err(err) => {
-            crate::logger::log(&format!("Помилка початку транзакції запису: {err}"));
+            crate::logger::log(&format!("Failed to open the write transaction: {err}"));
             batch.clear();
         }
     }
