@@ -147,13 +147,23 @@ fn run_headless(config: HeadlessConfig) -> u8 {
             return EXIT_RUNTIME;
         }
     };
+    let settings_path = match worker::settings_path() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("Could not determine the settings path: {err}");
+            return EXIT_RUNTIME;
+        }
+    };
 
     let elevated = crate::elevation::is_elevated();
 
-    let settings = match load_settings(&db_path) {
+    let settings = match load_settings(&db_path, &settings_path) {
         Ok(settings) => settings,
         Err(err) => {
-            eprintln!("Could not open the database {}: {err}", db_path.display());
+            eprintln!(
+                "Could not load settings from {}: {err}",
+                settings_path.display()
+            );
             return EXIT_RUNTIME;
         }
     };
@@ -287,11 +297,13 @@ fn run_headless(config: HeadlessConfig) -> u8 {
 }
 
 /// Opens the database (creating/migrating the schema on first use, same as the
-/// GUI's own first connection) and reads the persisted settings, dropping the
-/// connection before the scan opens its own.
-fn load_settings(db_path: &Path) -> Result<Settings, String> {
+/// GUI's own first connection), then loads the portable ini. When the ini does
+/// not exist yet, the legacy SQLite settings are migrated exactly once; after
+/// that the ini is the sole source of truth. The connection is dropped before
+/// the scan opens its own.
+fn load_settings(db_path: &Path, settings_path: &Path) -> Result<Settings, String> {
     let conn = gametrimmer_core::db::open(db_path).map_err(|err| err.to_string())?;
-    settings::load(&conn).map_err(|err| err.to_string())
+    settings::load_file_or_migrate(settings_path, Some(&conn)).map_err(|err| err.to_string())
 }
 
 /// Drives one scan to completion on this thread, draining the worker's message
@@ -408,3 +420,49 @@ fn attach_console() {
 
 #[cfg(not(windows))]
 fn attach_console() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gametrimmer_core::settings::{Lang, LanguagePreference, Theme};
+
+    #[test]
+    fn cli_migrates_legacy_settings_once_then_reads_only_the_ini() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("gametrimmer.db");
+        let settings_path = dir.path().join("gametrimmer.ini");
+        let conn = gametrimmer_core::db::open(&db_path).expect("open legacy database");
+        let legacy = Settings {
+            app_language: LanguagePreference::Fixed(Lang::Uk),
+            theme: Theme::Dark,
+            logging_enabled: false,
+            ..Settings::default()
+        };
+        settings::save(&conn, &legacy).expect("seed legacy settings");
+        drop(conn);
+
+        assert_eq!(
+            load_settings(&db_path, &settings_path).expect("migrate CLI settings"),
+            legacy
+        );
+        assert!(settings_path.exists(), "CLI should materialize the ini");
+
+        let conn = gametrimmer_core::db::open(&db_path).expect("reopen legacy database");
+        settings::save(
+            &conn,
+            &Settings {
+                theme: Theme::Light,
+                logging_enabled: true,
+                ..Settings::default()
+            },
+        )
+        .expect("change legacy settings after migration");
+        drop(conn);
+
+        assert_eq!(
+            load_settings(&db_path, &settings_path).expect("reload CLI settings"),
+            legacy,
+            "an existing ini must win over later legacy-database changes"
+        );
+    }
+}

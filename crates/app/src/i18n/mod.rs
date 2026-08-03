@@ -267,9 +267,9 @@ pub struct Strings {
     pub onboarding_profile: &'static str,
     pub onboarding_review_mark: &'static str,
     pub onboarding_safety: &'static str,
-    /// Why turning the diagnostic log on is worth it, offered where the
-    /// decision is cheap. The same setting as the one in "Data &
-    /// diagnostics", never a second flag.
+    /// Why keeping the diagnostic log is useful, explained where the default
+    /// can be reviewed. The same setting as the one in "Data & diagnostics",
+    /// never a second flag.
     pub onboarding_logging_body: &'static str,
 
     // -- onboarding: the liability disclaimer and its gate --
@@ -330,7 +330,7 @@ pub struct Strings {
     pub deletion_completed: &'static str,
     pub database_compacted: &'static str,
     pub database_cleared: &'static str,
-    pub settings_not_saved_no_db: &'static str,
+    pub settings_not_saved_no_path: &'static str,
 
     // -- worker progress verbs --
     pub verb_scan: &'static str,
@@ -619,7 +619,10 @@ impl Strings {
             ("deletion_completed", self.deletion_completed),
             ("database_compacted", self.database_compacted),
             ("database_cleared", self.database_cleared),
-            ("settings_not_saved_no_db", self.settings_not_saved_no_db),
+            (
+                "settings_not_saved_no_path",
+                self.settings_not_saved_no_path,
+            ),
             ("verb_scan", self.verb_scan),
             ("verb_analyze", self.verb_analyze),
             ("verb_delete", self.verb_delete),

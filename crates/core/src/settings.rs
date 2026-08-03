@@ -1,6 +1,16 @@
-//! Persisted user settings, stored in the `settings` key-value table of the
-//! main database. Unknown keys and unparseable values fall back to defaults,
-//! so a database written by a newer version never breaks an older one.
+//! Persisted user settings, stored in `gametrimmer.ini` next to the executable.
+//! Unknown keys, malformed lines and unparseable values fall back to defaults,
+//! so a file written by a newer version never breaks an older one.
+//!
+//! The SQLite `settings` table is a legacy, read-once migration source. It is
+//! consulted only when the ini file does not exist; production writes never go
+//! back to the database.
+
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -20,7 +30,7 @@ pub enum DeleteMethod {
 }
 
 impl DeleteMethod {
-    /// Stable string form persisted into the `settings` table.
+    /// Stable string form persisted in `gametrimmer.ini`.
     pub fn as_str(self) -> &'static str {
         match self {
             DeleteMethod::Permanent => "permanent",
@@ -55,7 +65,7 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// Stable string form persisted into the `settings` table.
+    /// Stable string form persisted in `gametrimmer.ini`.
     pub fn as_str(self) -> &'static str {
         match self {
             Lang::En => "en",
@@ -102,7 +112,7 @@ pub enum LanguagePreference {
 }
 
 impl LanguagePreference {
-    /// Stable string form persisted into the `settings` table.
+    /// Stable string form persisted in `gametrimmer.ini`.
     ///
     /// Shares the `app_language` key with the plain [`Lang`] values written
     /// by earlier versions: `"en"` and `"uk"` still parse, and still mean an
@@ -165,7 +175,7 @@ pub enum ScanRouting {
 }
 
 impl ScanRouting {
-    /// Stable string form persisted into the `settings` table.
+    /// Stable string form persisted in `gametrimmer.ini`.
     pub fn as_str(self) -> &'static str {
         match self {
             ScanRouting::Auto => "auto",
@@ -204,7 +214,7 @@ pub enum Theme {
 }
 
 impl Theme {
-    /// Stable string form persisted into the `settings` table.
+    /// Stable string form persisted in `gametrimmer.ini`.
     pub fn as_str(self) -> &'static str {
         match self {
             Theme::System => "system",
@@ -256,7 +266,7 @@ pub enum SelectionProfile {
 }
 
 impl SelectionProfile {
-    /// Stable string form persisted into the `settings` table.
+    /// Stable string form persisted in `gametrimmer.ini`.
     pub fn as_str(self) -> &'static str {
         match self {
             SelectionProfile::Cautious => "cautious",
@@ -312,7 +322,7 @@ pub enum ConfirmBehavior {
 }
 
 impl ConfirmBehavior {
-    /// Stable string form persisted into the `settings` table.
+    /// Stable string form persisted in `gametrimmer.ini`.
     pub fn as_str(self) -> &'static str {
         match self {
             ConfirmBehavior::Always => "always",
@@ -404,7 +414,7 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-/// Stable string form persisted into the `settings` table for a plain `bool`
+/// Stable string form persisted in `gametrimmer.ini` for a plain `bool`
 /// setting.
 fn bool_as_str(value: bool) -> &'static str {
     if value {
@@ -415,7 +425,7 @@ fn bool_as_str(value: bool) -> &'static str {
 }
 
 /// All persisted settings, with defaults for anything missing from the
-/// database. Grows one field per setting as the settings dialog gains
+/// ini file. Grows one field per setting as the settings dialog gains
 /// options (deletion method, keep-list languages, categories, app language,
 /// theme, ...).
 ///
@@ -465,9 +475,9 @@ pub struct Settings {
     pub confirm_behavior: ConfirmBehavior,
     /// Whether the app writes a `gametrimmer.log` file next to the
     /// executable with diagnostics (errors and scan lifecycle events) - see
-    /// the `logger` module in the `app` crate. Opt-in and off by default:
-    /// this is strictly a troubleshooting aid, not something every user
-    /// needs a file written for.
+    /// the `logger` module in the `app` crate. Enabled by default so a useful
+    /// diagnostic already exists when an unexpected scan result or failure
+    /// needs investigating; users can switch it off at any time.
     pub logging_enabled: bool,
     /// Whether the user has ever started a scan. The only thing it drives is
     /// the first-run explanation (GT-34), which occupies the empty tree area
@@ -489,6 +499,8 @@ pub struct Settings {
     pub disclaimer_accepted: bool,
 }
 
+const DEFAULT_LOGGING_ENABLED: bool = true;
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -501,7 +513,7 @@ impl Default for Settings {
             selection_profile: SelectionProfile::default(),
             default_selection_profile: SelectionProfile::default(),
             confirm_behavior: ConfirmBehavior::default(),
-            logging_enabled: false,
+            logging_enabled: DEFAULT_LOGGING_ENABLED,
             has_scanned: false,
             disclaimer_accepted: false,
         }
@@ -520,6 +532,101 @@ const CONFIRM_BEHAVIOR_KEY: &str = "confirm_behavior";
 const LOGGING_ENABLED_KEY: &str = "logging_enabled";
 const HAS_SCANNED_KEY: &str = "has_scanned";
 const DISCLAIMER_ACCEPTED_KEY: &str = "disclaimer_accepted";
+
+const SETTINGS_KEYS: [&str; 12] = [
+    DELETE_METHOD_KEY,
+    APP_LANGUAGE_KEY,
+    KEEP_LANGUAGES_KEY,
+    SCAN_ROUTING_KEY,
+    THEME_KEY,
+    ENABLED_CATEGORIES_KEY,
+    SELECTION_PROFILE_KEY,
+    DEFAULT_SELECTION_PROFILE_KEY,
+    CONFIRM_BEHAVIOR_KEY,
+    LOGGING_ENABLED_KEY,
+    HAS_SCANNED_KEY,
+    DISCLAIMER_ACCEPTED_KEY,
+];
+
+const INI_HEADER: &str = "; GameTrimmer user settings. Unknown keys are ignored.\n[settings]\n";
+
+fn settings_from_values(values: &HashMap<String, String>) -> Settings {
+    let value = |key: &str| values.get(key).map(String::as_str);
+    Settings {
+        delete_method: value(DELETE_METHOD_KEY)
+            .and_then(DeleteMethod::parse)
+            .unwrap_or_default(),
+        app_language: value(APP_LANGUAGE_KEY)
+            .and_then(LanguagePreference::parse)
+            .unwrap_or_default(),
+        keep_languages: value(KEEP_LANGUAGES_KEY)
+            .map(parse_keep_languages)
+            .unwrap_or_else(default_keep_languages),
+        scan_routing: value(SCAN_ROUTING_KEY)
+            .and_then(ScanRouting::parse)
+            .unwrap_or_default(),
+        theme: value(THEME_KEY).and_then(Theme::parse).unwrap_or_default(),
+        enabled_categories: value(ENABLED_CATEGORIES_KEY)
+            .map(parse_enabled_categories)
+            .unwrap_or_default(),
+        selection_profile: value(SELECTION_PROFILE_KEY)
+            .and_then(SelectionProfile::parse)
+            .unwrap_or_default(),
+        default_selection_profile: value(DEFAULT_SELECTION_PROFILE_KEY)
+            .and_then(SelectionProfile::parse)
+            .unwrap_or_default(),
+        confirm_behavior: value(CONFIRM_BEHAVIOR_KEY)
+            .and_then(ConfirmBehavior::parse)
+            .unwrap_or_default(),
+        logging_enabled: value(LOGGING_ENABLED_KEY)
+            .and_then(parse_bool)
+            .unwrap_or(DEFAULT_LOGGING_ENABLED),
+        has_scanned: value(HAS_SCANNED_KEY)
+            .and_then(parse_bool)
+            .unwrap_or_default(),
+        disclaimer_accepted: value(DISCLAIMER_ACCEPTED_KEY)
+            .and_then(parse_bool)
+            .unwrap_or_default(),
+    }
+}
+
+fn settings_values(settings: &Settings) -> [(&'static str, String); 12] {
+    [
+        (DELETE_METHOD_KEY, settings.delete_method.as_str().into()),
+        (APP_LANGUAGE_KEY, settings.app_language.as_str().into()),
+        (
+            KEEP_LANGUAGES_KEY,
+            serialize_keep_languages(&settings.keep_languages),
+        ),
+        (SCAN_ROUTING_KEY, settings.scan_routing.as_str().into()),
+        (THEME_KEY, settings.theme.as_str().into()),
+        (
+            ENABLED_CATEGORIES_KEY,
+            serialize_enabled_categories(&settings.enabled_categories),
+        ),
+        (
+            SELECTION_PROFILE_KEY,
+            settings.selection_profile.as_str().into(),
+        ),
+        (
+            DEFAULT_SELECTION_PROFILE_KEY,
+            settings.default_selection_profile.as_str().into(),
+        ),
+        (
+            CONFIRM_BEHAVIOR_KEY,
+            settings.confirm_behavior.as_str().into(),
+        ),
+        (
+            LOGGING_ENABLED_KEY,
+            bool_as_str(settings.logging_enabled).into(),
+        ),
+        (HAS_SCANNED_KEY, bool_as_str(settings.has_scanned).into()),
+        (
+            DISCLAIMER_ACCEPTED_KEY,
+            bool_as_str(settings.disclaimer_accepted).into(),
+        ),
+    ]
+}
 
 /// Reads one raw value from the `settings` table.
 fn read_value(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -541,59 +648,16 @@ fn write_value(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Loads settings from the database. Missing rows and unrecognized values
-/// both yield the field's default rather than an error.
+/// Loads settings from the legacy database table. Production calls this only
+/// when `gametrimmer.ini` is absent and immediately migrates the result.
 pub fn load(conn: &Connection) -> Result<Settings> {
-    let delete_method = read_value(conn, DELETE_METHOD_KEY)?
-        .and_then(|value| DeleteMethod::parse(&value))
-        .unwrap_or_default();
-    let app_language = read_value(conn, APP_LANGUAGE_KEY)?
-        .and_then(|value| LanguagePreference::parse(&value))
-        .unwrap_or_default();
-    let keep_languages = read_value(conn, KEEP_LANGUAGES_KEY)?
-        .map(|value| parse_keep_languages(&value))
-        .unwrap_or_else(default_keep_languages);
-    let scan_routing = read_value(conn, SCAN_ROUTING_KEY)?
-        .and_then(|value| ScanRouting::parse(&value))
-        .unwrap_or_default();
-    let theme = read_value(conn, THEME_KEY)?
-        .and_then(|value| Theme::parse(&value))
-        .unwrap_or_default();
-    let enabled_categories = read_value(conn, ENABLED_CATEGORIES_KEY)?
-        .map(|value| parse_enabled_categories(&value))
-        .unwrap_or_default();
-    let selection_profile = read_value(conn, SELECTION_PROFILE_KEY)?
-        .and_then(|value| SelectionProfile::parse(&value))
-        .unwrap_or_default();
-    let default_selection_profile = read_value(conn, DEFAULT_SELECTION_PROFILE_KEY)?
-        .and_then(|value| SelectionProfile::parse(&value))
-        .unwrap_or_default();
-    let confirm_behavior = read_value(conn, CONFIRM_BEHAVIOR_KEY)?
-        .and_then(|value| ConfirmBehavior::parse(&value))
-        .unwrap_or_default();
-    let logging_enabled = read_value(conn, LOGGING_ENABLED_KEY)?
-        .and_then(|value| parse_bool(&value))
-        .unwrap_or_default();
-    let has_scanned = read_value(conn, HAS_SCANNED_KEY)?
-        .and_then(|value| parse_bool(&value))
-        .unwrap_or_default();
-    let disclaimer_accepted = read_value(conn, DISCLAIMER_ACCEPTED_KEY)?
-        .and_then(|value| parse_bool(&value))
-        .unwrap_or_default();
-    Ok(Settings {
-        delete_method,
-        app_language,
-        keep_languages,
-        scan_routing,
-        theme,
-        enabled_categories,
-        selection_profile,
-        default_selection_profile,
-        confirm_behavior,
-        logging_enabled,
-        has_scanned,
-        disclaimer_accepted,
-    })
+    let mut values = HashMap::new();
+    for key in SETTINGS_KEYS {
+        if let Some(value) = read_value(conn, key)? {
+            values.insert(key.to_string(), value);
+        }
+    }
+    Ok(settings_from_values(&values))
 }
 
 /// Persists every settings field.
@@ -614,46 +678,128 @@ pub fn save(conn: &Connection, settings: &Settings) -> Result<()> {
 }
 
 fn write_values(conn: &Connection, settings: &Settings) -> Result<()> {
-    write_value(conn, DELETE_METHOD_KEY, settings.delete_method.as_str())?;
-    write_value(conn, APP_LANGUAGE_KEY, settings.app_language.as_str())?;
-    write_value(
-        conn,
-        KEEP_LANGUAGES_KEY,
-        &serialize_keep_languages(&settings.keep_languages),
-    )?;
-    write_value(conn, SCAN_ROUTING_KEY, settings.scan_routing.as_str())?;
-    write_value(conn, THEME_KEY, settings.theme.as_str())?;
-    write_value(
-        conn,
-        ENABLED_CATEGORIES_KEY,
-        &serialize_enabled_categories(&settings.enabled_categories),
-    )?;
-    write_value(
-        conn,
-        SELECTION_PROFILE_KEY,
-        settings.selection_profile.as_str(),
-    )?;
-    write_value(
-        conn,
-        DEFAULT_SELECTION_PROFILE_KEY,
-        settings.default_selection_profile.as_str(),
-    )?;
-    write_value(
-        conn,
-        CONFIRM_BEHAVIOR_KEY,
-        settings.confirm_behavior.as_str(),
-    )?;
-    write_value(
-        conn,
-        LOGGING_ENABLED_KEY,
-        bool_as_str(settings.logging_enabled),
-    )?;
-    write_value(conn, HAS_SCANNED_KEY, bool_as_str(settings.has_scanned))?;
-    write_value(
-        conn,
-        DISCLAIMER_ACCEPTED_KEY,
-        bool_as_str(settings.disclaimer_accepted),
-    )
+    for (key, value) in settings_values(settings) {
+        write_value(conn, key, &value)?;
+    }
+    Ok(())
+}
+
+/// Loads `gametrimmer.ini`. The parser is deliberately forgiving: comments,
+/// blank lines, unknown sections/keys and malformed lines are ignored, while
+/// invalid known values fall back field-by-field through [`Settings::default`].
+/// Invalid UTF-8 bytes are replaced rather than turning a damaged preference
+/// file into a startup blocker.
+pub fn load_file(path: &Path) -> Result<Settings> {
+    let bytes = fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(settings_from_values(&parse_ini(&text)))
+}
+
+/// Loads the ini when it exists. Otherwise reads the legacy SQLite table (if
+/// a connection is available), writes the result to the ini atomically, and
+/// returns it. The database is never written by this migration.
+pub fn load_file_or_migrate(path: &Path, legacy: Option<&Connection>) -> Result<Settings> {
+    if path.exists() {
+        return load_file(path);
+    }
+
+    let settings = match legacy {
+        Some(conn) => load(conn)?,
+        None => Settings::default(),
+    };
+    save_file(path, &settings)?;
+    Ok(settings)
+}
+
+/// Persists every setting to `gametrimmer.ini` via a sibling temporary file
+/// and an atomic replace. The complete snapshot is written on every change so
+/// the file has one source of truth and never needs merge semantics.
+pub fn save_file(path: &Path, settings: &Settings) -> Result<()> {
+    let mut body = String::from(INI_HEADER);
+    for (key, value) in settings_values(settings) {
+        body.push_str(key);
+        body.push('=');
+        body.push_str(&value);
+        body.push('\n');
+    }
+
+    let tmp_path = temporary_path(path);
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = File::create(&tmp_path)?;
+        file.write_all(body.as_bytes())?;
+        file.sync_all()?;
+        atomic_replace(&tmp_path, path)
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    Ok(write_result?)
+}
+
+fn parse_ini(text: &str) -> HashMap<String, String> {
+    let known: std::collections::HashSet<&str> = SETTINGS_KEYS.into_iter().collect();
+    let mut values = HashMap::new();
+    let mut in_settings = false;
+
+    for (index, line) in text.lines().enumerate() {
+        let line = if index == 0 {
+            line.trim_start_matches('\u{feff}')
+        } else {
+            line
+        };
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            in_settings = line[1..line.len() - 1]
+                .trim()
+                .eq_ignore_ascii_case("settings");
+            continue;
+        }
+        if !in_settings {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if known.contains(key) {
+            values.insert(key.to_string(), value.trim().to_string());
+        }
+    }
+    values
+}
+
+fn temporary_path(path: &Path) -> PathBuf {
+    let mut name: OsString = path.as_os_str().to_owned();
+    name.push(".tmp");
+    PathBuf::from(name)
+}
+
+#[cfg(windows)]
+fn atomic_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(from.as_ptr()),
+            PCWSTR(to.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|_| std::io::Error::last_os_error())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::rename(from, to)
 }
 
 #[cfg(test)]
@@ -1164,12 +1310,12 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_disabled_logging_on_empty_database() {
+    fn defaults_to_enabled_logging_on_empty_database() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
         let settings = load(&conn).expect("load settings");
         assert!(
-            !settings.logging_enabled,
-            "diagnostic logging must be opt-in, off by default"
+            settings.logging_enabled,
+            "diagnostic logging should be available from the first run"
         );
     }
 
@@ -1253,8 +1399,162 @@ mod tests {
 
         let settings = load(&conn).expect("load settings");
         assert!(
-            !settings.logging_enabled,
-            "a value written by a future version must not break loading"
+            settings.logging_enabled,
+            "an invalid value should fall back to the current default"
         );
+    }
+
+    #[test]
+    fn every_setting_and_variant_round_trips_through_ini() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.ini");
+        let mut cases = vec![Settings::default()];
+
+        for method in [DeleteMethod::Permanent, DeleteMethod::RecycleBin] {
+            cases.push(Settings {
+                delete_method: method,
+                ..Settings::default()
+            });
+        }
+        for app_language in [
+            LanguagePreference::System,
+            LanguagePreference::Fixed(Lang::En),
+            LanguagePreference::Fixed(Lang::Uk),
+        ] {
+            cases.push(Settings {
+                app_language,
+                ..Settings::default()
+            });
+        }
+        for scan_routing in [
+            ScanRouting::Auto,
+            ScanRouting::ForceMft,
+            ScanRouting::ForceWalkdir,
+        ] {
+            cases.push(Settings {
+                scan_routing,
+                ..Settings::default()
+            });
+        }
+        for theme in [Theme::System, Theme::Light, Theme::Dark] {
+            cases.push(Settings {
+                theme,
+                ..Settings::default()
+            });
+        }
+        for selection_profile in [
+            SelectionProfile::Cautious,
+            SelectionProfile::Balanced,
+            SelectionProfile::Aggressive,
+            SelectionProfile::Custom,
+        ] {
+            cases.push(Settings {
+                selection_profile,
+                ..Settings::default()
+            });
+            cases.push(Settings {
+                default_selection_profile: selection_profile,
+                ..Settings::default()
+            });
+        }
+        for confirm_behavior in [ConfirmBehavior::Always, ConfirmBehavior::Never] {
+            cases.push(Settings {
+                confirm_behavior,
+                ..Settings::default()
+            });
+        }
+        cases.push(Settings {
+            keep_languages: vec!["uk".into(), "en".into(), "ja".into()],
+            enabled_categories: vec!["docs".into(), "redist".into()],
+            logging_enabled: true,
+            has_scanned: true,
+            disclaimer_accepted: true,
+            ..Settings::default()
+        });
+
+        for expected in cases {
+            save_file(&path, &expected).expect("save ini");
+            assert_eq!(load_file(&path).expect("load ini"), expected);
+            assert!(
+                !temporary_path(&path).exists(),
+                "an atomic save must not leave its temporary sibling behind"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_ini_falls_back_field_by_field_without_blocking_load() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.ini");
+        std::fs::write(
+            &path,
+            b"\xFF\xFE; damaged bytes are tolerated\n\
+              [other]\n\
+              theme=dark\n\
+              [settings]\n\
+              malformed line\n\
+              future_key=future_value\n\
+              delete_method=quarantine\n\
+              app_language=fr\n\
+              keep_languages=\n\
+              scan_routing=teleport\n\
+              theme=sepia\n\
+              enabled_categories=\n\
+              selection_profile=reckless\n\
+              default_selection_profile=reckless\n\
+              confirm_behavior=only_above_1gb\n\
+              logging_enabled=maybe\n\
+              has_scanned=maybe\n\
+              disclaimer_accepted=maybe\n",
+        )
+        .expect("write malformed ini");
+
+        let loaded = load_file(&path).expect("a damaged ini must remain non-fatal");
+        assert_eq!(loaded, Settings::default());
+        assert!(loaded.enabled_categories.is_empty());
+        assert_eq!(loaded.keep_languages, default_keep_languages());
+    }
+
+    #[test]
+    fn missing_ini_migrates_legacy_database_once_then_ini_wins() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.ini");
+        let conn = crate::db::open_in_memory().expect("open legacy database");
+        let legacy = Settings {
+            delete_method: DeleteMethod::RecycleBin,
+            app_language: LanguagePreference::Fixed(Lang::Uk),
+            theme: Theme::Dark,
+            logging_enabled: true,
+            has_scanned: true,
+            disclaimer_accepted: true,
+            ..Settings::default()
+        };
+        save(&conn, &legacy).expect("seed legacy settings table");
+
+        let migrated = load_file_or_migrate(&path, Some(&conn)).expect("migrate to ini");
+        assert_eq!(migrated, legacy);
+        assert_eq!(load_file(&path).expect("read migrated ini"), legacy);
+
+        let changed_database = Settings {
+            theme: Theme::Light,
+            ..Settings::default()
+        };
+        save(&conn, &changed_database).expect("change legacy table after migration");
+        assert_eq!(
+            load_file_or_migrate(&path, Some(&conn)).expect("load existing ini"),
+            legacy,
+            "once the ini exists, the legacy database must never override it"
+        );
+    }
+
+    #[test]
+    fn a_fresh_install_materializes_default_ini_without_a_database() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.ini");
+
+        let loaded = load_file_or_migrate(&path, None).expect("create default ini");
+
+        assert_eq!(loaded, Settings::default());
+        assert_eq!(load_file(&path).expect("reload default ini"), loaded);
     }
 }

@@ -21,6 +21,7 @@ use crate::i18n::Verb;
 use crate::model::FindingRow;
 
 const DB_FILE_NAME: &str = "gametrimmer.db";
+const SETTINGS_FILE_NAME: &str = "gametrimmer.ini";
 const LOG_FILE_NAME: &str = "gametrimmer.log";
 pub(crate) const RULES_FILE_NAME: &str = "rules.json";
 /// Localization-detector data pack (community rules).
@@ -232,6 +233,11 @@ pub fn db_path() -> io::Result<PathBuf> {
     Ok(exe_dir()?.join(DB_FILE_NAME))
 }
 
+/// Resolves the settings path: `gametrimmer.ini` next to the executable.
+pub fn settings_path() -> io::Result<PathBuf> {
+    Ok(exe_dir()?.join(SETTINGS_FILE_NAME))
+}
+
 /// Resolves the diagnostic log path: `gametrimmer.log` next to the
 /// executable - see `crate::logger`.
 pub fn log_path() -> io::Result<PathBuf> {
@@ -276,8 +282,9 @@ pub fn ensure_l10n_rules_path() -> io::Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// `db_path()` (and, by the same `exe_dir()` construction, `ensure_rules_path()`/
-    /// `ensure_l10n_rules_path()`) must resolve identically no matter what the
+    /// `db_path()` and `settings_path()` (and, by the same `exe_dir()`
+    /// construction, `ensure_rules_path()`/`ensure_l10n_rules_path()`) must
+    /// resolve identically no matter what the
     /// process's current working directory happens to be at launch:
     /// double-clicking the exe from Explorer and running it from `cmd.exe`
     /// in an unrelated folder must give the same data paths, or a portable
@@ -289,28 +296,33 @@ mod tests {
     /// observe or be perturbed by this change. The original CWD is restored
     /// before returning either way.
     #[test]
-    fn db_path_is_independent_of_current_working_directory() {
+    fn portable_data_paths_are_independent_of_current_working_directory() {
         let original_cwd = std::env::current_dir().expect("read original cwd");
-        let path_before = db_path().expect("db_path with original cwd");
+        let paths_before = (
+            db_path().expect("db_path with original cwd"),
+            settings_path().expect("settings_path with original cwd"),
+        );
 
         // `std::env::temp_dir()` is guaranteed to differ from the test
         // binary's own directory (the only thing `exe_dir()` should track).
         let alt_dir = std::env::temp_dir();
         let cwd_change = std::env::set_current_dir(&alt_dir);
 
-        let result = cwd_change.map(|()| db_path());
+        let result = cwd_change.map(|()| (db_path(), settings_path()));
 
         // Always restore, even if the assertion below panics.
         let restore = std::env::set_current_dir(&original_cwd);
 
-        let path_after = result
-            .expect("change cwd for test")
-            .expect("db_path with alternate cwd");
+        let (db_after, settings_after) = result.expect("change cwd for test");
+        let paths_after = (
+            db_after.expect("db_path with alternate cwd"),
+            settings_after.expect("settings_path with alternate cwd"),
+        );
         restore.expect("restore original cwd");
 
         assert_eq!(
-            path_before, path_after,
-            "db_path() must not depend on the process's current working directory"
+            paths_before, paths_after,
+            "portable data paths must not depend on the process's current working directory"
         );
     }
 }

@@ -50,9 +50,9 @@ const ANIMATED_STEPS: usize = 4;
 /// [`UiTest::app`] while the harness is alive.
 pub type ShowFn = fn(&mut GameTrimmerApp, &mut egui::Ui);
 
-/// A harness plus the temp directory holding the app's throwaway database.
+/// A harness plus the temp directory holding the app's throwaway database and ini.
 ///
-/// Field order matters: `harness` owns the app, which opens the database on
+/// Field order matters: `harness` owns the app, which rewrites the ini on
 /// every persisted setting change, so it must drop before `_dir` deletes it.
 pub struct UiTest {
     harness: Harness<'static, GameTrimmerApp>,
@@ -68,7 +68,7 @@ impl UiTest {
     /// Same, at an explicit viewport - for asserting that a layout survives a
     /// narrow window instead of clipping its primary action.
     pub fn with_size(show: ShowFn, size: egui::Vec2) -> Self {
-        let dir = tempfile::tempdir().expect("create temp dir for the test database");
+        let dir = tempfile::tempdir().expect("create temp dir for portable test files");
         let app = GameTrimmerApp::new_for_test(dir.path());
         let harness = Harness::builder()
             .with_size(size)
@@ -389,16 +389,17 @@ mod tests {
         assert!(test.app().show_settings, "the click never reached the app");
     }
 
-    /// Each harness must own its database, or tests running in parallel would
-    /// interfere through persisted settings.
+    /// Each harness must own both portable state files, or tests running in
+    /// parallel would interfere through scan data or persisted settings.
     #[test]
-    fn each_harness_gets_its_own_database() {
+    fn each_harness_gets_its_own_database_and_ini() {
         fn show(_app: &mut GameTrimmerApp, _ui: &mut egui::Ui) {}
 
         let one = UiTest::new(show);
         let two = UiTest::new(show);
 
         assert_ne!(one.app().db_path(), two.app().db_path());
+        assert_ne!(one.app().settings_path(), two.app().settings_path());
         assert_eq!(one.app().db_error, None);
         assert_eq!(two.app().db_error, None);
     }

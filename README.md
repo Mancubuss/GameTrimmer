@@ -39,10 +39,14 @@ This matters more than the feature list, so it comes first:
 - **It does not go online.** No updates, no telemetry, no "anonymous
   statistics". The program opens no network connection at all.
 - **It does not install itself and leaves no traces.** All of its state lives
-  next to the executable: the database, `rules.json`, `l10n_rules.json`, plus a
-  diagnostic log if you switched one on and `*.bak` files after a rules import.
-  Nothing outside its own folder (except the Windows Recycle Bin, if that is
-  the deletion method you chose). Delete the folder and nothing is left.
+  next to the executable: disposable scan data in `gametrimmer.db`, user
+  settings in the readable `gametrimmer.ini`, `rules.json`, `l10n_rules.json`,
+  plus the default-on local diagnostic log `gametrimmer.log` (which you can
+  switch off) and `*.bak` files after a rules import. Nothing outside its own
+  folder (except the Windows Recycle Bin, if
+  that is the deletion method you chose). Delete the folder and nothing is
+  left. Deleting only `gametrimmer.db*` resets scan data without resetting your
+  settings.
 - **It does not promise a game will reinstall without consequences after a
   trim.** If the launcher runs a file verification, it will re-download what
   you removed.

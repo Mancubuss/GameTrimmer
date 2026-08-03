@@ -69,8 +69,9 @@ body:
     attributes:
       label: Diagnostic log
       description: >
-        Settings → Data and diagnostics → enable the log, reproduce the
-        problem, then attach `gametrimmer.log` from next to the exe. The log
-        stays on your machine until you attach it here — the program sends
-        nothing anywhere.
+        The log is enabled by default. Reproduce the problem, then attach
+        `gametrimmer.log` from next to the exe (Settings → Data and diagnostics
+        can turn it back on if you disabled it). The program sends nothing
+        anywhere, but review the file before attaching it: diagnostics can
+        include game names and local file or folder paths.
       render: text

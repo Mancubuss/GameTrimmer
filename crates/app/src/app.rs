@@ -91,13 +91,18 @@ pub struct ProgressState {
 
 pub struct GameTrimmerApp {
     db_path: Option<PathBuf>,
+    settings_path: Option<PathBuf>,
+    /// Where this instance writes diagnostics. Production resolves the file
+    /// beside the executable; tests pass `None` so their process-global
+    /// logger cannot leak state or files between parallel UI cases.
+    log_path: Option<PathBuf>,
     /// Set only when the database could not be located or opened at startup;
     /// the path itself is not shown in the UI (the database always lives
     /// next to the executable).
     pub db_error: Option<String>,
 
-    /// Persisted user settings (deletion method, ...), loaded from the
-    /// database at startup and saved on every change in the settings dialog.
+    /// Persisted user settings (deletion method, ...), loaded from
+    /// `gametrimmer.ini` at startup and saved there on every change.
     pub settings: Settings,
     /// What Windows reported as the user's preferred UI language at startup,
     /// already narrowed to one this app speaks. Read once and kept, not
@@ -296,10 +301,16 @@ impl GameTrimmerApp {
     /// `ctx` is `cc.egui_ctx` from `eframe::run_native`'s creation callback -
     /// see `worker::Notifier` for why every background worker needs it.
     pub fn new(ctx: egui::Context) -> Self {
-        Self::new_with(ctx, worker::db_path().ok(), true)
+        Self::new_with(
+            ctx,
+            worker::db_path().ok(),
+            worker::settings_path().ok(),
+            worker::log_path().ok(),
+            true,
+        )
     }
 
-    /// The real constructor, with the two pieces of ambient state that make
+    /// The real constructor, with the ambient state that makes
     /// [`Self::new`] unusable from a test taken as parameters instead:
     ///
     /// * `db_path`: where the database lives. Production passes
@@ -308,6 +319,13 @@ impl GameTrimmerApp {
     ///   `target/debug/deps/`, so every test in the binary would open, create
     ///   and mutate one shared file - tests pass a path inside their own
     ///   `TempDir` instead.
+    /// * `settings_path`: the `gametrimmer.ini` beside the executable. Tests
+    ///   pass a sibling of their throwaway database so preferences cannot
+    ///   leak between tests.
+    /// * `log_path`: the `gametrimmer.log` beside the executable. Tests pass
+    ///   `None` because the logger is process-global and parallel UI tests
+    ///   must neither replace each other's file handles nor create a shared
+    ///   log under `target/debug/deps/`.
     /// * `autoload`: whether to spawn the background worker that reloads the
     ///   previous scan's findings. A test wants a deterministic widget tree,
     ///   not a thread racing its assertions, so it passes `false`.
@@ -318,35 +336,44 @@ impl GameTrimmerApp {
     /// `compute_show_elevation_prompt` over no libraries probes no volumes
     /// and answers `false`. So a temp-database app is already deterministic
     /// without stubbing those out.
-    fn new_with(ctx: egui::Context, db_path: Option<PathBuf>, autoload: bool) -> Self {
+    fn new_with(
+        ctx: egui::Context,
+        db_path: Option<PathBuf>,
+        settings_path: Option<PathBuf>,
+        log_path: Option<PathBuf>,
+        autoload: bool,
+    ) -> Self {
         // One Win32 call, before anything can need a string: the default
         // preference is "follow Windows", so even the pre-database errors
         // below are worded in the machine's own language rather than in
         // English on a Ukrainian desktop.
         let system_lang = i18n::detect_system_language();
 
-        // Settings (and thus the UI language) aren't known until the
-        // database opens - startup errors before that point use the default
-        // preference's text, same as any other place with no settings yet.
+        // Settings (and thus the UI language) are not known until the ini is
+        // read. Startup errors before that point use the default preference's
+        // text, same as any other place with no settings yet.
         let startup_lang = Settings::default().app_language.resolve(system_lang);
-        let (db_error, settings) = match &db_path {
+        let (db_error, legacy_conn) = match &db_path {
             Some(path) => match gametrimmer_core::db::open(path) {
-                Ok(conn) => {
-                    // Unreadable settings are not fatal - fall back to the
-                    // defaults rather than blocking startup.
-                    let settings = gametrimmer_core::settings::load(&conn).unwrap_or_default();
-                    (None, settings)
-                }
-                Err(err) => (
-                    Some(i18n::db_open_error_long(startup_lang, err)),
-                    Settings::default(),
-                ),
+                Ok(conn) => (None, Some(conn)),
+                Err(err) => (Some(i18n::db_open_error_long(startup_lang, err)), None),
             },
             None => (
                 Some(i18n::strings(startup_lang).db_path_error.to_string()),
-                Settings::default(),
+                None,
             ),
         };
+        // A damaged or unreadable ini must not block startup. When it is
+        // absent, `load_file_or_migrate` reads the legacy table once and
+        // atomically creates the new single source of truth.
+        let settings = match settings_path.as_deref() {
+            Some(path) => {
+                gametrimmer_core::settings::load_file_or_migrate(path, legacy_conn.as_ref())
+                    .unwrap_or_default()
+            }
+            None => Settings::default(),
+        };
+        drop(legacy_conn);
         let libraries = Self::load_libraries(db_path.as_deref());
         // Short-circuits when `autoload` is off, so a test does not even pay
         // the database open for a question whose answer it would ignore.
@@ -358,14 +385,14 @@ impl GameTrimmerApp {
         let show_elevation_prompt =
             !elevated && compute_show_elevation_prompt(settings.scan_routing, &libraries);
 
-        // Diagnostic logging is opt-in (see `settings::Settings::logging_enabled`)
-        // and off by default - only turn it on here if the user already
-        // enabled it in a previous session. A `log_path()` failure (the exe's
-        // own directory could not be resolved) just means logging stays off
+        // Logging is enabled by default (see
+        // `settings::Settings::logging_enabled`), while an explicit saved
+        // `false` still keeps it off. Failure to resolve the exe directory
+        // leaves `log_path` as `None`, so logging simply stays unavailable
         // for this session; there is no UI up yet to report it through.
         if settings.logging_enabled {
-            if let Ok(log_path) = worker::log_path() {
-                logger::set_enabled(true, elevated, &log_path);
+            if let Some(path) = log_path.as_deref() {
+                logger::set_enabled(true, elevated, path);
             }
         }
 
@@ -373,6 +400,8 @@ impl GameTrimmerApp {
 
         let mut app = Self {
             db_path: db_path.clone(),
+            settings_path,
+            log_path,
             db_error,
             settings,
             system_lang,
@@ -466,6 +495,12 @@ impl GameTrimmerApp {
     /// app has its own.
     pub fn db_path(&self) -> Option<&std::path::Path> {
         self.db_path.as_deref()
+    }
+
+    /// Test-only read access to the portable ini path.
+    #[cfg(test)]
+    pub fn settings_path(&self) -> Option<&std::path::Path> {
+        self.settings_path.as_deref()
     }
 
     /// Marks a background job as started. `cancellable` is true only when the
@@ -881,7 +916,7 @@ impl GameTrimmerApp {
     ///
     /// Cheap to call on every edit - it returns immediately once the profile
     /// is already `Custom`, so only the first hand-edit after a profile
-    /// switch touches the database.
+    /// switch rewrites the ini.
     ///
     /// Only the live profile moves. What a *fresh scan* pre-checks lives in
     /// `default_selection_profile` and is untouched here, so hand-editing the
@@ -1327,26 +1362,20 @@ impl GameTrimmerApp {
         };
         self.persist_settings();
 
-        // The exe directory could not be resolved - extremely unlikely, and
-        // not worth a user-facing warning for what is purely a
-        // troubleshooting feature; log it to stderr like the other
-        // startup-only path-resolution edge cases and move on.
-        match worker::log_path() {
-            Ok(path) => logger::set_enabled(enabled, self.elevated, &path),
-            Err(err) => eprintln!("Failed to resolve the diagnostic log path: {err}"),
+        if let Some(path) = self.log_path.as_deref() {
+            logger::set_enabled(enabled, self.elevated, path);
         }
     }
 
     fn persist_settings(&mut self) {
         let lang = self.lang();
-        let Some(db_path) = self.db_path.clone() else {
-            let message = i18n::strings(lang).settings_not_saved_no_db.to_string();
+        let Some(settings_path) = self.settings_path.clone() else {
+            let message = i18n::strings(lang).settings_not_saved_no_path.to_string();
             self.warnings.push(message.clone());
             self.record_settings_save(Err(message));
             return;
         };
-        let result = gametrimmer_core::db::open(&db_path)
-            .and_then(|conn| gametrimmer_core::settings::save(&conn, &self.settings));
+        let result = gametrimmer_core::settings::save_file(&settings_path, &self.settings);
         match result {
             Ok(()) => self.record_settings_save(Ok(())),
             Err(err) => {
@@ -1805,14 +1834,16 @@ impl eframe::App for GameTrimmerApp {
 
 #[cfg(test)]
 impl GameTrimmerApp {
-    /// Builds an app for a test: its own throwaway database inside `dir`,
-    /// and no previous-scan autoload thread. See [`Self::new_with`] for why
-    /// both matter. The caller keeps the `TempDir` alive for as long as the
-    /// app is used - dropping it deletes the database out from under it.
+    /// Builds an app for a test: its own throwaway database and ini inside
+    /// `dir`, and no previous-scan autoload thread. See [`Self::new_with`] for
+    /// why these matter. The caller keeps the `TempDir` alive for as long as
+    /// the app is used - dropping it deletes both files out from under it.
     pub fn new_for_test(dir: &std::path::Path) -> Self {
         let mut app = Self::new_with(
             egui::Context::default(),
             Some(dir.join("gametrimmer.db")),
+            Some(dir.join("gametrimmer.ini")),
+            None,
             false,
         );
         // Pin the machine's answer. The default preference is "follow
@@ -1837,13 +1868,19 @@ mod tests {
     use super::*;
 
     /// The whole point of the `new_with` seam: a test app must not touch the
-    /// database `new()` would resolve to. Under `cargo test` that path is
-    /// `target/debug/deps/gametrimmer.db`, shared by every test in this
-    /// binary and surviving between runs.
+    /// database and ini `new()` would resolve to. Under `cargo test` those
+    /// paths live in `target/debug/deps/`, shared by every test and surviving
+    /// between runs.
     #[test]
-    fn test_app_uses_its_own_database_and_leaves_the_production_path_alone() {
-        let production_path = worker::db_path().expect("resolve production db path");
-        let existed_before = production_path.exists();
+    fn test_app_uses_its_own_files_and_leaves_production_paths_alone() {
+        let production_db = worker::db_path().expect("resolve production db path");
+        let production_ini = worker::settings_path().expect("resolve production ini path");
+        let production_log = worker::log_path().expect("resolve production log path");
+        let existed_before = (
+            production_db.exists(),
+            production_ini.exists(),
+            production_log.exists(),
+        );
 
         let dir = tempfile::tempdir().expect("create temp dir");
         let app = GameTrimmerApp::new_for_test(dir.path());
@@ -1851,13 +1888,22 @@ mod tests {
         assert_eq!(
             app.db_path.as_deref(),
             Some(dir.path().join("gametrimmer.db").as_path()),
-            "the test app should read and write inside its own temp dir",
+            "the test app database should live inside its temp dir",
         );
         assert_eq!(
-            production_path.exists(),
+            app.settings_path.as_deref(),
+            Some(dir.path().join("gametrimmer.ini").as_path()),
+            "the test app ini should live inside its temp dir",
+        );
+        assert_eq!(app.log_path, None, "a test app must not own a global log");
+        assert_eq!(
+            (
+                production_db.exists(),
+                production_ini.exists(),
+                production_log.exists(),
+            ),
             existed_before,
-            "building a test app must not create {}",
-            production_path.display(),
+            "building a test app must not create production database, ini or log files",
         );
     }
 
@@ -1882,6 +1928,37 @@ mod tests {
 
         let unique: std::collections::HashSet<&PathBuf> = paths.iter().flatten().collect();
         assert_eq!(unique.len(), dirs.len(), "each app needs its own database");
+    }
+
+    /// GT-72's user-facing contract: the scan cache is disposable, while the
+    /// preferences in the sibling ini are not. Reopening after deleting the
+    /// database must therefore restore every setting from the ini.
+    #[test]
+    fn deleting_the_database_does_not_reset_settings() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        {
+            let mut app = GameTrimmerApp::new_for_test(dir.path());
+            app.set_language(LanguagePreference::Fixed(Lang::Uk));
+            app.set_theme(Theme::Dark);
+            app.set_delete_method(DeleteMethod::RecycleBin);
+            // Persist an explicit opt-out without touching the process-global
+            // logger; reopening must not overwrite it with the new default.
+            app.settings.logging_enabled = false;
+            app.persist_settings();
+            assert!(dir.path().join("gametrimmer.ini").exists());
+        }
+
+        std::fs::remove_file(dir.path().join("gametrimmer.db"))
+            .expect("delete disposable scan database");
+        let reopened = GameTrimmerApp::new_for_test(dir.path());
+
+        assert_eq!(
+            reopened.settings.app_language,
+            LanguagePreference::Fixed(Lang::Uk)
+        );
+        assert_eq!(reopened.settings.theme, Theme::Dark);
+        assert_eq!(reopened.settings.delete_method, DeleteMethod::RecycleBin);
+        assert!(!reopened.settings.logging_enabled);
     }
 
     /// `autoload = false` is what keeps the widget tree deterministic: with

@@ -1,9 +1,9 @@
-//! Opt-in diagnostic log file (`gametrimmer.log`, next to the executable).
+//! Diagnostic log file (`gametrimmer.log`, next to the executable).
 //!
 //! Every existing diagnostic in this crate goes to `eprintln!`, which is
 //! invisible in a release build (`windows_subsystem = "windows"` - see
 //! `main.rs` - has no console attached). This module gives the user a way to
-//! capture those diagnostics to a file when something goes wrong, without
+//! retain those diagnostics when something goes wrong, without
 //! changing anything about the dev-console experience: [`log`] always
 //! `eprintln!`s its message first, then *additionally* appends it to the log
 //! file when logging is enabled.
@@ -28,8 +28,8 @@ use std::sync::Mutex;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
 /// `Some(file)` when logging is enabled and the file is open; `None` when
-/// disabled (the default at process start - nothing is written until
-/// `set_enabled(true, ..)` is called, see `app::GameTrimmerApp::new`).
+/// disabled at process start. `GameTrimmerApp::new` applies the saved setting
+/// immediately; that setting is enabled by default but remains user-controlled.
 static STATE: Mutex<Option<File>> = Mutex::new(None);
 
 /// Enables or disables the diagnostic log file. `elevated` and the app

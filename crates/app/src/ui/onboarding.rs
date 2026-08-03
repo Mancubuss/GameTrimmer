@@ -176,11 +176,11 @@ fn show_disclaimer(app: &mut GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::String
     }
 }
 
-/// The offer to turn diagnostic logging on, and the reason it is worth it.
+/// The default-on diagnostic logging choice, and the reason it is useful.
 ///
 /// It is the same setting as the one in "Data & diagnostics" rather than a
-/// second flag, so a user who says yes here finds it already ticked there -
-/// and one who says no is not asked again by a screen that never returns.
+/// second flag, so a user who leaves it on here finds it ticked there, while
+/// one who opts out finds it off there too.
 fn show_logging_offer(app: &mut GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::Strings) {
     let mut enabled = app.settings.logging_enabled;
 
@@ -450,15 +450,15 @@ mod tests {
     /// The logging offer is the same setting as the one in the settings
     /// dialog, not a second flag that agrees with it by accident.
     #[test]
-    fn the_logging_offer_drives_the_real_setting() {
+    fn the_default_on_logging_choice_drives_the_real_setting() {
         let mut test = fresh_window();
         let s = test.strings();
-        assert!(!test.app().settings.logging_enabled);
+        assert!(test.app().settings.logging_enabled);
         test.assert_label(s.onboarding_logging_body);
 
         test.click(s.logging_checkbox);
 
-        assert!(test.app().settings.logging_enabled);
+        assert!(!test.app().settings.logging_enabled);
     }
 
     /// The acknowledgements, each naming who it thanks. Asserted line by line

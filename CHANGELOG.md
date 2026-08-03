@@ -6,6 +6,15 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- User preferences now live in a readable, atomically written
+  `gametrimmer.ini` beside the executable. Existing database settings migrate
+  once when the ini is absent; deleting the disposable scan database no longer
+  resets language, theme, deletion policy or other preferences.
+- Diagnostic logging is enabled for new installations by default, while an
+  existing explicit opt-out remains respected.
+
 ## [1.0.0] — not yet released
 
 First public release.
@@ -76,8 +85,8 @@ First public release.
   `--profile`), but switched off in the release: it could not delete anything,
   and it returned the shell prompt before its own output. Any argument is
   answered with that, and no argument still opens the window.
-- Opt-in diagnostic log written next to the executable. The program opens no
-  network connection at all.
+- User-controlled diagnostic log written next to the executable. The program
+  opens no network connection at all.
 
 [Unreleased]: https://github.com/Mancubuss/GameTrimmer/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/Mancubuss/GameTrimmer/releases/tag/v1.0.0

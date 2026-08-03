@@ -175,7 +175,7 @@ pub(super) const STRINGS: Strings = Strings {
          checked. Changes take effect on the next scan.",
     logging_label: "Diagnostic log",
     logging_checkbox: "Write diagnostic log (gametrimmer.log next to the app)",
-    logging_hint: "Only for troubleshooting: records errors and scan events. Off by default.",
+    logging_hint: "Records errors and scan events locally. On by default; you can turn it off.",
 
     libraries_header: "Libraries",
     btn_add_folder: "Add folder...",
@@ -203,7 +203,8 @@ pub(super) const STRINGS: Strings = Strings {
          marked that way is ever ticked for you.",
     onboarding_safety: "Scanning changes nothing on disk. Nothing is deleted until you tick \
          it and confirm.",
-    onboarding_logging_body: "Writes gametrimmer.log next to the program: errors, and what \
+    onboarding_logging_body:
+        "On by default. Writes gametrimmer.log next to the program: errors, and what \
          the scan did on which volume. Nothing leaves your machine - there is no telemetry \
          here. If you ever hit a wrong finding, that file is the difference between a fixable \
          report and guesswork. Settings \u{2192} Data & diagnostics switches it off again.",
@@ -260,7 +261,7 @@ pub(super) const STRINGS: Strings = Strings {
     deletion_completed: "Deletion completed.",
     database_compacted: "Database compacted.",
     database_cleared: "Database cleared.",
-    settings_not_saved_no_db: "Settings not saved: no database path.",
+    settings_not_saved_no_path: "Settings not saved: no path to gametrimmer.ini.",
 
     verb_scan: "Scanning",
     verb_analyze: "Analyzing",
