@@ -784,6 +784,13 @@ pub fn lang_reason(lang: Lang, reason: &LangReason) -> String {
         return reason.to_string();
     }
 
+    // "у теці 'Voices'" or "у корені гри" - the engine reports the directory
+    // as data and leaves this wording to whoever writes the sentence.
+    let location = |dir: &Option<String>| match dir {
+        Some(dir) => format!("у теці '{dir}'"),
+        None => "у корені гри".to_string(),
+    };
+
     let mut text = match &reason.evidence {
         LangEvidence::LocPair { token } => format!("токен '{token}' у явній loc-парі"),
         LangEvidence::TokenWithMarker { token, marker } => {
@@ -793,17 +800,19 @@ pub fn lang_reason(lang: Lang, reason: &LangReason) -> String {
             format!("токен '{token}' (мовна тека без явного контексту)")
         }
         LangEvidence::Family { languages, dir } => {
-            format!("мовна сім'я з {languages} мов у теці '{dir}'")
+            format!("мовна сім'я з {languages} мов {}", location(dir))
         }
-        LangEvidence::FamilyAtSharedPosition { languages, dir } => {
-            format!("мовна сім'я з {languages} мов у теці '{dir}' (спільна позиція токена)")
-        }
+        LangEvidence::FamilyAtSharedPosition { languages, dir } => format!(
+            "мовна сім'я з {languages} мов {} (спільна позиція токена)",
+            location(dir)
+        ),
         LangEvidence::SubfolderFamily { languages, dir } => {
-            format!("мовна сім'я підтек з {languages} мов у теці '{dir}'")
+            format!("мовна сім'я підтек з {languages} мов {}", location(dir))
         }
-        LangEvidence::SubfolderFamilyWithPrefix { languages, dir } => {
-            format!("мовна сім'я підтек зі спільним префіксом ({languages} мов) у теці '{dir}'")
-        }
+        LangEvidence::SubfolderFamilyWithPrefix { languages, dir } => format!(
+            "мовна сім'я підтек зі спільним префіксом ({languages} мов) {}",
+            location(dir)
+        ),
     };
     if let Some(marker) = &reason.marker {
         text.push_str(&format!("; маркер '{marker}'"));

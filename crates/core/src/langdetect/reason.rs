@@ -15,8 +15,10 @@ use std::fmt;
 
 /// The evidence that made the detector flag a file.
 ///
-/// `dir` fields hold a display form of the directory, already trimmed for
-/// reading rather than for path manipulation.
+/// `dir` names the directory the evidence was found in, or is `None` when
+/// that is the game's own root - which has no name worth printing, and whose
+/// wording ("the game root") therefore belongs to whoever writes the sentence
+/// rather than to the engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LangEvidence {
     /// A recognized language token inside an explicit localization pair, such
@@ -30,16 +32,28 @@ pub enum LangEvidence {
     BareToken { token: String },
     /// Sibling files in one directory whose names differ only by the language
     /// token (`Voice_english.pak` / `Voice_french.pak` / ...).
-    Family { languages: usize, dir: String },
+    Family {
+        languages: usize,
+        dir: Option<String>,
+    },
     /// A family found by the language token sitting at the same position in
     /// each sibling's name, rather than by the names being otherwise equal.
-    FamilyAtSharedPosition { languages: usize, dir: String },
+    FamilyAtSharedPosition {
+        languages: usize,
+        dir: Option<String>,
+    },
     /// Sibling subdirectories whose entire names are language tokens
     /// (`en/ de/ fr/ es/`).
-    SubfolderFamily { languages: usize, dir: String },
+    SubfolderFamily {
+        languages: usize,
+        dir: Option<String>,
+    },
     /// The same, where the language-named subdirectories also share a common
     /// prefix.
-    SubfolderFamilyWithPrefix { languages: usize, dir: String },
+    SubfolderFamilyWithPrefix {
+        languages: usize,
+        dir: Option<String>,
+    },
 }
 
 impl LangEvidence {
@@ -91,6 +105,14 @@ impl LangReason {
     }
 }
 
+/// "in folder 'Voices'" or "in the game root", in English.
+fn location(dir: &Option<String>) -> String {
+    match dir {
+        Some(dir) => format!("in folder '{dir}'"),
+        None => "in the game root".to_string(),
+    }
+}
+
 impl fmt::Display for LangReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.evidence {
@@ -100,23 +122,29 @@ impl fmt::Display for LangReason {
             LangEvidence::TokenWithMarker { token, marker } => {
                 write!(f, "token '{token}' + marker '{marker}'")?
             }
-            LangEvidence::BareToken { token } => {
-                write!(f, "token '{token}' (language folder with no explicit context)")?
-            }
-            LangEvidence::Family { languages, dir } => {
-                write!(f, "language family of {languages} languages in folder '{dir}'")?
-            }
+            LangEvidence::BareToken { token } => write!(
+                f,
+                "token '{token}' (language folder with no explicit context)"
+            )?,
+            LangEvidence::Family { languages, dir } => write!(
+                f,
+                "language family of {languages} languages {}",
+                location(dir)
+            )?,
             LangEvidence::FamilyAtSharedPosition { languages, dir } => write!(
                 f,
-                "language family of {languages} languages in folder '{dir}' (shared token position)"
+                "language family of {languages} languages {} (shared token position)",
+                location(dir)
             )?,
             LangEvidence::SubfolderFamily { languages, dir } => write!(
                 f,
-                "subfolder language family of {languages} languages in folder '{dir}'"
+                "subfolder language family of {languages} languages {}",
+                location(dir)
             )?,
             LangEvidence::SubfolderFamilyWithPrefix { languages, dir } => write!(
                 f,
-                "subfolder language family with a shared prefix ({languages} languages) in folder '{dir}'"
+                "subfolder language family with a shared prefix ({languages} languages) {}",
+                location(dir)
             )?,
         }
         match &self.marker {
@@ -134,7 +162,7 @@ mod tests {
     fn a_marker_is_appended_to_the_evidence_it_corroborates() {
         let reason = LangReason::new(LangEvidence::Family {
             languages: 4,
-            dir: "Voices".to_string(),
+            dir: Some("Voices".to_string()),
         })
         .with_marker(Some("soundbanks"));
 
@@ -160,7 +188,7 @@ mod tests {
     /// the others must never be counted as family evidence.
     #[test]
     fn only_the_family_shapes_report_themselves_as_family() {
-        let dir = || "Data".to_string();
+        let dir = || Some("Data".to_string());
         let family = [
             LangEvidence::Family {
                 languages: 3,

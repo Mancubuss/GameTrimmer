@@ -1676,7 +1676,7 @@ mod tests {
             confidence: 90,
             reason: LangReason::new(LangEvidence::Family {
                 languages: 3,
-                dir: "Docs".to_string(),
+                dir: Some("Docs".to_string()),
             }),
         }
     }

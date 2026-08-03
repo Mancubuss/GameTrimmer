@@ -129,12 +129,10 @@ fn dir_key(segs: &[Segment], upto: usize) -> String {
         .join("\\")
 }
 
-fn display_dir(dir_key: &str) -> String {
-    if dir_key.is_empty() {
-        "<корінь>".to_string()
-    } else {
-        dir_key.to_string()
-    }
+/// The directory a family was found in, or `None` for the game's own root -
+/// whoever renders the reason words that, not this module.
+fn display_dir(dir_key: &str) -> Option<String> {
+    (!dir_key.is_empty()).then(|| dir_key.to_string())
 }
 
 fn shape_of(filename_lower: &str, start: usize, end: usize) -> String {

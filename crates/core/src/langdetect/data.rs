@@ -126,8 +126,8 @@ impl LangPack {
         let pack: LangPack = serde_json::from_str(json)?;
         if pack.version > LANG_PACK_VERSION {
             return Err(CoreError::Other(format!(
-                "l10n_rules.json version {} is newer than supported {} — \
-                 оновіть GameTrimmer або використайте старіший пакет правил",
+                "l10n_rules.json version {} is newer than supported {} - \
+                 update GameTrimmer, or use an older rules pack",
                 pack.version, LANG_PACK_VERSION
             )));
         }
