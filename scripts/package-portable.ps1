@@ -18,9 +18,16 @@
 #                                    MIT вимагає, щоб її текст їхав із копіями)
 #
 # Шлях до зібраного exe обчислюється через `cargo metadata`, а не
-# `target/release/...` напряму, бо `.cargo/config.toml` виносить target-dir
-# за межі проєкту (кириличний шлях репозиторію ламає autocfg - див.
-# CLAUDE.md і docs/portability-audit.md, розділ «Побічні спостереження»).
+# `target/release/...` напряму: target-dir не обов'язково лежить у проєкті -
+# його зсувають CARGO_TARGET_DIR, `build.target-dir` у будь-якому з
+# конфігураційних файлів Cargo і зміна розкладки workspace. `cargo metadata`
+# відповідає з того самого джерела, з якого збирає сама збірка, тож розійтися
+# вони не можуть.
+#
+# Історична примітка: колись тут справді жив `.cargo/config.toml`, який виносив
+# target-dir назовні через баг autocfg на кириличному шляху. Обхід прибрано
+# 2026-07-24 (6814264), і сьогодні target-dir - звичайний `target/` у корені.
+# `cargo metadata` лишається не через це, а з причини вище.
 #
 # Запуск (з кореня репозиторію або звідки завгодно):
 #   pwsh -File scripts\package-portable.ps1
@@ -43,7 +50,7 @@ try {
     cargo build --release -p gametrimmer
     if ($LASTEXITCODE -ne 0) { throw "cargo build --release провалився" }
 
-    # 3. Реальний target-dir (враховує .cargo/config.toml)
+    # 3. Реальний target-dir, як його бачить сама збірка
     $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
     $targetDir = $metadata.target_directory
     $exePath = Join-Path $targetDir "release\gametrimmer.exe"

@@ -253,7 +253,9 @@ Folder scan перевіряє `A:\`–`Z:\` через звичайні filesys
 
 - README каже, що Cautious включає `redist`, але код і тести виключають Redist із safe selection: [README.md:68-71](../README.md#L68-L71), [model.rs:326-338](../crates/app/src/model.rs#L326-L338).
 - README посилається на `.cargo/config.toml`, але файл відсутній: [README.md:203-204](../README.md#L203-L204).
+  - _Закрито 2026-08-03: README розділено на англійський і український, згадки не лишилося в жодному._
 - Packaging-коментарі згадують `.cargo/config.toml` і `CLAUDE.md`, яких у поточній копії немає.
+  - _Закрито 2026-08-03: коментарі в `scripts/package-portable.ps1` переписано — обхід прибрано ще 2026-07-24 (`6814264`), і `cargo metadata` там лишився з іншої, чинної причини._
 - Маніфест описує Windows 10/11, але містить також GUID Windows 8.1: [gametrimmer.manifest:13-15](../crates/app/assets/gametrimmer.manifest#L13-L15).
 - Частина CLI/status/error текстів локалізована, частина жорстко зафіксована українською або англійською.
 
