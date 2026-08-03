@@ -1,5 +1,5 @@
-//! Trust levels for the language dictionary (see docs/04_implementation_plan.md
-//! §5.2). The dictionary *data* — canonical language keys, their aliases per
+//! Trust levels for the language dictionary. The dictionary *data* —
+//! canonical language keys, their aliases per
 //! level, the industry-word list, the default keep-list — lives in
 //! `l10n_rules.json` at the repo root (parsed by `data.rs`'s
 //! `LangPack::builtin`), not in Rust source; this module keeps only the

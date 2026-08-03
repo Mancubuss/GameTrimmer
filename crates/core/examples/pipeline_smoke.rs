@@ -82,8 +82,8 @@ fn main() {
         library.games.len()
     );
 
-    // Default keep-list (uk+en) - see docs/04_implementation_plan.md; a
-    // configurable keep-list is a future phase.
+    // Default keep-list (uk+en) as shipped in `l10n_rules.json`; this smoke
+    // test deliberately does not read the user's configured keep-list.
     let lang_detector = LangDetector::new();
 
     let mut classified: Vec<ClassifiedFile> = Vec::new();

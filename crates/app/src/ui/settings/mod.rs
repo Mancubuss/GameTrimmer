@@ -1,6 +1,6 @@
 //! The settings dialog: a left-nav list of five sections plus one right-hand
 //! scroll area. Replaces the single modal with a `ScrollArea` nested inside
-//! another `ScrollArea` and a collapsed "Advanced" page (audit §6.2, §6.3).
+//! another `ScrollArea` and a collapsed "Advanced" page.
 //! Every change is applied and persisted immediately by the section that owns
 //! it, so "Done" only dismisses the dialog - there is no save step to forget.
 //! The footer says whether the last write actually landed, because the
@@ -9,7 +9,7 @@
 //! One module per section, each a plain `show(app, ui)` the harness can drive
 //! directly. They were ported one per commit onto this frame, in ascending
 //! order of risk, so the largest landed on geometry four others had already
-//! held stable. See `docs/ui-redesign-plan-2026-07-31.md` §5.
+//! held stable.
 //!
 //! # Why the section viewport has a fixed height
 //!

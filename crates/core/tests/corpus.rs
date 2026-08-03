@@ -1,5 +1,4 @@
-//! Corpus regression test for the localization-detection engine
-//! (docs/04_implementation_plan.md §5.6).
+//! Corpus regression test for the localization-detection engine.
 //!
 //! Reads `tests/corpus/corpus.tsv` (repo root — see
 //! `tests/corpus/README.md` for provenance and format), groups rows by

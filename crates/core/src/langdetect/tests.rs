@@ -1,5 +1,6 @@
-//! Canonical examples from docs/04_implementation_plan.md §5.3/§5.4 plus the
-//! false-positive traps and the Video/Font extension (2026-07-12 change).
+//! Canonical examples for the context markers (`markers.rs`) and the
+//! language-family heuristic (`family.rs`), plus the false-positive traps
+//! and the Video/Font extension (2026-07-12 change).
 
 use super::*;
 

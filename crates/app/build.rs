@@ -6,8 +6,8 @@
 //!
 //! `winit` (via `eframe`) already calls `SetProcessDpiAwarenessContext` at
 //! startup on its own, so this manifest is defense-in-depth rather than a
-//! fix for an observed bug - see `docs/portability-audit.md` for the manual
-//! 100/150/200% verification this doesn't replace. It also sets
+//! fix for an observed bug - it does not replace the manual 100/150/200%
+//! scaling checks in `docs/portability-test-cases.md`. It also sets
 //! `longPathAware`, which lifts the MAX_PATH=260 limit for this process on
 //! deeply nested portable install locations.
 

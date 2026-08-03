@@ -201,11 +201,12 @@ those who understand the risk.
 - A writable folder is a hard requirement, not a preference.
 - Windows 10/11, x64. The manifest declares per-monitor DPI v2 and long paths.
 - The executable is not code-signed, so SmartScreen will warn on first run.
-- Scenarios verified by reasoning only (running from an exFAT/FAT32 stick,
-  unpacking into `Program Files` without rights, 100/150/200% scaling, Recycle
-  Bin on removable media) are listed in
-  [`docs/portability-audit.md`](docs/portability-audit.md). If you hit any of
-  them, please report it.
+- Some scenarios have been reasoned through and covered by automated tests,
+  but not yet run on real hardware: an exFAT/FAT32 stick, unpacking into
+  `Program Files` without rights, 100/150/200% display scaling, and the
+  Recycle Bin on removable media. The manual steps for them are in
+  [`docs/portability-test-cases.md`](docs/portability-test-cases.md). If you
+  hit a problem in any of these, please report it.
 
 ## Rule packs
 
@@ -263,16 +264,15 @@ cargo test --workspace
 
 The portable zip is built by `scripts/package-portable.ps1`.
 
-[`docs/`](docs/README.md) has the manual test plan, the portability cases and
-the specifications the source comments cite by section. `docs/archive/` holds
-the project's history — dated snapshots, kept for the "why", not to be read as
-current guidance.
+[`docs/`](docs/README.md) has the manual test plan and the portability cases.
+Design documents are not published: source comments explain themselves rather
+than citing a specification by section.
 
 ## History
 
-Earlier attempts are preserved in archive branches: `legacy/cpp-qt` (C++20 +
-Qt 6.8), `legacy/winapi-cpp` (C++/WinAPI), `legacy/python` (the first
-prototype).
+This is the fourth attempt: a Python prototype came first, then C++/WinAPI,
+then C++20 with Qt 6.8, and finally this one. The earlier three are not
+published — what was worth keeping from them was carried over and rewritten.
 
 ## Acknowledgements
 

@@ -278,16 +278,16 @@ mod tests {
 
     /// `db_path()` (and, by the same `exe_dir()` construction, `ensure_rules_path()`/
     /// `ensure_l10n_rules_path()`) must resolve identically no matter what the
-    /// process's current working directory happens to be at launch - this is
-    /// P0 item 1 of `docs/portability-audit.md`: double-clicking the exe from
-    /// Explorer and running it from `cmd.exe` in an unrelated folder must give
-    /// the same data paths.
+    /// process's current working directory happens to be at launch:
+    /// double-clicking the exe from Explorer and running it from `cmd.exe`
+    /// in an unrelated folder must give the same data paths, or a portable
+    /// install would grow a second database depending on how it was started.
     ///
     /// This changes the process-global CWD, which would be unsafe if any
-    /// other code path read it - the audit's grep sweep (finding #23)
-    /// confirmed nothing in the workspace calls `std::env::current_dir()`,
-    /// so no other test can observe or be perturbed by this change. The
-    /// original CWD is restored before returning either way.
+    /// other code path read it - nothing in the workspace calls
+    /// `std::env::current_dir()` outside this test, so no other test can
+    /// observe or be perturbed by this change. The original CWD is restored
+    /// before returning either way.
     #[test]
     fn db_path_is_independent_of_current_working_directory() {
         let original_cwd = std::env::current_dir().expect("read original cwd");

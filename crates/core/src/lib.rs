@@ -17,8 +17,7 @@ mod portability_regression_tests {
     /// `eframe`'s `persistence` feature (pulled in transitively via
     /// `directories` + `ron`) would make `eframe::run_native` write window
     /// state to `%APPDATA%` on its own, outside this app's "everything next
-    /// to the exe" contract - and nothing in this codebase enables it today
-    /// (see `docs/portability-audit.md`, findings #20 and P0 item 2).
+    /// to the exe" contract - and nothing in this codebase enables it today.
     ///
     /// This is a regression guard, not a correctness test: it greps the
     /// workspace `Cargo.lock` for those two crates so that a future `eframe`
@@ -36,7 +35,7 @@ mod portability_regression_tests {
                 "Cargo.lock now contains {forbidden} - this likely means eframe's \
                  `persistence` feature got enabled (directly or transitively), which \
                  would write window state to %APPDATA%. If intentional, update this \
-                 test and docs/portability-audit.md finding #20 to match."
+                 test and the README's \"leaves no traces\" promise to match."
             );
         }
     }

@@ -1,5 +1,5 @@
-//! The "language family" heuristic (docs/04_implementation_plan.md §5.4) —
-//! the strongest signal in the engine. Three independent shapes of evidence:
+//! The "language family" heuristic — the strongest signal in the engine.
+//! Three independent shapes of evidence:
 //!
 //! 1. **File-name family**: sibling files in the same directory whose names
 //!    differ only by the recognized language token

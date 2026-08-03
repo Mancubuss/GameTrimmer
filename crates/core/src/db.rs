@@ -95,10 +95,9 @@ fn configure(conn: &Connection) -> Result<()> {
     // Keep SQLite's own temp files (used by `VACUUM`, large sorts, and
     // transient indices) in memory rather than the OS temp directory.
     // Without this, `compact()`'s `VACUUM` can spill to `%TEMP%` - the one
-    // way the app's state could leak outside its own portable folder (see
-    // docs/portability-audit.md, finding #10). `MEMORY` is fine here: the
-    // database itself is already file-backed, so this only affects
-    // short-lived scratch space, not durability.
+    // way the app's state could leak outside its own portable folder.
+    // `MEMORY` is fine here: the database itself is already file-backed, so
+    // this only affects short-lived scratch space, not durability.
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     Ok(())
 }
@@ -674,8 +673,8 @@ mod tests {
         assert_eq!(path, "D:/SteamLibrary");
     }
 
-    /// `temp_store=MEMORY` must be in effect after `open` - this is the
-    /// portability guarantee from finding #10 in `docs/portability-audit.md`:
+    /// `temp_store=MEMORY` must be in effect after `open` - this is what
+    /// keeps the app's "everything stays next to the exe" promise honest:
     /// `VACUUM`/large sorts must not spill temp files into `%TEMP%`.
     #[test]
     fn open_sets_temp_store_to_memory() {

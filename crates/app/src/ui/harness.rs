@@ -5,7 +5,7 @@
 //! in a screenshot. Four rounds, four symptoms, all green on
 //! `build`/`test`/`clippy` - including the round that panics on tab switch.
 //! Correctness belongs in `cargo test`; only aesthetic judgement should need
-//! a human. See `docs/ui-redesign-plan-2026-07-31.md`.
+//! a human.
 //!
 //! Every `ui` submodule has the same shape, `show(&mut GameTrimmerApp,
 //! &mut egui::Ui)`, so a harness can drive one directly through

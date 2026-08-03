@@ -1759,9 +1759,11 @@ fn theme_preference(theme: Theme) -> egui::ThemePreference {
 impl eframe::App for GameTrimmerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        // eframe's built-in persistence is deliberately disabled (see
-        // docs/portability-audit.md) so this app owns "did the theme
-        // change" itself: applying the current setting every frame is
+        // eframe's built-in persistence is deliberately disabled (it would
+        // write window state to %APPDATA%; guarded by
+        // `cargo_lock_does_not_pull_in_eframe_persistence_deps` in
+        // `gametrimmer_core`), so this app owns "did the theme change"
+        // itself: applying the current setting every frame is
         // cheap (it just writes an enum into egui's in-memory options) and
         // means a change from the settings dialog takes effect the same
         // frame with no separate "apply" step to forget.

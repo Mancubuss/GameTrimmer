@@ -1,5 +1,5 @@
-//! Read-only corpus collection tool for the localization-detection engine
-//! (docs/04_implementation_plan.md §5). Discovers real Steam libraries,
+//! Read-only corpus collection tool for the localization-detection engine.
+//! Discovers real Steam libraries,
 //! scans each game's files in memory (no database), and extracts candidate
 //! paths that contain a potential language token. Candidates are balanced
 //! across libraries, given a draft `expected` label via conservative rules,
@@ -28,7 +28,8 @@ use gametrimmer_core::providers::{GameInstall, LibraryProvider};
 use gametrimmer_core::scanner::{scan_games_parallel, FileEntry};
 
 // ---------------------------------------------------------------------
-// Dictionaries (docs/04_implementation_plan.md §5.2, and the task spec).
+// Dictionaries. Deliberately a simplified draft of what `langdetect::dict`
+// does - this tool must not depend on the engine it collects test data for.
 // ---------------------------------------------------------------------
 
 const FULL_NAMES: &[&str] = &[

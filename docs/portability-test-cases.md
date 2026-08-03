@@ -1,6 +1,6 @@
 # Портабельність — покрокові ручні тест-кейси
 
-Закривають пункти P2 з [portability-audit.md](portability-audit.md) (7–10) та DPI-чек-лист.
+Закривають те, що автотести перевірити не можуть: поведінку на реальному знімному носії, на FAT32/exFAT, у теці без прав на запис і при різному масштабуванні екрана.
 
 **Об'єкт тестування:** `dist/GameTrimmer-<version>-portable-win64.zip` (збирається `scripts/package-portable.ps1`; вміст: `gametrimmer.exe`, `rules.json`, `l10n_rules.json`, `README.md`, `LICENSE`).
 

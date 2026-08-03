@@ -1,7 +1,7 @@
 //! Localization detection engine: finds files that belong to a specific
 //! language's localization (voice-over, subtitles, UI text, cinematics,
 //! fonts) while never flagging ordinary game resources whose names merely
-//! resemble language identifiers. See docs/04_implementation_plan.md §5.
+//! resemble language identifiers.
 //!
 //! Zero false positives on ordinary game resources matters more than
 //! completeness: a bare two-letter code (`it`, `no`, `de`, `es`, ...) never

@@ -1,7 +1,6 @@
 //! Context markers: positive (audio/text/video/font) and negative segment
-//! tokens that steer confidence and `LangKind` (see
-//! docs/04_implementation_plan.md §5.3, extended with Video/Font per the
-//! 2026-07-12 requirement change).
+//! tokens that steer confidence and `LangKind`. Audio and text were the
+//! original two categories; Video and Font were added on 2026-07-12.
 //!
 //! Markers match as **whole segment tokens**, never substrings, and a match
 //! anywhere along the path affects the whole file (not just the adjacent

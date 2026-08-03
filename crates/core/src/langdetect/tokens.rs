@@ -1,4 +1,4 @@
-//! Tokenization: rel_path -> segments -> tokens (see docs/04_implementation_plan.md §5.1).
+//! Tokenization: rel_path -> segments -> tokens.
 //!
 //! Everything is lowercased and byte-offset-tracked within its segment so
 //! that recognized language tokens can later be excised to build a "shape"

@@ -23,9 +23,9 @@ strip = true
 # Measured cost (2026-07-19, this exact tree, opt-level=z/lto=fat/
 # codegen-units=1/strip=true unchanged in both builds): 10,913,792 bytes
 # with "abort" vs. 13,189,120 bytes with "unwind" - about +2.18 MiB
-# (+20.9%). That is real, not "a few hundred KiB" as originally guessed in
-# docs/portability-audit.md finding #22 - flagged there as a deviation from
-# the audit's own estimate. Kept as "unwind" anyway: this project's stated
+# (+20.9%). That is real, not the "a few hundred KiB" this was originally
+# guessed to cost - measure before trading it away. Kept as "unwind"
+# anyway: this project's stated
 # size sensitivity is about install/download footprint (portable zip on a
 # flash drive), and a process-ending panic during a multi-hour scan (losing
 # all progress) is a worse user-facing outcome than ~2 MiB. If size

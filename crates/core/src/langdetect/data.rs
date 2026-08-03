@@ -8,8 +8,8 @@
 //! `rules.json` seeds `gametrimmer_core::rules::BUILTIN_RULES_JSON`). A
 //! `l10n_rules.json` file next to the *executable* overrides the embedded
 //! copy at runtime, which is what makes community rule packs possible
-//! (docs/05_rules_pack_plan.md). `dict.rs` and `markers.rs` now hold only
-//! the algorithm-facing types (`Level`, `MarkerKind`, ...) and the design
+//! (the merge itself lives in `crate::packs`). `dict.rs` and `markers.rs`
+//! now hold only the algorithm-facing types (`Level`, `MarkerKind`, ...) and the design
 //! rationale behind the word lists — the words themselves live in the JSON
 //! file so editing them never means touching Rust source.
 
