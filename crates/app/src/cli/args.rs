@@ -11,6 +11,31 @@ use std::path::PathBuf;
 
 use gametrimmer_core::settings::SelectionProfile;
 
+/// Whether this build accepts any CLI flag at all.
+///
+/// Off in the v1 release build: the headless mode as it stands cannot delete
+/// (`--apply` is gated separately, see [`APPLY_ENABLED`]) and, because the exe
+/// is built with `windows_subsystem = "windows"`, the shell prints its prompt
+/// again the instant the process is launched - the report then arrives *under*
+/// that prompt, and the operator is left pressing Enter at a console that looks
+/// finished. A read-only reporter that does not hand the user back their
+/// console is not worth its surface area in a first release.
+///
+/// Same `const`-not-`#[cfg]` treatment as [`APPLY_ENABLED`], and for the same
+/// reason: everything under `cli` stays compiled, type-checked and unit-tested
+/// in the default build, so switching it back on is a build flag rather than an
+/// archaeology exercise.
+pub const HEADLESS_ENABLED: bool = cfg!(feature = "headless");
+
+/// What a build without the `headless` feature answers to *any* argument.
+///
+/// Any argument, not just the headless-selecting ones: `--help` and `--version`
+/// exist to describe a command-line mode, and help that documents flags the
+/// build refuses is worse than no help at all.
+const HEADLESS_DISABLED_MSG: &str = "GameTrimmer has no command-line mode in this build: the \
+     headless run could not delete anything, and it returned the shell prompt before its own \
+     output, so v1 ships without it. Start GameTrimmer with no arguments to use the app";
+
 /// Whether this build accepts `--apply` at all (GT-15).
 ///
 /// A plain `const` rather than `#[cfg]` attributes on every apply-related
@@ -72,6 +97,10 @@ pub struct HeadlessConfig {
 /// Parses process arguments (excluding `argv[0]`) into an [`Invocation`].
 ///
 /// Rules:
+/// - No arguments at all -> [`Invocation::Gui`], in every build. Double-clicking
+///   the exe is unaffected by any of the rest of this.
+/// - In a build without the `headless` feature, *any* argument ->
+///   [`Invocation::Error`] naming the absent mode (see [`HEADLESS_ENABLED`]).
 /// - No recognized flag at all -> [`Invocation::Gui`].
 /// - `--help`/`-h` (plus the Windows spellings `/?`, `-?`, `/h`, `/help`) and
 ///   `--version`/`-V` short-circuit (help wins over version).
@@ -82,6 +111,17 @@ pub struct HeadlessConfig {
 /// - An unknown flag, a missing/invalid value, or a conflicting combination
 ///   yields [`Invocation::Error`] rather than a best-guess.
 pub fn parse_invocation(args: &[String]) -> Invocation {
+    // Before any parsing, so a build without the mode answers one thing to
+    // every argument rather than "unknown argument" to some and a report to
+    // others. No arguments still means the GUI, in every build.
+    if !HEADLESS_ENABLED {
+        return if args.is_empty() {
+            Invocation::Gui
+        } else {
+            Invocation::Error(HEADLESS_DISABLED_MSG.to_string())
+        };
+    }
+
     let mut scan = false;
     let mut apply = false;
     let mut dry_run = false;
@@ -222,202 +262,250 @@ mod tests {
         assert_eq!(parse_invocation(&args(&[])), Invocation::Gui);
     }
 
-    #[test]
-    fn scan_alone_is_dry_run_with_no_explicit_profile() {
-        assert_eq!(
-            parse_invocation(&args(&["--scan"])),
-            Invocation::Headless(HeadlessConfig {
-                mode: Mode::DryRun,
-                profile: None,
-                report: None,
-            })
-        );
-    }
+    /// The v1 release build. Every argument gets the same answer, naming the
+    /// absent mode - not "unknown argument", which would read as a typo in a
+    /// flag that used to work, and not a usage block listing flags this build
+    /// refuses.
+    #[cfg(not(feature = "headless"))]
+    mod without_the_feature {
+        use super::*;
 
-    #[test]
-    fn dry_run_flag_is_headless_dry_run() {
-        assert_eq!(
-            parse_invocation(&args(&["--dry-run"])),
-            Invocation::Headless(HeadlessConfig {
-                mode: Mode::DryRun,
-                profile: None,
-                report: None,
-            })
-        );
-    }
-
-    /// GT-15: in a build without the `cli-apply` feature - which is what v1
-    /// ships - the flag is refused outright. Never downgraded to a dry run:
-    /// someone who typed `--apply` expects files to go, and a run that quietly
-    /// deleted nothing would read as success.
-    #[cfg(not(feature = "cli-apply"))]
-    #[test]
-    fn apply_is_refused_in_a_build_without_the_feature() {
-        for argv in [
-            vec!["--apply"],
-            vec!["--apply", "--profile", "aggressive"],
-            vec!["--apply", "--dry-run", "--profile", "cautious"],
-        ] {
-            match parse_invocation(&args(&argv)) {
-                Invocation::Error(msg) => assert!(
-                    msg.contains("is switched off in this build"),
-                    "expected the disabled-build reason for {argv:?}, got: {msg}"
-                ),
-                other => panic!("expected a refusal for {argv:?}, got {other:?}"),
+        #[test]
+        fn every_flag_is_refused_with_the_same_reason() {
+            for argv in [
+                vec!["--scan"],
+                vec!["--dry-run"],
+                vec!["--report", "out.txt"],
+                vec!["--profile", "balanced"],
+                vec!["--apply", "--profile", "aggressive"],
+                vec!["--help"],
+                vec!["/?"],
+                vec!["--version"],
+                vec!["--frobnicate"],
+            ] {
+                match parse_invocation(&args(&argv)) {
+                    Invocation::Error(msg) => assert!(
+                        msg.contains("no command-line mode in this build"),
+                        "expected the disabled-mode reason for {argv:?}, got: {msg}"
+                    ),
+                    other => panic!("expected a refusal for {argv:?}, got {other:?}"),
+                }
             }
         }
-    }
 
-    #[cfg(feature = "cli-apply")]
-    #[test]
-    fn apply_requires_explicit_profile() {
-        match parse_invocation(&args(&["--apply"])) {
-            Invocation::Error(msg) => assert!(msg.contains("--profile"), "got: {msg}"),
-            other => panic!("expected usage error, got {other:?}"),
+        /// The one thing switching the mode off must not touch: double-clicking
+        /// the exe passes no arguments and has to launch the app.
+        #[test]
+        fn a_bare_launch_still_opens_the_window() {
+            assert_eq!(parse_invocation(&args(&[])), Invocation::Gui);
         }
     }
 
-    #[cfg(feature = "cli-apply")]
-    #[test]
-    fn apply_with_profile_is_apply_mode() {
-        assert_eq!(
-            parse_invocation(&args(&["--apply", "--profile", "aggressive"])),
-            Invocation::Headless(HeadlessConfig {
-                mode: Mode::Apply,
-                profile: Some(SelectionProfile::Aggressive),
-                report: None,
-            })
-        );
-    }
+    /// Everything the headless mode does when it is switched on. Compiled and
+    /// run only in a `--features headless` build - in the default one every
+    /// argument is refused before parsing begins, so these would all be
+    /// asserting against that refusal instead of against the parser.
+    #[cfg(feature = "headless")]
+    mod enabled {
+        use super::*;
 
-    #[cfg(feature = "cli-apply")]
-    #[test]
-    fn apply_and_dry_run_conflict() {
-        match parse_invocation(&args(&["--apply", "--dry-run", "--profile", "cautious"])) {
-            Invocation::Error(msg) => assert!(msg.contains("mutually exclusive"), "got: {msg}"),
-            other => panic!("expected conflict error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn profile_accepts_equals_form() {
-        assert_eq!(
-            parse_invocation(&args(&["--scan", "--profile=balanced"])),
-            Invocation::Headless(HeadlessConfig {
-                mode: Mode::DryRun,
-                profile: Some(SelectionProfile::Balanced),
-                report: None,
-            })
-        );
-    }
-
-    #[test]
-    fn report_captures_path_in_both_forms() {
-        let space = parse_invocation(&args(&["--scan", "--report", "out.txt"]));
-        let equals = parse_invocation(&args(&["--scan", "--report=out.txt"]));
-        let expected = Invocation::Headless(HeadlessConfig {
-            mode: Mode::DryRun,
-            profile: None,
-            report: Some(PathBuf::from("out.txt")),
-        });
-        assert_eq!(space, expected);
-        assert_eq!(equals, expected);
-    }
-
-    #[test]
-    fn report_alone_is_headless_dry_run() {
-        // Even with no --scan/--dry-run, asking for a report means "run headless".
-        assert_eq!(
-            parse_invocation(&args(&["--report", "r.txt"])),
-            Invocation::Headless(HeadlessConfig {
-                mode: Mode::DryRun,
-                profile: None,
-                report: Some(PathBuf::from("r.txt")),
-            })
-        );
-    }
-
-    #[test]
-    fn unknown_flag_is_error() {
-        match parse_invocation(&args(&["--frobnicate"])) {
-            Invocation::Error(msg) => assert!(msg.contains("unknown argument"), "got: {msg}"),
-            other => panic!("expected error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn invalid_profile_name_is_error() {
-        match parse_invocation(&args(&["--scan", "--profile", "reckless"])) {
-            Invocation::Error(msg) => assert!(msg.contains("reckless"), "got: {msg}"),
-            other => panic!("expected error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn profile_missing_value_at_end_is_error() {
-        match parse_invocation(&args(&["--scan", "--profile"])) {
-            Invocation::Error(msg) => assert!(msg.contains("needs a value"), "got: {msg}"),
-            other => panic!("expected error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn empty_equals_value_is_error() {
-        match parse_invocation(&args(&["--report="])) {
-            Invocation::Error(msg) => assert!(msg.contains("needs a value"), "got: {msg}"),
-            other => panic!("expected error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn help_wins_over_everything() {
-        assert_eq!(
-            parse_invocation(&args(&["--apply", "--help"])),
-            Invocation::Help
-        );
-        assert_eq!(parse_invocation(&args(&["-h"])), Invocation::Help);
-    }
-
-    /// The Windows help conventions must reach the same place as `--help`
-    /// (MT-T01) - `/?` in particular, which is what an operator types first on
-    /// this platform.
-    #[test]
-    fn windows_help_conventions_are_accepted_too() {
-        for flag in ["/?", "-?", "/h", "/help"] {
+        #[test]
+        fn scan_alone_is_dry_run_with_no_explicit_profile() {
             assert_eq!(
-                parse_invocation(&args(&[flag])),
-                Invocation::Help,
-                "flag: {flag}"
+                parse_invocation(&args(&["--scan"])),
+                Invocation::Headless(HeadlessConfig {
+                    mode: Mode::DryRun,
+                    profile: None,
+                    report: None,
+                })
             );
         }
-    }
 
-    #[test]
-    fn version_flag() {
-        assert_eq!(parse_invocation(&args(&["--version"])), Invocation::Version);
-        assert_eq!(parse_invocation(&args(&["-V"])), Invocation::Version);
-    }
+        #[test]
+        fn dry_run_flag_is_headless_dry_run() {
+            assert_eq!(
+                parse_invocation(&args(&["--dry-run"])),
+                Invocation::Headless(HeadlessConfig {
+                    mode: Mode::DryRun,
+                    profile: None,
+                    report: None,
+                })
+            );
+        }
 
-    #[test]
-    fn help_beats_version_when_both_present() {
-        assert_eq!(
-            parse_invocation(&args(&["--version", "--help"])),
-            Invocation::Help
-        );
-    }
+        /// GT-15: in a build without the `cli-apply` feature - which is what v1
+        /// ships - the flag is refused outright. Never downgraded to a dry run:
+        /// someone who typed `--apply` expects files to go, and a run that quietly
+        /// deleted nothing would read as success.
+        #[cfg(not(feature = "cli-apply"))]
+        #[test]
+        fn apply_is_refused_in_a_build_without_the_feature() {
+            for argv in [
+                vec!["--apply"],
+                vec!["--apply", "--profile", "aggressive"],
+                vec!["--apply", "--dry-run", "--profile", "cautious"],
+            ] {
+                match parse_invocation(&args(&argv)) {
+                    Invocation::Error(msg) => assert!(
+                        msg.contains("is switched off in this build"),
+                        "expected the disabled-build reason for {argv:?}, got: {msg}"
+                    ),
+                    other => panic!("expected a refusal for {argv:?}, got {other:?}"),
+                }
+            }
+        }
 
-    #[test]
-    #[cfg(feature = "cli-apply")]
-    fn apply_accepts_custom_profile_explicitly() {
-        // `custom` is a valid explicit choice (the plain confidence path); only
-        // *omitting* the profile under --apply is rejected.
-        assert_eq!(
-            parse_invocation(&args(&["--apply", "--profile", "custom"])),
-            Invocation::Headless(HeadlessConfig {
-                mode: Mode::Apply,
-                profile: Some(SelectionProfile::Custom),
-                report: None,
-            })
-        );
+        #[cfg(feature = "cli-apply")]
+        #[test]
+        fn apply_requires_explicit_profile() {
+            match parse_invocation(&args(&["--apply"])) {
+                Invocation::Error(msg) => assert!(msg.contains("--profile"), "got: {msg}"),
+                other => panic!("expected usage error, got {other:?}"),
+            }
+        }
+
+        #[cfg(feature = "cli-apply")]
+        #[test]
+        fn apply_with_profile_is_apply_mode() {
+            assert_eq!(
+                parse_invocation(&args(&["--apply", "--profile", "aggressive"])),
+                Invocation::Headless(HeadlessConfig {
+                    mode: Mode::Apply,
+                    profile: Some(SelectionProfile::Aggressive),
+                    report: None,
+                })
+            );
+        }
+
+        #[cfg(feature = "cli-apply")]
+        #[test]
+        fn apply_and_dry_run_conflict() {
+            match parse_invocation(&args(&["--apply", "--dry-run", "--profile", "cautious"])) {
+                Invocation::Error(msg) => assert!(msg.contains("mutually exclusive"), "got: {msg}"),
+                other => panic!("expected conflict error, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn profile_accepts_equals_form() {
+            assert_eq!(
+                parse_invocation(&args(&["--scan", "--profile=balanced"])),
+                Invocation::Headless(HeadlessConfig {
+                    mode: Mode::DryRun,
+                    profile: Some(SelectionProfile::Balanced),
+                    report: None,
+                })
+            );
+        }
+
+        #[test]
+        fn report_captures_path_in_both_forms() {
+            let space = parse_invocation(&args(&["--scan", "--report", "out.txt"]));
+            let equals = parse_invocation(&args(&["--scan", "--report=out.txt"]));
+            let expected = Invocation::Headless(HeadlessConfig {
+                mode: Mode::DryRun,
+                profile: None,
+                report: Some(PathBuf::from("out.txt")),
+            });
+            assert_eq!(space, expected);
+            assert_eq!(equals, expected);
+        }
+
+        #[test]
+        fn report_alone_is_headless_dry_run() {
+            // Even with no --scan/--dry-run, asking for a report means "run headless".
+            assert_eq!(
+                parse_invocation(&args(&["--report", "r.txt"])),
+                Invocation::Headless(HeadlessConfig {
+                    mode: Mode::DryRun,
+                    profile: None,
+                    report: Some(PathBuf::from("r.txt")),
+                })
+            );
+        }
+
+        #[test]
+        fn unknown_flag_is_error() {
+            match parse_invocation(&args(&["--frobnicate"])) {
+                Invocation::Error(msg) => assert!(msg.contains("unknown argument"), "got: {msg}"),
+                other => panic!("expected error, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn invalid_profile_name_is_error() {
+            match parse_invocation(&args(&["--scan", "--profile", "reckless"])) {
+                Invocation::Error(msg) => assert!(msg.contains("reckless"), "got: {msg}"),
+                other => panic!("expected error, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn profile_missing_value_at_end_is_error() {
+            match parse_invocation(&args(&["--scan", "--profile"])) {
+                Invocation::Error(msg) => assert!(msg.contains("needs a value"), "got: {msg}"),
+                other => panic!("expected error, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn empty_equals_value_is_error() {
+            match parse_invocation(&args(&["--report="])) {
+                Invocation::Error(msg) => assert!(msg.contains("needs a value"), "got: {msg}"),
+                other => panic!("expected error, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn help_wins_over_everything() {
+            assert_eq!(
+                parse_invocation(&args(&["--apply", "--help"])),
+                Invocation::Help
+            );
+            assert_eq!(parse_invocation(&args(&["-h"])), Invocation::Help);
+        }
+
+        /// The Windows help conventions must reach the same place as `--help`
+        /// (MT-T01) - `/?` in particular, which is what an operator types first on
+        /// this platform.
+        #[test]
+        fn windows_help_conventions_are_accepted_too() {
+            for flag in ["/?", "-?", "/h", "/help"] {
+                assert_eq!(
+                    parse_invocation(&args(&[flag])),
+                    Invocation::Help,
+                    "flag: {flag}"
+                );
+            }
+        }
+
+        #[test]
+        fn version_flag() {
+            assert_eq!(parse_invocation(&args(&["--version"])), Invocation::Version);
+            assert_eq!(parse_invocation(&args(&["-V"])), Invocation::Version);
+        }
+
+        #[test]
+        fn help_beats_version_when_both_present() {
+            assert_eq!(
+                parse_invocation(&args(&["--version", "--help"])),
+                Invocation::Help
+            );
+        }
+
+        #[test]
+        #[cfg(feature = "cli-apply")]
+        fn apply_accepts_custom_profile_explicitly() {
+            // `custom` is a valid explicit choice (the plain confidence path); only
+            // *omitting* the profile under --apply is rejected.
+            assert_eq!(
+                parse_invocation(&args(&["--apply", "--profile", "custom"])),
+                Invocation::Headless(HeadlessConfig {
+                    mode: Mode::Apply,
+                    profile: Some(SelectionProfile::Custom),
+                    report: None,
+                })
+            );
+        }
     }
 }

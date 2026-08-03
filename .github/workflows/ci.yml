@@ -43,8 +43,17 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
-      # The apply path is compiled but switched off in release builds. It must
-      # keep compiling, otherwise it rots silently until someone re-enables it.
+      # The headless mode and its apply path are compiled but switched off in
+      # release builds. They must keep compiling and passing, otherwise they rot
+      # silently until someone re-enables them.
+      #
+      # Both combinations, because they are genuinely different builds:
+      # `cli-apply` implies `headless`, so a `headless`-only run is the only one
+      # that exercises the refusal of `--apply` in a build that does have the
+      # command line.
+      - name: Tests with the headless feature
+        run: cargo test -p gametrimmer --features headless --locked
+
       - name: Tests with the cli-apply feature
         run: cargo test -p gametrimmer --features cli-apply --locked
 

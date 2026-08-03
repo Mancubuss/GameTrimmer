@@ -41,10 +41,12 @@ const KOREAN_FONT_NAME: &str = "malgun-gothic";
 const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/gametrimmer_256.png");
 
 fn main() -> eframe::Result {
-    // Headless (CLI) mode - GT-10. With no CLI flag this returns `LaunchGui`
-    // and the graphical app starts exactly as before; with `--scan`/`--apply`/
-    // etc. the run completes here and the process exits with a status code,
-    // never constructing a window.
+    // Headless (CLI) mode - GT-10, switched off in the v1 release build (see
+    // `cli::args::HEADLESS_ENABLED`). With no argument this returns `LaunchGui`
+    // in every build and the graphical app starts exactly as before; with an
+    // argument the process exits here with a status code, never constructing a
+    // window - either having run the headless job, or having said that this
+    // build has no command-line mode.
     match cli::run_from_env() {
         cli::Outcome::Exit(code) => std::process::exit(code as i32),
         cli::Outcome::LaunchGui => {}

@@ -179,21 +179,22 @@ part of it back.
 
 ## Headless (CLI)
 
-The same exe works without a window:
+**Not part of version 1.0.** Launched with any argument, GameTrimmer says so
+and exits; launched with none, it opens the window as usual.
 
-```
-gametrimmer --scan                     # scan and print a report
-gametrimmer --dry-run --report out.txt # the same, saving the report to a file
-gametrimmer --profile balanced --scan  # with an explicit profile
-```
+Two things kept it out. It could not delete: `--apply` is the only path in the
+program where files disappear without a click, it has never been exercised on
+live data, and it stays switched off. And because the exe is built as a Windows
+GUI application, the shell prints its prompt again the moment the process
+starts — the report then arrives underneath that prompt, at a console that
+looks like it has already finished. A read-only reporter that does not hand you
+back your console is not worth shipping.
 
-None of these modes deletes anything.
-
-**`--apply` (unattended deletion with no human in the loop) is not part of
-version 1.0.** It is the only path in the program where files disappear
-without a click, and it has never been exercised on live data. The code is
-there but switched off — building with `--features cli-apply` enables it for
-those who understand the risk.
+The code is compiled, type-checked and unit-tested in every build, so it is not
+going anywhere: `--features headless` restores the mode (`--scan`, `--dry-run`,
+`--report <path>`, `--profile <name>`), and `--features cli-apply` additionally
+restores `--apply` for those who understand the risk. It goes back on by
+default once it works end to end.
 
 ## Portability and known limits
 

@@ -54,7 +54,7 @@ First public release.
 - Reports how much space was actually freed, which is not the same number as
   what was expected whenever the Recycle Bin holds part of it back.
 - Nothing is ever deleted without an explicit click. The unattended `--apply`
-  CLI path is compiled but switched off in release builds.
+  path is compiled but switched off in release builds.
 
 ### Around it
 
@@ -68,8 +68,11 @@ First public release.
 - First-run screen explaining the method, gated on an accepted disclaimer.
 - Rule packs are importable and exportable; imports merge rather than replace,
   and back up the previous files as `*.bak`.
-- Headless mode (`--scan`, `--dry-run`, `--report`, `--profile`), none of
-  which deletes anything.
+- No headless mode. It is compiled, type-checked and tested in every build
+  (`--features headless` restores `--scan`, `--dry-run`, `--report`,
+  `--profile`), but switched off in the release: it could not delete anything,
+  and it returned the shell prompt before its own output. Any argument is
+  answered with that, and no argument still opens the window.
 - Opt-in diagnostic log written next to the executable. The program opens no
   network connection at all.
 

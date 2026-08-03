@@ -5,10 +5,12 @@
 //! auto-selected findings, communicating solely through an exit code and a text
 //! report.
 //!
-//! `--apply` is gated behind the off-by-default `cli-apply` feature (GT-15) and
-//! is therefore absent from the v1 release build - see
-//! [`args::APPLY_ENABLED`]. The code below still compiles and type-checks it,
-//! so the path cannot rot while it is switched off.
+//! **The whole mode is switched off in the v1 release build**, behind the
+//! off-by-default `headless` feature - see [`args::HEADLESS_ENABLED`] for the
+//! two reasons. Within it, `--apply` is gated a second time behind `cli-apply`
+//! (GT-15) - see [`args::APPLY_ENABLED`]. Everything below still compiles,
+//! type-checks and unit-tests in the default build, so neither can rot while it
+//! is switched off.
 //!
 //! This is a *second front end over the same worker layer* - it drives
 //! [`crate::worker::scan`] and [`crate::worker::delete`] exactly as the GUI does,
@@ -118,8 +120,15 @@ pub fn run_from_env() -> Outcome {
         }
         Invocation::Error(msg) => {
             attach_console();
-            eprintln!("Argument error: {msg}\n");
-            eprint!("{}", usage());
+            // No usage block in a build without the mode: every flag it lists
+            // is one this build refuses, so printing it would answer "there is
+            // no command-line mode" with a page of command-line flags.
+            if args::HEADLESS_ENABLED {
+                eprintln!("Argument error: {msg}\n");
+                eprint!("{}", usage());
+            } else {
+                eprintln!("{msg}.");
+            }
             Outcome::Exit(EXIT_USAGE)
         }
         Invocation::Headless(config) => {
