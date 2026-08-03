@@ -131,11 +131,18 @@ fn separate(ui: &mut egui::Ui) {
 /// an acknowledgement.
 fn show_disclaimer(app: &mut GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::Strings) {
     let mut accepted = app.settings.disclaimer_accepted;
+    let already_accepted = accepted;
 
     crate::ui::danger_frame(ui, s.disclaimer_heading, |ui| {
         ui.label(s.disclaimer_body);
         ui.add_space(8.0);
-        ui.checkbox(&mut accepted, s.disclaimer_accept_checkbox);
+        // Disabled once ticked, rather than left live and silently ignoring the
+        // click: accepting is one-way, and a checkbox that springs back on its
+        // own reads as a bug, not as a decision the app is holding to (MT-A02).
+        ui.add_enabled_ui(!already_accepted, |ui| {
+            ui.checkbox(&mut accepted, s.disclaimer_accept_checkbox)
+                .on_disabled_hover_text(s.disclaimer_already_accepted);
+        });
     });
 
     // One-way: see `GameTrimmerApp::accept_disclaimer` for why unticking is
@@ -293,6 +300,23 @@ mod tests {
 
         assert!(test.app().settings.disclaimer_accepted);
         assert!(test.app().blocked_by_disclaimer().is_none());
+    }
+
+    /// Accepting is one-way, so the tick is disabled afterwards and says why.
+    /// It used to stay live and simply ignore the click, which looks like the
+    /// app failing to register it rather than holding to a decision (MT-A02).
+    #[test]
+    fn the_accepted_tick_is_disabled_and_explains_itself() {
+        let mut test = fresh_window();
+        let s = test.strings();
+
+        test.click(s.disclaimer_accept_checkbox);
+        // Still the first-run screen for this frame - the tick is on it, and
+        // the claim is about how it looks the moment after acceptance.
+        assert!(test.app().settings.disclaimer_accepted);
+
+        test.hover(s.disclaimer_accept_checkbox);
+        test.assert_label(s.disclaimer_already_accepted);
     }
 
     /// Acceptance has to outlive the process too, or the gate asks again on

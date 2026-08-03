@@ -87,6 +87,9 @@ pub(super) const STRINGS: Strings = Strings {
     plan_filter_all: "all categories",
     btn_remove_category: "Clean up whole category",
     search_hint: "Search by name\u{2026}",
+    btn_clear_search: "Clear the search",
+    search_no_matches: "Nothing matches the current search or category filter. Clear them to \
+         see the findings again.",
 
     elevation_heading: "Speed up scanning?",
     elevation_body: "Fast scanning reads the NTFS file table ($MFT) directly, like the Everything \
@@ -221,6 +224,8 @@ pub(super) const STRINGS: Strings = Strings {
          store, and that is the safety net this tool is designed around.",
     disclaimer_accept_checkbox: "I have read the above. I accept the risk and take \
          responsibility for what I delete.",
+    disclaimer_already_accepted: "Already accepted - this one cannot be taken back. The \
+         program keeps no other record of it.",
 
     credits_heading: "Thanks",
     credits_anthropic: "Anthropic - for Claude Code, with which this program was written.",

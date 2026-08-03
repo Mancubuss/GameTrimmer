@@ -46,11 +46,14 @@
 //! hit-tests later-registered widgets as being on top) while everything
 //! between and around them lands on the row.
 //!
-//! Note what a row click deliberately does *not* do: it moves the cursor, it
-//! never ticks the row's checkbox. In a tool that deletes files those are two
-//! different things, and a stray click on a wide target must not be able to
-//! mark anything for removal - marking stays on the checkbox and on the
-//! explicit `Space`/`Enter` toggle.
+//! A click on the row moves the cursor there and, on a row that has children,
+//! expands or collapses it (MT-E07).
+//!
+//! Note what a row click deliberately does *not* do: it never ticks the row's
+//! checkbox. In a tool that deletes files those are two different things, and
+//! a stray click on a wide target must not be able to mark anything for
+//! removal - marking stays on the checkbox and on the explicit `Space`/`Enter`
+//! toggle.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -203,6 +206,17 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             if cursor >= rows.len() {
                 app.tree_cursor = rows.len().checked_sub(1);
             }
+        }
+
+        // A search or a category filter can hide every row of a tree that is
+        // itself far from empty. Handing zero rows to the scroll area below
+        // leaves a blank panel with nothing to explain it, which reads as
+        // broken detection rather than as an empty result - the same reason
+        // the unscanned window carries a hint instead of silence (MT-F05).
+        if rows.is_empty() {
+            ui.add_space(16.0);
+            ui.label(i18n::strings(lang).search_no_matches);
+            return;
         }
 
         // Disjoint field borrows: `tree` (read-only tree shape), `findings`
@@ -783,6 +797,18 @@ fn show_row(
 
     if background.clicked() {
         *cursor = Some(row_index);
+
+        // The same click also expands or collapses an expandable row (MT-E07).
+        // Moving the cursor is all it used to do, and the cursor is a thin
+        // highlight - so on the wide empty part of a group row the click read
+        // as nothing happening at all. Folding is what the row visibly offers
+        // and it is undone by clicking again; ticking, per this module's
+        // header, stays out of reach of a stray click. File rows have nothing
+        // to fold and keep cursor-only behaviour.
+        if let Some((key, default_open)) = row_toggle_key(tree, row) {
+            let open = is_open(toggles, &key, default_open);
+            toggles.insert(key, !open);
+        }
     }
 
     match row {
@@ -1346,6 +1372,7 @@ mod tests {
     use gametrimmer_core::settings::SelectionProfile;
 
     use crate::ui::harness::UiTest;
+    use crate::ui::plan_panel::CLEAR_SEARCH_GLYPH;
 
     /// The name of the first seeded finding's row, as the tree draws it.
     const SEEDED_FILE_NAME: &str = "data/loc_0.pak";
@@ -1390,6 +1417,81 @@ mod tests {
 
         test.assert_label(SEEDED_FILE_NAME);
         test
+    }
+
+    /// A search that matches nothing must say so. Before this, the empty tree
+    /// fell through to the same "press Scan libraries" hint an unscanned
+    /// window shows - advice that is simply wrong when the scan did find
+    /// things and the query is what hid them (MT-F05).
+    #[test]
+    fn a_search_that_matches_nothing_says_so_instead_of_offering_a_scan() {
+        let mut test = tree_of_files([90; 2]);
+        let s = test.strings();
+
+        test.app_mut()
+            .set_search_query("no-such-file-anywhere".to_string());
+        test.run();
+
+        test.assert_label(s.search_no_matches);
+        test.assert_no_label(s.no_findings_hint);
+    }
+
+    /// The same window with no query at all keeps the original hint: the two
+    /// empty states must not collapse into one message.
+    #[test]
+    fn an_unsearched_empty_tree_still_offers_the_scan() {
+        let mut test = UiTest::new(show);
+        test.app_mut().accept_disclaimer();
+        test.app_mut().mark_scan_started();
+        test.run();
+        let s = test.strings();
+
+        test.assert_label(s.no_findings_hint);
+        test.assert_no_label(s.search_no_matches);
+    }
+
+    /// The button that empties the field, offered only while there is
+    /// something in it (MT-F05).
+    #[test]
+    fn the_search_field_offers_a_way_to_clear_itself() {
+        let mut test = tree_of_files([90; 2]);
+
+        // Nothing typed: no button to find.
+        test.assert_no_label(CLEAR_SEARCH_GLYPH);
+
+        test.app_mut().set_search_query("loc_0".to_string());
+        test.run();
+        test.assert_label(CLEAR_SEARCH_GLYPH);
+
+        test.click(CLEAR_SEARCH_GLYPH);
+        assert!(
+            test.app().tree_search.is_empty(),
+            "the clear button left the query in place: {:?}",
+            test.app().tree_search,
+        );
+        test.assert_label(SEEDED_FILE_NAME);
+    }
+
+    /// Clicking a row's empty width folds it, so the widened click target does
+    /// something visible beyond moving the cursor (MT-E07).
+    #[test]
+    fn a_click_on_a_rows_empty_width_collapses_it() {
+        let mut test = tree_of_files([90; 2]);
+
+        // The disk row is the topmost one and starts open (see `tree_of_files`).
+        let row = test.rect_of(SEEDED_FILE_NAME);
+        let disk_label = i18n::disk_label(test.app().lang(), "C:");
+        let disk_row_y = test.rect_of(&disk_label).center().y;
+        // Far right of the row, past every widget it draws - the inert width
+        // this test is about.
+        let empty_spot = egui::pos2(row.right() - 4.0, disk_row_y);
+
+        test.click_at(empty_spot);
+        test.assert_no_label(SEEDED_FILE_NAME);
+
+        // And the same click again brings it back - folding is not one-way.
+        test.click_at(empty_spot);
+        test.assert_label(SEEDED_FILE_NAME);
     }
 
     /// The confidence percentage is gone from the tree - header and rows

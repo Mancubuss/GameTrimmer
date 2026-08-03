@@ -87,6 +87,9 @@ pub(super) const STRINGS: Strings = Strings {
     plan_filter_all: "усі категорії",
     btn_remove_category: "Прибрати всю категорію",
     search_hint: "Пошук за назвою\u{2026}",
+    btn_clear_search: "Очистити пошук",
+    search_no_matches: "Ніщо не збігається з поточним пошуком або фільтром категорії. \
+         Зніміть їх, щоб знову побачити знахідки.",
 
     elevation_heading: "Пришвидшити сканування?",
     elevation_body: "Швидке сканування читає файлову таблицю NTFS ($MFT) напряму, як інструмент \
@@ -221,6 +224,8 @@ pub(super) const STRINGS: Strings = Strings {
          страхувальну сітку розрахований цей інструмент.",
     disclaimer_accept_checkbox: "Я прочитав(-ла) написане вище. Приймаю ризик і беру на себе \
          відповідальність за те, що видаляю.",
+    disclaimer_already_accepted: "Уже прийнято — цього не відкликати. Жодного іншого запису \
+         про це програма не зберігає.",
 
     credits_heading: "Подяки",
     credits_anthropic: "Anthropic — за Claude Code, яким написано цю програму.",

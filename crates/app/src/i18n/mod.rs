@@ -163,6 +163,15 @@ pub struct Strings {
     pub btn_remove_category: &'static str,
     /// Placeholder inside the empty name-search field (GT-18).
     pub search_hint: &'static str,
+    /// Tooltip on the button that empties the search field. Offered only while
+    /// the field has something in it (MT-F05).
+    pub btn_clear_search: &'static str,
+    /// Shown in place of the tree when a search or a category filter has hidden
+    /// every finding. Distinct from `no_findings_hint`, which means the scan
+    /// found nothing at all - telling someone to press "Scan libraries" when
+    /// their own query is what emptied the list sends them the wrong way
+    /// (MT-F05).
+    pub search_no_matches: &'static str,
 
     // -- dialogs --
     pub elevation_heading: &'static str,
@@ -267,6 +276,11 @@ pub struct Strings {
     pub disclaimer_heading: &'static str,
     pub disclaimer_body: &'static str,
     pub disclaimer_accept_checkbox: &'static str,
+    /// Hover text on the checkbox once it is ticked. Accepting is one-way (see
+    /// `GameTrimmerApp::accept_disclaimer`), so the tick is disabled afterwards;
+    /// a disabled control owes the user the reason, or clicking it looks like
+    /// the app ignoring them (MT-A02).
+    pub disclaimer_already_accepted: &'static str,
 
     // -- onboarding: acknowledgements --
     pub credits_heading: &'static str,
@@ -565,12 +579,18 @@ impl Strings {
                 "disclaimer_accept_checkbox",
                 self.disclaimer_accept_checkbox,
             ),
+            (
+                "disclaimer_already_accepted",
+                self.disclaimer_already_accepted,
+            ),
             ("credits_heading", self.credits_heading),
             ("credits_anthropic", self.credits_anthropic),
             ("credits_karpathy", self.credits_karpathy),
             ("credits_tikione", self.credits_tikione),
             ("scanning_in_progress", self.scanning_in_progress),
             ("no_findings_hint", self.no_findings_hint),
+            ("btn_clear_search", self.btn_clear_search),
+            ("search_no_matches", self.search_no_matches),
             ("col_language", self.col_language),
             ("col_files", self.col_files),
             ("col_size", self.col_size),

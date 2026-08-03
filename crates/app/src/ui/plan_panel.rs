@@ -31,6 +31,11 @@ const SUMMARY_WIDTH_SHARE: f32 = 0.5;
 /// category controls off the edge.
 const SEARCH_WIDTH_PX: f32 = 220.0;
 
+/// Glyph on the button that empties the search field. A multiplication sign
+/// rather than the letter "x": it is the character this control is drawn with
+/// everywhere, and it does not read as text someone typed.
+pub(crate) const CLEAR_SEARCH_GLYPH: &str = "\u{d7}";
+
 /// Renders the plan summary row directly into `ui` (the caller owns the
 /// enclosing panel). A no-op when there are no findings, so nothing is drawn -
 /// and no separator - on the empty startup screen.
@@ -116,6 +121,18 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         // row instead of costing the tree another line of height.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mut query = app.tree_search.clone();
+            // Laid out right-to-left, so the clear button is added first to end
+            // up at the far right, past the field. Present only while there is
+            // something to clear - an always-visible "x" beside an empty field
+            // is one more thing to read for no gain (MT-F05).
+            if !query.is_empty()
+                && ui
+                    .small_button(CLEAR_SEARCH_GLYPH)
+                    .on_hover_text(s.btn_clear_search)
+                    .clicked()
+            {
+                new_search = Some(String::new());
+            }
             let width = ui.available_width().min(SEARCH_WIDTH_PX);
             let response = ui.add(
                 egui::TextEdit::singleline(&mut query)
