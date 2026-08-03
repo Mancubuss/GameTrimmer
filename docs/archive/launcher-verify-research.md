@@ -43,7 +43,7 @@
 `steam://validate/<appid>` — відкриває Steam і запускає «Перевірити цілісність
 файлів гри» для вказаного застосунку. Ідентифікатор у нас уже є:
 `parse_appmanifest` кладе `appid` у `GameInstall.app_id`
-([steam.rs:171](../crates/core/src/providers/steam.rs:171)).
+([steam.rs:171](../../crates/core/src/providers/steam.rs:171)).
 
 Важлива межа, яку картка вже фіксує: валідація повертає **всі** відсутні файли
 гри, а не вибірково зачищені GameTrimmer. Для нашого наративу це саме те, що
@@ -76,7 +76,7 @@ App %s not installed, skipping remote verify.
 запуском — це один із пунктів польової перевірки нижче.
 
 Ідентифікатор: наш `app_id` для Epic — це `AppName` з `.item`-маніфесту
-([epic.rs:93](../crates/core/src/providers/epic.rs:93)), і саме `AppName`
+([epic.rs:93](../../crates/core/src/providers/epic.rs:93)), і саме `AppName`
 використовується в коротких Epic-ярликах. Але трапляється й довга форма
 `<namespace>:<catalogItemId>:<artifactId>` — чи приймає обробник коротку для
 будь-якої гри, теж перевіряємо польово.
@@ -114,7 +114,7 @@ CEF (`libcef.dll`, `*.pak`), тож логіка верифікації, най�
 `CancelVerify`, `VerifyTamperedFiles`), є прапорець `-titleid`, але
 прапорця з `verify`/`repair` немає, а серед URI лише `rockstar://settings` і
 `rockstar://social`. Плюс у нас для Rockstar `app_id: None`
-([rockstar.rs:68](../crates/core/src/providers/rockstar.rs:68)) — навіть за
+([rockstar.rs:68](../../crates/core/src/providers/rockstar.rs:68)) — навіть за
 наявності механізму нам не було б чим його адресувати.
 
 ## Battle.net — технічно можливо, але не за ціну картки
@@ -127,7 +127,7 @@ API (типово `localhost:1120`): запит на `/agent` без автор�
 Два стопери для GT-01: (1) це недокументований приватний API з токеном і
 портом, що змінюється, — на порядок дорожче за «відкрити URL»; (2) наш `app_id`
 для Battle.net — це ім'я ключа в реєстрі деінсталяції (наприклад `Overwatch`,
-[battlenet.rs:123](../crates/core/src/providers/battlenet.rs:123)), а API
+[battlenet.rs:123](../../crates/core/src/providers/battlenet.rs:123)), а API
 потребує TACT-коду продукту (`pro`, `wow`, `s2`) — потрібна окрема таблиця
 відповідності. Рекомендація: **не робити в межах GT-01**, лишити інструкцію.
 
@@ -151,7 +151,7 @@ API (типово `localhost:1120`): запит на `/agent` без автор�
    Ховати пункт мовчки не можна (це вимога самої картки).
 2. **Відсутній `app_id` — окремий випадок, не помилка.** Ігри, знайдені через
    `folderscan`, майже завжди мають `app_id: None`
-   ([folderscan.rs:140](../crates/core/src/providers/folderscan.rs:140), виняток —
+   ([folderscan.rs:140](../../crates/core/src/providers/folderscan.rs:140), виняток —
    GOG із `goggame-*.info`). Тобто навіть для гри з `vendor = "steam"`
    ідентифікатора може не бути, і UI має падати в інструкцію.
 3. **Оцінка картки (S) залишається чинною** — за умови, що Battle.net Agent API

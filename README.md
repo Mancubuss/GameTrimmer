@@ -263,6 +263,11 @@ cargo test --workspace
 
 The portable zip is built by `scripts/package-portable.ps1`.
 
+[`docs/`](docs/README.md) has the manual test plan, the portability cases and
+the specifications the source comments cite by section. `docs/archive/` holds
+the project's history — dated snapshots, kept for the "why", not to be read as
+current guidance.
+
 ## History
 
 Earlier attempts are preserved in archive branches: `legacy/cpp-qt` (C++20 +

@@ -1,7 +1,7 @@
 # UI redesign — development plan (2026-07-31)
 
 Supersedes the *plan* sections of
-[`ui-redesign-handoff-2026-07-31.md`](ui-redesign-handoff-2026-07-31.md) and
+[`archive/ui-redesign-handoff-2026-07-31.md`](archive/ui-redesign-handoff-2026-07-31.md) and
 `~/.claude/plans/magical-prancing-firefly.md`. Both remain valid as inputs:
 the handoff for the egui 0.35 facts and the symptom history, the old plan for
 the *design* of each change. This document replaces the **build order and the
@@ -43,7 +43,7 @@ Each module exposes the same shape:
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui)
 ```
 
-— see [`ui/mod.rs`](crates/app/src/ui/mod.rs) and every submodule. That means
+— see [`ui/mod.rs`](../crates/app/src/ui/mod.rs) and every submodule. That means
 a test can drive `settings_dialog::show` through
 `egui_kittest::Harness::new_ui(|ui| ...)` with **no `eframe::Frame`, no
 window, no GPU**. Confirmed against the 0.35 API: `Harness::new_ui`,
@@ -61,7 +61,7 @@ Revisit only if Stage 4 (spacing/DPI) actually happens.
 ### 2.2. `crates/app` is a binary-only crate
 
 There is no `lib.rs` — only `[[bin]]` in
-[`crates/app/Cargo.toml`](crates/app/Cargo.toml). All 212 existing app tests
+[`crates/app/Cargo.toml`](../crates/app/Cargo.toml). All 212 existing app tests
 live in `#[cfg(test)] mod tests` blocks inside the bin (52 in `model.rs`, 44
 in `worker/scan.rs`, 37 in `worker/scan_route.rs`, 18 in `cli/args.rs`, …).
 
@@ -72,16 +72,16 @@ already, so the existing pipeline needs no change.
 
 ### 2.3. `GameTrimmerApp::new` is not test-safe — this is a prerequisite
 
-[`app.rs:250`](crates/app/src/app.rs:250) does all of the following:
+[`app.rs:250`](../crates/app/src/app.rs#L250) does all of the following:
 
 - resolves `worker::db_path()`, which is `exe_dir()/gametrimmer.db` — under
   `cargo test` that is `target/debug/deps/gametrimmer.db`;
 - opens (and therefore **creates**) that SQLite database;
 - calls `elevation::is_elevated()`, a real syscall;
 - computes `show_elevation_prompt`, which probes volume media via
-  `DeviceIoControl` for each library ([`app.rs:1360`](crates/app/src/app.rs:1360));
+  `DeviceIoControl` for each library ([`app.rs:1360`](../crates/app/src/app.rs#L1360));
 - **spawns a background load worker** if the database has saved findings
-  ([`app.rs:345`](crates/app/src/app.rs:345)).
+  ([`app.rs:345`](../crates/app/src/app.rs#L345)).
 
 A harness built on this would share one mutable database file across parallel
 test threads, and its behaviour would depend on whatever the previous test run
@@ -89,7 +89,7 @@ left behind. The handoff did not mention this at all. It must be fixed
 *before* the first harness test, not after the first flake.
 
 Mitigating detail: `load_libraries(None)` returns an empty vec
-([`app.rs:387`](crates/app/src/app.rs:387)), and
+([`app.rs:387`](../crates/app/src/app.rs#L387)), and
 `compute_show_elevation_prompt` over an empty library list probes nothing. So
 a temp-database app naturally starts with no libraries, no elevation prompt
 and no spawned worker — deterministic, as long as the path is per-test.
@@ -103,11 +103,11 @@ was not needed.
 
 Not hypotheses from the audit — verified now:
 
-- [`tree_view.rs:126-128`](crates/app/src/ui/tree_view.rs:126): `modal_open`
+- [`tree_view.rs:126-128`](../crates/app/src/ui/tree_view.rs#L126): `modal_open`
   checks `confirm_delete`, `remove_summary`, `show_elevation_prompt` and is
   missing `show_settings` and `confirm_clear_database`. The tree reacts to
   arrow keys behind the settings dialog today.
-- [`bottom_bar.rs:36-124`](crates/app/src/ui/bottom_bar.rs:36): summary,
+- [`bottom_bar.rs:36-124`](../crates/app/src/ui/bottom_bar.rs#L36): summary,
   hint, occupancy, profile combo, Select all, Deselect all and Delete are all
   children of one `ui.horizontal` with no wrap path. This is audit §5.1
   exactly.
@@ -209,7 +209,7 @@ Nothing in Phase 1 or 2 starts until Phase 0 is green.
 
 ### 0.1. Test-safe construction seam
 
-Split [`app.rs:250`](crates/app/src/app.rs:250):
+Split [`app.rs:250`](../crates/app/src/app.rs#L250):
 
 ```rust
 pub fn new(ctx: egui::Context) -> Self {
@@ -250,7 +250,7 @@ still clean with the new dev-dependency present.
 ### 0.3. Harness helper module
 
 New `crates/app/src/ui/harness.rs`, `#[cfg(test)]`-gated and declared as
-`#[cfg(test)] mod harness;` in [`ui/mod.rs`](crates/app/src/ui/mod.rs). It
+`#[cfg(test)] mod harness;` in [`ui/mod.rs`](../crates/app/src/ui/mod.rs). It
 provides:
 
 - `fn test_app() -> (TempDir, GameTrimmerApp)` — temp db, `autoload = false`,
@@ -267,7 +267,7 @@ have to be edited in the same commit as the rename, which defeats them.
 
 ### 0.4. Baseline test against the **current** dialog
 
-Against today's [`settings_dialog.rs`](crates/app/src/ui/settings_dialog.rs),
+Against today's [`settings_dialog.rs`](../crates/app/src/ui/settings/mod.rs),
 before any redesign:
 
 1. open the dialog (`app.show_settings = true`), run, assert no panic;

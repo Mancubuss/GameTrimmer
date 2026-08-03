@@ -1,7 +1,7 @@
 # Промт для Design: новий мокап інтерфейсу GameTrimmer
 
 **Дата:** 2026-07-30
-**Джерело вимог:** [ui-ux-audit-2026-07-29.md](../ui-ux-audit-2026-07-29.md) (прочитай повністю перед роботою — нижче лише витяг)
+**Джерело вимог:** [ui-ux-audit-2026-07-29.md](ui-ux-audit-2026-07-29.md) (прочитай повністю перед роботою — нижче лише витяг)
 **Кодова база інтерфейсу:** `crates/app/src/ui/` (top_bar, plan_panel, tree_view, bottom_bar, settings_dialog, dialogs, libraries_panel)
 
 ---

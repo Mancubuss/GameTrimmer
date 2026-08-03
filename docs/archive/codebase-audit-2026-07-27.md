@@ -105,9 +105,9 @@ GameTrimmer має добрий інженерний фундамент: зро�
 **Пріоритет:** P0, release blocker  
 **Впевненість:** висока
 
-Steam provider пропускає помилки читання каталогу, читання маніфесту та парсингу через `.ok()`, `.flatten()` і `filter_map`: [steam.rs:54-61](../crates/core/src/providers/steam.rs#L54-L61). У результаті жива встановлена гра просто зникає зі списку керованих інсталяцій.
+Steam provider пропускає помилки читання каталогу, читання маніфесту та парсингу через `.ok()`, `.flatten()` і `filter_map`: [steam.rs:54-61](../../crates/core/src/providers/steam.rs#L54-L61). У результаті жива встановлена гра просто зникає зі списку керованих інсталяцій.
 
-Далі orphan detection трактує некеровані підкаталоги `steamapps/common` як сироти: [orphans.rs:212-230](../crates/core/src/orphans.rs#L212-L230). GUI відносить `Orphan` до safe-категорій і автоматично вибирає її у профілях Cautious, Balanced та Aggressive: [model.rs:326-338](../crates/app/src/model.rs#L326-L338). Типовий профіль — Balanced, типовий спосіб — Permanent: [settings.rs:9-18](../crates/core/src/settings.rs#L9-L18), [settings.rs:165-177](../crates/core/src/settings.rs#L165-L177).
+Далі orphan detection трактує некеровані підкаталоги `steamapps/common` як сироти: [orphans.rs:212-230](../../crates/core/src/orphans.rs#L212-L230). GUI відносить `Orphan` до safe-категорій і автоматично вибирає її у профілях Cautious, Balanced та Aggressive: [model.rs:326-338](../../crates/app/src/model.rs#L326-L338). Типовий профіль — Balanced, типовий спосіб — Permanent: [settings.rs:9-18](../../crates/core/src/settings.rs#L9-L18), [settings.rs:165-177](../../crates/core/src/settings.rs#L165-L177).
 
 **Реальний сценарій:**
 
@@ -117,7 +117,7 @@ Steam provider пропускає помилки читання каталогу
 4. Balanced наперед ставить прапорець.
 5. Користувач підтверджує сумарний діалог і постійно видаляє живу інсталяцію.
 
-Ручно скопійована гра без маніфесту має той самий ризик. Це суперечить власному safety-принципу в [orphans.rs:24-33](../crates/core/src/orphans.rs#L24-L33).
+Ручно скопійована гра без маніфесту має той самий ризик. Це суперечить власному safety-принципу в [orphans.rs:24-33](../../crates/core/src/orphans.rs#L24-L33).
 
 **Рекомендація:**
 
@@ -135,7 +135,7 @@ Steam provider пропускає помилки читання каталогу
 **Пріоритет:** P0, release blocker  
 **Впевненість:** висока
 
-GUI створює ціль через `install_dir.join(rel_path)`: [app.rs:752-760](../crates/app/src/app.rs#L752-L760). До worker передаються вже готові `full_path`, без довіреного root або відносного шляху: [delete.rs:25-29](../crates/app/src/worker/delete.rs#L25-L29). Core потім безпосередньо видаляє отриману ціль: [ops.rs:39-49](../crates/core/src/ops.rs#L39-L49).
+GUI створює ціль через `install_dir.join(rel_path)`: [app.rs:752-760](../../crates/app/src/app.rs#L752-L760). До worker передаються вже готові `full_path`, без довіреного root або відносного шляху: [delete.rs:25-29](../../crates/app/src/worker/delete.rs#L25-L29). Core потім безпосередньо видаляє отриману ціль: [ops.rs:39-49](../../crates/core/src/ops.rs#L39-L49).
 
 На Windows абсолютний `rel_path` може замінити base під час `join`, а компоненти `..` можуть вивести шлях за межі інсталяції. Пошкоджена, стара або вручну змінена БД таким чином стає не просто кешем, а повноваженням на видалення будь-якого доступного файлу.
 
@@ -154,7 +154,7 @@ GUI створює ціль через `install_dir.join(rel_path)`: [app.rs:752
 
 ### GT-003 — застарілі findings бібліотеки залишаються активними
 
-Тест прямо закріплює політику «бібліотека більше не знайдена — лишити без змін»: [scan.rs:2016-2071](../crates/app/src/worker/scan.rs#L2016-L2071). Startup завантажує попередні findings без поняття active snapshot або offline library: [load.rs:102-110](../crates/app/src/worker/load.rs#L102-L110), [app.rs:339-355](../crates/app/src/app.rs#L339-L355).
+Тест прямо закріплює політику «бібліотека більше не знайдена — лишити без змін»: [scan.rs:2016-2071](../../crates/app/src/worker/scan.rs#L2016-L2071). Startup завантажує попередні findings без поняття active snapshot або offline library: [load.rs:102-110](../../crates/app/src/worker/load.rs#L102-L110), [app.rs:339-355](../../crates/app/src/app.rs#L339-L355).
 
 Якщо диск від’єднали, provider тимчасово впав або літера диска перейшла іншому носію, старий шлях знову стає доступним для видалення — потенційно вже для іншого вмісту.
 
@@ -162,13 +162,13 @@ GUI створює ціль через `install_dir.join(rel_path)`: [app.rs:752
 
 ### GT-004 — будь-яка помилка `symlink_metadata` очищає запис
 
-Після невдалого видалення запис вважається purgeable, якщо `symlink_metadata` повернув **будь-яку** помилку: [delete.rs:143-159](../crates/app/src/worker/delete.rs#L143-L159). `PermissionDenied`, sharing violation або transient I/O — не доказ, що файл зник.
+Після невдалого видалення запис вважається purgeable, якщо `symlink_metadata` повернув **будь-яку** помилку: [delete.rs:143-159](../../crates/app/src/worker/delete.rs#L143-L159). `PermissionDenied`, sharing violation або transient I/O — не доказ, що файл зник.
 
 **Виправлення:** очищати записи лише при успішному видаленні або `ErrorKind::NotFound`; в усіх інших випадках залишати finding і показувати точну помилку.
 
 ### GT-005 — scan writer публікує результати до успішного commit
 
-`flush_batch` додає findings до UI-масиву одразу після окремого `persist_prepared_game`, але до commit; помилка гри лише логується, а помилка commit теж не припиняє успішне завершення: [scan.rs:870-901](../crates/app/src/worker/scan.rs#L870-L901).
+`flush_batch` додає findings до UI-масиву одразу після окремого `persist_prepared_game`, але до commit; помилка гри лише логується, а помилка commit теж не припиняє успішне завершення: [scan.rs:870-901](../../crates/app/src/worker/scan.rs#L870-L901).
 
 Наслідки:
 
@@ -181,29 +181,29 @@ GUI створює ціль через `install_dir.join(rel_path)`: [app.rs:752
 
 ### GT-006 — cancel і закриття застосунку не зберігають останній добрий стан
 
-`persist_libraries` видаляє старі files/findings/games до завершення нового scan: [scan.rs:931-1005](../crates/app/src/worker/scan.rs#L931-L1005). Після цього cancel може обірвати pipeline, залишивши часткову базу.
+`persist_libraries` видаляє старі files/findings/games до завершення нового scan: [scan.rs:931-1005](../../crates/app/src/worker/scan.rs#L931-L1005). Після цього cancel може обірвати pipeline, залишивши часткову базу.
 
-Окремо коментар каже, що `JoinHandle` буде joined on drop: [app.rs:113-115](../crates/app/src/app.rs#L113-L115), але `std::thread::JoinHandle` при drop від’єднує thread; у коді немає відповідного `Drop`/`on_exit` shutdown protocol.
+Окремо коментар каже, що `JoinHandle` буде joined on drop: [app.rs:113-115](../../crates/app/src/app.rs#L113-L115), але `std::thread::JoinHandle` при drop від’єднує thread; у коді немає відповідного `Drop`/`on_exit` shutdown protocol.
 
 **Виправлення:** staging snapshot із activation лише після `Done`; cancel видаляє staging і зберігає активний snapshot; на закритті — cancel + bounded join для scan, заборона/підтвердження закриття під час delete/rebuild.
 
 ### GT-007 — rebuild БД спочатку видаляє оригінал
 
-Після побудови temp DB код викликає `delete_database_files`, а лише потім `rename` temp-файла: [db.rs:435-473](../crates/core/src/db.rs#L435-L473). Видалення починається з головного файла, sidecars ідуть після нього: [db.rs:480-485](../crates/core/src/db.rs#L480-L485).
+Після побудови temp DB код викликає `delete_database_files`, а лише потім `rename` temp-файла: [db.rs:435-473](../../crates/core/src/db.rs#L435-L473). Видалення починається з головного файла, sidecars ідуть після нього: [db.rs:480-485](../../crates/core/src/db.rs#L480-L485).
 
-Помилка на WAL/SHM lock або на rename залишає користувача без основної БД. Крім того, salvage відкриває джерело через звичайний `open`, який може застосувати schema/migrations: [db.rs:499-509](../crates/core/src/db.rs#L499-L509).
+Помилка на WAL/SHM lock або на rename залишає користувача без основної БД. Крім того, salvage відкриває джерело через звичайний `open`, який може застосувати schema/migrations: [db.rs:499-509](../../crates/core/src/db.rs#L499-L509).
 
 **Виправлення:** read-only salvage; checkpoint/close; перевірена temp DB; атомарна заміна через Windows `ReplaceFileW` або `original -> .bak`, `temp -> original`, rollback; fault-injection тести на кожній межі.
 
 ### GT-008 — directory symlink/junction не має коректної Windows-гілки
 
-Видалення визначає каталог через `symlink_metadata().is_dir()`, інакше викликає `remove_file`: [ops.rs:39-49](../crates/core/src/ops.rs#L39-L49). Для directory symlink/junction metadata описує сам link/reparse point, тому потрібне окреме визначення типу; поточна реалізація може не видалити посилання, хоча коментар обіцяє не переходити в target.
+Видалення визначає каталог через `symlink_metadata().is_dir()`, інакше викликає `remove_file`: [ops.rs:39-49](../../crates/core/src/ops.rs#L39-L49). Для directory symlink/junction metadata описує сам link/reparse point, тому потрібне окреме визначення типу; поточна реалізація може не видалити посилання, хоча коментар обіцяє не переходити в target.
 
 **Виправлення:** використати Windows reparse/file type API й окремо викликати видалення directory link; інтеграційно довести, що target лишається недоторканим.
 
 ### GT-009 — неповний discovery маскується як успішний
 
-Окрім Steam, walker мовчки пропускає окремі помилки: [scanner.rs:102-108](../crates/core/src/scanner.rs#L102-L108). Humble перетворює malformed JSON на порожній результат: [humble.rs:94-100](../crates/core/src/providers/humble.rs#L94-L100). Itch пропускає помилки рядків через `flatten`: [itch.rs:57-96](../crates/core/src/providers/itch.rs#L57-L96).
+Окрім Steam, walker мовчки пропускає окремі помилки: [scanner.rs:102-108](../../crates/core/src/scanner.rs#L102-L108). Humble перетворює malformed JSON на порожній результат: [humble.rs:94-100](../../crates/core/src/providers/humble.rs#L94-L100). Itch пропускає помилки рядків через `flatten`: [itch.rs:57-96](../../crates/core/src/providers/itch.rs#L57-L96).
 
 Це допустимо для best-effort інвентаризації, але не для destructive decision без ознаки completeness.
 
@@ -211,13 +211,13 @@ GUI створює ціль через `install_dir.join(rel_path)`: [app.rs:752
 
 ### GT-010 — файл видаляється раніше, ніж журнал гарантовано оновлено
 
-Фізична операція відбувається до SQL update журналу: [ops.rs:125-145](../crates/core/src/ops.rs#L125-L145). Якщо видалення успішне, а update через lock/disk-full завершується помилкою, UI бачить failure, але файл уже зник, а operation лишається pending.
+Фізична операція відбувається до SQL update журналу: [ops.rs:125-145](../../crates/core/src/ops.rs#L125-L145). Якщо видалення успішне, а update через lock/disk-full завершується помилкою, UI бачить failure, але файл уже зник, а operation лишається pending.
 
 **Виправлення:** durable state machine `prepared -> executing -> completed/failed/reconcile`; на startup звіряти pending operation з filesystem і завершувати журнал ідемпотентно.
 
 ### GT-011 — probing усіх літер дисків може зависнути
 
-Folder scan перевіряє `A:\`–`Z:\` через звичайні filesystem calls: [folderscan.rs:64-84](../crates/core/src/providers/folderscan.rs#L64-L84). Disconnected mapped drive або повільний removable/network volume може довго блокувати worker і спричинити неочікуваний SMB доступ.
+Folder scan перевіряє `A:\`–`Z:\` через звичайні filesystem calls: [folderscan.rs:64-84](../../crates/core/src/providers/folderscan.rs#L64-L84). Disconnected mapped drive або повільний removable/network volume може довго блокувати worker і спричинити неочікуваний SMB доступ.
 
 **Виправлення:** `GetLogicalDrives` + `GetDriveTypeW`; за замовчуванням пропускати `DRIVE_REMOTE`, `NO_ROOT_DIR`, `UNKNOWN`; network drives — лише explicit opt-in; time-bounded probes.
 
@@ -225,25 +225,25 @@ Folder scan перевіряє `A:\`–`Z:\` через звичайні filesys
 
 ### GT-012 — category action ігнорує ручний selection
 
-Операція з plan card збирає всі не видалені елементи категорії, незалежно від checkbox: [app.rs:705-727](../crates/app/src/app.rs#L705-L727). Confirmation показує лише кількість і сумарний обсяг: [dialogs.rs:91-149](../crates/app/src/ui/dialogs.rs#L91-L149).
+Операція з plan card збирає всі не видалені елементи категорії, незалежно від checkbox: [app.rs:705-727](../../crates/app/src/app.rs#L705-L727). Confirmation показує лише кількість і сумарний обсяг: [dialogs.rs:91-149](../../crates/app/src/ui/dialogs.rs#L91-L149).
 
 **Виправлення:** або дія працює лише з selected, або текст прямо каже «видалити всі, включно з N вручну знятими» і показує preview шляхів.
 
 ### GT-013 — визначення фактичного Recycle Bin результату ненадійне
 
-Після операції код порівнює `PathBuf` з одним after-snapshot: [delete.rs:117-129](../crates/app/src/worker/delete.rs#L117-L129), [delete.rs:201-212](../crates/app/src/worker/delete.rs#L201-L212). Exact comparison не враховує Windows case/prefix normalization; старий recycled item із тим самим original path може маскувати новий permanent fallback.
+Після операції код порівнює `PathBuf` з одним after-snapshot: [delete.rs:117-129](../../crates/app/src/worker/delete.rs#L117-L129), [delete.rs:201-212](../../crates/app/src/worker/delete.rs#L201-L212). Exact comparison не враховує Windows case/prefix normalization; старий recycled item із тим самим original path може маскувати новий permanent fallback.
 
 **Виправлення:** before/after delta, стабільний item identity/час, Windows-normalized comparison; невизначений результат не називати підтвердженим.
 
 ### GT-014 — rule pack import/export частково атомарний
 
-Код прямо дозволяє лишати вже імпортовані файли при помилці наступного: [rules_io.rs:34-40](../crates/app/src/worker/rules_io.rs#L34-L40). Backup створюється, але target записується напряму: [rules_io.rs:83-126](../crates/app/src/worker/rules_io.rs#L83-L126).
+Код прямо дозволяє лишати вже імпортовані файли при помилці наступного: [rules_io.rs:34-40](../../crates/app/src/worker/rules_io.rs#L34-L40). Backup створюється, але target записується напряму: [rules_io.rs:83-126](../../crates/app/src/worker/rules_io.rs#L83-L126).
 
 **Виправлення:** спочатку прочитати й валідувати весь набір; писати temp siblings, flush/sync, atomic replace; автоматичний rollback із backup.
 
 ### GT-015 — schema evolution і валідація даних
 
-Міграції базуються переважно на probing колонок, без явного versioned registry. Значення з SQLite місцями приводяться до unsigned типів через `as`, зокрема при завантаженні findings: [load.rs:125-130](../crates/app/src/worker/load.rs#L125-L130). У schema бракує сильних `CHECK`/uniqueness інваріантів для частини доменних значень.
+Міграції базуються переважно на probing колонок, без явного versioned registry. Значення з SQLite місцями приводяться до unsigned типів через `as`, зокрема при завантаженні findings: [load.rs:125-130](../../crates/app/src/worker/load.rs#L125-L130). У schema бракує сильних `CHECK`/uniqueness інваріантів для частини доменних значень.
 
 **Виправлення:** `PRAGMA user_version` або таблиця migration registry; кожна міграція в transaction; `TryFrom`/range validation; `CHECK(size >= 0)`, confidence range, унікальність identity/relative path відповідно до доменної моделі.
 
@@ -251,19 +251,19 @@ Folder scan перевіряє `A:\`–`Z:\` через звичайні filesys
 
 ### GT-016 — документація розійшлася з реалізацією
 
-- README каже, що Cautious включає `redist`, але код і тести виключають Redist із safe selection: [README.md:68-71](../README.md#L68-L71), [model.rs:326-338](../crates/app/src/model.rs#L326-L338).
-- README посилається на `.cargo/config.toml`, але файл відсутній: [README.md:203-204](../README.md#L203-L204).
+- README каже, що Cautious включає `redist`, але код і тести виключають Redist із safe selection: [README.md:68-71](../../README.md#L68-L71), [model.rs:326-338](../../crates/app/src/model.rs#L326-L338).
+- README посилається на `.cargo/config.toml`, але файл відсутній: [README.md:203-204](../../README.md#L203-L204).
   - _Закрито 2026-08-03: README розділено на англійський і український, згадки не лишилося в жодному._
 - Packaging-коментарі згадують `.cargo/config.toml` і `CLAUDE.md`, яких у поточній копії немає.
   - _Закрито 2026-08-03: коментарі в `scripts/package-portable.ps1` переписано — обхід прибрано ще 2026-07-24 (`6814264`), і `cargo metadata` там лишився з іншої, чинної причини._
-- Маніфест описує Windows 10/11, але містить також GUID Windows 8.1: [gametrimmer.manifest:13-15](../crates/app/assets/gametrimmer.manifest#L13-L15).
+- Маніфест описує Windows 10/11, але містить також GUID Windows 8.1: [gametrimmer.manifest:13-15](../../crates/app/assets/gametrimmer.manifest#L13-L15).
 - Частина CLI/status/error текстів локалізована, частина жорстко зафіксована українською або англійською.
 
 **Виправлення:** визначити selection policy як один versioned product contract; генерувати таблицю README з коду/тестового fixture; додати documentation/packaging smoke check.
 
 ### GT-017 — orchestration-модулі вже перевищили зручні межі
 
-`scan.rs`, `model.rs`, `db.rs` та `app.rs` одночасно містять orchestration, persistence, presentation policy і recovery. Скасування визначається рядком `"cancelled"`: [scan.rs:838-839](../crates/app/src/worker/scan.rs#L838-L839), що легко зламати зміною тексту.
+`scan.rs`, `model.rs`, `db.rs` та `app.rs` одночасно містять orchestration, persistence, presentation policy і recovery. Скасування визначається рядком `"cancelled"`: [scan.rs:838-839](../../crates/app/src/worker/scan.rs#L838-L839), що легко зламати зміною тексту.
 
 **Рекомендований поділ:**
 
@@ -275,13 +275,13 @@ Folder scan перевіряє `A:\`–`Z:\` через звичайні filesys
 
 ### GT-018 — зайва робота UI на кадр
 
-Tree view може двічі будувати список visible rows за один кадр: [tree_view.rs:131-147](../crates/app/src/ui/tree_view.rs#L131-L147). Sort comparator створює lowercase-рядки та клони під час порівнянь: [model.rs:595-612](../crates/app/src/model.rs#L595-L612).
+Tree view може двічі будувати список visible rows за один кадр: [tree_view.rs:131-147](../../crates/app/src/ui/tree_view.rs#L131-L147). Sort comparator створює lowercase-рядки та клони під час порівнянь: [model.rs:595-612](../../crates/app/src/model.rs#L595-L612).
 
 **Виправлення:** кеш visible rows із invalidation на filter/expand; попередньо обчислені normalized sort keys; benchmark на 100k/500k findings; debounce пошуку.
 
 ### GT-019 — системні програми запускаються через PATH
 
-UI викликає `explorer.exe` і `rundll32.exe` за коротким ім’ям: [row_actions.rs:47-83](../crates/app/src/ui/row_actions.rs#L47-L83). У portable/current-directory сценарії це створює зайву поверхню executable search-order hijacking.
+UI викликає `explorer.exe` і `rundll32.exe` за коротким ім’ям: [row_actions.rs:47-83](../../crates/app/src/ui/row_actions.rs#L47-L83). У portable/current-directory сценарії це створює зайву поверхню executable search-order hijacking.
 
 **Виправлення:** Shell APIs або перевірений абсолютний шлях до `%SystemRoot%\System32`; аргументи передавати без shell.
 
