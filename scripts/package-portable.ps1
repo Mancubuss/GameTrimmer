@@ -54,7 +54,13 @@ try {
     # 4. Збірка вмісту пакета
     $distDir = Join-Path $repoRoot "dist"
     $stageDir = Join-Path $distDir "GameTrimmer-$version"
-    if (Test-Path $stageDir) { Remove-Item $stageDir -Recurse -Force }
+    # Вміст теки, а не сама тека: якщо її тримає відкрите вікно Провідника чи
+    # термінал усередині, Windows забороняє ВИДАЛИТИ каталог, але дозволяє
+    # створювати в ньому файли. Видалення теки цілком тут падало з "process
+    # cannot access the file" і зупиняло пакування після успішної збірки.
+    if (Test-Path $stageDir) {
+        Get-ChildItem -Path $stageDir -Force | Remove-Item -Recurse -Force
+    }
     New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
     Copy-Item $exePath (Join-Path $stageDir "gametrimmer.exe")
