@@ -21,6 +21,22 @@
 //! once and accepted the disclaimer. Nothing is added to the window; nothing
 //! new has to be dismissed.
 //!
+//! # Why the action comes before the explanation
+//!
+//! The first version put everything it had to say above the Scan button, and
+//! the result was a screen the user had to scroll before they could find out
+//! there was anything to press: at the standard 900x600 window the disclaimer
+//! and the button both ended up past the fold. So the order is now what the
+//! screen *asks for* first - the three steps, the one-line promise that
+//! scanning deletes nothing, the disclaimer, the button - and the background
+//! reading (how the detectors decide, what the filters narrow, what "profile"
+//! and the \u{26a0} mark mean) after it. None of the latter is needed to decide
+//! whether to press Scan, and half of it only starts meaning anything once
+//! there are findings on screen.
+//!
+//! `everything_the_first_run_asks_for_fits_in_the_window` is the assertion that
+//! keeps it that way in both languages, since the wording will change again.
+//!
 //! # Why the disclaimer gates rather than informs
 //!
 //! A liability notice the user can scroll past is not one. So the acceptance
@@ -74,24 +90,6 @@ fn show_content(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.add_space(4.0);
     }
 
-    separate(ui);
-
-    // How the proposals are arrived at, and what narrows them. Both were
-    // reachable before only by reading the README that ships beside the exe.
-    ui.strong(s.onboarding_how_heading);
-    ui.add_space(4.0);
-    ui.label(s.onboarding_how_body);
-    ui.add_space(6.0);
-    ui.label(s.onboarding_filters_body);
-
-    separate(ui);
-
-    // The word and the mark the main screen otherwise uses without ever
-    // explaining them.
-    ui.label(s.onboarding_profile);
-    ui.add_space(4.0);
-    ui.label(s.onboarding_review_mark);
-
     ui.add_space(12.0);
     // The promise the rest of the app has to keep, stated before the user
     // presses anything: this button scans, it does not delete.
@@ -107,6 +105,32 @@ fn show_content(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     if crate::ui::gated_button(ui, s.btn_scan_libraries, blocked).clicked() {
         app.start_scan();
     }
+
+    separate(ui);
+
+    // How the proposals are arrived at, and what narrows them. Both were
+    // reachable before only by reading the README that ships beside the exe.
+    //
+    // Below the button rather than above it, which is the other half of the
+    // shortening (the first half was cutting the text itself): what the user
+    // has to *do* - read the steps, read the disclaimer, tick it, scan - now
+    // ends inside the window, and the background reading follows it instead of
+    // pushing it past the fold. Nothing here is needed to decide whether to
+    // press Scan; the safety line above already carries the one fact that is.
+    ui.strong(s.onboarding_how_heading);
+    ui.add_space(4.0);
+    ui.label(s.onboarding_how_body);
+    ui.add_space(6.0);
+    ui.label(s.onboarding_filters_body);
+
+    separate(ui);
+
+    // The word and the mark the main screen otherwise uses without ever
+    // explaining them. Both only start mattering once there are findings on
+    // screen, which is after this button has been pressed.
+    ui.label(s.onboarding_profile);
+    ui.add_space(4.0);
+    ui.label(s.onboarding_review_mark);
 
     separate(ui);
     show_logging_offer(app, ui, s);
@@ -173,6 +197,8 @@ fn show_logging_offer(app: &mut GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::Str
 
 #[cfg(test)]
 mod tests {
+    use gametrimmer_core::settings::Lang;
+
     use super::*;
 
     use crate::ui::harness::UiTest;
@@ -208,6 +234,75 @@ mod tests {
             s.onboarding_safety,
         ] {
             test.assert_label(line);
+        }
+    }
+
+    /// The complaint this screen was shortened for: it was long enough that the
+    /// disclaimer the user has to accept, and the button that becomes live once
+    /// they do, both sat below the fold of the standard window - so the first
+    /// thing a first-run user had to work out was that there was more screen.
+    ///
+    /// Measured on this layout at 900x600: the Scan button used to end at
+    /// y=633, and now ends at y=347. The assertion is the weaker claim that
+    /// everything the screen *asks for* is on it, which is what has to keep
+    /// holding as the wording changes again.
+    /// Both languages, because the fold is a claim about rendered height and
+    /// the Ukrainian strings are the longer set - an English-only assertion
+    /// would pass on a layout that overflows for half the audience.
+    #[test]
+    fn everything_the_first_run_asks_for_fits_in_the_window() {
+        for language in [Lang::En, Lang::Uk] {
+            let mut test = fresh_window();
+            test.app_mut()
+                .set_language(gametrimmer_core::settings::LanguagePreference::Fixed(
+                    language,
+                ));
+            test.run();
+
+            let s = i18n::strings(language);
+            let fold = crate::ui::harness::STANDARD_VIEWPORT.y;
+
+            for label in [
+                s.onboarding_heading,
+                s.onboarding_step_scan,
+                s.onboarding_safety,
+                s.disclaimer_heading,
+                s.disclaimer_body,
+                s.disclaimer_accept_checkbox,
+                s.btn_scan_libraries,
+            ] {
+                let bottom = test.rect_of(label).max.y;
+                assert!(
+                    bottom <= fold,
+                    "in {language:?} the first-run screen pushes something it asks for past \
+                     the fold (ends at y={bottom}, window is {fold} tall): {label}",
+                );
+            }
+        }
+    }
+
+    /// The other half of the shortening: the background reading was moved from
+    /// above the Scan button to below it. Asserted by geometry rather than by
+    /// presence, because presence is what the layout had before too - the
+    /// question is only where.
+    #[test]
+    fn the_background_reading_follows_the_action_rather_than_delaying_it() {
+        let test = fresh_window();
+        let s = test.strings();
+        let button = test.rect_of(s.btn_scan_libraries).max.y;
+
+        for label in [
+            s.onboarding_how_heading,
+            s.onboarding_how_body,
+            s.onboarding_filters_body,
+            s.onboarding_profile,
+            s.onboarding_review_mark,
+        ] {
+            let top = test.rect_of(label).min.y;
+            assert!(
+                top > button,
+                "background reading sits above the Scan button (y={top} vs {button}): {label}",
+            );
         }
     }
 

@@ -66,6 +66,9 @@ First public release.
   description can be written per language in `rules.json`.
 - Light, dark, or system theme.
 - First-run screen explaining the method, gated on an accepted disclaimer.
+  Everything it asks of the user — the three steps, the disclaimer, the tick,
+  the Scan button — fits the standard window without scrolling; the background
+  reading follows the button rather than delaying it.
 - Rule packs are importable and exportable; imports merge rather than replace,
   and back up the previous files as `*.bak`.
 - No headless mode. It is compiled, type-checked and tested in every build
