@@ -594,7 +594,23 @@ pub fn load(conn: &Connection) -> Result<Settings> {
 }
 
 /// Persists every settings field.
+///
+/// All twelve writes go in one transaction. Outside one, each `INSERT` is its
+/// own implicit transaction and costs a WAL sync of its own - twelve syncs per
+/// flipped radio button, which on a USB flash drive is the difference between
+/// instant and a visible pause (MT-I01, MT-N01). One transaction also makes the
+/// write atomic: a pull mid-save can no longer leave half the settings updated.
 pub fn save(conn: &Connection, settings: &Settings) -> Result<()> {
+    // `unchecked_transaction` rather than `Connection::transaction`, which needs
+    // `&mut Connection`: every caller here holds a shared borrow, and there is
+    // no nested transaction to conflict with - this function only ever runs on
+    // a freshly opened connection.
+    let tx = conn.unchecked_transaction()?;
+    write_values(&tx, settings)?;
+    Ok(tx.commit()?)
+}
+
+fn write_values(conn: &Connection, settings: &Settings) -> Result<()> {
     write_value(conn, DELETE_METHOD_KEY, settings.delete_method.as_str())?;
     write_value(conn, APP_LANGUAGE_KEY, settings.app_language.as_str())?;
     write_value(
