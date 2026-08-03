@@ -3,9 +3,9 @@
 Start with the [README](../README.md) — this folder is for people working on
 GameTrimmer, not for people running it.
 
-Everything here is **live**: kept true as the code changes. There is no
-archive and no plans folder. A document that stops being maintained is
-deleted rather than left where a reader would trust it.
+Everything published here is **live**: kept true as the code changes. A
+document that stops being maintained leaves this repository rather than
+sitting where a reader would trust it.
 
 | Document | What it is |
 |---|---|

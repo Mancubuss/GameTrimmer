@@ -5,6 +5,15 @@ gametrimmer.db*
 # Portable packaging output (scripts/package-portable.ps1)
 /dist/
 
+# Pre-release plans, audits, the project's own history and old git backups.
+# Kept next to the code because that is where they are useful, but they are
+# not part of the published project: they describe intentions rather than the
+# shipped program, and a reader who found them here would reasonably take them
+# for current guidance. Stored as a single compressed archive rather than
+# loose files - see the extraction and warning notes inside it.
+/docs/archive.7z
+/docs/archive/
+
 # IDE
 .idea/
 .vscode/
