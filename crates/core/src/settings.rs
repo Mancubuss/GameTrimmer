@@ -290,48 +290,51 @@ impl SelectionProfile {
 /// [`Always`](Self::Always) is the default - skipping the confirmation is a
 /// choice a user should have to make deliberately, not one an accidental
 /// click can leave them in.
+///
+/// # Why there is no size threshold any more
+///
+/// A third option, "only above 1 GB", used to sit between these two. It
+/// compared against the *batch* total, not any single file, which is not what
+/// its label says and not what a reader assumed: 200 files of 10 MB tripped it
+/// and one 900 MB file did not. A setting whose behaviour cannot be read off
+/// its own label is worse than no setting, and the threshold was arbitrary
+/// besides - so this is now the plain question it always was, asked or not
+/// asked. A stored `only_above_1gb` no longer parses and therefore falls back
+/// to [`Always`](Self::Always), which is the safe direction: nobody is silently
+/// upgraded into deleting without being asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConfirmBehavior {
-    /// Always show the confirmation modal before deleting.
+    /// Show the confirmation modal before every deletion.
     #[default]
     Always,
-    /// Only ask when the batch is at least [`ConfirmBehavior::ONE_GB`];
-    /// smaller batches delete straight away.
-    OnlyAboveOneGb,
     /// Never ask - the delete starts as soon as the button is clicked.
     Never,
 }
 
 impl ConfirmBehavior {
-    /// The threshold [`ConfirmBehavior::OnlyAboveOneGb`] compares against.
-    pub const ONE_GB: u64 = 1024 * 1024 * 1024;
-
     /// Stable string form persisted into the `settings` table.
     pub fn as_str(self) -> &'static str {
         match self {
             ConfirmBehavior::Always => "always",
-            ConfirmBehavior::OnlyAboveOneGb => "only_above_1gb",
             ConfirmBehavior::Never => "never",
         }
     }
 
-    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values (e.g.
-    /// written by a future version) - callers fall back to the default.
+    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values - a
+    /// setting written by a future version, or the retired `only_above_1gb`
+    /// (see the type docs). Callers fall back to the default.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "always" => Some(ConfirmBehavior::Always),
-            "only_above_1gb" => Some(ConfirmBehavior::OnlyAboveOneGb),
             "never" => Some(ConfirmBehavior::Never),
             _ => None,
         }
     }
 
-    /// Whether a batch totalling `total_bytes` on disk needs confirming
-    /// under this policy.
-    pub fn should_confirm(self, total_bytes: u64) -> bool {
+    /// Whether a deletion needs confirming under this policy.
+    pub fn should_confirm(self) -> bool {
         match self {
             ConfirmBehavior::Always => true,
-            ConfirmBehavior::OnlyAboveOneGb => total_bytes >= Self::ONE_GB,
             ConfirmBehavior::Never => false,
         }
     }
@@ -1101,11 +1104,7 @@ mod tests {
     #[test]
     fn save_then_load_round_trips_every_confirm_behavior() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
-        for behavior in [
-            ConfirmBehavior::Always,
-            ConfirmBehavior::OnlyAboveOneGb,
-            ConfirmBehavior::Never,
-        ] {
+        for behavior in [ConfirmBehavior::Always, ConfirmBehavior::Never] {
             let settings = Settings {
                 confirm_behavior: behavior,
                 ..Settings::default()
@@ -1118,11 +1117,7 @@ mod tests {
 
     #[test]
     fn confirm_behavior_round_trips_through_as_str_and_parse() {
-        for behavior in [
-            ConfirmBehavior::Always,
-            ConfirmBehavior::OnlyAboveOneGb,
-            ConfirmBehavior::Never,
-        ] {
+        for behavior in [ConfirmBehavior::Always, ConfirmBehavior::Never] {
             assert_eq!(ConfirmBehavior::parse(behavior.as_str()), Some(behavior));
         }
         assert_eq!(ConfirmBehavior::parse("nonsense"), None);
@@ -1144,11 +1139,28 @@ mod tests {
     }
 
     #[test]
-    fn should_confirm_matches_the_one_gb_threshold() {
-        assert!(ConfirmBehavior::Always.should_confirm(0));
-        assert!(!ConfirmBehavior::Never.should_confirm(u64::MAX));
-        assert!(!ConfirmBehavior::OnlyAboveOneGb.should_confirm(ConfirmBehavior::ONE_GB - 1));
-        assert!(ConfirmBehavior::OnlyAboveOneGb.should_confirm(ConfirmBehavior::ONE_GB));
+    fn should_confirm_is_the_setting_itself() {
+        assert!(ConfirmBehavior::Always.should_confirm());
+        assert!(!ConfirmBehavior::Never.should_confirm());
+    }
+
+    /// The retired size threshold, which used to mean "ask only above 1 GB of
+    /// batch total". A database that still holds it must land on *asking* -
+    /// dropping a setting is not licence to start deleting without a prompt on
+    /// someone's machine.
+    #[test]
+    fn the_retired_size_threshold_falls_back_to_always_asking() {
+        assert_eq!(ConfirmBehavior::parse("only_above_1gb"), None);
+
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('confirm_behavior', 'only_above_1gb')",
+            [],
+        )
+        .expect("insert retired value");
+
+        let settings = load(&conn).expect("load settings");
+        assert_eq!(settings.confirm_behavior, ConfirmBehavior::Always);
     }
 
     #[test]

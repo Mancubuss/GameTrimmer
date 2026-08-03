@@ -917,9 +917,8 @@ impl GameTrimmerApp {
     /// Split out from the two request paths so the policy can be exercised
     /// as plain logic - the alternative is a test that has to let a real
     /// delete run in order to observe the decision not to ask.
-    pub(crate) fn needs_delete_confirmation(&self, indices: &[usize]) -> bool {
-        let total_bytes = model::group_size_bytes(&self.findings, indices);
-        self.settings.confirm_behavior.should_confirm(total_bytes)
+    pub(crate) fn needs_delete_confirmation(&self) -> bool {
+        self.settings.confirm_behavior.should_confirm()
     }
 
     /// Shared tail of both delete request paths: build the modal state, then
@@ -941,7 +940,7 @@ impl GameTrimmerApp {
         if self.blocked_by_disclaimer().is_some() {
             return;
         }
-        let skip = !self.needs_delete_confirmation(&indices);
+        let skip = !self.needs_delete_confirmation();
         // The persisted setting is the starting point, not a lock: the modal
         // lets the user pick a different method for this delete alone.
         self.confirm_delete = Some(ConfirmDelete {
@@ -1955,24 +1954,27 @@ mod tests {
     /// The confirmation policy, exercised without letting a delete run - the
     /// decision and the consequence are separate on purpose (see
     /// `needs_delete_confirmation`).
+    ///
+    /// Batch sizes are varied deliberately even though the setting no longer
+    /// looks at them: the retired "only above 1 GB" option keyed off the batch
+    /// total (which is not what its label said), and this is what states that
+    /// size has stopped being an input.
     #[test]
-    fn the_confirmation_policy_decides_per_batch_size() {
+    fn the_confirmation_policy_ignores_the_size_of_the_batch() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let one_gb = ConfirmBehavior::ONE_GB;
+        let one_gb: u64 = 1024 * 1024 * 1024;
 
         for (behavior, size, expected) in [
             (ConfirmBehavior::Always, 1_u64, true),
             (ConfirmBehavior::Always, one_gb, true),
             (ConfirmBehavior::Never, 1, false),
             (ConfirmBehavior::Never, one_gb, false),
-            (ConfirmBehavior::OnlyAboveOneGb, one_gb - 1, false),
-            (ConfirmBehavior::OnlyAboveOneGb, one_gb, true),
         ] {
             let mut app = app_with_one_selected_finding(dir.path(), size);
             app.set_confirm_behavior(behavior);
 
             assert_eq!(
-                app.needs_delete_confirmation(&[0]),
+                app.needs_delete_confirmation(),
                 expected,
                 "{behavior:?} on a {size}-byte batch",
             );

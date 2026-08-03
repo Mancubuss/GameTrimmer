@@ -68,9 +68,8 @@ pub struct Strings {
     pub default_profile_label: &'static str,
     pub default_profile_hint: &'static str,
     pub confirm_behavior_label: &'static str,
-    pub confirm_always_label: &'static str,
-    pub confirm_only_1gb_label: &'static str,
-    pub confirm_never_label: &'static str,
+    pub confirm_yes_label: &'static str,
+    pub confirm_no_label: &'static str,
     pub confirm_behavior_hint: &'static str,
     /// Spells out that scanning, auto-selection and deletion are three
     /// separate decisions - the section is arranged around that, but the
@@ -432,9 +431,8 @@ impl Strings {
             ("profile_aggressive_hint", self.profile_aggressive_hint),
             ("profile_custom_hint", self.profile_custom_hint),
             ("confirm_behavior_label", self.confirm_behavior_label),
-            ("confirm_always_label", self.confirm_always_label),
-            ("confirm_only_1gb_label", self.confirm_only_1gb_label),
-            ("confirm_never_label", self.confirm_never_label),
+            ("confirm_yes_label", self.confirm_yes_label),
+            ("confirm_no_label", self.confirm_no_label),
             ("confirm_behavior_hint", self.confirm_behavior_hint),
             (
                 "selection_independent_switches_hint",

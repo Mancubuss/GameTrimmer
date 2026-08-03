@@ -38,10 +38,10 @@ pub(super) const STRINGS: Strings = Strings {
     profile_custom_hint: "Ticks nothing by category - only the individual findings the app \
          is most certain about. Everything else you tick by hand.",
     confirm_behavior_label: "Ask before deleting",
-    confirm_always_label: "Always",
-    confirm_only_1gb_label: "Only above 1 GB",
-    confirm_never_label: "Never",
-    confirm_behavior_hint: "When to show the confirmation before a deletion runs.",
+    confirm_yes_label: "Yes",
+    confirm_no_label: "No",
+    confirm_behavior_hint: "With this off, the delete starts the moment you press the button \
+         - there is no second chance to look at what was ticked.",
     selection_independent_switches_hint: "What is scanned (the Scanning section), what is \
          pre-selected (the profile above) and how it is deleted (the method above) are three \
          independent switches - changing one leaves the other two alone.",

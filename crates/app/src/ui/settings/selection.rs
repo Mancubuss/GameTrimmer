@@ -123,22 +123,22 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.add_space(8.0);
 
+    // Two options, because the heading is already a yes/no question. The third
+    // one that used to sit between them ("only above 1 GB") compared against
+    // the batch total rather than any single file, which is not what its label
+    // said - see `ConfirmBehavior`'s own docs for why it is gone rather than
+    // reworded.
     super::row_heading(ui, s.confirm_behavior_label, s.badge_immediately);
     ui.add_enabled_ui(!app.busy, |ui| {
         ui.radio_value(
             &mut picked_confirm,
             ConfirmBehavior::Always,
-            s.confirm_always_label,
-        );
-        ui.radio_value(
-            &mut picked_confirm,
-            ConfirmBehavior::OnlyAboveOneGb,
-            s.confirm_only_1gb_label,
+            s.confirm_yes_label,
         );
         ui.radio_value(
             &mut picked_confirm,
             ConfirmBehavior::Never,
-            s.confirm_never_label,
+            s.confirm_no_label,
         );
     });
     ui.small(s.confirm_behavior_hint);
@@ -189,9 +189,8 @@ mod tests {
         test.assert_label(s.delete_method_recycle_label);
 
         test.assert_label(s.confirm_behavior_label);
-        test.assert_label(s.confirm_always_label);
-        test.assert_label(s.confirm_only_1gb_label);
-        test.assert_label(s.confirm_never_label);
+        test.assert_label(s.confirm_yes_label);
+        test.assert_label(s.confirm_no_label);
     }
 
     /// Four bare names - "Cautious", "Balanced", "Aggressive", "Custom" -
@@ -292,14 +291,14 @@ mod tests {
             ConfirmBehavior::Always
         );
 
-        test.click(s.confirm_only_1gb_label);
+        test.click(s.confirm_no_label);
+        assert_eq!(test.app().settings.confirm_behavior, ConfirmBehavior::Never);
+
+        test.click(s.confirm_yes_label);
         assert_eq!(
             test.app().settings.confirm_behavior,
-            ConfirmBehavior::OnlyAboveOneGb,
+            ConfirmBehavior::Always
         );
-
-        test.click(s.confirm_never_label);
-        assert_eq!(test.app().settings.confirm_behavior, ConfirmBehavior::Never);
     }
 
     /// The hints under the delete method are the ones that used to panic:
@@ -324,7 +323,7 @@ mod tests {
 
         test.click(s.profile_aggressive);
         test.click(s.delete_method_recycle_label);
-        test.click(s.confirm_never_label);
+        test.click(s.confirm_no_label);
 
         assert_eq!(
             test.app().settings.default_selection_profile,

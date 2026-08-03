@@ -48,7 +48,9 @@ First public release.
 ### Deleting
 
 - Permanent deletion or the Windows Recycle Bin, chosen by the user.
-- Confirmation policy: always, only above 1 GB, or never.
+- Confirmation before a deletion runs: on or off. There is no size threshold —
+  the one that existed compared against the batch total rather than any single
+  file, which is not what its label said.
 - Reports how much space was actually freed, which is not the same number as
   what was expected whenever the Recycle Bin holds part of it back.
 - Nothing is ever deleted without an explicit click. The unattended `--apply`
