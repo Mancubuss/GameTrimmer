@@ -175,6 +175,9 @@ pub struct Strings {
     // -- dialogs --
     pub elevation_heading: &'static str,
     pub elevation_body: &'static str,
+    /// Why declining is safe, and why this modal appears on some machines and
+    /// never on others - the question the old two-sentence body left open.
+    pub elevation_when_asked: &'static str,
     pub btn_continue_without_elevation: &'static str,
     pub btn_relaunch_elevated: &'static str,
     pub confirm_delete_heading: &'static str,
@@ -479,6 +482,7 @@ impl Strings {
             ("disabled_disclaimer", self.disabled_disclaimer),
             ("elevation_heading", self.elevation_heading),
             ("elevation_body", self.elevation_body),
+            ("elevation_when_asked", self.elevation_when_asked),
             (
                 "btn_continue_without_elevation",
                 self.btn_continue_without_elevation,

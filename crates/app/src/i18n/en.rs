@@ -92,9 +92,15 @@ pub(super) const STRINGS: Strings = Strings {
          see the findings again.",
 
     elevation_heading: "Speed up scanning?",
-    elevation_body: "Fast scanning reads the NTFS file table ($MFT) directly, like the Everything \
-         tool, which requires administrator rights. Without them, scanning will \
-         be slower (a regular folder walk).",
+    elevation_body: "At least one of your game libraries is on a hard drive. There GameTrimmer \
+         can read the NTFS file table ($MFT) directly instead of walking every folder - the \
+         technique the Everything search tool uses, and much faster on a spinning disk. \
+         Reading a volume that way is something Windows permits only to an administrator, so \
+         this is the one thing the program cannot do for you unelevated.",
+    elevation_when_asked: "Declining costs time, not results: the scan walks folders instead and \
+         finds exactly the same files. You will not be asked on a machine whose libraries are \
+         all on SSD or NVMe - there walking is the faster route anyway, so administrator rights \
+         would buy nothing.",
     btn_continue_without_elevation: "Continue without acceleration",
     btn_relaunch_elevated: "Restart as administrator",
     confirm_delete_heading: "Confirm deletion",
@@ -141,7 +147,9 @@ pub(super) const STRINGS: Strings = Strings {
     scan_routing_label: "Scan file-enumeration method:",
     scan_routing_auto_label: "Auto (recommended)",
     scan_routing_auto_hint: "Uses the fast MFT index on hard drives and a regular folder walk \
-         on SSDs/NVMe, whichever is faster for that drive type.",
+         on SSDs/NVMe, whichever is faster for that drive type. The MFT index needs \
+         administrator rights - without them every drive is walked instead, which is why \
+         GameTrimmer offers to restart elevated only when a library sits on a hard drive.",
     // Not "Always": elevation, volume-letter and canonical-path gates all
     // still send a game to the folder walk under this mode (audit §6.8).
     scan_routing_force_mft_label: "Prefer the MFT index where available",

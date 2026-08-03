@@ -55,6 +55,11 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.heading(s.elevation_heading);
         ui.add_space(8.0);
         ui.label(s.elevation_body);
+        ui.add_space(6.0);
+        // Under the offer rather than beside it: "what happens if I say no"
+        // and "why am I being asked at all" are the two questions this modal
+        // used to leave to the README.
+        ui.small(s.elevation_when_asked);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button(s.btn_continue_without_elevation).clicked() {
