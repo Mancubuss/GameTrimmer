@@ -43,7 +43,9 @@ GameTrimmer - headless mode
 USAGE:
     gametrimmer [FLAGS]
 
-Running with no flags launches the graphical app.
+Running with no flags launches the graphical app. Output is written to the
+console this exe was started from; the shell prompt returns before the text
+does, so press Enter when it finishes.
 
 FLAGS:
     --scan               Scan libraries and report (deletes nothing).
@@ -72,7 +74,7 @@ const USAGE_TAIL: &str =
                          Optional for a dry run (defaults to the saved setting);
                          mandatory for --apply.
     --report <path>      Also write the full text report to <path>.
-    -h, --help           Print this help and exit.
+    -h, --help, /?       Print this help and exit.
     -V, --version        Print the version and exit.
 
 EXIT CODES:
@@ -116,7 +118,7 @@ pub fn run_from_env() -> Outcome {
         }
         Invocation::Error(msg) => {
             attach_console();
-            eprintln!("Помилка аргументів: {msg}\n");
+            eprintln!("Argument error: {msg}\n");
             eprint!("{}", usage());
             Outcome::Exit(EXIT_USAGE)
         }
@@ -132,7 +134,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     let db_path = match worker::db_path() {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("Не вдалося визначити шлях до бази даних: {err}");
+            eprintln!("Could not determine the database path: {err}");
             return EXIT_RUNTIME;
         }
     };
@@ -142,10 +144,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     let settings = match load_settings(&db_path) {
         Ok(settings) => settings,
         Err(err) => {
-            eprintln!(
-                "Не вдалося відкрити базу даних {}: {err}",
-                db_path.display()
-            );
+            eprintln!("Could not open the database {}: {err}", db_path.display());
             return EXIT_RUNTIME;
         }
     };
@@ -163,12 +162,17 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     // An explicit --profile wins; otherwise the persisted profile decides, just
     // as it does for the GUI's post-scan selection.
     let profile = config.profile.unwrap_or(settings.selection_profile);
-    // Same resolution the GUI does: an explicit choice wins, "follow Windows"
-    // asks Windows. A CLI run reports its findings in text too, and there is
-    // no reason for it to answer in a different language than the window.
-    let lang = settings
-        .app_language
-        .resolve(crate::i18n::detect_system_language());
+    // The headless mode speaks one language: English (MT-U02).
+    //
+    // The report body is deliberately fixed English so a script can grep it and
+    // a diff across runs does not shift with the UI language (see
+    // `report::format_report`). Following the *window's* language for the
+    // surrounding console lines - progress, warnings, the scanner's own summary
+    // line embedded in the report - produced exactly the mix that reads as a
+    // half-translated program: an English report with a Ukrainian sentence in
+    // its `scan:` field. Everything the CLI emits therefore uses `Lang::En`,
+    // including the language handed to the scan worker.
+    let lang = crate::i18n::Lang::En;
 
     crate::logger::log(&format!(
         "CLI run: mode={:?}, profile={}, elevated={elevated}",
@@ -186,7 +190,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     let (findings, scan_summary) = match run_scan_headless(&db_path, elevated, options) {
         Ok(result) => result,
         Err(err) => {
-            eprintln!("Помилка сканування: {err}");
+            eprintln!("Scan failed: {err}");
             return EXIT_RUNTIME;
         }
     };
@@ -239,7 +243,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
                 match run_delete_headless(&db_path, delete_items, settings.delete_method, lang) {
                     Ok(outcomes) => Some(apply_report(settings.delete_method, &outcomes)),
                     Err(err) => {
-                        eprintln!("Помилка видалення: {err}");
+                        eprintln!("Delete failed: {err}");
                         return EXIT_RUNTIME;
                     }
                 }
@@ -264,10 +268,10 @@ fn run_headless(config: HeadlessConfig) -> u8 {
 
     if let Some(path) = &config.report {
         if let Err(err) = std::fs::write(path, &text) {
-            eprintln!("Не вдалося записати звіт у {}: {err}", path.display());
+            eprintln!("Could not write the report to {}: {err}", path.display());
             return EXIT_RUNTIME;
         }
-        eprintln!("Звіт записано: {}", path.display());
+        eprintln!("Report written: {}", path.display());
     }
 
     data.exit_code()
@@ -306,16 +310,16 @@ fn run_scan_headless(
         match msg {
             WorkerMsg::Status { text } => eprintln!("{text}"),
             WorkerMsg::LibrariesFound { libraries, games } => {
-                eprintln!("Бібліотек: {libraries}, ігор: {games}");
+                eprintln!("Libraries: {libraries}, games: {games}");
             }
-            WorkerMsg::Warning { msg } => eprintln!("Попередження: {msg}"),
+            WorkerMsg::Warning { msg } => eprintln!("Warning: {msg}"),
             WorkerMsg::Done {
                 findings,
                 scan_summary,
                 ..
             } => result = Some((findings, scan_summary)),
             WorkerMsg::Error { msg } => error = Some(msg),
-            WorkerMsg::Cancelled => error = Some("сканування скасовано".to_string()),
+            WorkerMsg::Cancelled => error = Some("the scan was cancelled".to_string()),
             // Per-game progress would spam the console; the summary line covers it.
             _ => {}
         }
@@ -325,7 +329,7 @@ fn run_scan_headless(
     match (result, error) {
         (Some(result), _) => Ok(result),
         (None, Some(err)) => Err(err),
-        (None, None) => Err("сканування завершилося без результату".to_string()),
+        (None, None) => Err("the scan finished without a result".to_string()),
     }
 }
 
@@ -346,7 +350,7 @@ fn run_delete_headless(
     let mut error: Option<String> = None;
     for msg in rx {
         match msg {
-            WorkerMsg::Warning { msg } => eprintln!("Попередження: {msg}"),
+            WorkerMsg::Warning { msg } => eprintln!("Warning: {msg}"),
             WorkerMsg::RemoveDone { outcomes: o, .. } => outcomes = Some(o),
             WorkerMsg::Error { msg } => error = Some(msg),
             _ => {}
@@ -357,7 +361,7 @@ fn run_delete_headless(
     match (outcomes, error) {
         (Some(outcomes), _) => Ok(outcomes),
         (None, Some(err)) => Err(err),
-        (None, None) => Err("видалення завершилося без результату".to_string()),
+        (None, None) => Err("the delete finished without a result".to_string()),
     }
 }
 

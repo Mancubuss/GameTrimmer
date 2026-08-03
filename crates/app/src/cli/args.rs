@@ -22,9 +22,9 @@ pub const APPLY_ENABLED: bool = cfg!(feature = "cli-apply");
 /// Why `--apply` is refused in a build without the `cli-apply` feature. Says
 /// what to use instead, so someone automating GameTrimmer is not left guessing
 /// whether the flag was renamed.
-const APPLY_DISABLED_MSG: &str = "--apply вимкнено в цій збірці: цей шлях видалення ще не \
-     проганявся наживо, тож у v1 він не входить. Доступні --scan / --dry-run / --report — вони \
-     нічого не видаляють";
+const APPLY_DISABLED_MSG: &str = "--apply is switched off in this build: that deletion path has \
+     never been run live, so v1 ships without it. Use --scan / --dry-run / --report instead - they \
+     delete nothing";
 
 /// What the process should do, decided purely from its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +73,8 @@ pub struct HeadlessConfig {
 ///
 /// Rules:
 /// - No recognized flag at all -> [`Invocation::Gui`].
-/// - `--help`/`-h` and `--version`/`-V` short-circuit (help wins over version).
+/// - `--help`/`-h` (plus the Windows spellings `/?`, `-?`, `/h`, `/help`) and
+///   `--version`/`-V` short-circuit (help wins over version).
 /// - Any of `--scan`, `--apply`, `--dry-run`, `--profile`, `--report` selects
 ///   headless mode.
 /// - `--apply` requires an explicit `--profile <name>` and conflicts with
@@ -95,7 +96,11 @@ pub fn parse_invocation(args: &[String]) -> Invocation {
             "--scan" => scan = true,
             "--apply" => apply = true,
             "--dry-run" => dry_run = true,
-            "--help" | "-h" => help = true,
+            // `/?` and `-?` alongside the POSIX spellings: this is a Windows
+            // exe, and `gametrimmer /?` is the first thing a Windows operator
+            // types. Answering "unknown argument" to the platform's own help
+            // convention reads as a broken program (MT-T01).
+            "--help" | "-h" | "-?" | "/?" | "/h" | "/help" => help = true,
             "--version" | "-V" => version = true,
             _ => {
                 // `--profile <val>` / `--profile=val` and the same for
@@ -111,7 +116,7 @@ pub fn parse_invocation(args: &[String]) -> Invocation {
                         Err(e) => return Invocation::Error(e),
                     }
                 } else {
-                    return Invocation::Error(format!("невідомий аргумент: {arg}"));
+                    return Invocation::Error(format!("unknown argument: {arg}"));
                 }
             }
         }
@@ -145,7 +150,7 @@ pub fn parse_invocation(args: &[String]) -> Invocation {
 
     if apply && dry_run {
         return Invocation::Error(
-            "--apply і --dry-run взаємовиключні: --apply видаляє, --dry-run лише звітує"
+            "--apply and --dry-run are mutually exclusive: --apply deletes, --dry-run only reports"
                 .to_string(),
         );
     }
@@ -155,7 +160,7 @@ pub fn parse_invocation(args: &[String]) -> Invocation {
             Some(p) => Some(p),
             None => {
                 return Invocation::Error(format!(
-                    "невідомий профіль \"{raw}\": очікується cautious | balanced | aggressive | custom"
+                    "unknown profile \"{raw}\": expected cautious | balanced | aggressive | custom"
                 ));
             }
         },
@@ -164,8 +169,8 @@ pub fn parse_invocation(args: &[String]) -> Invocation {
 
     if apply && profile.is_none() {
         return Invocation::Error(
-            "--apply вимагає явного --profile <назва> (запобіжник: автоматичне видалення \
-             не успадковує профіль за замовчуванням)"
+            "--apply requires an explicit --profile <name> (a safety catch: an automated \
+             delete never inherits the saved default)"
                 .to_string(),
         );
     }
@@ -192,12 +197,12 @@ fn flag_value<'a>(
     if arg == name {
         return match iter.next() {
             Some(value) => Some(Ok(value.clone())),
-            None => Some(Err(format!("{name} потребує значення"))),
+            None => Some(Err(format!("{name} needs a value"))),
         };
     }
     if let Some(rest) = arg.strip_prefix(name).and_then(|r| r.strip_prefix('=')) {
         if rest.is_empty() {
-            return Some(Err(format!("{name} потребує значення")));
+            return Some(Err(format!("{name} needs a value")));
         }
         return Some(Ok(rest.to_string()));
     }
@@ -255,7 +260,7 @@ mod tests {
         ] {
             match parse_invocation(&args(&argv)) {
                 Invocation::Error(msg) => assert!(
-                    msg.contains("вимкнено в цій збірці"),
+                    msg.contains("is switched off in this build"),
                     "expected the disabled-build reason for {argv:?}, got: {msg}"
                 ),
                 other => panic!("expected a refusal for {argv:?}, got {other:?}"),
@@ -289,7 +294,7 @@ mod tests {
     #[test]
     fn apply_and_dry_run_conflict() {
         match parse_invocation(&args(&["--apply", "--dry-run", "--profile", "cautious"])) {
-            Invocation::Error(msg) => assert!(msg.contains("взаємовиключн"), "got: {msg}"),
+            Invocation::Error(msg) => assert!(msg.contains("mutually exclusive"), "got: {msg}"),
             other => panic!("expected conflict error, got {other:?}"),
         }
     }
@@ -335,7 +340,7 @@ mod tests {
     #[test]
     fn unknown_flag_is_error() {
         match parse_invocation(&args(&["--frobnicate"])) {
-            Invocation::Error(msg) => assert!(msg.contains("невідомий аргумент"), "got: {msg}"),
+            Invocation::Error(msg) => assert!(msg.contains("unknown argument"), "got: {msg}"),
             other => panic!("expected error, got {other:?}"),
         }
     }
@@ -351,7 +356,7 @@ mod tests {
     #[test]
     fn profile_missing_value_at_end_is_error() {
         match parse_invocation(&args(&["--scan", "--profile"])) {
-            Invocation::Error(msg) => assert!(msg.contains("потребує значення"), "got: {msg}"),
+            Invocation::Error(msg) => assert!(msg.contains("needs a value"), "got: {msg}"),
             other => panic!("expected error, got {other:?}"),
         }
     }
@@ -359,7 +364,7 @@ mod tests {
     #[test]
     fn empty_equals_value_is_error() {
         match parse_invocation(&args(&["--report="])) {
-            Invocation::Error(msg) => assert!(msg.contains("потребує значення"), "got: {msg}"),
+            Invocation::Error(msg) => assert!(msg.contains("needs a value"), "got: {msg}"),
             other => panic!("expected error, got {other:?}"),
         }
     }
@@ -371,6 +376,20 @@ mod tests {
             Invocation::Help
         );
         assert_eq!(parse_invocation(&args(&["-h"])), Invocation::Help);
+    }
+
+    /// The Windows help conventions must reach the same place as `--help`
+    /// (MT-T01) - `/?` in particular, which is what an operator types first on
+    /// this platform.
+    #[test]
+    fn windows_help_conventions_are_accepted_too() {
+        for flag in ["/?", "-?", "/h", "/help"] {
+            assert_eq!(
+                parse_invocation(&args(&[flag])),
+                Invocation::Help,
+                "flag: {flag}"
+            );
+        }
     }
 
     #[test]

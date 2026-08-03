@@ -92,6 +92,20 @@ fn mode_label(mode: Mode) -> &'static str {
     }
 }
 
+/// Closing line of a dry run. It must not advertise `--apply` in a build that
+/// refuses the flag (GT-15): `--help` states the flag is absent, and a report
+/// telling the same operator to "re-run with --apply" in the same breath reads
+/// as a broken build rather than a deliberate omission.
+fn dry_run_footer() -> &'static str {
+    if super::args::APPLY_ENABLED {
+        "\nDry run: nothing was deleted. Re-run with --apply --profile <name> to remove \
+         the selected findings.\n"
+    } else {
+        "\nDry run: nothing was deleted. This build has no deletion flag at all - headless \
+         runs only ever report; remove the findings from the graphical app.\n"
+    }
+}
+
 fn method_label(method: DeleteMethod) -> &'static str {
     match method {
         DeleteMethod::Permanent => "permanent delete",
@@ -141,10 +155,7 @@ pub fn format_report(data: &ReportData, lang: Lang) -> String {
 
     match &data.apply {
         None => {
-            out.push_str(
-                "\nDry run: nothing was deleted. Re-run with --apply --profile <name> to remove \
-                 the selected findings.\n",
-            );
+            out.push_str(dry_run_footer());
         }
         Some(apply) => {
             out.push('\n');
@@ -220,6 +231,20 @@ mod tests {
         // A dry run must make it explicit that nothing was removed.
         assert!(text.contains("nothing was deleted"), "{text}");
         assert!(!text.contains("Apply result"), "{text}");
+    }
+
+    /// The dry-run footer and `--help` must agree about whether this build
+    /// takes `--apply` (MT-T03): the shipped v1 build says "not part of this
+    /// build" in the help, so its report must not tell the same operator to
+    /// re-run with the flag.
+    #[test]
+    fn dry_run_footer_matches_what_the_build_actually_accepts() {
+        let text = format_report(&dry_run_data(), Lang::En);
+        assert_eq!(
+            text.contains("--apply"),
+            super::super::args::APPLY_ENABLED,
+            "{text}"
+        );
     }
 
     #[test]
