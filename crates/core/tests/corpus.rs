@@ -211,7 +211,7 @@ fn main_check() -> Stats {
                 if is_flagged {
                     stats.false_positive += 1;
                     let f = &found[&idx];
-                    if f.reason.contains("сім'я") {
+                    if f.reason.is_family() {
                         stats.false_positive_family += 1;
                     } else if stats.false_positive - stats.false_positive_family <= 60 {
                         eprintln!(

@@ -2,101 +2,149 @@
   {
     "category": "redist_folder",
     "pattern": "^_?commonredist(s)?$",
-    "desc": "Спільна тека редистрибутивів (наприклад _CommonRedist)",
+    "desc": {
+      "en": "Shared redistributables folder (e.g. _CommonRedist)",
+      "uk": "Спільна тека редистрибутивів (наприклад _CommonRedist)"
+    },
     "confidence": 90
   },
   {
     "category": "redist_folder",
     "pattern": "^directx.*$",
-    "desc": "Тека редистрибутиву MS DirectX",
+    "desc": {
+      "en": "MS DirectX redistributable folder",
+      "uk": "Тека редистрибутиву MS DirectX"
+    },
     "confidence": 90,
     "max_depth": 4
   },
   {
     "category": "redist_folder",
     "pattern": "^(msvc.*|vc_?redist)$",
-    "desc": "Тека MS Visual C++ Runtime",
+    "desc": {
+      "en": "MS Visual C++ Runtime folder",
+      "uk": "Тека MS Visual C++ Runtime"
+    },
     "confidence": 90,
     "max_depth": 4
   },
   {
     "category": "redist_folder",
     "pattern": "^(g4w|wmfdist11|wmf)$",
-    "desc": "Застарілі інсталятори MS (Games for Windows Live / WMF)",
+    "desc": {
+      "en": "Legacy MS installers (Games for Windows Live / WMF)",
+      "uk": "Застарілі інсталятори MS (Games for Windows Live / WMF)"
+    },
     "confidence": 90
   },
   {
     "category": "redist_folder",
     "pattern": "^3rd$",
-    "desc": "Тека сторонніх редистрибутивів (3rd party)",
+    "desc": {
+      "en": "Third-party redistributables folder (3rd party)",
+      "uk": "Тека сторонніх редистрибутивів (3rd party)"
+    },
     "confidence": 75
   },
   {
     "category": "redist_folder",
     "pattern": "^.*(dependenc|prereq|install|redist).*$",
-    "desc": "Узагальнена тека залежностей/редистрибутивів/інсталяторів",
+    "desc": {
+      "en": "Generic dependencies/redistributables/installers folder",
+      "uk": "Узагальнена тека залежностей/редистрибутивів/інсталяторів"
+    },
     "confidence": 65
   },
   {
     "category": "redist_file",
     "pattern": "^(UplayInstaller|UbisoftConnectInstaller|EAappInstaller)\\.exe$",
-    "desc": "Інсталятори платформ дистрибуції (Uplay/Ubisoft Connect/EA app)",
+    "desc": {
+      "en": "Launcher client installer (Uplay/Ubisoft Connect/EA app)",
+      "uk": "Інсталятори платформ дистрибуції (Uplay/Ubisoft Connect/EA app)"
+    },
     "confidence": 95
   },
   {
     "category": "redist_file",
     "pattern": "^(wic_(x64|x86)|xpsepsc|.*netfx).*\\.(exe|msi)$",
-    "desc": "MS .NET Framework / Windows Imaging Component редистрибутив",
+    "desc": {
+      "en": "MS .NET Framework / Windows Imaging Component redistributable",
+      "uk": "MS .NET Framework / Windows Imaging Component редистрибутив"
+    },
     "confidence": 90
   },
   {
     "category": "redist_file",
     "pattern": "^(dxwebsetup|dxsetup)\\.exe$",
-    "desc": "Інсталятор MS DirectX",
+    "desc": {
+      "en": "MS DirectX installer",
+      "uk": "Інсталятор MS DirectX"
+    },
     "confidence": 95,
     "max_depth": 4
   },
   {
     "category": "redist_file",
     "pattern": "^vc_?redist.*\\.exe$",
-    "desc": "Інсталятор MS Visual C++ Redist",
+    "desc": {
+      "en": "MS Visual C++ Redist installer",
+      "uk": "Інсталятор MS Visual C++ Redist"
+    },
     "confidence": 95,
     "max_depth": 4
   },
   {
     "category": "redist_file",
     "pattern": "^(gfwl.*|arcadeinstall.*|gamespyinstaller.*)\\.exe$",
-    "desc": "Застарілі інсталятори платформ (GFWL/GameSpy Arcade)",
+    "desc": {
+      "en": "Legacy service installers (GFWL/GameSpy Arcade)",
+      "uk": "Застарілі інсталятори платформ (GFWL/GameSpy Arcade)"
+    },
     "confidence": 90
   },
   {
     "category": "redist_file",
     "pattern": "^.*kb\\d{5,8}.*\\.exe$",
-    "desc": "Оновлення MS System Update (KB)",
+    "desc": {
+      "en": "MS System Update package (KB)",
+      "uk": "Оновлення MS System Update (KB)"
+    },
     "confidence": 90
   },
   {
     "category": "redist_file",
     "pattern": "^.*msxml.*\\.exe$",
-    "desc": "Редистрибутив MS XML",
+    "desc": {
+      "en": "MS XML redistributable",
+      "uk": "Редистрибутив MS XML"
+    },
     "confidence": 90
   },
   {
     "category": "redist_file",
     "pattern": "^physx.*\\.exe$",
-    "desc": "Інсталятор NVidia PhysX",
+    "desc": {
+      "en": "NVIDIA PhysX installer",
+      "uk": "Інсталятор NVidia PhysX"
+    },
     "confidence": 95
   },
   {
     "category": "redist_file",
     "pattern": "^(openalweax|oalinst)\\.exe$",
-    "desc": "Інсталятор OpenAL",
+    "desc": {
+      "en": "OpenAL installer",
+      "uk": "Інсталятор OpenAL"
+    },
     "confidence": 90
   },
   {
     "category": "redist_file",
     "pattern": "^rapture3d_.*\\.exe$",
-    "desc": "Інсталятор Rapture 3D",
+    "desc": {
+      "en": "Rapture 3D installer",
+      "uk": "Інсталятор Rapture 3D"
+    },
     "confidence": 90
   },
   {
@@ -108,25 +156,37 @@
   {
     "category": "redist_file",
     "pattern": "^.*battleeye.*\\.exe$",
-    "desc": "Інсталятор BattlEye Anti-Cheat Engine",
+    "desc": {
+      "en": "BattlEye Anti-Cheat Engine installer",
+      "uk": "Інсталятор BattlEye Anti-Cheat Engine"
+    },
     "confidence": 90
   },
   {
     "category": "redist_file",
     "pattern": "^xna.*\\.(msi|exe)$",
-    "desc": "Редистрибутив MS XNA Framework",
+    "desc": {
+      "en": "MS XNA Framework redistributable",
+      "uk": "Редистрибутив MS XNA Framework"
+    },
     "confidence": 90
   },
   {
     "category": "redist_file",
     "pattern": "^dotnet.*\\.(exe|msi)$",
-    "desc": "Інсталятор MS .NET Framework",
+    "desc": {
+      "en": "MS .NET Framework installer",
+      "uk": "Інсталятор MS .NET Framework"
+    },
     "confidence": 90
   },
   {
     "category": "docs_folder",
     "pattern": "^(docs|documents|manuals?)$",
-    "desc": "Тека документації",
+    "desc": {
+      "en": "Documentation folder",
+      "uk": "Тека документації"
+    },
     "confidence": 85,
     "extensions": [
       "pdf",
@@ -143,31 +203,46 @@
   {
     "category": "docs_folder",
     "pattern": "^tutorials?$",
-    "desc": "Тека навчальних матеріалів (tutorial)",
+    "desc": {
+      "en": "Tutorial materials folder",
+      "uk": "Тека навчальних матеріалів (tutorial)"
+    },
     "confidence": 80
   },
   {
     "category": "docs_file",
     "pattern": "^.+\\.(pdf|rtf)$",
-    "desc": "Файл документації (PDF/RTF)",
+    "desc": {
+      "en": "Documentation file (PDF/RTF)",
+      "uk": "Файл документації (PDF/RTF)"
+    },
     "confidence": 85
   },
   {
     "category": "docs_file",
     "pattern": "^.*(read\\s?_?me|eula|licen[cs]es?|manual|tutorial).*\\.(pdf|rtf|txt|docx?|html?|chm)$",
-    "desc": "Readme/EULA/ліцензія/посібник (у т.ч. локалізовані)",
+    "desc": {
+      "en": "Readme/EULA/licence/manual (localized copies included)",
+      "uk": "Readme/EULA/ліцензія/посібник (у т.ч. локалізовані)"
+    },
     "confidence": 88
   },
   {
     "category": "redist_file",
     "pattern": "^d3d11install.*\\.exe$",
-    "desc": "Інсталятор MS D3D11 runtime",
+    "desc": {
+      "en": "MS D3D11 runtime installer",
+      "uk": "Інсталятор MS D3D11 runtime"
+    },
     "confidence": 90
   },
   {
     "category": "bonus",
     "pattern": "^(digital\\s?rewards|rewards|goodies)$",
-    "desc": "Бонусні матеріали передзамовлення/видання (rewards)",
+    "desc": {
+      "en": "Preorder/reward bonus material",
+      "uk": "Бонусні матеріали передзамовлення/видання (rewards)"
+    },
     "confidence": 80,
     "extensions": [
       "pdf",
@@ -204,7 +279,10 @@
   {
     "category": "bonus",
     "pattern": "^(bonus|artbook|soundtrack|extras)$",
-    "desc": "Бонусні матеріали (артбук, саундтрек тощо)",
+    "desc": {
+      "en": "Bonus material (artbook, soundtrack)",
+      "uk": "Бонусні матеріали (артбук, саундтрек тощо)"
+    },
     "confidence": 80,
     "extensions": [
       "pdf",
@@ -241,40 +319,58 @@
   {
     "category": "docs_folder",
     "pattern": "^(support|help)$",
-    "desc": "Тека підтримки/довідки (може містити редистрибутиви або довідкові файли)",
+    "desc": {
+      "en": "Support/help folder (often holds redistributables or reference material)",
+      "uk": "Тека підтримки/довідки (може містити редистрибутиви або довідкові файли)"
+    },
     "confidence": 70,
     "max_depth": 2
   },
   {
     "category": "docs_folder",
     "pattern": "^ea\\s?help$",
-    "desc": "Файли довідки EA Help",
+    "desc": {
+      "en": "EA Help reference section",
+      "uk": "Файли довідки EA Help"
+    },
     "confidence": 65,
     "max_depth": 2
   },
   {
     "category": "docs_folder",
     "pattern": "^(privacy\\s?policy|terms\\s?of\\s?service|terms\\s?of\\s?use)$",
-    "desc": "Юридичні тексти (політика приватності, умови користування)",
+    "desc": {
+      "en": "Legal documents (privacy policy, terms of use)",
+      "uk": "Юридичні тексти (політика приватності, умови користування)"
+    },
     "confidence": 80,
     "max_depth": 6
   },
   {
     "category": "dev_leftovers",
     "pattern": "^(thumbs\\.db|testapp.*\\.exe)$",
-    "desc": "Залишки розробки (кеш Thumbs.db, тестові виконувані файли)",
+    "desc": {
+      "en": "Development leftovers (e.g. Thumbs.db, test executables)",
+      "uk": "Залишки розробки (кеш Thumbs.db, тестові виконувані файли)"
+    },
     "confidence": 90
   },
   {
     "category": "dev_leftovers",
     "pattern": "^(desktop\\.ini|\\.ds_store|ehthumbs\\.db)$",
-    "desc": "Службові файли провідника ОС (desktop.ini, .DS_Store, ehthumbs.db)",
+    "desc": {
+      "en": "OS service files (desktop.ini, .DS_Store, ehthumbs.db)",
+      "uk": "Службові файли провідника ОС (desktop.ini, .DS_Store, ehthumbs.db)"
+    },
     "confidence": 90
   },
   {
     "category": "dev_leftovers",
     "pattern": "^.*\\.pdb$",
-    "desc": "Символи налагодження (PDB), залишок збірки розробника",
+    "desc": {
+      "en": "Debug symbols (PDB), useful only to developers",
+      "uk": "Символи налагодження (PDB), залишок збірки розробника"
+    },
     "confidence": 75
   }
 ]

@@ -4,6 +4,8 @@
 //! type-checked `format!` - no runtime template parsing, no way for a
 //! placeholder count to silently drift from its call site.
 
+use gametrimmer_core::langdetect::{LangEvidence, LangReason};
+
 use super::Lang;
 use crate::model::RiskLevel;
 
@@ -765,6 +767,48 @@ pub fn hover_reason(lang: Lang, path: &str, rule_desc: &str, confidence: u8) -> 
         Lang::En => format!("{path}\nReason: {rule_desc} (confidence {confidence}%)"),
         Lang::Uk => format!("{path}\nПричина: {rule_desc} (упевненість {confidence}%)"),
     }
+}
+
+/// Renders the localization detector's evidence into `lang`.
+///
+/// The engine reports why it flagged a file as data rather than prose
+/// (`gametrimmer_core::langdetect::LangReason`) precisely so this function can
+/// exist: the sentence is written where the interface language is known, not
+/// where the detection happens.
+///
+/// English is the engine's own `Display`, so the two can never drift apart -
+/// adding a variant there is a compile error here, not a silently untranslated
+/// string.
+pub fn lang_reason(lang: Lang, reason: &LangReason) -> String {
+    if lang == Lang::En {
+        return reason.to_string();
+    }
+
+    let mut text = match &reason.evidence {
+        LangEvidence::LocPair { token } => format!("токен '{token}' у явній loc-парі"),
+        LangEvidence::TokenWithMarker { token, marker } => {
+            format!("токен '{token}' + маркер '{marker}'")
+        }
+        LangEvidence::BareToken { token } => {
+            format!("токен '{token}' (мовна тека без явного контексту)")
+        }
+        LangEvidence::Family { languages, dir } => {
+            format!("мовна сім'я з {languages} мов у теці '{dir}'")
+        }
+        LangEvidence::FamilyAtSharedPosition { languages, dir } => {
+            format!("мовна сім'я з {languages} мов у теці '{dir}' (спільна позиція токена)")
+        }
+        LangEvidence::SubfolderFamily { languages, dir } => {
+            format!("мовна сім'я підтек з {languages} мов у теці '{dir}'")
+        }
+        LangEvidence::SubfolderFamilyWithPrefix { languages, dir } => {
+            format!("мовна сім'я підтек зі спільним префіксом ({languages} мов) у теці '{dir}'")
+        }
+    };
+    if let Some(marker) = &reason.marker {
+        text.push_str(&format!("; маркер '{marker}'"));
+    }
+    text
 }
 
 pub fn hover_lang_suffix(lang: Lang, lang_tag: &str) -> String {

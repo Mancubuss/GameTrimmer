@@ -14,7 +14,10 @@ mod dict;
 mod family;
 mod markers;
 mod occurrences;
+mod reason;
 mod tokens;
+
+pub use reason::{LangEvidence, LangReason};
 
 #[cfg(test)]
 mod tests;
@@ -68,9 +71,9 @@ pub struct LangFinding {
     pub kind: LangKind,
     /// 0-100.
     pub confidence: u8,
-    /// Short human-readable explanation of why this file was flagged,
-    /// e.g. "токен 'Spanish(Spain)' + маркер 'soundbanks'".
-    pub reason: String,
+    /// Why this file was flagged, as structured evidence the caller renders
+    /// in its own language (see [`LangReason`]).
+    pub reason: LangReason,
 }
 
 /// The detection engine. Holds the data tables and the keep-list.
@@ -217,11 +220,12 @@ fn marker_kind_to_lang_kind(kind: MarkerKind) -> LangKind {
     }
 }
 
-fn append_marker_note(reason: &str, ctx: &MarkerContext) -> String {
-    match ctx.closest_any_hit() {
-        Some(hit) => format!("{reason}; маркер '{}'", hit.word),
-        None => reason.to_string(),
-    }
+/// Family evidence says a file is localized without saying what kind of asset
+/// it is, so the closest marker word - when there is one - rides along.
+fn append_marker_note(reason: &LangReason, ctx: &MarkerContext) -> LangReason {
+    reason
+        .clone()
+        .with_marker(ctx.closest_any_hit().map(|hit| hit.word.as_str()))
 }
 
 /// Best non-family candidate among a file's recognized occurrences.
@@ -250,8 +254,8 @@ fn best_non_family_candidate(
     occs: &[Occurrence],
     ctx: &MarkerContext,
     keep: &HashSet<String>,
-) -> Option<(&'static str, u8, String)> {
-    let mut best: Option<(u8, &'static str, String)> = None;
+) -> Option<(&'static str, u8, LangReason)> {
+    let mut best: Option<(u8, &'static str, LangReason)> = None;
 
     for occ in occs {
         if keep.contains(occ.canonical) {
@@ -313,17 +317,23 @@ fn best_non_family_candidate(
         };
         let Some(score) = score else { continue };
 
-        let reason = if loc_paired {
-            format!("токен '{}' у явній loc-парі", occ.matched)
+        let reason = LangReason::new(if loc_paired {
+            LangEvidence::LocPair {
+                token: occ.matched.clone(),
+            }
         } else if ctx.has_any() {
-            let word = ctx
-                .closest_any_hit()
-                .map(|h| h.word.as_str())
-                .unwrap_or_default();
-            format!("токен '{}' + маркер '{}'", occ.matched, word)
+            LangEvidence::TokenWithMarker {
+                token: occ.matched.clone(),
+                marker: ctx
+                    .closest_any_hit()
+                    .map(|h| h.word.clone())
+                    .unwrap_or_default(),
+            }
         } else {
-            format!("токен '{}' (мовна тека без явного контексту)", occ.matched)
-        };
+            LangEvidence::BareToken {
+                token: occ.matched.clone(),
+            }
+        });
 
         let is_better = match &best {
             Some((existing_score, _, _)) => score > *existing_score,

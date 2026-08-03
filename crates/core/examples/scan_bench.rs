@@ -475,7 +475,7 @@ fn combine(
     match (rule, lang) {
         (Some(r), Some(l)) if l.confidence > r.confidence => Some((
             lang_category_key(l.kind),
-            l.reason.clone(),
+            l.reason.to_string(),
             l.confidence,
             Some(l.lang_tag.clone()),
         )),
@@ -487,7 +487,7 @@ fn combine(
         )),
         (None, Some(l)) => Some((
             lang_category_key(l.kind),
-            l.reason.clone(),
+            l.reason.to_string(),
             l.confidence,
             Some(l.lang_tag.clone()),
         )),

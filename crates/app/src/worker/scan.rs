@@ -125,13 +125,16 @@ fn run_scan(
     let engine = match super::ensure_rules_path()
         .map_err(CoreError::from)
         .and_then(|path| {
-            RuleEngine::load(&path)
+            RuleEngine::load_in(&path, lang.as_str())
                 .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
         }) {
         Ok(engine) => engine,
         Err(err) => {
             send_warning(notifier, i18n::rules_json_load_failed(lang, err));
-            match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON) {
+            match RuleEngine::from_json_in(
+                gametrimmer_core::rules::BUILTIN_RULES_JSON,
+                lang.as_str(),
+            ) {
                 Ok(engine) => engine,
                 Err(err) => {
                     // The embedded defaults are validated by core tests, so
@@ -299,6 +302,7 @@ fn run_scan(
             &games,
             &engine,
             &lang_detector,
+            lang,
             cancel,
             &result_tx,
             &mft_pass.entries,
@@ -457,6 +461,7 @@ fn dispatch_scans(
     games: &[(i64, String, PathBuf)],
     engine: &RuleEngine,
     lang_detector: &LangDetector,
+    ui_lang: Lang,
     cancel: &AtomicBool,
     result_tx: &Sender<GameOutcome>,
     mft_entries: &HashMap<i64, Vec<FileEntry>>,
@@ -508,6 +513,7 @@ fn dispatch_scans(
                 install_dir,
                 entries.clone(),
                 enabled_categories,
+                ui_lang,
                 cancel,
             ),
             None => scan_and_prepare_game(
@@ -517,6 +523,7 @@ fn dispatch_scans(
                 name,
                 install_dir,
                 enabled_categories,
+                ui_lang,
                 cancel,
             ),
         };
@@ -1127,6 +1134,8 @@ struct PreparedGame {
 /// been enumerated. It is checked once more right after the walk returns,
 /// before classification starts, so a game that finishes walking just as
 /// Stop is pressed doesn't still pay the cost of `classify_game`.
+// Same flat-list reasoning as `classify_game`, which this forwards to.
+#[allow(clippy::too_many_arguments)]
 fn scan_and_prepare_game(
     engine: &RuleEngine,
     lang_detector: &LangDetector,
@@ -1134,6 +1143,7 @@ fn scan_and_prepare_game(
     name: &str,
     install_dir: &Path,
     enabled_categories: &[String],
+    ui_lang: Lang,
     cancel: &AtomicBool,
 ) -> CoreResult<PreparedGame> {
     let entries = scan_dir_cancellable(install_dir, cancel)?;
@@ -1148,6 +1158,7 @@ fn scan_and_prepare_game(
         install_dir,
         entries,
         enabled_categories,
+        ui_lang,
         cancel,
     )
 }
@@ -1188,6 +1199,7 @@ fn classify_game(
     install_dir: &Path,
     entries: Vec<FileEntry>,
     enabled_categories: &[String],
+    ui_lang: Lang,
     cancel: &AtomicBool,
 ) -> CoreResult<PreparedGame> {
     // `analyze_game` needs sibling context (the language-family heuristic),
@@ -1213,7 +1225,7 @@ fn classify_game(
         let rule_finding = engine.classify(&entry.rel_path);
         let lang_finding = lang_findings.get(&index);
 
-        if let Some(combined) = combine_finding(rule_finding, lang_finding) {
+        if let Some(combined) = combine_finding(rule_finding, lang_finding, ui_lang) {
             if category_enabled(enabled_categories, display_category(combined.source)) {
                 combined_by_index.push((index, combined));
             }
@@ -1419,6 +1431,7 @@ fn scan_and_classify_game(
         name,
         install_dir,
         &[],
+        Lang::En,
         &never_cancel,
     )?;
     let db_tx = conn.transaction()?;
@@ -1444,7 +1457,17 @@ struct CombinedFinding {
 /// per-language file inside `Support\` is support material (also the docs
 /// category) - the language split inside such folders does not change what
 /// the folder is. Localization applies only to files no rule claimed.
-fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<CombinedFinding> {
+///
+/// `ui_lang` is what the reason is written in. It is resolved here, at scan
+/// time, rather than when the row is drawn, because `rule_id` is persisted as
+/// text: the same choice the orphan pass already makes. The cost is that
+/// switching the interface language leaves already-scanned findings describing
+/// themselves in the previous one until the next scan.
+fn combine_finding(
+    rule: Option<Finding>,
+    lang: Option<&LangFinding>,
+    ui_lang: Lang,
+) -> Option<CombinedFinding> {
     match (rule, lang) {
         (Some(r), _) => Some(CombinedFinding {
             source: FindingSource::Rule(r.category),
@@ -1454,7 +1477,7 @@ fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<
         }),
         (None, Some(l)) => Some(CombinedFinding {
             source: FindingSource::Loc(l.kind),
-            rule_id: l.reason.clone(),
+            rule_id: i18n::lang_reason(ui_lang, &l.reason),
             confidence: l.confidence,
             lang_tag: Some(l.lang_tag.clone()),
         }),
@@ -1641,7 +1664,7 @@ fn persist_orphans(
 mod tests {
     use super::*;
     use gametrimmer_core::db;
-    use gametrimmer_core::langdetect::{LangDetector, LangKind};
+    use gametrimmer_core::langdetect::{LangDetector, LangEvidence, LangKind, LangReason};
     use gametrimmer_core::providers::GameInstall;
     use gametrimmer_core::rules::{Category, RuleEngine};
     use std::fs;
@@ -1651,7 +1674,10 @@ mod tests {
             lang_tag: "de".to_string(),
             kind: LangKind::Text,
             confidence: 90,
-            reason: "мовна сім'я ReadMe_*".to_string(),
+            reason: LangReason::new(LangEvidence::Family {
+                languages: 3,
+                dir: "Docs".to_string(),
+            }),
         }
     }
 
@@ -1665,7 +1691,7 @@ mod tests {
             confidence: 85,
         };
 
-        let combined = combine_finding(Some(rule), Some(&lang_finding_de()))
+        let combined = combine_finding(Some(rule), Some(&lang_finding_de()), Lang::En)
             .expect("a rule match must produce a finding");
 
         assert!(matches!(
@@ -1677,7 +1703,7 @@ mod tests {
 
     #[test]
     fn combine_finding_uses_localization_only_when_no_rule_matches() {
-        let combined = combine_finding(None, Some(&lang_finding_de()))
+        let combined = combine_finding(None, Some(&lang_finding_de()), Lang::En)
             .expect("a localization finding alone must survive");
 
         assert!(matches!(
@@ -1726,6 +1752,7 @@ mod tests {
             "Test Game",
             install_dir.path(),
             &[],
+            Lang::En,
             &cancel,
         );
 
@@ -1762,6 +1789,7 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &[],
+            Lang::En,
             &cancel,
         );
 
@@ -2362,6 +2390,7 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries.clone(),
             &[], // empty = every category enabled
+            Lang::En,
             &never_cancel,
         )
         .expect("uncancelled classify_game should succeed");
@@ -2379,6 +2408,7 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &["redist".to_string()], // "docs" is not in the enabled list
+            Lang::En,
             &never_cancel,
         )
         .expect("uncancelled classify_game should succeed");
@@ -2404,6 +2434,7 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &["docs".to_string()],
+            Lang::En,
             &AtomicBool::new(false),
         )
         .expect("uncancelled classify_game should succeed");
@@ -2619,6 +2650,123 @@ mod tests {
 
     fn entry(rel_path: &str) -> FileEntry {
         FileEntry::logical_only(rel_path, 1, None)
+    }
+
+    /// GT-76. An English interface used to show Ukrainian sentences in its row
+    /// tooltips and CSV export: the rule descriptions came straight out of
+    /// `rules.json`, and the detector built its reasons with Ukrainian format
+    /// strings. Both now go through a language, so this scans in English and
+    /// insists nothing Cyrillic comes back.
+    ///
+    /// `rule_id` is the single field both surfaces read - `hover_reason` and
+    /// the CSV's "Rule/reason" column each take it verbatim - so checking it
+    /// here covers both without building a tree and a `FindingItem` list.
+    #[test]
+    fn an_english_scan_produces_no_cyrillic_reasons() {
+        let engine = RuleEngine::from_json_in(
+            gametrimmer_core::rules::BUILTIN_RULES_JSON,
+            Lang::En.as_str(),
+        )
+        .expect("builtin rules compile");
+        let entries = vec![
+            // Claimed by a rule: the docs_file pattern.
+            entry(r"Docs\manual.pdf"),
+            // Claimed by the detector: a language family of four, of which
+            // English is on the keep-list and the rest are flagged.
+            entry(r"Voices\Voice_english.pak"),
+            entry(r"Voices\Voice_french.pak"),
+            entry(r"Voices\Voice_german.pak"),
+            entry(r"Voices\Voice_spanish.pak"),
+        ];
+
+        let prepared = classify_game(
+            &engine,
+            &LangDetector::new(),
+            1,
+            "Test Game",
+            Path::new("C:/Games/Test"),
+            entries,
+            &[],
+            Lang::En,
+            &AtomicBool::new(false),
+        )
+        .expect("classify_game should succeed");
+
+        // Both paths have to be exercised, or the test could pass by finding
+        // nothing at all.
+        assert!(
+            prepared
+                .findings
+                .iter()
+                .any(|f| matches!(f.source, FindingSource::Rule(_))),
+            "expected the docs rule to claim manual.pdf"
+        );
+        assert!(
+            prepared
+                .findings
+                .iter()
+                .any(|f| matches!(f.source, FindingSource::Loc(_))),
+            "expected the voice family to be detected"
+        );
+
+        for finding in &prepared.findings {
+            assert!(
+                !finding.rule_id.chars().any(is_cyrillic),
+                "an English scan produced a Cyrillic reason: {:?}",
+                finding.rule_id
+            );
+        }
+    }
+
+    /// The same guard from the other side: a Ukrainian scan must still speak
+    /// Ukrainian, so the fix is a translation rather than a deletion.
+    #[test]
+    fn a_ukrainian_scan_still_describes_findings_in_ukrainian() {
+        let engine = RuleEngine::from_json_in(
+            gametrimmer_core::rules::BUILTIN_RULES_JSON,
+            Lang::Uk.as_str(),
+        )
+        .expect("builtin rules compile");
+        let entries = vec![
+            entry(r"Docs\manual.pdf"),
+            entry(r"Voices\Voice_english.pak"),
+            entry(r"Voices\Voice_french.pak"),
+            entry(r"Voices\Voice_german.pak"),
+            entry(r"Voices\Voice_spanish.pak"),
+        ];
+
+        let prepared = classify_game(
+            &engine,
+            &LangDetector::new(),
+            1,
+            "Test Game",
+            Path::new("C:/Games/Test"),
+            entries,
+            &[],
+            Lang::Uk,
+            &AtomicBool::new(false),
+        )
+        .expect("classify_game should succeed");
+
+        for source in [
+            FindingSource::Rule(Category::DocsFile),
+            FindingSource::Loc(LangKind::Unknown),
+        ] {
+            let found = prepared
+                .findings
+                .iter()
+                .find(|f| std::mem::discriminant(&f.source) == std::mem::discriminant(&source));
+            let found = found.unwrap_or_else(|| panic!("no finding for {source:?}"));
+            assert!(
+                found.rule_id.chars().any(is_cyrillic),
+                "a Ukrainian scan should describe {source:?} in Ukrainian, got {:?}",
+                found.rule_id
+            );
+        }
+    }
+
+    fn is_cyrillic(ch: char) -> bool {
+        ('\u{0400}'..='\u{04FF}').contains(&ch)
     }
 
     #[test]

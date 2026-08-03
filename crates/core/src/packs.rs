@@ -37,8 +37,8 @@ pub fn detect_pack_kind(json: &str) -> Result<PackKind> {
         serde_json::Value::Array(_) => Ok(PackKind::CategoryRules),
         serde_json::Value::Object(_) => Ok(PackKind::LangPack),
         _ => Err(CoreError::Other(
-            "невідомий формат файлу правил: очікується масив правил категорій \
-             або об'єкт мовного пакета"
+            "unrecognized rules file: expected an array of category rules \
+             or a language-pack object"
                 .to_string(),
         )),
     }
@@ -133,9 +133,9 @@ mod tests {
         let merged = parse_rule_list(&json).expect("merged output reparses");
         assert_eq!(merged.len(), 3);
         // The replaced rule keeps its position and takes the new tuning.
-        assert_eq!(merged[1].desc, "Bonus retuned");
+        assert_eq!(merged[1].desc.get("en"), "Bonus retuned");
         assert_eq!(merged[1].confidence, 85);
-        assert_eq!(merged[2].desc, "Manuals");
+        assert_eq!(merged[2].desc.get("en"), "Manuals");
         // The merged output still compiles into an engine.
         RuleEngine::from_json(&json).expect("merged rules compile");
     }

@@ -8,6 +8,7 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
+use crate::localized::{LocalizedText, DEFAULT_LANG};
 
 /// Redist and bonus rules only apply when the match occurs within this many
 /// path segments from the game root (redist installers and bonus-material
@@ -82,8 +83,9 @@ pub struct Rule {
     /// Case-insensitive regex. Folder rules match one path segment,
     /// file rules match the file name.
     pub pattern: String,
-    /// Human-readable description, e.g. "MS Visual C++ Redist".
-    pub desc: String,
+    /// Human-readable description, e.g. "MS Visual C++ Redist". Either one
+    /// string or one per language - see [`LocalizedText`].
+    pub desc: LocalizedText,
     /// 0-100.
     pub confidence: u8,
     /// Optional per-rule override of the category's default depth limit
@@ -140,19 +142,37 @@ pub struct RuleEngine {
 }
 
 impl RuleEngine {
-    /// Builds the engine from rules.json text.
+    /// Builds the engine from rules.json text, describing its findings in
+    /// English. This is the form used to *validate* an incoming rule pack,
+    /// where no interface language is in play.
     pub fn from_json(json: &str) -> Result<Self> {
+        Self::from_json_in(json, DEFAULT_LANG)
+    }
+
+    /// Builds the engine from rules.json text, resolving every description
+    /// into `lang` once, here, rather than per matched file: `classify` runs
+    /// over every file of every game, and the engine is rebuilt whenever the
+    /// interface language changes anyway.
+    pub fn from_json_in(json: &str, lang: &str) -> Result<Self> {
         let raw_rules = parse_rule_list(json)?;
 
         let mut rules = Vec::with_capacity(raw_rules.len());
         for (index, rule) in raw_rules.into_iter().enumerate() {
+            if rule.desc.is_empty() {
+                return Err(CoreError::Other(format!(
+                    "rules.json: rule #{index} (category {:?}, pattern `{}`) has no description; \
+                     a finding the user cannot read is worse than no rule at all",
+                    rule.category, rule.pattern
+                )));
+            }
+            let desc = rule.desc.get(lang).to_string();
             let regex = RegexBuilder::new(&rule.pattern)
                 .case_insensitive(true)
                 .build()
                 .map_err(|err| {
                     CoreError::Other(format!(
-                        "rules.json: invalid regex in rule #{index} (category {:?}, desc \"{}\", pattern `{}`): {err}",
-                        rule.category, rule.desc, rule.pattern
+                        "rules.json: invalid regex in rule #{index} (category {:?}, desc \"{desc}\", pattern `{}`): {err}",
+                        rule.category, rule.pattern
                     ))
                 })?;
 
@@ -164,7 +184,7 @@ impl RuleEngine {
             rules.push(CompiledRule {
                 category: rule.category,
                 regex,
-                desc: rule.desc,
+                desc,
                 confidence: rule.confidence,
                 max_depth: rule.max_depth.unwrap_or(default_depth),
                 extensions: rule.extensions.map(|list| {
@@ -178,10 +198,17 @@ impl RuleEngine {
         Ok(Self { rules })
     }
 
-    /// Loads and builds the engine from a rules.json file.
+    /// Loads and builds the engine from a rules.json file, describing its
+    /// findings in English.
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_in(path, DEFAULT_LANG)
+    }
+
+    /// Loads and builds the engine from a rules.json file, describing its
+    /// findings in `lang` - see [`from_json_in`](Self::from_json_in).
+    pub fn load_in(path: &Path, lang: &str) -> Result<Self> {
         let text = std::fs::read_to_string(path)?;
-        Self::from_json(&text)
+        Self::from_json_in(&text, lang)
     }
 
     /// Classifies one file by its path relative to the game root
@@ -445,6 +472,52 @@ mod tests {
             engine.classify(r"Extras\noextension"),
             None,
             "a file without an extension never passes a whitelist"
+        );
+    }
+
+    /// GT-76: the shipped rules were written in Ukrainian, and an English
+    /// interface showed them untranslated in its row tooltips and CSV export.
+    /// A new rule added Ukrainian-only would bring the bug straight back, so
+    /// the data file is checked rather than only the machinery that reads it.
+    #[test]
+    fn every_builtin_rule_describes_itself_in_english() {
+        let rules = parse_rule_list(BUILTIN_RULES_JSON).expect("builtin rules parse");
+        assert!(!rules.is_empty(), "the builtin rule list must not be empty");
+
+        for rule in &rules {
+            let english = rule.desc.get(DEFAULT_LANG);
+            assert!(
+                !english.trim().is_empty(),
+                "rule `{}` has no English description",
+                rule.pattern
+            );
+            assert!(
+                !english
+                    .chars()
+                    .any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch)),
+                "rule `{}` describes itself in Cyrillic where English is expected: {english:?}",
+                rule.pattern
+            );
+        }
+    }
+
+    /// The Ukrainian side must survive the translation, or the fix would have
+    /// been "delete the Ukrainian" rather than "add the English".
+    #[test]
+    fn the_builtin_rules_keep_their_ukrainian_descriptions() {
+        let rules = parse_rule_list(BUILTIN_RULES_JSON).expect("builtin rules parse");
+        let translated = rules
+            .iter()
+            .filter(|rule| rule.desc.get("uk") != rule.desc.get(DEFAULT_LANG))
+            .count();
+
+        // Every rule but the one whose description is a bare product name
+        // ("AMD Dual-Core Optimizer"), which is deliberately language-neutral
+        // and stored as a single string.
+        assert_eq!(
+            translated,
+            rules.len() - 1,
+            "expected all but the language-neutral rule to carry a Ukrainian variant"
         );
     }
 

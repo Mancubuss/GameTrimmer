@@ -40,6 +40,7 @@ use crate::error::{CoreError, Result as CoreResult};
 use crate::langdetect::data::LangData;
 use crate::langdetect::dict::Level;
 use crate::langdetect::occurrences::Occurrence;
+use crate::langdetect::reason::{LangEvidence, LangReason};
 use crate::langdetect::tokens::Segment;
 use crate::scanner::CANCEL_POLL_INTERVAL;
 
@@ -99,7 +100,7 @@ type PositionGroups = HashMap<(String, u8, bool, usize), Vec<PositionMember>>;
 pub struct FamilyHit {
     pub canonical: &'static str,
     pub confidence: u8,
-    pub reason: String,
+    pub reason: LangReason,
 }
 
 fn family_confidence(level: Level) -> u8 {
@@ -229,11 +230,10 @@ fn compute_file_shape_family(
             if keep.contains(canonical) {
                 continue;
             }
-            let reason = format!(
-                "мовна сім'я з {} мов у теці '{}'",
-                distinct.len(),
-                display_dir(parent_dir)
-            );
+            let reason = LangReason::new(LangEvidence::Family {
+                languages: distinct.len(),
+                dir: display_dir(parent_dir),
+            });
             upsert(
                 result,
                 file_idx,
@@ -571,11 +571,10 @@ fn compute_directory_occurrence_family(
             if keep.contains(member.canonical) {
                 continue;
             }
-            let reason = format!(
-                "мовна сім'я з {} мов у теці '{}' (спільна позиція токена)",
-                distinct.len(),
-                display_dir(parent_dir)
-            );
+            let reason = LangReason::new(LangEvidence::FamilyAtSharedPosition {
+                languages: distinct.len(),
+                dir: display_dir(parent_dir),
+            });
             upsert(
                 result,
                 member.file_idx,
@@ -657,10 +656,10 @@ fn compute_folder_family(
             if let Some(&(canonical, confidence, count)) =
                 confirmed.get(&(parent_prefix.clone(), child_lower))
             {
-                let reason = format!(
-                    "мовна сім'я підтек з {count} мов у теці '{}'",
-                    display_dir(&parent_prefix)
-                );
+                let reason = LangReason::new(LangEvidence::SubfolderFamily {
+                    languages: count,
+                    dir: display_dir(&parent_prefix),
+                });
                 upsert(
                     result,
                     i,
@@ -753,10 +752,10 @@ fn compute_prefixed_folder_family(
             if let Some(&(canonical, confidence, count)) =
                 confirmed.get(&(parent_prefix.clone(), segs[j].lower.clone()))
             {
-                let reason = format!(
-                    "мовна сім'я підтек зі спільним префіксом ({count} мов) у теці '{}'",
-                    display_dir(&parent_prefix)
-                );
+                let reason = LangReason::new(LangEvidence::SubfolderFamilyWithPrefix {
+                    languages: count,
+                    dir: display_dir(&parent_prefix),
+                });
                 upsert(
                     result,
                     i,

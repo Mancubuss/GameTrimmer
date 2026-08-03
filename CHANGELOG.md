@@ -58,7 +58,9 @@ First public release.
 - Portable: one exe, no installer, no registry, nothing written outside its
   own folder.
 - English and Ukrainian interface, following the Windows UI language by
-  default.
+  default. This reaches all the way down: why a file was flagged is reported
+  by the engine as evidence rather than as a finished sentence, and a rule's
+  description can be written per language in `rules.json`.
 - Light, dark, or system theme.
 - First-run screen explaining the method, gated on an accepted disclaimer.
 - Rule packs are importable and exportable; imports merge rather than replace,

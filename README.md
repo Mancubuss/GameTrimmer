@@ -214,7 +214,10 @@ The analyzer is driven by two JSON files in the repository root:
 
 - [`rules.json`](rules.json) — category rules (redistributables,
   documentation, bonus material and so on): path pattern → category →
-  confidence.
+  confidence. A rule's `desc` is what the tooltip and the CSV export show, so
+  it can be written per language — `{"en": "...", "uk": "..."}` — or as a
+  single string when the text is a product name and needs no translation.
+  Unknown interface languages fall back to `en`.
 - [`l10n_rules.json`](l10n_rules.json) — the localization engine's data: the
   language dictionary (canonical keys and their aliases by confidence tier),
   marker words (audio/text/video/fonts, negative markers) and the default

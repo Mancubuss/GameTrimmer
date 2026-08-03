@@ -89,7 +89,7 @@ fn main() {
                     f.lang_tag.clone(),
                     format!("{:?}", f.kind),
                     f.confidence.to_string(),
-                    f.reason.clone(),
+                    f.reason.to_string(),
                 ),
                 None => (
                     "-".to_string(),
@@ -102,7 +102,7 @@ fn main() {
             let category = if row.expected == "none" {
                 if !is_flagged {
                     "MATCH"
-                } else if found[&idx].reason.contains("сім'я") {
+                } else if found[&idx].reason.is_family() {
                     "FP_FAMILY"
                 } else {
                     "FP_NONFAMILY"
