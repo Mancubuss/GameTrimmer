@@ -136,6 +136,11 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             let width = ui.available_width().min(SEARCH_WIDTH_PX);
             let response = ui.add(
                 egui::TextEdit::singleline(&mut query)
+                    // The clear button is conditional, so its appearance after
+                    // the first character shifts every following auto ID. A
+                    // persistent ID keeps keyboard focus on this text edit
+                    // instead of stranding it on the vanished previous ID.
+                    .id_source("plan_name_search")
                     .desired_width(width)
                     .hint_text(s.search_hint),
             );

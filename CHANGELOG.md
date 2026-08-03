@@ -35,7 +35,8 @@ First public release.
 
 - Findings tree: disk → game → category → folder → file, with ticks at any
   level propagating downwards.
-- Search by name and a category filter as two independent axes.
+- Responsive search by name and a category filter as two independent axes;
+  typing keeps keyboard focus even when the clear control appears.
 - Right-click any row to reveal it in Explorer, copy its path, or open a file
   with another program.
 - Full keyboard navigation.

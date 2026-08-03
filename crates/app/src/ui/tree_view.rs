@@ -1472,6 +1472,25 @@ mod tests {
         test.assert_label(SEEDED_FILE_NAME);
     }
 
+    /// Typing the first character makes the conditional clear button appear.
+    /// That must not change the text edit's identity and strand keyboard focus
+    /// on a widget which no longer exists on the next frame.
+    #[test]
+    fn typing_keeps_the_search_field_focused_when_the_clear_button_appears() {
+        let mut test = tree_of_files([90; 2]);
+
+        test.focus_only_role(egui::accesskit::Role::TextInput);
+        test.type_text("l");
+        assert_eq!(test.app().tree_search, "l");
+
+        test.type_text("o");
+        assert_eq!(
+            test.app().tree_search,
+            "lo",
+            "the second keystroke was lost after the clear button appeared",
+        );
+    }
+
     /// Clicking a row's empty width folds it, so the widened click target does
     /// something visible beyond moving the cursor (MT-E07).
     #[test]

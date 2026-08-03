@@ -222,6 +222,10 @@ pub struct GameTrimmerApp {
     /// Which findings `tree_search` matches. Rebuilt only when the query or
     /// the findings change, never per frame - see `search::SearchIndex`.
     pub tree_search_index: search::SearchIndex,
+    /// The lowercase text `tree_search_index` is built from. Folded once per
+    /// findings list rather than once per keystroke, which is what keeps the
+    /// search field responsive on a large scan - see `search::Corpus`.
+    tree_search_corpus: search::Corpus,
 
     /// Every registered library (all vendors), for the library management
     /// list. Refreshed after every add/remove and on startup.
@@ -402,6 +406,7 @@ impl GameTrimmerApp {
             tree_category_filter: None,
             tree_search: String::new(),
             tree_search_index: search::SearchIndex::default(),
+            tree_search_corpus: search::Corpus::default(),
             libraries,
             folder_picker_active: false,
             export_active: false,
@@ -970,16 +975,32 @@ impl GameTrimmerApp {
         if query == self.tree_search {
             return;
         }
-        self.tree_search_index = search::SearchIndex::build(&query, &self.findings);
+        // The outgoing index is handed to the new one: typing one more
+        // character can only narrow the previous hits, so the rebuild scans
+        // those rather than the whole corpus (see `search::SearchIndex::build`).
+        self.tree_search_index = search::SearchIndex::build(
+            &query,
+            &self.tree_search_corpus,
+            Some(&self.tree_search_index),
+        );
         self.tree_search = query;
         self.tree_cursor = None;
     }
 
-    /// Drops any active search - used when a fresh result set replaces the one
-    /// the query was built against.
-    fn clear_search(&mut self) {
+    /// Drops any active search and refolds the corpus - used when a fresh
+    /// result set replaces the one the query was built against.
+    ///
+    /// The two belong together: the corpus and the index are both keyed by
+    /// position in `findings`, so this is called from every site that replaces
+    /// that list, and is the reason no live index can ever outlive its corpus.
+    ///
+    /// `pub(crate)` so the test harness can restore the same invariant after
+    /// seeding `findings` directly - a seeded list with a stale (empty) corpus
+    /// would make every search assertion pass or fail for the wrong reason.
+    pub(crate) fn clear_search(&mut self) {
         self.tree_search.clear();
         self.tree_search_index = search::SearchIndex::default();
+        self.tree_search_corpus = search::Corpus::build(&self.findings);
     }
 
     /// Opens the delete confirmation for every non-removed finding in one
@@ -1925,6 +1946,9 @@ mod tests {
             selected: true,
             removed: false,
         }];
+        // Keeps the search corpus in step with the findings, exactly as
+        // `WorkerMsg::Done` does for a real result set.
+        app.clear_search();
         app
     }
 

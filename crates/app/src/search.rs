@@ -19,21 +19,92 @@
 //! everything below them. Typing a game's name therefore opens up its entire
 //! contents to browse, which is the point of searching for a game.
 //!
-//! Matching is case-insensitive without allocating: the index is rebuilt on
-//! every keystroke, and `to_lowercase()` on every finding's path would mean one
-//! allocation per finding per keystroke. Comparison folds case per character,
-//! so Cyrillic file names match too, not just ASCII ones.
+//! # Why the case folding is precomputed
+//!
+//! Once per query change is still once per keystroke, and the first version of
+//! this module folded case *during* the comparison: for every byte offset of
+//! every path it re-ran `char::to_lowercase` character by character. That is
+//! what made the field feel like it was lagging a character behind. Measured on
+//! this machine over a synthetic 200,000-finding result set, one keystroke cost
+//! 75-112 ms (500,000 findings: 192-278 ms), all of it on the UI thread, with
+//! the worst case being a query that matches nothing - every position of every
+//! string is tried before it gives up.
+//!
+//! An ASCII fast path was the cheaper fix and was measured too: 20-27 ms, but
+//! it does nothing for a Cyrillic query (110 ms), and game and file names here
+//! are routinely non-ASCII. So the fold happens exactly once, when the findings
+//! change, into a [`Corpus`] of lowercase haystacks; a keystroke then does
+//! plain `str::contains` over them - 4-8 ms at 200,000 findings, and the same
+//! for a Cyrillic query as for an ASCII one.
+//!
+//! The cost is one lowercase copy of each finding's game name and relative path
+//! (~15 MB at 200,000 findings) plus ~80 ms to build it - paid once, at the end
+//! of a scan that took seconds or minutes.
+//!
+//! On top of that, [`SearchIndex::build`] narrows: when the new query extends
+//! the one the previous index was built for, only findings that already matched
+//! can still match, so every keystroke after the first scans the previous hits
+//! rather than the whole corpus.
 
 use std::collections::HashSet;
 
 use crate::model::FindingItem;
+
+/// Separates a finding's game name from its relative path inside one haystack.
+/// `NUL` because NTFS forbids it in a file name, so no query can match across
+/// the join and produce a hit that exists in neither field.
+const FIELD_SEPARATOR: char = '\0';
+
+/// The searchable text of the current findings, folded to lowercase once.
+///
+/// Rebuilt whenever `findings` is replaced (see `GameTrimmerApp::clear_search`,
+/// which is called at every site that swaps the findings list), and indexed by
+/// position in that list exactly like [`SearchIndex::matched`].
+#[derive(Debug, Default, Clone)]
+pub struct Corpus {
+    /// `"<game name>\0<relative path>"`, lowercased, one per finding.
+    haystacks: Vec<String>,
+    /// The game id of each finding, in the same order.
+    game_ids: Vec<i64>,
+}
+
+impl Corpus {
+    /// Folds `findings` into lowercase haystacks. O(total text length), and the
+    /// only place in the search path that allocates per finding.
+    pub fn build(findings: &[FindingItem]) -> Self {
+        let mut haystacks = Vec::with_capacity(findings.len());
+        let mut game_ids = Vec::with_capacity(findings.len());
+
+        for item in findings {
+            let mut haystack = item.row.game_name.to_lowercase();
+            haystack.push(FIELD_SEPARATOR);
+            haystack.push_str(&item.row.rel_path.to_lowercase());
+            haystacks.push(haystack);
+            game_ids.push(item.row.game_id);
+        }
+
+        Self {
+            haystacks,
+            game_ids,
+        }
+    }
+
+    /// How many findings this corpus covers. Private: nothing outside this
+    /// module has any use for the count, and the only reason it exists is
+    /// [`SearchIndex::narrows_into`]'s check that an index and a corpus are
+    /// talking about the same findings list.
+    fn len(&self) -> usize {
+        self.haystacks.len()
+    }
+}
 
 /// Which findings match the current search query. An empty query is the
 /// inactive state: [`is_active`](Self::is_active) is false and the tree view
 /// skips filtering entirely.
 #[derive(Debug, Default, Clone)]
 pub struct SearchIndex {
-    /// The lowercase query this index was built for, `""` when inactive.
+    /// The trimmed, lowercased query this index was built for, `""` when
+    /// inactive.
     query: String,
     /// Indexed by position in `findings`: does this finding match?
     matched: Vec<bool>,
@@ -42,25 +113,55 @@ pub struct SearchIndex {
 }
 
 impl SearchIndex {
-    /// Builds the index for `query` over `findings`. A blank query (or one
-    /// that is only whitespace) yields the inactive index.
-    pub fn build(query: &str, findings: &[FindingItem]) -> Self {
+    /// Builds the index for `query` over `corpus`. A blank query (or one that
+    /// is only whitespace) yields the inactive index.
+    ///
+    /// `previous` is the index this one replaces, if any. When the new query
+    /// extends the previous one, only findings that already matched are
+    /// re-tested: a longer needle can only ever match a subset of what a prefix
+    /// of it matched. Passing `None` (or an index from a different findings
+    /// list) is always correct, merely slower - it just scans the whole corpus.
+    ///
+    /// The two queries are compared *after* trimming and folding, i.e. as the
+    /// strings actually tested against the corpus, so the narrowing holds
+    /// regardless of how either was spelled.
+    pub fn build(query: &str, corpus: &Corpus, previous: Option<&SearchIndex>) -> Self {
         let query = query.trim().to_lowercase();
         if query.is_empty() {
             return Self::default();
         }
 
-        let mut matched = Vec::with_capacity(findings.len());
+        let mut matched = vec![false; corpus.len()];
         let mut games_with_match = HashSet::new();
 
-        for item in findings {
-            // A game-name hit marks every finding under that game, so the
-            // whole subtree stays browsable (see the module docs).
-            let hit = contains_ignore_case(&item.row.game_name, &query)
-                || contains_ignore_case(&item.row.rel_path, &query);
-            matched.push(hit);
-            if hit {
-                games_with_match.insert(item.row.game_id);
+        // A game-name hit marks every finding under that game, because the
+        // game's name is part of every one of its haystacks (see the module
+        // docs) - so the whole subtree stays browsable.
+        let mut record = |index: usize| {
+            matched[index] = true;
+            games_with_match.insert(corpus.game_ids[index]);
+        };
+
+        match previous.filter(|prev| prev.narrows_into(&query, corpus)) {
+            Some(prev) => {
+                for index in prev
+                    .matched
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, hit)| **hit)
+                    .map(|(index, _)| index)
+                {
+                    if corpus.haystacks[index].contains(&query) {
+                        record(index);
+                    }
+                }
+            }
+            None => {
+                for (index, haystack) in corpus.haystacks.iter().enumerate() {
+                    if haystack.contains(&query) {
+                        record(index);
+                    }
+                }
             }
         }
 
@@ -69,6 +170,18 @@ impl SearchIndex {
             matched,
             games_with_match,
         }
+    }
+
+    /// Whether this index's hits are a superset of what `query` can match over
+    /// `corpus` - the precondition for reusing it instead of rescanning.
+    ///
+    /// The length check is what ties it to `corpus`: an index built against a
+    /// different findings list has no meaningful positions. It cannot be
+    /// reached in practice (every site that replaces the findings goes through
+    /// `GameTrimmerApp::clear_search`, which resets this index to the inactive
+    /// one), but "in practice" is not a guarantee worth silently wrong results.
+    fn narrows_into(&self, query: &str, corpus: &Corpus) -> bool {
+        self.is_active() && self.matched.len() == corpus.len() && query.starts_with(&self.query)
     }
 
     /// Whether a search is in effect. When false the tree view must show
@@ -94,39 +207,6 @@ impl SearchIndex {
     /// whether they still have visible content under the current query.
     pub fn any_matches(&self, indices: &[usize]) -> bool {
         indices.iter().any(|&index| self.item_matches(index))
-    }
-}
-
-/// Case-insensitive `haystack.contains(needle)` without allocating. `needle`
-/// must already be lowercase (the caller lowercases the query once).
-fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-
-    haystack
-        .char_indices()
-        .any(|(offset, _)| starts_with_ignore_case(&haystack[offset..], needle))
-}
-
-/// Case-insensitive `haystack.starts_with(needle)`, folding `haystack`'s case
-/// as it goes. `needle` must already be lowercase.
-fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
-    let mut folded = haystack.chars().flat_map(char::to_lowercase);
-    let mut wanted = needle.chars();
-
-    loop {
-        match (wanted.next(), folded.next()) {
-            // Needle exhausted: every char matched.
-            (None, _) => return true,
-            // Haystack ran out first, or the chars differ.
-            (Some(_), None) => return false,
-            (Some(want), Some(have)) => {
-                if want != have {
-                    return false;
-                }
-            }
-        }
     }
 }
 
@@ -160,6 +240,11 @@ mod tests {
         }
     }
 
+    /// The whole path most callers take: fold the findings, then query them.
+    fn index(query: &str, findings: &[FindingItem]) -> SearchIndex {
+        SearchIndex::build(query, &Corpus::build(findings), None)
+    }
+
     #[test]
     fn build_matches_findings_by_relative_path() {
         let findings = vec![
@@ -167,7 +252,7 @@ mod tests {
             finding(1, "Some Game", r"Docs\manual.pdf"),
         ];
 
-        let index = SearchIndex::build("manual", &findings);
+        let index = index("manual", &findings);
 
         assert!(!index.item_matches(0));
         assert!(index.item_matches(1));
@@ -184,7 +269,7 @@ mod tests {
             finding(8, "Other Game", r"content\audio.pak"),
         ];
 
-        let index = SearchIndex::build("witcher", &findings);
+        let index = index("witcher", &findings);
 
         assert!(index.item_matches(0));
         assert!(index.item_matches(1));
@@ -196,7 +281,7 @@ mod tests {
     #[test]
     fn build_ignores_surrounding_whitespace_in_the_query() {
         let findings = vec![finding(1, "Some Game", r"Docs\manual.pdf")];
-        assert!(SearchIndex::build("  manual  ", &findings).item_matches(0));
+        assert!(index("  manual  ", &findings).item_matches(0));
     }
 
     #[test]
@@ -206,66 +291,188 @@ mod tests {
             finding(1, "Some Game", r"bin\game.exe"),
         ];
 
-        let index = SearchIndex::build("manual", &findings);
+        let index = index("manual", &findings);
 
         assert!(index.any_matches(&[0, 1]));
         assert!(!index.any_matches(&[1]));
     }
 
     #[test]
-    fn contains_ignore_case_matches_regardless_of_case() {
-        assert!(contains_ignore_case(
-            r"Data\Localization\FR.pak",
-            "localization"
-        ));
-        assert!(contains_ignore_case("VALORANT", "valor"));
-        assert!(!contains_ignore_case("Battlefield", "portal"));
+    fn matching_is_case_insensitive_in_both_directions() {
+        let findings = vec![
+            finding(1, "VALORANT", r"Data\Localization\FR.pak"),
+            finding(2, "Battlefield", r"bin\game.exe"),
+        ];
+
+        assert!(index("localization", &findings).item_matches(0));
+        assert!(index("VALOR", &findings).item_matches(0));
+        assert!(!index("portal", &findings).item_matches(1));
     }
 
     /// Game and file names are routinely non-ASCII, so folding has to cover
-    /// more than `a-z` - an ASCII-only fold would silently miss these.
+    /// more than `a-z` - an ASCII-only fold would silently miss these, and an
+    /// ASCII-only *fast path* was rejected for exactly this reason (see the
+    /// module docs).
     #[test]
-    fn contains_ignore_case_folds_cyrillic() {
-        assert!(contains_ignore_case(
-            r"Озвучення\Українська.pak",
-            "українська"
-        ));
-        assert!(contains_ignore_case("ВІДЬМАК", "відьмак"));
+    fn matching_folds_cyrillic() {
+        let findings = vec![finding(
+            1,
+            // "ВІДЬМАК", uppercase
+            "\u{412}\u{406}\u{414}\u{42c}\u{41c}\u{410}\u{41a}",
+            // "Озвучення\Українська.pak"
+            "\u{41e}\u{437}\u{432}\u{443}\u{447}\u{435}\u{43d}\u{43d}\u{44f}\\\
+             \u{423}\u{43a}\u{440}\u{430}\u{457}\u{43d}\u{441}\u{44c}\u{43a}\u{430}.pak",
+        )];
+
+        // "відьмак" and "українська", both lowercase.
+        assert!(index(
+            "\u{432}\u{456}\u{434}\u{44c}\u{43c}\u{430}\u{43a}",
+            &findings
+        )
+        .item_matches(0));
+        assert!(index(
+            "\u{443}\u{43a}\u{440}\u{430}\u{457}\u{43d}\u{441}\u{44c}\u{43a}\u{430}",
+            &findings
+        )
+        .item_matches(0));
     }
 
     #[test]
-    fn contains_ignore_case_handles_the_end_of_the_haystack() {
-        assert!(contains_ignore_case("game.pak", "pak"));
-        // Needle longer than what remains must not match (and must not panic).
-        assert!(!contains_ignore_case("pak", "package"));
+    fn a_needle_longer_than_the_haystack_does_not_match() {
+        let findings = vec![finding(1, "G", "pak")];
+        assert!(index("pak", &findings).item_matches(0));
+        assert!(!index("package", &findings).item_matches(0));
     }
 
+    /// The separator between the two fields must not be matchable across, or a
+    /// query would find a "hit" that exists in neither the name nor the path.
     #[test]
-    fn empty_needle_matches_anything() {
-        assert!(contains_ignore_case("whatever", ""));
+    fn a_query_cannot_match_across_the_name_and_the_path() {
+        let findings = vec![finding(1, "Doom", "eternal.pak")];
+
+        assert!(index("doom", &findings).item_matches(0));
+        assert!(index("eternal", &findings).item_matches(0));
+        assert!(!index("doometernal", &findings).item_matches(0));
     }
 
     #[test]
     fn blank_query_builds_an_inactive_index() {
-        assert!(!SearchIndex::build("", &[]).is_active());
-        assert!(!SearchIndex::build("   ", &[]).is_active());
+        assert!(!index("", &[]).is_active());
+        assert!(!index("   ", &[]).is_active());
     }
 
     #[test]
     fn non_blank_query_builds_an_active_index() {
-        assert!(SearchIndex::build("witcher", &[]).is_active());
+        assert!(index("witcher", &[]).is_active());
     }
 
     #[test]
     fn item_matches_is_false_for_an_out_of_range_index() {
-        let index = SearchIndex::build("witcher", &[]);
+        let index = index("witcher", &[]);
         assert!(!index.item_matches(0));
         assert!(!index.item_matches(9_999));
     }
 
     #[test]
     fn any_matches_is_false_for_no_indices() {
-        let index = SearchIndex::build("witcher", &[]);
+        let index = index("witcher", &[]);
         assert!(!index.any_matches(&[]));
+    }
+
+    /// The narrowing optimisation must be invisible in the result: typing a
+    /// query character by character has to land on exactly what building it in
+    /// one go produces. This is the assertion that keeps the fast path honest.
+    #[test]
+    fn narrowing_keystroke_by_keystroke_gives_the_same_answer_as_one_shot() {
+        let findings = vec![
+            finding(1, "The Witcher 3", r"content\voice\french.pak"),
+            finding(1, "The Witcher 3", r"content\voice\polish.pak"),
+            finding(2, "Voidtrain", r"bin\game.exe"),
+            finding(3, "Other Game", r"Docs\manual.pdf"),
+        ];
+        let corpus = Corpus::build(&findings);
+
+        let mut typed = SearchIndex::default();
+        for query in ["v", "vo", "voi", "voic", "voice"] {
+            typed = SearchIndex::build(query, &corpus, Some(&typed));
+        }
+        let one_shot = SearchIndex::build("voice", &corpus, None);
+
+        assert_eq!(typed.matched, one_shot.matched);
+        assert_eq!(typed.games_with_match, one_shot.games_with_match);
+        assert!(typed.item_matches(0) && typed.item_matches(1));
+        assert!(!typed.item_matches(2), "\"Voidtrain\" is not \"voice\"");
+        assert!(!typed.item_matches(3));
+    }
+
+    /// Deleting a character widens the query, so the previous index is *not* a
+    /// superset any more and the whole corpus has to be rescanned. Getting this
+    /// wrong would make backspace silently lose rows.
+    #[test]
+    fn shortening_the_query_rescans_instead_of_narrowing() {
+        let findings = vec![
+            finding(1, "Some Game", r"Docs\manual.pdf"),
+            finding(2, "Other Game", r"bin\man.exe"),
+        ];
+        let corpus = Corpus::build(&findings);
+
+        let narrow = SearchIndex::build("manual", &corpus, None);
+        assert!(!narrow.item_matches(1));
+
+        let widened = SearchIndex::build("man", &corpus, Some(&narrow));
+
+        assert!(widened.item_matches(0));
+        assert!(
+            widened.item_matches(1),
+            "backspacing lost a row the shorter query matches",
+        );
+    }
+
+    /// An unrelated query is not an extension of the previous one either.
+    #[test]
+    fn an_unrelated_query_rescans_instead_of_narrowing() {
+        let findings = vec![
+            finding(1, "Some Game", r"Docs\manual.pdf"),
+            finding(2, "Other Game", r"bin\game.exe"),
+        ];
+        let corpus = Corpus::build(&findings);
+
+        let first = SearchIndex::build("manual", &corpus, None);
+        let second = SearchIndex::build("game.exe", &corpus, Some(&first));
+
+        assert!(second.item_matches(1));
+        assert!(!second.item_matches(0));
+    }
+
+    /// The guard against reusing an index whose positions mean something else.
+    /// It cannot happen through the app (see `narrows_into`), which is exactly
+    /// why it needs a test of its own.
+    #[test]
+    fn an_index_from_another_findings_list_is_not_reused() {
+        let old = vec![finding(1, "Some Game", r"Docs\manual.pdf")];
+        let new = vec![
+            finding(2, "Other Game", r"bin\game.exe"),
+            finding(2, "Other Game", r"Docs\manual.pdf"),
+        ];
+        let stale = SearchIndex::build("manual", &Corpus::build(&old), None);
+
+        let rebuilt = SearchIndex::build("manual", &Corpus::build(&new), Some(&stale));
+
+        assert!(!rebuilt.item_matches(0));
+        assert!(
+            rebuilt.item_matches(1),
+            "the stale index narrowed away a real match",
+        );
+    }
+
+    #[test]
+    fn an_empty_corpus_matches_nothing_without_panicking() {
+        let corpus = Corpus::build(&[]);
+        assert_eq!(corpus.len(), 0);
+
+        let index = SearchIndex::build("anything", &corpus, None);
+
+        assert!(index.is_active());
+        assert!(!index.item_matches(0));
     }
 }

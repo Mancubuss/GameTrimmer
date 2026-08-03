@@ -202,6 +202,12 @@ impl UiTest {
             })
             .collect();
         app.tree = crate::model::build_tree(&app.findings);
+        // What `WorkerMsg::Done` does after swapping in a real result set:
+        // fold the search corpus over the new findings. Assigning `findings`
+        // here without it would leave the name search looking at an empty
+        // corpus, so every search assertion would pass or fail for the wrong
+        // reason.
+        app.clear_search();
         self.run();
     }
 
@@ -223,6 +229,31 @@ impl UiTest {
     /// Sends a key press and runs until the UI settles.
     pub fn press(&mut self, key: egui::Key) {
         self.harness.key_press(key);
+        self.run();
+    }
+
+    /// Gives keyboard focus to the only widget with this accessibility role.
+    /// Useful for controls such as an unlabelled text edit whose visible text
+    /// is a placeholder rather than an accessibility label.
+    #[track_caller]
+    pub fn focus_only_role(&mut self, role: egui::accesskit::Role) {
+        {
+            let mut nodes = self.harness.query_all_by_role(role);
+            let node = nodes
+                .next()
+                .unwrap_or_else(|| panic!("no widget with role {role:?} on screen"));
+            assert!(
+                nodes.next().is_none(),
+                "more than one widget with role {role:?} is on screen",
+            );
+            node.focus();
+        }
+        self.run();
+    }
+
+    /// Sends text to whichever widget currently owns keyboard focus.
+    pub fn type_text(&mut self, text: &str) {
+        self.harness.event(egui::Event::Text(text.to_owned()));
         self.run();
     }
 
