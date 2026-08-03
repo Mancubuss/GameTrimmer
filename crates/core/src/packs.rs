@@ -1,5 +1,5 @@
 //! Text-level merge of community rule packs for the settings dialog's
-//! «Імпортувати правила» flow (docs/05_rules_pack_plan.md, крок 5).
+//! "Import rules" flow (docs/05_rules_pack_plan.md, step 5).
 //!
 //! The app layer only shuttles file contents around; everything that needs
 //! JSON - telling the two pack kinds apart, validating an incoming file,

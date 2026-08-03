@@ -1,70 +1,74 @@
 # package-portable.ps1
 #
-# Збирає release-версію GameTrimmer і пакує портабельний zip:
+# Builds a release GameTrimmer and packs the portable zip:
 #   GameTrimmer-<version>-portable-win64.zip
 #   `-- GameTrimmer-<version>/
-#       |-- gametrimmer.exe   (release, strip=true, з іконкою й DPI-маніфестом)
-#       |-- rules.json        (щоб перший запуск не потребував прав на запис
-#       |                      для матеріалізації - ensure_rules_path()
-#       |                      усе одно її створить, якщо файл відсутній)
-#       |-- l10n_rules.json   (те саме для мовних правил)
-#       |-- README.md      (англійська - мова, якою читає більшість тих, хто
-#       |                   звантажив zip з релізу)
-#       |-- README.uk.md   (українська; обидва файли, бо в архіві немає
-#       |                   переходу за посиланням між ними)
+#       |-- gametrimmer.exe   (release, strip=true, with the icon and the DPI
+#       |                      manifest)
+#       |-- rules.json        (shipped so the first run needs no write access
+#       |                      to materialize it - ensure_rules_path() would
+#       |                      create it anyway if the file were missing)
+#       |-- l10n_rules.json   (the same, for the localization rules)
+#       |-- README.md         (English - what most people who downloaded a
+#       |                      release zip read)
+#       |-- README.uk.md      (Ukrainian; both files ship, because inside an
+#       |                      archive there is no link to follow between them)
 #       |-- LICENSE
-#       `-- THIRD-PARTY-NOTICES.md  (MIT-ліцензія TikiOne Steam Cleaner, чий
-#                                    перелік дистрибутивів став основою правил -
-#                                    MIT вимагає, щоб її текст їхав із копіями)
+#       `-- THIRD-PARTY-NOTICES.md  (the MIT licence of TikiOne Steam Cleaner,
+#                                    whose redistributable list seeded these
+#                                    rules - MIT requires its text to travel
+#                                    with copies)
 #
-# Шлях до зібраного exe обчислюється через `cargo metadata`, а не
-# `target/release/...` напряму: target-dir не обов'язково лежить у проєкті -
-# його зсувають CARGO_TARGET_DIR, `build.target-dir` у будь-якому з
-# конфігураційних файлів Cargo і зміна розкладки workspace. `cargo metadata`
-# відповідає з того самого джерела, з якого збирає сама збірка, тож розійтися
-# вони не можуть.
+# The path to the built exe comes from `cargo metadata` rather than
+# `target/release/...` directly: target-dir does not have to live inside the
+# project. CARGO_TARGET_DIR moves it, so does `build.target-dir` in any of
+# Cargo's config files, and so does a change in workspace layout.
+# `cargo metadata` answers from the same source the build itself reads, so the
+# two cannot drift apart.
 #
-# Історична примітка: колись тут справді жив `.cargo/config.toml`, який виносив
-# target-dir назовні через баг autocfg на кириличному шляху. Обхід прибрано
-# 2026-07-24 (6814264), і сьогодні target-dir - звичайний `target/` у корені.
-# `cargo metadata` лишається не через це, а з причини вище.
+# Historical note: a `.cargo/config.toml` did once live here, moving target-dir
+# outside the project because autocfg tripped over the Cyrillic path. That
+# workaround was removed on 2026-07-24 (6814264), and target-dir is a plain
+# `target/` in the repository root today. `cargo metadata` stays for the reason
+# above, not for that one.
 #
-# Запуск (з кореня репозиторію або звідки завгодно):
+# Run it (from the repository root or from anywhere):
 #   pwsh -File scripts\package-portable.ps1
 #
-# Готовий zip з'являється в dist\GameTrimmer-<version>-portable-win64.zip.
+# The finished zip appears at dist\GameTrimmer-<version>-portable-win64.zip.
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $repoRoot
 try {
-    # 1. Версія з Cargo.toml (workspace.package.version)
+    # 1. Version from Cargo.toml (workspace.package.version)
     $cargoToml = Get-Content "$repoRoot\Cargo.toml" -Raw
     if ($cargoToml -notmatch 'version\s*=\s*"([^"]+)"') {
-        throw "Не вдалося визначити версію з Cargo.toml"
+        throw "could not read the version from Cargo.toml"
     }
     $version = $Matches[1]
 
-    # 2. Release-збірка
+    # 2. Release build
     cargo build --release -p gametrimmer
-    if ($LASTEXITCODE -ne 0) { throw "cargo build --release провалився" }
+    if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed" }
 
-    # 3. Реальний target-dir, як його бачить сама збірка
+    # 3. The real target-dir, as the build itself sees it
     $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
     $targetDir = $metadata.target_directory
     $exePath = Join-Path $targetDir "release\gametrimmer.exe"
     if (-not (Test-Path $exePath)) {
-        throw "exe не знайдено за шляхом $exePath"
+        throw "no exe at $exePath"
     }
 
-    # 4. Збірка вмісту пакета
+    # 4. Assemble the package contents
     $distDir = Join-Path $repoRoot "dist"
     $stageDir = Join-Path $distDir "GameTrimmer-$version"
-    # Вміст теки, а не сама тека: якщо її тримає відкрите вікно Провідника чи
-    # термінал усередині, Windows забороняє ВИДАЛИТИ каталог, але дозволяє
-    # створювати в ньому файли. Видалення теки цілком тут падало з "process
-    # cannot access the file" і зупиняло пакування після успішної збірки.
+    # The directory's contents, not the directory itself: while an Explorer
+    # window or a shell sits inside it, Windows refuses to REMOVE the directory
+    # but happily lets files be created in it. Removing it outright failed here
+    # with "process cannot access the file" and killed the packaging run after
+    # a successful build.
     if (Test-Path $stageDir) {
         Get-ChildItem -Path $stageDir -Force | Remove-Item -Recurse -Force
     }
@@ -78,11 +82,11 @@ try {
     Copy-Item "$repoRoot\LICENSE" (Join-Path $stageDir "LICENSE")
     Copy-Item "$repoRoot\THIRD-PARTY-NOTICES.md" (Join-Path $stageDir "THIRD-PARTY-NOTICES.md")
 
-    # 5. Zip - через .NET ZipFile, а не Compress-Archive: командлет не дає
-    # рівня стиснення вище Optimal, тоді як SmallestSize (deflate з
-    # максимальним зусиллям, .NET 6+/PowerShell 7) помітно менший для
-    # великого exe. Останній аргумент $false - без кореневої теки в архіві
-    # (вміст лежить у корені zip, як і в Compress-Archive "$stageDir\*").
+    # 5. Zip - through .NET ZipFile rather than Compress-Archive: the cmdlet
+    # offers no compression level above Optimal, whereas SmallestSize (deflate
+    # at maximum effort, .NET 6+/PowerShell 7) is noticeably smaller for a big
+    # exe. The last argument $false means no root folder inside the archive
+    # (contents sit at the zip root, as with Compress-Archive "$stageDir\*").
     $zipPath = Join-Path $distDir "GameTrimmer-$version-portable-win64.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -94,8 +98,8 @@ try {
 
     $exeSizeMb = [Math]::Round((Get-Item $exePath).Length / 1MB, 2)
     $zipSizeMb = [Math]::Round((Get-Item $zipPath).Length / 1MB, 2)
-    Write-Host "Готово: $zipPath"
-    Write-Host "  exe: $exeSizeMb МБ, zip: $zipSizeMb МБ"
+    Write-Host "Done: $zipPath"
+    Write-Host "  exe: $exeSizeMb MB, zip: $zipSizeMb MB"
 }
 finally {
     Pop-Location

@@ -202,7 +202,7 @@ impl LangPack {
     }
 
     /// How many words a pack contributes across every list - used by the
-    /// import summary to report "нових слів N" as the size delta between
+    /// import summary to report "N new words" as the size delta between
     /// the merged and the base pack.
     pub fn word_count(&self) -> usize {
         self.languages

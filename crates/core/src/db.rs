@@ -252,7 +252,7 @@ pub fn checkpoint_truncate(conn: &Connection) -> Result<()> {
 /// Compacts the database: truncates the WAL and rebuilds the main file.
 ///
 /// Deletes accumulate free pages in the main file over time (rows removed
-/// after a "Видалити вибране" run don't shrink the file on disk). `VACUUM`
+/// after a "Delete selected" run don't shrink the file on disk). `VACUUM`
 /// rebuilds the file without that free space, but it cannot see rows still
 /// sitting in the WAL, so `wal_checkpoint(TRUNCATE)` runs first to fold the
 /// WAL back into the main file and shrink the WAL file itself to zero bytes.

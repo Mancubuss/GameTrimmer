@@ -74,7 +74,7 @@ impl Category {
 }
 
 /// One rule from rules.json. `Serialize` keeps the round trip lossless for
-/// the "Експортувати правила"/"Імпортувати правила" flow (see
+/// the "Export rules"/"Import rules" flow (see
 /// `crate::packs`), which rewrites the merged list back to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
@@ -395,7 +395,7 @@ mod tests {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
         // Support/help folders are reference material, so they belong to
-        // the docs category ("Документація і довідкові матеріали" in the
+        // the docs category ("Documentation and reference material" in the
         // UI), not to bonus - and the folder claims its content wholesale,
         // whatever the file type or per-language subfolder split inside.
         let finding = engine
