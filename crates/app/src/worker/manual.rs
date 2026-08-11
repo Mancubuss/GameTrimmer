@@ -6,7 +6,9 @@
 use std::path::{Path, PathBuf};
 
 use gametrimmer_core::error::Result as CoreResult;
-use gametrimmer_core::providers::{holds_installed_files, DiscoveredLibrary, GameInstall};
+use gametrimmer_core::providers::{
+    try_holds_installed_files, DiscoveredLibrary, DiscoveryDiagnostic, GameInstall, OrphanEvidence,
+};
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang};
@@ -90,7 +92,11 @@ pub fn remove_library(conn: &mut Connection, library_id: i64) -> CoreResult<()> 
 pub fn discover_manual_libraries(
     conn: &Connection,
     lang: Lang,
-) -> CoreResult<(Vec<DiscoveredLibrary>, Vec<String>)> {
+) -> CoreResult<(
+    Vec<DiscoveredLibrary>,
+    Vec<String>,
+    Vec<DiscoveryDiagnostic>,
+)> {
     let mut stmt = conn.prepare("SELECT path FROM game_libraries WHERE vendor = ?1")?;
     let paths: Vec<PathBuf> = stmt
         .query_map(params![MANUAL_VENDOR], |row| {
@@ -100,51 +106,73 @@ pub fn discover_manual_libraries(
 
     let mut libraries = Vec::new();
     let mut warnings = Vec::new();
+    let mut diagnostics = Vec::new();
 
     for path in paths {
-        if !path.is_dir() {
-            warnings.push(i18n::manual_library_unavailable(lang, path.display()));
-            continue;
+        let discovery = match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => enumerate_subfolders(&path),
+            Ok(_) => Err(std::io::Error::other(
+                "manual library path is not a directory",
+            )),
+            Err(err) => Err(err),
+        };
+        match discovery {
+            Ok(games) => libraries.push(DiscoveredLibrary {
+                vendor: MANUAL_VENDOR,
+                games,
+                path,
+                orphan_evidence: OrphanEvidence::Heuristic,
+            }),
+            Err(err) => {
+                warnings.push(format!(
+                    "{}: {err}",
+                    i18n::manual_library_unavailable(lang, path.display())
+                ));
+                diagnostics.push(DiscoveryDiagnostic {
+                    provider: MANUAL_VENDOR,
+                    stage: "library-enumeration",
+                    path: Some(path.clone()),
+                    message: err.to_string(),
+                });
+                libraries.push(DiscoveredLibrary {
+                    vendor: MANUAL_VENDOR,
+                    games: Vec::new(),
+                    path,
+                    orphan_evidence: OrphanEvidence::Degraded,
+                });
+            }
         }
-
-        libraries.push(DiscoveredLibrary {
-            vendor: MANUAL_VENDOR,
-            games: enumerate_subfolders(&path),
-            path,
-        });
     }
 
-    Ok((libraries, warnings))
+    Ok((libraries, warnings, diagnostics))
 }
 
 /// Every first-level subdirectory of `library_path` that actually holds
-/// files, sorted by name. Directories that cannot be read (permissions, ...)
-/// are silently skipped, same policy as `gametrimmer_core::scanner::scan_dir`
-/// uses for individual entries.
+/// files, sorted by name. Any enumeration or metadata error is returned so a
+/// partial manual inventory can be persisted as degraded.
 ///
-/// The `holds_installed_files` filter is the manual-library half of GT-29: a
+/// The `holds_installed_files` filter is the manual-library half of installed-content validation: a
 /// hand-picked folder is enumerated by name just like a vendor root, so a
 /// contentless subfolder became a phantom game here for the same reason.
 /// Pointing GameTrimmer at a folder is not a claim that every subfolder of it
 /// is an installed game.
-fn enumerate_subfolders(library_path: &Path) -> Vec<GameInstall> {
-    let Ok(entries) = std::fs::read_dir(library_path) else {
-        return Vec::new();
-    };
-
-    let mut games: Vec<GameInstall> = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_dir()))
-        .filter(|entry| holds_installed_files(&entry.path()))
-        .map(|entry| GameInstall {
+fn enumerate_subfolders(library_path: &Path) -> std::io::Result<Vec<GameInstall>> {
+    let entries = std::fs::read_dir(library_path)?;
+    let mut games = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || !try_holds_installed_files(&entry.path())? {
+            continue;
+        }
+        games.push(GameInstall {
             name: entry.file_name().to_string_lossy().into_owned(),
             install_dir: entry.path(),
             app_id: None,
-        })
-        .collect();
+        });
+    }
 
     games.sort_by(|a, b| a.name.cmp(&b.name));
-    games
+    Ok(games)
 }
 
 #[cfg(test)]
@@ -169,13 +197,14 @@ mod tests {
 
         add_manual_library(&conn, dir.path()).expect("register manual library");
 
-        let (libraries, warnings) =
+        let (libraries, warnings, diagnostics) =
             discover_manual_libraries(&conn, Lang::En).expect("discover should succeed");
 
         assert!(
             warnings.is_empty(),
             "existing library should produce no warnings: {warnings:?}"
         );
+        assert!(diagnostics.is_empty());
         assert_eq!(libraries.len(), 1);
         let library = &libraries[0];
         assert_eq!(library.vendor, MANUAL_VENDOR);
@@ -194,7 +223,7 @@ mod tests {
         assert!(game_a.app_id.is_none());
     }
 
-    /// The manual-library half of GT-29: pointing GameTrimmer at a folder is
+    /// The manual-library half of installed-content validation: pointing GameTrimmer at a folder is
     /// not a claim that every subfolder of it is an installed game. A
     /// contentless subfolder is residue, and a phantom game must not enter the
     /// model of a tool that deletes files.
@@ -211,7 +240,7 @@ mod tests {
 
         add_manual_library(&conn, dir.path()).expect("register manual library");
 
-        let (libraries, _) =
+        let (libraries, _, _) =
             discover_manual_libraries(&conn, Lang::En).expect("discover should succeed");
 
         let games = &libraries[0].games;
@@ -232,14 +261,14 @@ mod tests {
 
         add_manual_library(&conn, &missing_path).expect("register manual library");
 
-        let (libraries, warnings) = discover_manual_libraries(&conn, Lang::En)
+        let (libraries, warnings, diagnostics) = discover_manual_libraries(&conn, Lang::En)
             .expect("discover must not error on a missing folder");
 
-        assert!(
-            libraries.is_empty(),
-            "a missing folder must not produce a discovered library"
-        );
+        assert_eq!(libraries.len(), 1);
+        assert!(libraries[0].games.is_empty());
+        assert_eq!(libraries[0].orphan_evidence, OrphanEvidence::Degraded);
         assert_eq!(warnings.len(), 1);
+        assert_eq!(diagnostics.len(), 1);
         assert!(warnings[0].contains(&missing_path.display().to_string()));
 
         let count: i64 = conn

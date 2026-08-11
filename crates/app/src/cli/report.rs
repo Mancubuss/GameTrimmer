@@ -1,4 +1,4 @@
-//! Text report for a headless run (GT-10): a stable, human-readable summary
+//! Text report for a headless run (headless CLI mode): a stable, human-readable summary
 //! written to `--report <path>` and echoed to the console. Pure formatting
 //! over a precomputed [`ReportData`], so it is fully unit-testable without a
 //! scan, a database, or Win32 - the entry point in [`super`] fills the struct
@@ -60,6 +60,9 @@ pub struct ReportData {
     pub selected_count: usize,
     /// On-disk total of the pre-selected findings.
     pub selected_size_on_disk: u64,
+    /// Findings the profile would otherwise select but the safety contract
+    /// keeps read-only, rendered with their local blocking reason.
+    pub blocked: Vec<String>,
     /// Present only for [`Mode::Apply`], after the delete ran.
     pub apply: Option<ApplyReport>,
 }
@@ -93,7 +96,7 @@ fn mode_label(mode: Mode) -> &'static str {
 }
 
 /// Closing line of a dry run. It must not advertise `--apply` in a build that
-/// refuses the flag (GT-15): `--help` states the flag is absent, and a report
+/// refuses the flag (apply-feature gating): `--help` states the flag is absent, and a report
 /// telling the same operator to "re-run with --apply" in the same breath reads
 /// as a broken build rather than a deliberate omission.
 fn dry_run_footer() -> &'static str {
@@ -130,6 +133,12 @@ pub fn format_report(data: &ReportData, lang: Lang) -> String {
         "Findings by category ({} total):\n",
         data.total_findings
     ));
+    if !data.blocked.is_empty() {
+        out.push_str("Blocked by deletion safety:\n");
+        for blocked in &data.blocked {
+            out.push_str(&format!("  - {blocked}\n"));
+        }
+    }
     if data.cards.is_empty() {
         out.push_str("  (none)\n");
     } else {
@@ -213,6 +222,7 @@ mod tests {
             total_findings: 235,
             selected_count: 235,
             selected_size_on_disk: 41 * 1024 * 1024 * 1024 + 87 * 1024 * 1024,
+            blocked: Vec::new(),
             apply: None,
         }
     }

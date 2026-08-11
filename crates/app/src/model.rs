@@ -11,7 +11,7 @@ use gametrimmer_core::settings::SelectionProfile;
 
 /// Granular source of a finding: a rules-engine category (redist, docs,
 /// bonus, ...), a localization-detector kind (audio, text, video, font,
-/// unknown), or an orphaned-residue kind (GT-02: a folder inside a launcher's
+/// unknown), or an orphaned-residue kind (orphan-residue safety: a folder inside a launcher's
 /// managed area with no live game behind it, or the launcher's own
 /// download/cache scratch folder). All variants wrap public `core` types
 /// unchanged. Kept on every row so the persistence key and the file's original
@@ -38,7 +38,7 @@ pub enum DisplayCategory {
     Bonus,
     Loc,
     Other,
-    /// Orphaned launcher residue (GT-02) - shown under the per-disk pseudo-game
+    /// Orphaned launcher residue (orphan-residue safety) - shown under the per-disk pseudo-game
     /// branch ([`ORPHAN_GAME_ID`]), never mixed into a real game's categories.
     Orphan,
 }
@@ -48,7 +48,7 @@ pub enum DisplayCategory {
 pub struct FindingRow {
     pub file_id: i64,
     /// The owning game's id, or the [`ORPHAN_GAME_ID`] sentinel for orphaned
-    /// residue (GT-02), which has no game behind it.
+    /// residue (orphan-residue safety), which has no game behind it.
     pub game_id: i64,
     /// The owning game's display name. Empty for orphan rows - the tree renders
     /// the orphan branch with a localized label keyed off [`ORPHAN_GAME_ID`]
@@ -60,8 +60,9 @@ pub struct FindingRow {
     /// isn't what deleting actually reclaims.
     pub size: u64,
     /// On-disk allocated size (bytes) - the honest "space freed" figure and the
-    /// one shown as primary and summed for totals/estimates (GT-05a). Falls
-    /// back to `size` for rows loaded from a pre-GT-05a database (see
+    /// one shown as primary and summed for totals/estimates (allocated-size accounting). Falls
+    /// back to `size` for rows loaded from a database created before allocated-size
+    /// accounting was added (see
     /// `worker::load`).
     pub size_on_disk: u64,
     pub source: FindingSource,
@@ -80,6 +81,13 @@ pub struct FindingRow {
     /// metadata, computed by `worker::scan::assign_group_dirs` - never
     /// persisted to the database.
     pub group_dir: Option<String>,
+    /// Present when this row is read-only. The same core preflight enforces
+    /// this at execution time; the UI uses it only to explain and disable the
+    /// selection affordance early.
+    pub deletion_block_reason: Option<String>,
+    /// Imported community rules are visible and manually selectable, but no
+    /// profile may preselect them until the user has reviewed the finding.
+    pub imported_untrusted: bool,
 }
 
 impl FindingRow {
@@ -115,12 +123,12 @@ pub const CATEGORY_ORDER: [DisplayCategory; 6] = [
     DisplayCategory::Orphan,
 ];
 
-/// Synthetic `game_id` shared by every orphaned-residue finding (GT-02). Real
+/// Synthetic `game_id` shared by every orphaned-residue finding (orphan-residue safety). Real
 /// game ids are SQLite rowids (always `>= 1`), so a single reserved negative
 /// sentinel can never collide with one. Because [`build_tree`] groups by
 /// `(disk, game_id)`, giving every orphan on a disk the same sentinel merges
 /// them all into exactly one "orphaned residue" pseudo-game node per disk,
-/// beside the real games - which is the separate tree branch GT-02 calls for.
+/// beside real games in the dedicated orphan-residue branch.
 /// The rows themselves are persisted with a `NULL` `files.game_id` (there is
 /// no game), and reconstructed with this sentinel at scan/load time.
 pub const ORPHAN_GAME_ID: i64 = i64::MIN;
@@ -283,7 +291,7 @@ pub fn category_enabled(enabled_categories: &[String], category: DisplayCategory
             .any(|id| id == category_ui_key(category))
 }
 
-/// Default selection policy (docs/04 §5.5): auto-select only high-confidence
+/// Default selection policy: auto-select only high-confidence
 /// findings; lower-confidence ones are shown but left for the user to opt in.
 /// This is the [`SelectionProfile::Custom`] policy - the confidence-only path.
 pub const AUTO_SELECT_CONFIDENCE_THRESHOLD: u8 = 85;
@@ -300,7 +308,7 @@ pub fn default_selected(confidence: u8) -> bool {
 pub const AGGRESSIVE_CONFIDENCE_FLOOR: u8 = 70;
 
 /// Whether a finding in `category` with `confidence` is pre-selected under
-/// `profile` (GT-04). A pure policy over already-scanned findings, so switching
+/// `profile` (selection profiles). A pure policy over already-scanned findings, so switching
 /// profiles re-selects without re-scanning. Orthogonal to [`category_enabled`],
 /// which decides what is scanned in the first place.
 ///
@@ -312,7 +320,7 @@ pub const AGGRESSIVE_CONFIDENCE_FLOOR: u8 = 70;
 /// anything at or above [`AGGRESSIVE_CONFIDENCE_FLOOR`]; `Custom` defers to the
 /// plain confidence threshold ([`default_selected`]).
 ///
-/// Note (GT-02): unlike the confidence-threshold path, a profile *can*
+/// Note (orphan-residue safety): unlike the confidence-threshold path, a profile *can*
 /// pre-select orphaned residue - by the user's explicit choice of a profile
 /// that includes the `Orphan` category. The orphan confidences deliberately
 /// stay below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`], so the `Custom` (and any
@@ -339,7 +347,7 @@ pub fn profile_auto_selects(
     }
 }
 
-/// Coarse deletion-risk band shown on a [`PlanCard`] (GT-03). Deliberately a
+/// Coarse deletion-risk band shown on a [`PlanCard`] (plan-action filtering). Deliberately a
 /// small curated scale, *not* derived from a finding's raw `confidence`: the
 /// action screen answers "how safe is it to sweep this whole category" in
 /// human terms, which does not line up with per-file detector confidence (an
@@ -359,7 +367,7 @@ pub enum RiskLevel {
 }
 
 /// The curated deletion risk of a whole display category on the action screen
-/// (GT-03). See [`RiskLevel`] for why this is a hand-tuned table rather than a
+/// (plan-action filtering). See [`RiskLevel`] for why this is a hand-tuned table rather than a
 /// function of confidence.
 pub fn category_risk(category: DisplayCategory) -> RiskLevel {
     match category {
@@ -373,13 +381,13 @@ pub fn category_risk(category: DisplayCategory) -> RiskLevel {
     }
 }
 
-/// One aggregated action on the "plan of action" screen (GT-03): a whole
+/// One aggregated action on the "plan of action" screen (plan-action filtering): a whole
 /// display category rolled up across every disk and game, with the total space
 /// it would reclaim and its curated risk band. Built by [`plan_cards`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanCard {
     pub category: DisplayCategory,
-    /// Total on-disk allocation across the category's findings (GT-05a) - the
+    /// Total on-disk allocation across the category's findings (allocated-size accounting) - the
     /// honest reclaimable figure, matching the tree and bottom-bar totals.
     pub total_size_on_disk: u64,
     /// How many findings the category holds.
@@ -432,7 +440,7 @@ pub fn plan_cards(items: &[FindingItem]) -> Vec<PlanCard> {
 }
 
 /// The whole-plan roll-up behind the one-line summary above the tree
-/// (GT-12). Built by [`plan_totals`].
+/// (plan summary). Built by [`plan_totals`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PlanTotals {
     /// How many findings there are in total.
@@ -573,7 +581,7 @@ fn majority_category(items: &[FindingItem], indices: &[usize]) -> DisplayCategor
 
 /// Total bytes represented by a tree node - a folder's precomputed total, or
 /// a single file's size - used to sort nodes within a category. On-disk size,
-/// to match the figure shown and summed everywhere else (GT-05a).
+/// to match the figure shown and summed everywhere else (allocated-size accounting).
 fn node_bytes(items: &[FindingItem], node: &TreeNode) -> u64 {
     match node {
         TreeNode::Folder { total_bytes, .. } => *total_bytes,
@@ -811,7 +819,9 @@ pub fn toggle_group(items: &mut [FindingItem], indices: &[usize]) {
 /// bulk-selection actions (select all on a disk, all of a category, ...).
 pub fn set_group_selection(items: &mut [FindingItem], indices: &[usize], selected: bool) {
     for &index in indices {
-        items[index].selected = selected;
+        if !selected || items[index].row.deletion_block_reason.is_none() {
+            items[index].selected = selected;
+        }
     }
 }
 
@@ -967,6 +977,8 @@ mod tests {
                 confidence,
                 lang_tag: None,
                 group_dir: None,
+                deletion_block_reason: None,
+                imported_untrusted: false,
             },
             selected: default_selected(confidence),
             removed: false,
@@ -1725,7 +1737,7 @@ mod tests {
 
     #[test]
     fn orphan_confidence_is_below_auto_select_threshold_for_both_kinds() {
-        // The GT-02 safety contract: orphaned residue is shown but never
+        // The orphan-residue safety contract: orphaned residue is shown but never
         // auto-selected, so a game installed past the launcher can't be
         // pre-checked for deletion. Enforced purely through confidence.
         assert!(orphan_confidence(OrphanKind::UnmanagedFolder) < AUTO_SELECT_CONFIDENCE_THRESHOLD);
@@ -1924,7 +1936,7 @@ mod tests {
     #[test]
     fn only_a_profile_never_the_confidence_path_can_select_orphans() {
         use DisplayCategory::Orphan;
-        // GT-02 contract, now profile-scoped: the Custom (confidence-only) path
+        // orphan-residue safety contract, now profile-scoped: the Custom (confidence-only) path
         // still never auto-selects orphaned residue (its confidence is < 85)...
         assert!(!profile_auto_selects(
             SelectionProfile::Custom,
@@ -2047,7 +2059,7 @@ mod tests {
         assert_eq!(cards[0].total_size_on_disk, 100);
     }
 
-    /// GT-12. The summary row states one game count for the whole plan, so it
+    /// plan summary. The summary row states one game count for the whole plan, so it
     /// must count distinct games across categories - summing the per-card
     /// figures would report a game contributing to three categories as three
     /// games, inflating the headline number of a tool that deletes files.

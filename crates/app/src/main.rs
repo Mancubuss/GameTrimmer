@@ -2,6 +2,7 @@
 
 mod app;
 mod cli;
+mod deletion_controller;
 mod elevation;
 mod export;
 mod i18n;
@@ -41,7 +42,7 @@ const KOREAN_FONT_NAME: &str = "malgun-gothic";
 const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/gametrimmer_256.png");
 
 fn main() -> eframe::Result {
-    // Headless (CLI) mode - GT-10, switched off in the v1 release build (see
+    // Headless (CLI) mode, switched off in the v1 release build (see
     // `cli::args::HEADLESS_ENABLED`). With no argument this returns `LaunchGui`
     // in every build and the graphical app starts exactly as before; with an
     // argument the process exits here with a status code, never constructing a

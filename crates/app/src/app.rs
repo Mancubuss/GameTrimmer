@@ -47,7 +47,7 @@ pub struct RemoveSummary {
     /// when the user picked a one-off method without "remember").
     pub method: gametrimmer_core::settings::DeleteMethod,
     /// On-disk bytes the user expected to free (sum over everything queued) -
-    /// the same figure the confirm dialog promised (GT-05a).
+    /// the same figure the confirm dialog promised (allocated-size accounting).
     pub expected_bytes: u64,
     /// On-disk bytes actually reclaimed *now*: successfully removed files for a
     /// permanent delete, or only the over-quota `nuked` files for a recycle
@@ -174,10 +174,6 @@ pub struct GameTrimmerApp {
     /// its name so the app clearly still looks alive.
     pub last_progress_detail: String,
     pub last_progress_detail_at: f64,
-    /// Non-fatal issues surfaced during the last scan (a provider failed, a
-    /// manual library's folder is currently missing, ...). Cleared at the
-    /// start of every scan.
-    pub warnings: Vec<String>,
     /// How long the most recently completed scan's phases took (see
     /// `model::ScanTiming`), shown persistently in the bottom bar until the
     /// next scan starts. `None` before any scan has completed this session,
@@ -215,12 +211,12 @@ pub struct GameTrimmerApp {
     /// The findings tree viewport height as of the last rendered frame - the
     /// "page" for PgUp/PgDn.
     pub tree_viewport_height: f32,
-    /// Active "plan of action" card filter (GT-03): when `Some`, the findings
+    /// Active "plan of action" card filter (plan-action filtering): when `Some`, the findings
     /// tree shows only that display category (the user clicked a card's
     /// "View" button). `None` = the full tree. UI-only; never persisted, and
     /// cleared whenever a fresh tree is built.
     pub tree_category_filter: Option<model::DisplayCategory>,
-    /// Name search text (GT-18), as typed. UI-only, never persisted, and
+    /// Name search text (name search), as typed. UI-only, never persisted, and
     /// cleared whenever a fresh tree is built - a query from the previous
     /// result set would silently hide most of the new one.
     pub tree_search: String,
@@ -422,7 +418,6 @@ impl GameTrimmerApp {
             status_message: String::new(),
             last_progress_detail: String::new(),
             last_progress_detail_at: 0.0,
-            warnings: Vec::new(),
             last_scan_timing: None,
             findings: Vec::new(),
             occupancy: model::Occupancy::default(),
@@ -525,8 +520,8 @@ impl GameTrimmerApp {
     ///
     /// The button used to appear for any `busy`, but `cancel_scan` only sets
     /// the scan's cancel token - during a delete, compaction, database clear,
-    /// rules import or export it looked actionable and did nothing (audit
-    /// §5.4).
+    /// rules import or export it looked actionable but could not cancel that
+    /// operation.
     pub fn can_cancel(&self) -> bool {
         self.busy && self.cancellable_job
     }
@@ -599,9 +594,18 @@ impl GameTrimmerApp {
         let Ok(conn) = gametrimmer_core::db::open(db_path) else {
             return false;
         };
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM findings LIMIT 1)", [], |row| {
-            row.get::<_, bool>(0)
-        })
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM findings fi
+                JOIN files f ON f.id = fi.file_id
+                WHERE f.scan_id = (
+                    SELECT active_scan_id FROM scan_state WHERE singleton = 1
+                )
+                LIMIT 1
+            )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
         .unwrap_or(false)
     }
 
@@ -628,21 +632,19 @@ impl GameTrimmerApp {
     fn add_manual_library(&mut self, path: PathBuf) {
         let lang = self.lang();
         let Some(db_path) = self.db_path.clone() else {
-            self.warnings
-                .push(i18n::strings(lang).no_db_path.to_string());
+            self.report_action_failure(i18n::strings(lang).no_db_path.to_string());
             return;
         };
 
         match gametrimmer_core::db::open(&db_path) {
             Ok(conn) => {
                 if let Err(err) = manual::add_manual_library(&conn, &path) {
-                    self.warnings
-                        .push(i18n::add_library_failed(lang, path.display(), err));
+                    self.report_action_failure(i18n::add_library_failed(lang, path.display(), err));
                     return;
                 }
                 self.refresh_libraries();
             }
-            Err(err) => self.warnings.push(i18n::db_open_error_short(lang, err)),
+            Err(err) => self.report_action_failure(i18n::db_open_error_short(lang, err)),
         }
     }
 
@@ -651,20 +653,19 @@ impl GameTrimmerApp {
     pub fn remove_manual_library(&mut self, library_id: i64) {
         let lang = self.lang();
         let Some(db_path) = self.db_path.clone() else {
-            self.warnings
-                .push(i18n::strings(lang).no_db_path.to_string());
+            self.report_action_failure(i18n::strings(lang).no_db_path.to_string());
             return;
         };
 
         match gametrimmer_core::db::open(&db_path) {
             Ok(mut conn) => {
                 if let Err(err) = manual::remove_library(&mut conn, library_id) {
-                    self.warnings.push(i18n::remove_library_failed(lang, err));
+                    self.report_action_failure(i18n::remove_library_failed(lang, err));
                     return;
                 }
                 self.refresh_libraries();
             }
-            Err(err) => self.warnings.push(i18n::db_open_error_short(lang, err)),
+            Err(err) => self.report_action_failure(i18n::db_open_error_short(lang, err)),
         }
     }
 
@@ -745,10 +746,10 @@ impl GameTrimmerApp {
         });
     }
 
-    /// Spawns the «Import rules» flow: a blocking multi-file picker
-    /// on a background thread, then merging each picked pack into the
-    /// current files (see `worker::rules_io::import_pack_files`). Result
-    /// comes back as [`WorkerMsg::RulesImportDone`]. The settings dialog
+    /// Spawns the «Import rules» flow: a blocking multi-file picker, a
+    /// read-only active-snapshot impact preview, explicit confirmation, then
+    /// an atomic batch replacement. Result comes back as
+    /// [`WorkerMsg::RulesImportDone`]. The settings dialog
     /// additionally disables the button while a scan runs, since the import
     /// rewrites the files a scan reads at startup.
     pub fn start_rules_import(&mut self) {
@@ -761,6 +762,7 @@ impl GameTrimmerApp {
         let lang = self.lang();
         let s = i18n::strings(lang);
         let (title, filter_label) = (s.rules_import_dialog_title, s.rules_import_filter_label);
+        let db_path = self.db_path.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let picked = rfd::FileDialog::new()
@@ -769,10 +771,28 @@ impl GameTrimmerApp {
                 .pick_files();
 
             let (summary, error) = match picked {
-                Some(files) => match worker::rules_io::import_pack_files(lang, &files) {
-                    Ok(summary) => (Some(summary), None),
-                    Err(err) => (None, Some(err)),
-                },
+                Some(files) => {
+                    match worker::rules_io::prepare_pack_import(lang, &files, db_path.as_deref()) {
+                        Ok(prepared) => {
+                            let confirmed = rfd::MessageDialog::new()
+                                .set_title(title)
+                                .set_description(&prepared.preview)
+                                .set_level(rfd::MessageLevel::Warning)
+                                .set_buttons(rfd::MessageButtons::OkCancel)
+                                .show()
+                                == rfd::MessageDialogResult::Ok;
+                            if confirmed {
+                                match worker::rules_io::apply_prepared_import(lang, prepared) {
+                                    Ok(summary) => (Some(summary), None),
+                                    Err(err) => (None, Some(err)),
+                                }
+                            } else {
+                                (None, None)
+                            }
+                        }
+                        Err(err) => (None, Some(err)),
+                    }
+                }
                 None => (None, None),
             };
             let _ = tx.send(WorkerMsg::RulesImportDone { summary, error });
@@ -780,7 +800,7 @@ impl GameTrimmerApp {
     }
 
     /// Records that the user has started a scan at least once, which is what
-    /// retires the first-run explanation (GT-34, `ui::onboarding`).
+    /// retires the first-run explanation (first-run onboarding, `ui::onboarding`).
     ///
     /// Its own method rather than three lines inside [`Self::start_scan`]:
     /// that one spawns a worker that walks the machine's real libraries, so a
@@ -848,7 +868,6 @@ impl GameTrimmerApp {
         self.begin_job(true);
         self.progress = None;
         self.status_message.clear();
-        self.warnings.clear();
         self.remove_summary = None;
         self.last_scan_timing = None;
 
@@ -890,19 +909,13 @@ impl GameTrimmerApp {
 
     /// Selects every non-removed finding (the "Select All" action).
     pub fn select_all(&mut self) {
-        for item in &mut self.findings {
-            if !item.removed {
-                item.selected = true;
-            }
-        }
+        crate::deletion_controller::select_all(&mut self.findings);
         self.mark_selection_custom();
     }
 
     /// Deselects every finding (the "Deselect All" action).
     pub fn deselect_all(&mut self) {
-        for item in &mut self.findings {
-            item.selected = false;
-        }
+        crate::deletion_controller::deselect_all(&mut self.findings);
         self.mark_selection_custom();
     }
 
@@ -912,7 +925,7 @@ impl GameTrimmerApp {
     /// `SelectionProfile::Custom`'s own doc comment already described it as
     /// the state "entered when the user hand-edits the selection", but
     /// nothing ever set it: the picker could read "Balanced" while the actual
-    /// selection had been edited row by row into something else (audit §5.5).
+    /// selection had been edited row by row into something else.
     ///
     /// Cheap to call on every edit - it returns immediately once the profile
     /// is already `Custom`, so only the first hand-edit after a profile
@@ -935,13 +948,7 @@ impl GameTrimmerApp {
     /// Selects the currently-checked, non-removed findings and opens the
     /// confirmation modal. No-op if nothing is selected.
     pub fn request_delete_confirmation(&mut self) {
-        let indices: Vec<usize> = self
-            .findings
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.selected && !item.removed)
-            .map(|(index, _)| index)
-            .collect();
+        let indices = crate::deletion_controller::selected_indices(&self.findings);
 
         self.open_delete_confirmation(indices);
     }
@@ -967,6 +974,13 @@ impl GameTrimmerApp {
         if indices.is_empty() {
             return;
         }
+        let indices = match crate::deletion_controller::validate_batch(&self.findings, &indices) {
+            Ok(indices) => indices,
+            Err(block) => {
+                self.status_message = i18n::deletion_blocked(self.lang(), &block.reason);
+                return;
+            }
+        };
         // The single funnel both delete paths reach, so the disclaimer gate
         // is stated once here rather than at each button. It matters for the
         // upgrade case specifically: a database from before the disclaimer
@@ -992,7 +1006,7 @@ impl GameTrimmerApp {
         self.confirm_delete = None;
     }
 
-    /// Focuses the findings tree on a single display category (GT-03: a plan
+    /// Focuses the findings tree on a single display category (plan-action filtering: a plan
     /// card's "View" button), or clears the filter with `None`. Resets the
     /// keyboard cursor, since the set of visible rows changes.
     pub fn set_category_filter(&mut self, filter: Option<DisplayCategory>) {
@@ -1000,7 +1014,7 @@ impl GameTrimmerApp {
         self.tree_cursor = None;
     }
 
-    /// Applies a new name-search query (GT-18), rebuilding the match index.
+    /// Applies a new name-search query (name search), rebuilding the match index.
     /// No-op when the text is unchanged, so the index is not rebuilt on frames
     /// where the user merely clicked into the field. Resets the keyboard
     /// cursor for the same reason [`Self::set_category_filter`] does: the set
@@ -1038,18 +1052,12 @@ impl GameTrimmerApp {
     }
 
     /// Opens the delete confirmation for every non-removed finding in one
-    /// display category (GT-03: a plan card's "Remove" action). Unlike
+    /// display category (plan-action filtering: a plan card's "Remove" action). Unlike
     /// [`Self::request_delete_confirmation`], it acts on the whole category
     /// regardless of the current checkbox selection, so the card is a
     /// self-contained action. No-op if the category is empty.
     pub fn request_delete_for_category(&mut self, category: DisplayCategory) {
-        let indices: Vec<usize> = self
-            .findings
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| !item.removed && item.row.display_category() == category)
-            .map(|(index, _)| index)
-            .collect();
+        let indices = crate::deletion_controller::category_indices(&self.findings, category);
 
         self.open_delete_confirmation(indices);
     }
@@ -1083,7 +1091,6 @@ impl GameTrimmerApp {
                 let row = &self.findings[index].row;
                 DeleteItem {
                     file_id: row.file_id,
-                    full_path: row.install_dir.join(&row.rel_path),
                     size_on_disk: row.size_on_disk,
                 }
             })
@@ -1261,7 +1268,7 @@ impl GameTrimmerApp {
         self.persist_settings();
     }
 
-    /// Switches the selection profile (GT-04), persists it, and **re-applies**
+    /// Switches the selection profile (selection profiles), persists it, and **re-applies**
     /// it to the currently displayed findings without re-scanning: every
     /// non-removed finding's checkbox is recomputed from the new profile,
     /// overwriting any manual tweaks (the point of a profile is to be a
@@ -1295,7 +1302,8 @@ impl GameTrimmerApp {
                 profile,
                 item.row.display_category(),
                 item.row.confidence,
-            );
+            ) && item.row.deletion_block_reason.is_none()
+                && !item.row.imported_untrusted;
         }
     }
 
@@ -1371,7 +1379,7 @@ impl GameTrimmerApp {
         let lang = self.lang();
         let Some(settings_path) = self.settings_path.clone() else {
             let message = i18n::strings(lang).settings_not_saved_no_path.to_string();
-            self.warnings.push(message.clone());
+            crate::logger::log(&message);
             self.record_settings_save(Err(message));
             return;
         };
@@ -1380,18 +1388,30 @@ impl GameTrimmerApp {
             Ok(()) => self.record_settings_save(Ok(())),
             Err(err) => {
                 let message = i18n::settings_save_failed(lang, err);
-                self.warnings.push(message.clone());
+                crate::logger::log(&message);
                 self.record_settings_save(Err(message));
             }
         }
     }
 
+    /// Reports a failed user action on the status line, where the result of
+    /// that action already appears when it succeeds.
+    ///
+    /// Adding a folder, removing a library and exporting are all things the
+    /// user just asked for and is waiting on. Their failures used to go to a
+    /// shared warnings list; with that list gone they need to land where the
+    /// success message does, or a click that did nothing would look exactly
+    /// like a click that worked.
+    fn report_action_failure(&mut self, message: String) {
+        crate::logger::log(&message);
+        self.status_message = i18n::error_prefixed(self.lang(), message);
+    }
+
     /// Records how the last settings write went, for the dialog to report.
     ///
-    /// The warnings list it also goes into is on the main window, behind the
-    /// modal - so before this, a setting that failed to save inside the
-    /// dialog looked exactly like one that saved fine, and the explanation
-    /// was waiting on a surface the user could not see.
+    /// The failure is reported inside the dialog, where the change was made -
+    /// before this, a setting that failed to save looked exactly like one
+    /// that saved fine.
     fn record_settings_save(&mut self, result: Result<(), String>) {
         match result {
             Ok(()) => {
@@ -1430,7 +1450,9 @@ impl GameTrimmerApp {
         }
     }
 
-    fn apply_message(&mut self, msg: WorkerMsg) {
+    /// `pub(crate)` so UI tests can drive a worker outcome straight into the
+    /// app and assert what the window does with it, without a real worker.
+    pub(crate) fn apply_message(&mut self, msg: WorkerMsg) {
         let lang = self.lang();
         match msg {
             WorkerMsg::Status { text } => {
@@ -1477,7 +1499,7 @@ impl GameTrimmerApp {
                 self.last_scan_timing = timing;
                 self.last_routing_breakdown = routing_breakdown;
                 let count = findings.len();
-                // GT-04: a persisted profile decides which findings arrive
+                // selection profiles: a persisted profile decides which findings arrive
                 // pre-checked (see `model::profile_auto_selects`), not a bare
                 // confidence threshold. The *default* profile is the one that
                 // applies here - `selection_profile` describes the tree being
@@ -1494,7 +1516,8 @@ impl GameTrimmerApp {
                             profile,
                             row.display_category(),
                             row.confidence,
-                        );
+                        ) && row.deletion_block_reason.is_none()
+                            && !row.imported_untrusted;
                         FindingItem {
                             row,
                             selected,
@@ -1544,7 +1567,7 @@ impl GameTrimmerApp {
                 self.progress = None;
 
                 // On-disk space accounting for the honest "freed X of expected
-                // Y" summary (GT-05a) - a pure tally so it stays unit-testable
+                // Y" summary (allocated-size accounting) - a pure tally so it stays unit-testable
                 // outside the app; see `worker::delete::space_tally`.
                 let space = worker::delete::space_tally(method, &outcomes);
 
@@ -1632,7 +1655,10 @@ impl GameTrimmerApp {
                 self.status_message = i18n::error_prefixed(lang, msg);
             }
             WorkerMsg::Warning { msg } => {
-                self.warnings.push(msg);
+                // Scan-time diagnostics are for whoever reads a bug report:
+                // an app id or a manifest field name tells the person at the
+                // window nothing about what the scan did or did not cover.
+                crate::logger::log(&msg);
             }
             WorkerMsg::FolderPicked { path } => {
                 self.folder_picker_active = false;
@@ -1643,7 +1669,7 @@ impl GameTrimmerApp {
             WorkerMsg::ExportDone { path, error } => {
                 self.export_active = false;
                 if let Some(error) = error {
-                    self.warnings.push(i18n::export_save_failed(lang, error));
+                    self.report_action_failure(i18n::export_save_failed(lang, error));
                 } else if let Some(path) = path {
                     self.status_message = i18n::exported_to(lang, path.display());
                 }
@@ -1654,8 +1680,8 @@ impl GameTrimmerApp {
                 self.rules_io_active = false;
                 if let Some(error) = error {
                     let msg = i18n::rules_export_failed(lang, error);
-                    self.rules_io_result = Some(Err(msg.clone()));
-                    self.warnings.push(msg);
+                    crate::logger::log(&msg);
+                    self.rules_io_result = Some(Err(msg));
                 } else if let Some(path) = path {
                     let msg = i18n::rules_exported_to(lang, path.display());
                     self.rules_io_result = Some(Ok(msg.clone()));
@@ -1667,8 +1693,8 @@ impl GameTrimmerApp {
                 self.rules_io_active = false;
                 if let Some(error) = error {
                     let msg = i18n::rules_import_failed(lang, error);
-                    self.rules_io_result = Some(Err(msg.clone()));
-                    self.warnings.push(msg);
+                    crate::logger::log(&msg);
+                    self.rules_io_result = Some(Err(msg));
                 } else if let Some(summary) = summary {
                     self.rules_io_result = Some(Ok(summary.clone()));
                     self.status_message = summary;
@@ -1825,7 +1851,7 @@ impl eframe::App for GameTrimmerApp {
         // its central panel), so the tree is always visible directly below the
         // cards - see `ui::tree_view::show`. It is deliberately not a separate
         // top panel: a second top panel starved the central tree panel of
-        // height, hiding the tree entirely (the GT-03 regression this fixes).
+        // height, hiding the tree entirely (the plan-action filtering regression this fixes).
         ui::tree_view::show(self, ui);
         ui::dialogs::show(self, ui);
         ui::settings::show(self, ui);
@@ -1930,7 +1956,7 @@ mod tests {
         assert_eq!(unique.len(), dirs.len(), "each app needs its own database");
     }
 
-    /// GT-72's user-facing contract: the scan cache is disposable, while the
+    /// settings/cache separation's user-facing contract: the scan cache is disposable, while the
     /// preferences in the sibling ini are not. Reopening after deleting the
     /// database must therefore restore every setting from the ini.
     #[test]
@@ -2018,6 +2044,8 @@ mod tests {
                 confidence: 90,
                 lang_tag: Some("de".to_string()),
                 group_dir: None,
+                deletion_block_reason: None,
+                imported_untrusted: false,
             },
             selected: true,
             removed: false,

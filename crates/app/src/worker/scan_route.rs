@@ -37,7 +37,7 @@ pub struct RootCheck {
 /// Reported back to the user in the settings dialog's "Scanning" section:
 /// "Prefer the MFT index" cannot promise the MFT will be used, and without
 /// the reasons a user who turned it on and saw no speed-up had no way to
-/// find out that, say, the app is not elevated (audit §5.2).
+/// find out that, say, the app is not elevated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalkdirReason {
     /// The process is not running elevated, so no volume can be opened for

@@ -1,4 +1,4 @@
-//! Headless (CLI) mode - GT-10.
+//! Headless (CLI) mode - headless CLI mode.
 //!
 //! The same portable exe runs without a GUI when given CLI flags: it scans,
 //! reports what it would remove, and (only with `--apply`) removes the profile's
@@ -8,7 +8,7 @@
 //! **The whole mode is switched off in the v1 release build**, behind the
 //! off-by-default `headless` feature - see [`args::HEADLESS_ENABLED`] for the
 //! two reasons. Within it, `--apply` is gated a second time behind `cli-apply`
-//! (GT-15) - see [`args::APPLY_ENABLED`]. Everything below still compiles,
+//! (apply-feature gating) - see [`args::APPLY_ENABLED`]. Everything below still compiles,
 //! type-checks and unit-tests in the default build, so neither can rot while it
 //! is switched off.
 //!
@@ -55,7 +55,7 @@ FLAGS:
 ";
 
 /// The `--apply` block of the help, present only in a build that accepts the
-/// flag (GT-15) - help that advertises a flag the build refuses is worse than
+/// flag (apply-feature gating) - help that advertises a flag the build refuses is worse than
 /// no help at all.
 ///
 /// No `\`-continuation after the opening quote in this and the blocks below:
@@ -219,7 +219,9 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         .into_iter()
         .map(|row| {
             let selected =
-                model::profile_auto_selects(profile, row.display_category(), row.confidence);
+                model::profile_auto_selects(profile, row.display_category(), row.confidence)
+                    && row.deletion_block_reason.is_none();
+            let selected = selected && !row.imported_untrusted;
             FindingItem {
                 row,
                 selected,
@@ -233,6 +235,26 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     let selected: Vec<&FindingItem> = items.iter().filter(|item| item.selected).collect();
     let selected_count = selected.len();
     let selected_size_on_disk: u64 = selected.iter().map(|item| item.row.size_on_disk).sum();
+    let blocked: Vec<String> = items
+        .iter()
+        .filter_map(|item| {
+            let reason = item.row.deletion_block_reason.as_ref()?;
+            model::profile_auto_selects(profile, item.row.display_category(), item.row.confidence)
+                .then(|| {
+                    format!(
+                        "{}: {reason}",
+                        item.row.install_dir.join(&item.row.rel_path).display()
+                    )
+                })
+        })
+        .collect();
+
+    if matches!(config.mode, Mode::Apply) && !blocked.is_empty() {
+        for reason in &blocked {
+            eprintln!("Delete blocked: {reason}");
+        }
+        return EXIT_RUNTIME;
+    }
 
     // For --apply, delete the selected set through the same worker the GUI uses.
     let apply = match config.mode {
@@ -242,7 +264,6 @@ fn run_headless(config: HeadlessConfig) -> u8 {
                 .iter()
                 .map(|item| DeleteItem {
                     file_id: item.row.file_id,
-                    full_path: item.row.install_dir.join(&item.row.rel_path),
                     size_on_disk: item.row.size_on_disk,
                 })
                 .collect();
@@ -279,6 +300,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         total_findings,
         selected_count,
         selected_size_on_disk,
+        blocked,
         apply,
     };
 

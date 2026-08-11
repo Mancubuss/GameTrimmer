@@ -1,4 +1,4 @@
-//! Name search over the findings tree (GT-18): the user types part of a game,
+//! Name search over the findings tree (name search): the user types part of a game,
 //! folder, or file name and the tree shows only the branches that contain a
 //! match.
 //!
@@ -234,6 +234,8 @@ mod tests {
                 confidence: 100,
                 lang_tag: None,
                 group_dir: None,
+                deletion_block_reason: None,
+                imported_untrusted: false,
             },
             selected: false,
             removed: false,

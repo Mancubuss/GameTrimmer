@@ -5,9 +5,12 @@
 //! and write. Errors are user-facing, already-localized strings - they end
 //! up directly in the warnings list.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use gametrimmer_core::packs::{self, MergeStats, PackKind};
+use gametrimmer_core::rules::RuleEngine;
+use rusqlite::{Connection, OpenFlags};
 
 use crate::i18n::{self, Lang};
 
@@ -37,6 +40,17 @@ pub fn pack_path(kind: PackKind) -> std::io::Result<PathBuf> {
     }
 }
 
+fn pack_target_path(kind: PackKind) -> std::io::Result<PathBuf> {
+    let executable = std::env::current_exe()?;
+    let directory = executable
+        .parent()
+        .ok_or_else(|| std::io::Error::other("executable has no parent directory"))?;
+    Ok(directory.join(match kind {
+        PackKind::CategoryRules => RULES_FILE_NAME,
+        PackKind::LangPack => L10N_RULES_FILE_NAME,
+    }))
+}
+
 /// The embedded default text for a pack of `kind`.
 fn builtin_text(kind: PackKind) -> Result<String, String> {
     match kind {
@@ -52,7 +66,7 @@ fn builtin_text(kind: PackKind) -> Result<String, String> {
 /// Shown live in the settings dialog rather than only as a toast after an
 /// import: a hand-edited `rules.json` that no longer compiles otherwise
 /// fails silently at scan time, with the app quietly running on fewer rules
-/// than the user thinks (audit §6.6). A pack that cannot even be read counts
+/// than the user thinks. A pack that cannot even be read counts
 /// as invalid - from the user's side the effect is the same.
 pub fn pack_is_valid(kind: PackKind) -> bool {
     let Ok(path) = pack_path(kind) else {
@@ -90,8 +104,17 @@ pub fn restore_builtin(lang: Lang, kind: PackKind) -> Result<String, String> {
 /// temp directory instead of over the packs next to the test binary.
 fn restore_builtin_at(lang: Lang, kind: PackKind, target: &Path) -> Result<String, String> {
     let text = builtin_text(kind)?;
-    backup(lang, target)?;
-    write_text(lang, target, &text)?;
+    gametrimmer_core::atomic_file::atomic_write_with_backup(
+        target,
+        text.as_bytes(),
+        |_path, bytes| {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            validate_pack_text(kind, text)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        },
+    )
+    .map_err(|err| i18n::write_failed(lang, target.display(), err))?;
     Ok(i18n::rules_restored(lang, target.display()))
 }
 
@@ -101,82 +124,282 @@ fn read_ensured(lang: Lang, ensured: std::io::Result<PathBuf>) -> Result<String,
     std::fs::read_to_string(&path).map_err(|err| i18n::read_file_failed(lang, path.display(), err))
 }
 
-/// Imports every picked pack file: detects its kind, merges it into the
-/// current effective pack of that kind, backs the previous file up as
-/// `*.bak` and writes the merged result where the scanner will load it
-/// from. Returns the ready-to-show, already-localized summary. Stops at the
-/// first broken file - files before it are already merged and stay merged,
-/// which the error message says explicitly.
-pub fn import_pack_files(lang: Lang, files: &[PathBuf]) -> Result<String, String> {
+/// Imports every picked pack file as an all-or-nothing batch. Every selected
+/// file is size-checked, read and validated before either effective pack is
+/// changed. The two output files share the same rollback-capable replacement
+/// batch, so a failure cannot leave a half-imported selection.
+pub struct PreparedRuleImport {
+    outputs: Vec<(PathBuf, String)>,
+    summary: String,
+    pub preview: String,
+}
+
+pub fn prepare_pack_import(
+    lang: Lang,
+    files: &[PathBuf],
+    db_path: Option<&Path>,
+) -> Result<PreparedRuleImport, String> {
+    let mut incoming = Vec::with_capacity(files.len());
+    for file in files {
+        let metadata =
+            std::fs::metadata(file).map_err(|err| format!("{}: {err}", file.display()))?;
+        if metadata.len() > gametrimmer_core::rules::MAX_RULE_PACK_BYTES as u64 {
+            return Err(format!(
+                "{}: file exceeds the {} byte limit",
+                file.display(),
+                gametrimmer_core::rules::MAX_RULE_PACK_BYTES
+            ));
+        }
+        let text = std::fs::read_to_string(file).map_err(|err| {
+            format!(
+                "{}: {}",
+                file.display(),
+                i18n::read_picked_file_failed(lang, err)
+            )
+        })?;
+        let kind =
+            packs::detect_pack_kind(&text).map_err(|err| format!("{}: {err}", file.display()))?;
+        validate_pack_text(kind, &text).map_err(|err| format!("{}: {err}", file.display()))?;
+        incoming.push((kind, text));
+    }
+
+    let needs_rules = incoming
+        .iter()
+        .any(|(kind, _)| *kind == PackKind::CategoryRules);
+    let needs_lang = incoming.iter().any(|(kind, _)| *kind == PackKind::LangPack);
+    let rules_target = needs_rules
+        .then(|| {
+            pack_target_path(PackKind::CategoryRules)
+                .map_err(|err| i18n::prepare_rules_json_failed(lang, err))
+        })
+        .transpose()?;
+    let lang_target = needs_lang
+        .then(|| {
+            pack_target_path(PackKind::LangPack)
+                .map_err(|err| i18n::prepare_l10n_rules_failed(lang, err))
+        })
+        .transpose()?;
+    let mut rules_text = rules_target
+        .as_ref()
+        .map(|path| {
+            if path.is_file() {
+                std::fs::read_to_string(path)
+                    .map_err(|err| i18n::read_file_failed(lang, path.display(), err))
+            } else {
+                builtin_text(PackKind::CategoryRules)
+            }
+        })
+        .transpose()?;
+    let mut lang_text = lang_target
+        .as_ref()
+        .map(|path| {
+            if path.is_file() {
+                std::fs::read_to_string(path)
+                    .map_err(|err| i18n::read_file_failed(lang, path.display(), err))
+            } else {
+                builtin_text(PackKind::LangPack)
+            }
+        })
+        .transpose()?;
+    let base_rules_text = rules_text.clone();
     let mut rules_stats: Option<MergeStats> = None;
     let mut lang_stats: Option<MergeStats> = None;
 
-    for (index, file) in files.iter().enumerate() {
-        let (kind, stats) = import_one_file(lang, file).map_err(|err| {
-            let done_note = if index > 0 {
-                i18n::previous_files_already_imported(lang, index)
-            } else {
-                String::new()
-            };
-            format!("{}: {err}{done_note}", file.display())
-        })?;
+    for (kind, text) in incoming {
+        let (merged, stats) = match kind {
+            PackKind::CategoryRules => packs::merge_category_rules(
+                rules_text.as_deref().expect("rules base was loaded"),
+                &text,
+            )
+            .map_err(|err| err.to_string())?,
+            PackKind::LangPack => packs::merge_lang_packs(
+                lang_text.as_deref().expect("language base was loaded"),
+                &text,
+            )
+            .map_err(|err| err.to_string())?,
+        };
         match kind {
-            PackKind::CategoryRules => rules_stats = Some(accumulate(rules_stats, stats)),
-            PackKind::LangPack => lang_stats = Some(accumulate(lang_stats, stats)),
+            PackKind::CategoryRules => {
+                rules_text = Some(merged);
+                rules_stats = Some(accumulate(rules_stats, stats));
+            }
+            PackKind::LangPack => {
+                lang_text = Some(merged);
+                lang_stats = Some(accumulate(lang_stats, stats));
+            }
         }
     }
 
-    Ok(build_summary(lang, rules_stats, lang_stats))
+    let summary = build_summary(lang, rules_stats, lang_stats);
+    let impact = preview_active_impact(
+        db_path,
+        base_rules_text.as_deref(),
+        rules_text.as_deref(),
+        needs_lang,
+    )?;
+    let preview = format_preview(lang, &summary, &impact);
+    let mut outputs = Vec::new();
+    if let (Some(path), Some(text)) = (&rules_target, &rules_text) {
+        outputs.push((path.clone(), text.clone()));
+    }
+    if let (Some(path), Some(text)) = (&lang_target, &lang_text) {
+        outputs.push((path.clone(), text.clone()));
+    }
+
+    Ok(PreparedRuleImport {
+        outputs,
+        summary,
+        preview,
+    })
 }
 
-/// Reads one picked file, detects which pack it is and merges it into the
-/// matching current pack on disk.
-fn import_one_file(lang: Lang, file: &Path) -> Result<(PackKind, MergeStats), String> {
-    let text =
-        std::fs::read_to_string(file).map_err(|err| i18n::read_picked_file_failed(lang, err))?;
-    let kind = packs::detect_pack_kind(&text).map_err(|err| err.to_string())?;
-    let stats = match kind {
-        PackKind::CategoryRules => import_category_rules(lang, &text)?,
-        PackKind::LangPack => import_lang_pack(lang, &text)?,
+pub fn apply_prepared_import(lang: Lang, prepared: PreparedRuleImport) -> Result<String, String> {
+    let outputs: Vec<(&Path, &[u8])> = prepared
+        .outputs
+        .iter()
+        .map(|(path, text)| (path.as_path(), text.as_bytes()))
+        .collect();
+    gametrimmer_core::atomic_file::atomic_write_batch_with_backup(&outputs, |_path, bytes| {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let kind = packs::detect_pack_kind(text)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        validate_pack_text(kind, text)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    })
+    .map_err(|err| i18n::write_failed(lang, "rule pack batch", err))?;
+
+    Ok(prepared.summary)
+}
+
+#[derive(Default)]
+struct ImportImpact {
+    files: usize,
+    bytes: u64,
+    categories: BTreeSet<String>,
+    examples: Vec<String>,
+    conservative: bool,
+}
+
+fn preview_active_impact(
+    db_path: Option<&Path>,
+    base_rules: Option<&str>,
+    merged_rules: Option<&str>,
+    localization_changed: bool,
+) -> Result<ImportImpact, String> {
+    let Some(db_path) = db_path.filter(|path| path.is_file()) else {
+        return Ok(ImportImpact::default());
     };
-    Ok((kind, stats))
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("cannot preview the active snapshot: {error}"))?;
+    let base = base_rules
+        .map(RuleEngine::from_json)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let merged = merged_rules
+        .map(RuleEngine::from_json)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.rel_path, COALESCE(f.size_on_disk, f.size), g.install_dir
+             FROM files f JOIN games g ON g.id = f.game_id
+             WHERE f.scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1)",
+        )
+        .map_err(|error| format!("cannot preview the active snapshot: {error}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?.max(0) as u64,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| format!("cannot preview the active snapshot: {error}"))?;
+
+    let mut impact = ImportImpact {
+        conservative: localization_changed,
+        ..ImportImpact::default()
+    };
+    for row in rows {
+        let (rel_path, bytes, install_dir) =
+            row.map_err(|error| format!("cannot preview the active snapshot: {error}"))?;
+        let before = base.as_ref().and_then(|engine| engine.classify(&rel_path));
+        let after = merged
+            .as_ref()
+            .and_then(|engine| engine.classify(&rel_path));
+        if !localization_changed && before == after {
+            continue;
+        }
+        impact.files += 1;
+        impact.bytes = impact.bytes.saturating_add(bytes);
+        if localization_changed {
+            impact.categories.insert("localization".to_string());
+        }
+        if let Some(finding) = after {
+            impact
+                .categories
+                .insert(finding.category.as_str().to_string());
+        }
+        if impact.examples.len() < 5 {
+            impact.examples.push(
+                PathBuf::from(install_dir)
+                    .join(rel_path)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    Ok(impact)
 }
 
-/// Merges an incoming rules.json into the current effective one next to the
-/// executable (materialized from the embedded defaults if this is the first
-/// touch) and writes the merged result back.
-fn import_category_rules(lang: Lang, incoming: &str) -> Result<MergeStats, String> {
-    let target = ensure_rules_path().map_err(|err| i18n::prepare_rules_json_failed(lang, err))?;
-    let base = std::fs::read_to_string(&target)
-        .map_err(|err| i18n::read_file_failed(lang, target.display(), err))?;
-
-    let (merged, stats) =
-        packs::merge_category_rules(&base, incoming).map_err(|err| err.to_string())?;
-    backup(lang, &target)?;
-    write_text(lang, &target, &merged)?;
-    Ok(stats)
+fn format_preview(lang: Lang, summary: &str, impact: &ImportImpact) -> String {
+    let categories = if impact.categories.is_empty() {
+        "-".to_string()
+    } else {
+        impact
+            .categories
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let examples = if impact.examples.is_empty() {
+        "-".to_string()
+    } else {
+        impact.examples.join("\n")
+    };
+    match lang {
+        Lang::Uk => format!(
+            "Попередній перегляд імпорту\n\n{summary}\n\n{} файлів активного snapshot: {}\nБайти: {}\nКатегорії: {categories}\n\nПриклади:\n{examples}\n\nПродовжити?",
+            if impact.conservative { "Потенційно уражено" } else { "Уражено" },
+            impact.files,
+            impact.bytes,
+        ),
+        Lang::En => format!(
+            "Import preview\n\n{summary}\n\n{} active-snapshot files: {}\nBytes: {}\nCategories: {categories}\n\nExamples:\n{examples}\n\nContinue?",
+            if impact.conservative { "Potentially affected" } else { "Affected" },
+            impact.files,
+            impact.bytes,
+        ),
+    }
 }
 
-/// Merges an incoming l10n_rules.json into the current effective pack next
-/// to the executable - same materialize-first contract as
-/// [`import_category_rules`], so the first-ever import starts from exactly
-/// what the scanner uses today.
-fn import_lang_pack(lang: Lang, incoming: &str) -> Result<MergeStats, String> {
-    let target =
-        ensure_l10n_rules_path().map_err(|err| i18n::prepare_l10n_rules_failed(lang, err))?;
-    let base = std::fs::read_to_string(&target)
-        .map_err(|err| i18n::read_file_failed(lang, target.display(), err))?;
-
-    let (merged, stats) =
-        packs::merge_lang_packs(&base, incoming).map_err(|err| err.to_string())?;
-    backup(lang, &target)?;
-    write_text(lang, &target, &merged)?;
-    Ok(stats)
+fn validate_pack_text(kind: PackKind, text: &str) -> Result<(), String> {
+    match kind {
+        PackKind::CategoryRules => gametrimmer_core::rules::RuleEngine::from_json(text)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        PackKind::LangPack => gametrimmer_core::langdetect::LangPack::from_json(text)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+    }
 }
 
 /// Copies an existing `target` aside as `<name>.bak` before it gets
 /// overwritten by a merge, so one step of rolling back the import is always
 /// a manual rename away. A `target` that does not exist yet needs no backup.
+#[cfg(test)]
 fn backup(lang: Lang, target: &Path) -> Result<(), String> {
     if !target.is_file() {
         return Ok(());
@@ -193,7 +416,16 @@ fn backup(lang: Lang, target: &Path) -> Result<(), String> {
 }
 
 fn write_text(lang: Lang, path: &Path, text: &str) -> Result<(), String> {
-    std::fs::write(path, text).map_err(|err| i18n::write_failed(lang, path.display(), err))
+    gametrimmer_core::atomic_file::atomic_write_with_backup(
+        path,
+        text.as_bytes(),
+        |_path, bytes| {
+            std::str::from_utf8(bytes)
+                .map(|_| ())
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        },
+    )
+    .map_err(|err| i18n::write_failed(lang, path.display(), err))
 }
 
 fn accumulate(current: Option<MergeStats>, stats: MergeStats) -> MergeStats {
@@ -268,6 +500,59 @@ mod tests {
         );
         assert!(rules_only.contains("categories - 2 new, 1 updated"));
         assert!(!rules_only.contains("localization"));
+    }
+
+    #[test]
+    fn preview_counts_active_snapshot_rule_deltas_and_examples() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("preview.db");
+        let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
+        let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('test', 'F:\\Games')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO games (scan_id, library_id, name, install_dir)
+             VALUES (?1, 1, 'Fixture', 'F:\\Games\\Fixture')",
+            [scan_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO files (scan_id, game_id, rel_path, size, size_on_disk)
+             VALUES (?1, 1, 'preview_fixture.tmp', 3000, 4096)",
+            [scan_id],
+        )
+        .unwrap();
+        gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
+        drop(conn);
+
+        let merged = r#"[
+            {"category":"dev_leftovers","pattern":"^preview_fixture\\.tmp$",
+             "desc":"Preview fixture","confidence":90}
+        ]"#;
+        let impact = preview_active_impact(Some(&db_path), Some("[]"), Some(merged), false)
+            .expect("preview succeeds");
+
+        assert_eq!(impact.files, 1);
+        assert_eq!(impact.bytes, 4096);
+        assert!(impact.categories.contains("dev_leftovers"));
+        assert!(impact.examples[0].contains("preview_fixture.tmp"));
+        assert!(!impact.conservative);
+    }
+
+    #[test]
+    fn localization_preview_is_explicitly_conservative() {
+        let preview = format_preview(
+            Lang::En,
+            "Localization pack: 1 new language",
+            &ImportImpact {
+                conservative: true,
+                ..ImportImpact::default()
+            },
+        );
+        assert!(preview.contains("Potentially affected"));
     }
 
     #[test]

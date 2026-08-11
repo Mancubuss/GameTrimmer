@@ -157,6 +157,8 @@ mod tests {
                 confidence: 90,
                 lang_tag: None,
                 group_dir: group_dir.map(|s| s.to_string()),
+                deletion_block_reason: None,
+                imported_untrusted: false,
             },
             selected,
             removed: false,

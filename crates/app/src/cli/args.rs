@@ -1,4 +1,4 @@
-//! Command-line argument parsing for the headless (CLI) mode (GT-10).
+//! Command-line argument parsing for the headless (CLI) mode (headless CLI mode).
 //!
 //! Pure, allocation-light, and fully unit-tested: [`parse_invocation`] turns
 //! the process arguments (already stripped of `argv[0]`) into an
@@ -36,7 +36,7 @@ const HEADLESS_DISABLED_MSG: &str = "GameTrimmer has no command-line mode in thi
      headless run could not delete anything, and it returned the shell prompt before its own \
      output, so v1 ships without it. Start GameTrimmer with no arguments to use the app";
 
-/// Whether this build accepts `--apply` at all (GT-15).
+/// Whether this build accepts `--apply` at all (apply-feature gating).
 ///
 /// A plain `const` rather than `#[cfg]` attributes on every apply-related
 /// branch: the deletion path stays compiled and type-checked (so it cannot rot
@@ -333,7 +333,7 @@ mod tests {
             );
         }
 
-        /// GT-15: in a build without the `cli-apply` feature - which is what v1
+        /// apply-feature gating: in a build without the `cli-apply` feature - which is what v1
         /// ships - the flag is refused outright. Never downgraded to a dry run:
         /// someone who typed `--apply` expects files to go, and a run that quietly
         /// deleted nothing would read as success.

@@ -3,10 +3,15 @@
 //! background thread; the only database connection used here is opened
 //! and dropped within this thread.
 
+mod discovery;
+mod generation;
+mod orphan_analysis;
+mod persistence;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -17,8 +22,11 @@ use gametrimmer_core::error::{CoreError, Result as CoreResult};
 use gametrimmer_core::langdetect::{LangData, LangDetector, LangFinding};
 use gametrimmer_core::mftscan;
 use gametrimmer_core::orphans::{self, OrphanKind};
-use gametrimmer_core::providers::{self, DiscoveredLibrary};
-use gametrimmer_core::rules::{Finding, RuleEngine};
+use gametrimmer_core::providers::{
+    self, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, OrphanEvidence,
+};
+use gametrimmer_core::rules::{Finding, RuleEngine, RuleProvenance};
+use gametrimmer_core::safety::{SafetySnapshot, SnapshotCapture};
 use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry};
 use gametrimmer_core::settings::ScanRouting;
 use rusqlite::{params, Connection};
@@ -31,6 +39,13 @@ use crate::model::{
 
 use super::scan_route::{self, ScanRoute};
 use super::{manual, Notifier, WorkerMsg};
+use generation::ScanGenerationGuard;
+#[cfg(test)]
+use orphan_analysis::PreparedOrphan;
+use orphan_analysis::{collect_orphans, persist_orphans};
+#[cfg(test)]
+use persistence::persist_prepared_game;
+use persistence::{persist_libraries, run_writer};
 
 /// Worker threads used for scanning+classifying games in parallel. Chosen
 /// deliberately smaller than "one thread per game" and not tied to CPU count:
@@ -182,49 +197,64 @@ fn run_scan(
         text: i18n::strings(lang).detecting_libraries.to_string(),
     });
 
-    // Every vendor provider is tried; one provider failing (registry key
-    // missing, launcher config unreadable, ...) must not abort the whole
-    // scan - it is reported as a warning and the rest still run.
-    let mut libraries: Vec<DiscoveredLibrary> = Vec::new();
-    for provider in providers::all() {
-        match provider.discover() {
-            Ok(mut discovered) => libraries.append(&mut discovered),
-            Err(err) => send_warning(notifier, i18n::provider_failed(lang, provider.name(), err)),
-        }
-    }
-
-    match manual::discover_manual_libraries(&conn, lang) {
-        Ok((manual_libraries, manual_warnings)) => {
-            for warning in manual_warnings {
-                send_warning(notifier, warning);
-            }
-            libraries.extend(manual_libraries);
-        }
-        Err(err) => {
-            send_error(notifier, i18n::manual_libraries_read_failed(lang, err));
+    let discovery::DiscoveryOutcome {
+        libraries,
+        diagnostics: discovery_diagnostics,
+        degraded: discovery_degraded,
+    } = match discovery::discover_libraries(&conn, lang, notifier) {
+        Ok(discovery) => discovery,
+        Err(error) => {
+            send_error(notifier, error);
             return;
         }
-    }
-
-    // Different providers (and the manual list) can discover the same root
-    // folder - e.g. the Epic manifests and the vendor-folder scan both find
-    // F:\Epic. Merge them so persist_libraries sees each library once.
-    let libraries = providers::merge_libraries_by_path(libraries);
-    // Two providers can also describe the same *game* under libraries whose
-    // roots differ (an EA-published game installed into a Steam library), which
-    // merging by root cannot catch.
-    let libraries = providers::dedupe_games_across_libraries(libraries);
-
-    if libraries.is_empty() {
-        send_error(notifier, i18n::no_libraries_found(lang));
-        return;
-    }
+    };
 
     notifier.send(WorkerMsg::Status {
         text: i18n::strings(lang).preparing_database.to_string(),
     });
 
-    let games = match persist_libraries(&conn, &libraries) {
+    let discovery_status = if discovery_degraded {
+        "degraded"
+    } else {
+        "complete"
+    };
+    let scan_id = match db::begin_scan(&conn, discovery_status) {
+        Ok(scan_id) => scan_id,
+        Err(err) => {
+            send_error(notifier, i18n::libraries_write_failed(lang, err));
+            return;
+        }
+    };
+    let mut generation = ScanGenerationGuard::new(db_path, scan_id);
+
+    for library in &libraries {
+        let status = match library.orphan_evidence {
+            OrphanEvidence::Authoritative => "complete",
+            OrphanEvidence::Degraded => "degraded",
+            OrphanEvidence::Heuristic => "heuristic",
+        };
+        if let Err(err) =
+            db::record_scan_library_evidence(&conn, scan_id, &library.path, library.vendor, status)
+        {
+            send_error(notifier, i18n::libraries_write_failed(lang, err));
+            return;
+        }
+    }
+    for diagnostic in &discovery_diagnostics {
+        if let Err(err) = db::record_scan_diagnostic(
+            &conn,
+            scan_id,
+            diagnostic.provider,
+            diagnostic.stage,
+            diagnostic.path.as_deref(),
+            &diagnostic.message,
+        ) {
+            send_error(notifier, i18n::libraries_write_failed(lang, err));
+            return;
+        }
+    }
+
+    let games = match persist_libraries(&conn, &libraries, scan_id) {
         Ok(games) => games,
         Err(err) => {
             send_error(notifier, i18n::libraries_write_failed(lang, err));
@@ -244,6 +274,7 @@ fn run_scan(
 
     if cancel.load(Ordering::Relaxed) {
         crate::logger::log("Scan cancelled");
+        generation.abort(&mut conn, "cancelled");
         notifier.send(WorkerMsg::Cancelled);
         return;
     }
@@ -273,6 +304,7 @@ fn run_scan(
 
     if cancel.load(Ordering::Relaxed) {
         crate::logger::log("Scan cancelled");
+        generation.abort(&mut conn, "cancelled");
         notifier.send(WorkerMsg::Cancelled);
         return;
     }
@@ -284,7 +316,7 @@ fn run_scan(
     // write, and the write side never has more than one connection open.
     // See `crates/core/examples/scan_bench.rs` for the measurements that
     // motivated this over the previous fully-sequential loop.
-    let (result_tx, result_rx) = std::sync::mpsc::channel::<GameOutcome>();
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<GameOutcome>(2 * SCAN_THREADS);
 
     // Shared count of games the writer has finished persisting. The writer
     // owns writing it; the scan workers only read it, to label the "started
@@ -326,7 +358,16 @@ fn run_scan(
     let analyze_phase_end = Instant::now();
 
     let mut findings = match write_outcome {
-        Ok(findings) => findings,
+        Ok(Ok(findings)) => findings,
+        Ok(Err(err)) => {
+            if cancel.load(Ordering::Relaxed) || err.to_string() == "cancelled" {
+                generation.abort(&mut conn, "cancelled");
+                notifier.send(WorkerMsg::Cancelled);
+            } else {
+                send_error(notifier, i18n::scan_incomplete(lang, err));
+            }
+            return;
+        }
         Err(_) => {
             send_error(notifier, i18n::write_thread_crashed(lang));
             return;
@@ -335,11 +376,12 @@ fn run_scan(
 
     if cancel.load(Ordering::Relaxed) {
         crate::logger::log("Scan cancelled");
+        generation.abort(&mut conn, "cancelled");
         notifier.send(WorkerMsg::Cancelled);
         return;
     }
 
-    // GT-02: orphaned launcher residue as its own tree branch. Runs after the
+    // orphan-residue safety: orphaned launcher residue as its own tree branch. Runs after the
     // per-game writer thread has joined (so `conn` is ours again) and only on a
     // scan that reached here without cancellation. Detection is Steam-only for
     // now - see `collect_orphans`. `persist_orphans` always replaces the whole
@@ -348,18 +390,83 @@ fn run_scan(
     // prior scan left behind - otherwise disabling the category wouldn't hide
     // them on the next load.
     if category_enabled(enabled_categories, DisplayCategory::Orphan) {
-        let orphans = collect_orphans(&libraries, cancel);
+        let orphan_collection = collect_orphans(&libraries, cancel);
         if !cancel.load(Ordering::Relaxed) {
-            match persist_orphans(&mut conn, &orphans, lang) {
+            for issue in &orphan_collection.issues {
+                // Same as provider discovery: full detail to the log, nothing
+                // to the window. The user-visible consequence is already in
+                // the result - no leftovers are offered for this library.
+                crate::logger::log(&i18n::provider_failed(
+                    Lang::En,
+                    issue.provider,
+                    format!(
+                        "{} [{}: {}]",
+                        issue.message,
+                        issue.stage,
+                        issue.path.display()
+                    ),
+                ));
+                if let Err(err) = db::mark_scan_degraded(&conn, scan_id)
+                    .and_then(|_| {
+                        db::record_scan_library_evidence(
+                            &conn,
+                            scan_id,
+                            &issue.library_path,
+                            issue.provider,
+                            "degraded",
+                        )
+                    })
+                    .and_then(|_| {
+                        db::record_scan_diagnostic(
+                            &conn,
+                            scan_id,
+                            issue.provider,
+                            issue.stage,
+                            Some(&issue.path),
+                            &issue.message,
+                        )
+                    })
+                {
+                    send_error(notifier, i18n::libraries_write_failed(lang, err));
+                    return;
+                }
+                for row in &mut findings {
+                    let root = issue.library_path.to_string_lossy().to_lowercase();
+                    let install = row.install_dir.to_string_lossy().to_lowercase();
+                    let nested = install == root
+                        || install
+                            .strip_prefix(&root)
+                            .is_some_and(|tail| tail.starts_with(['\\', '/']));
+                    if nested {
+                        row.deletion_block_reason =
+                            Some("library discovery was degraded".to_string());
+                    }
+                }
+            }
+            match persist_orphans(&mut conn, &orphan_collection.orphans, lang, scan_id) {
                 Ok(mut rows) => {
                     crate::logger::log(&format!("Orphans: {} found", rows.len()));
                     findings.append(&mut rows);
                 }
-                Err(err) => send_warning(notifier, i18n::orphans_persist_failed(lang, err)),
+                Err(err) => {
+                    send_error(notifier, i18n::orphans_persist_failed(lang, err));
+                    return;
+                }
             }
         }
-    } else if let Err(err) = persist_orphans(&mut conn, &[], lang) {
-        crate::logger::log(&format!("Failed to clear stale orphan rows: {err}"));
+    } else if let Err(err) = persist_orphans(&mut conn, &[], lang, scan_id) {
+        send_error(notifier, i18n::orphans_persist_failed(lang, err));
+        return;
+    }
+
+    if cancel.load(Ordering::Relaxed) {
+        generation.abort(&mut conn, "cancelled");
+        notifier.send(WorkerMsg::Cancelled);
+        return;
+    }
+    if let Err(err) = generation.activate(&mut conn) {
+        send_error(notifier, i18n::libraries_write_failed(lang, err));
+        return;
     }
 
     // Fold this connection's own WAL into the main file and truncate it
@@ -463,7 +570,7 @@ fn dispatch_scans(
     lang_detector: &LangDetector,
     ui_lang: Lang,
     cancel: &AtomicBool,
-    result_tx: &Sender<GameOutcome>,
+    result_tx: &SyncSender<GameOutcome>,
     mft_entries: &HashMap<i64, Vec<FileEntry>>,
     enabled_categories: &[String],
     notifier: &Notifier,
@@ -473,7 +580,7 @@ fn dispatch_scans(
     let run_one = |game_id: i64,
                    name: &str,
                    install_dir: &Path,
-                   result_tx: Sender<GameOutcome>,
+                   result_tx: SyncSender<GameOutcome>,
                    worker_notifier: Notifier| {
         if cancel.load(Ordering::Relaxed) {
             let _ = result_tx.send(GameOutcome::Failed {
@@ -817,279 +924,12 @@ fn volume_failure_results(
         .collect()
 }
 
-/// The single database writer: receives every game's scan outcome and
-/// persists it, batching `WRITE_BATCH_SIZE` games per transaction to keep
-/// the number of commits (and WAL syncs) low regardless of how many files a
-/// game has. Sends one `Progress` message per finished game, in whatever
-/// order results arrive (scanning is parallel, so this is no longer
-/// necessarily the games' discovery order).
-fn run_writer(
-    conn: &mut Connection,
-    result_rx: Receiver<GameOutcome>,
-    notifier: &Notifier,
-    total: usize,
-    completed: &std::sync::atomic::AtomicUsize,
-    cancel: &AtomicBool,
-) -> Vec<FindingRow> {
-    let mut findings = Vec::new();
-    let mut batch: Vec<PreparedGame> = Vec::with_capacity(WRITE_BATCH_SIZE);
-
-    for (index, outcome) in result_rx.iter().enumerate() {
-        let done = index + 1;
-        // Publish the completed count for the scan workers' "started" progress
-        // (see `dispatch_scans`). Only this thread writes it, so a plain store
-        // of the running total is enough.
-        completed.store(done, Ordering::Relaxed);
-        match outcome {
-            GameOutcome::Scanned(prepared) => {
-                notifier.send(WorkerMsg::Progress {
-                    verb: Verb::Analyze,
-                    current: done,
-                    total,
-                    detail: prepared.name.clone(),
-                });
-                batch.push(prepared);
-                if batch.len() >= WRITE_BATCH_SIZE {
-                    flush_batch(conn, &mut batch, &mut findings);
-                }
-            }
-            GameOutcome::Failed {
-                name,
-                install_dir,
-                error,
-            } => {
-                // A single game failing to scan (permissions, moved folder,
-                // ...) must not abort the whole run. Cancellation reports
-                // through this same Failed path with a "cancelled" sentinel
-                // (a game never started, or a walkdir aborted mid-way by
-                // Stop) - that is a normal user action, not a scan failure,
-                // so it is not logged as an error.
-                if error.to_string() != "cancelled" {
-                    crate::logger::log(&format!(
-                        "Failed to scan \"{name}\" ({}): {error}",
-                        install_dir.display()
-                    ));
-                }
-                notifier.send(WorkerMsg::Progress {
-                    verb: Verb::Analyze,
-                    current: done,
-                    total,
-                    detail: name,
-                });
-            }
-        }
-
-        // Once cancelled, stop accepting more batches promptly rather than
-        // draining (and writing) the rest of an already-large in-flight
-        // backlog; already-completed games up to this point are still
-        // flushed below so their writes are not lost.
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-    }
-
-    flush_batch(conn, &mut batch, &mut findings);
-    findings
-}
-
-/// Commits one batch of games' `files`/`findings` writes in a single
-/// transaction. A batch failing to open or commit its transaction (disk
-/// full, ...) drops that batch's writes but must not crash the writer
-/// thread - remaining batches still get a chance to persist.
-fn flush_batch(
-    conn: &mut Connection,
-    batch: &mut Vec<PreparedGame>,
-    findings: &mut Vec<FindingRow>,
-) {
-    if batch.is_empty() {
-        return;
-    }
-
-    match conn.transaction() {
-        Ok(db_tx) => {
-            for prepared in batch.drain(..) {
-                match persist_prepared_game(&db_tx, &prepared) {
-                    Ok(mut rows) => findings.append(&mut rows),
-                    Err(err) => crate::logger::log(&format!(
-                        "Failed to write \"{}\" to the database: {err}",
-                        prepared.name
-                    )),
-                }
-            }
-            if let Err(err) = db_tx.commit() {
-                crate::logger::log(&format!(
-                    "Failed to commit the game batch to the database: {err}"
-                ));
-            }
-        }
-        Err(err) => {
-            crate::logger::log(&format!("Failed to open the write transaction: {err}"));
-            batch.clear();
-        }
-    }
-}
-
 fn send_error(notifier: &Notifier, msg: String) {
     notifier.send(WorkerMsg::Error { msg });
 }
 
 fn send_warning(notifier: &Notifier, msg: String) {
     notifier.send(WorkerMsg::Warning { msg });
-}
-
-/// Writes discovered libraries and their games into the database,
-/// replacing each library's game list (`INSERT OR IGNORE` on the library
-/// itself, keyed by path; full delete+reinsert of its games).
-///
-/// Rescanning a library that already has data must not fail: `games.id` is
-/// referenced by `files.game_id`, and `files.id` by `findings.file_id`,
-/// neither with `ON DELETE CASCADE`, and `PRAGMA foreign_keys = ON` is set
-/// (see `db::configure`). So before a library's old `games` rows are
-/// deleted, their `files` and (transitively) `findings` rows must be
-/// deleted first, child-to-parent, in the same transaction - otherwise
-/// SQLite raises `FOREIGN KEY constraint failed`. This also takes care of
-/// games that disappeared from a library between scans: their rows are
-/// unconditionally part of the old set being replaced, so no orphaned
-/// `files`/`findings` rows are left behind for them either.
-///
-/// The library id itself is always resolved via `SELECT ... WHERE path`
-/// after the `INSERT OR IGNORE`, never via `last_insert_rowid()`: on a
-/// no-op ignore (the library already exists) `last_insert_rowid()` would
-/// return whatever row - in whatever table - was last inserted on this
-/// connection, not this library's id.
-fn persist_libraries(
-    conn: &Connection,
-    libraries: &[DiscoveredLibrary],
-) -> CoreResult<Vec<(i64, String, PathBuf)>> {
-    // Foreign-key enforcement is disabled for the whole delete+reinsert.
-    // This is the silent 15-20s phase at the start of every scan on a large
-    // library: the three `DELETE ... WHERE library_id = ?` statements below
-    // otherwise pay a per-row child-existence check for every one of the
-    // (millions of) `files`/`findings` rows being replaced. Integrity is
-    // preserved regardless by deleting child-before-parent (findings ->
-    // files -> games); the checks it skips were only re-proving that
-    // ordering. `with_foreign_keys_off` restores enforcement before
-    // returning, so the per-game writes that follow (see `run_writer`) run
-    // with it back on. It also opens the transaction via
-    // `unchecked_transaction` (needing only `&Connection`), since the
-    // `foreign_keys` pragma may not be toggled inside an open transaction.
-    db::with_foreign_keys_off(conn, |conn| {
-        let tx = conn.unchecked_transaction()?;
-        let mut games = Vec::new();
-
-        for library in libraries {
-            let path_str = library.path.to_string_lossy().to_string();
-
-            // Upsert, not `INSERT OR IGNORE` (GT-30): on a path already known
-            // the ignore kept whatever vendor was stored first - typically
-            // `manual`, from the user registering the folder by hand before
-            // any provider knew it - so the stored vendor never caught up with
-            // what discovery had since learned.
-            //
-            // What that actually costs, having traced it: the library list in
-            // the UI (`manual::list_libraries`) keeps labelling a real Steam
-            // library "manual", and `discover_manual_libraries`, which selects
-            // `WHERE vendor = 'manual'`, re-enumerates that path as a manual
-            // library on every later scan - redundant work resolved each time
-            // by `merge_libraries_by_path`. Orphan detection is NOT affected,
-            // contrary to what this comment first claimed: `collect_orphans`
-            // runs `orphan_spec_for` over the in-memory `DiscoveredLibrary`
-            // list, whose `vendor` is the provider's own `&'static str`, and
-            // never reads this column.
-            //
-            // `manual` is a floor, never a destination: a scan where a
-            // provider dropped out (registry key missing, drive briefly
-            // absent) re-offers the folder as `manual`, and demoting on that
-            // would switch orphan detection off exactly when a scan half
-            // failed. Any other vendor is the provider's verdict from this
-            // scan and wins - `merge_libraries_by_path` has already reduced a
-            // path to its single best-known vendor by the time we get here.
-            tx.execute(
-                "INSERT INTO game_libraries (vendor, path) VALUES (?1, ?2)
-                 ON CONFLICT(path) DO UPDATE SET vendor = excluded.vendor
-                 WHERE excluded.vendor <> ?3 AND vendor <> excluded.vendor",
-                params![library.vendor, path_str, manual::MANUAL_VENDOR],
-            )?;
-            let library_id: i64 = tx.query_row(
-                "SELECT id FROM game_libraries WHERE path = ?1",
-                params![path_str],
-                |row| row.get(0),
-            )?;
-
-            tx.execute(
-                "DELETE FROM findings WHERE file_id IN (
-                    SELECT id FROM files WHERE game_id IN (
-                        SELECT id FROM games WHERE library_id = ?1
-                    )
-                )",
-                params![library_id],
-            )?;
-            tx.execute(
-                "DELETE FROM files WHERE game_id IN (SELECT id FROM games WHERE library_id = ?1)",
-                params![library_id],
-            )?;
-            tx.execute(
-                "DELETE FROM games WHERE library_id = ?1",
-                params![library_id],
-            )?;
-
-            let build_ids = build_ids_for(library);
-
-            for game in &library.games {
-                // GT-14: record now, show later. The build id costs nothing to
-                // store and nothing in the UI shows it yet, but users of v1
-                // start accumulating history from their first scan - so the
-                // "what came back" diff in a later release works for them
-                // immediately, instead of only after one more full scan.
-                let build_id = game
-                    .app_id
-                    .as_ref()
-                    .and_then(|app_id| build_ids.get(app_id.as_str()));
-
-                tx.execute(
-                    "INSERT INTO games (library_id, name, install_dir, app_id, build_id) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        library_id,
-                        game.name,
-                        game.install_dir.to_string_lossy(),
-                        game.app_id,
-                        build_id
-                    ],
-                )?;
-                games.push((
-                    tx.last_insert_rowid(),
-                    game.name.clone(),
-                    game.install_dir.clone(),
-                ));
-            }
-        }
-
-        tx.commit()?;
-        Ok(games)
-    })
-}
-
-/// Content build ids for one library, keyed by vendor app id (GT-14).
-///
-/// Only Steam publishes one: `buildid` in each `appmanifest_*.acf`, bumped by
-/// Valve on every content update and by a `Verify` that re-downloads files.
-/// Every other vendor yields an empty map, so their games are stored with
-/// `build_id = NULL` - which `gamestate::changed_games` reads as "unknown,
-/// claim nothing" rather than "changed".
-///
-/// Cheap by construction: this reads a few dozen small text files, never
-/// walking the games themselves. A library whose manifests are unreadable
-/// yields an empty map, which costs a NULL - never a failed scan.
-fn build_ids_for(library: &DiscoveredLibrary) -> HashMap<String, String> {
-    if library.vendor != "steam" {
-        return HashMap::new();
-    }
-
-    providers::steam::manifest_states(&library.path)
-        .into_iter()
-        .filter_map(|state| Some((state.app_id, state.build_id?)))
-        .collect()
 }
 
 /// One file's finding, already resolved (rule engine vs. localization
@@ -1105,12 +945,20 @@ struct PreparedFinding {
     source: FindingSource,
     rule_id: String,
     confidence: u8,
+    provenance: RuleProvenance,
     lang_tag: Option<String>,
     /// Folder-grouping key for the UI tree; see [`assign_group_dirs`].
     /// Persisted to `findings.group_dir` by `persist_prepared_game` so a
     /// later startup load can read it straight back instead of recomputing
     /// it from the whole file list (the dominant cost of the old load path).
     group_dir: Option<String>,
+    /// Scan-time deletion evidence, or the reason it could not be captured.
+    ///
+    /// Captured here, on the scan pool, rather than in the writer: it costs a
+    /// handful of file opens per finding, and doing it inside the writer's
+    /// transaction made one thread pay for every finding in the scan while
+    /// holding the database lock. The writer only inserts what it is handed.
+    safety: std::result::Result<SafetySnapshot, String>,
 }
 
 /// The result of scanning and classifying one game: no DB state, so it can
@@ -1235,10 +1083,17 @@ fn classify_game(
     let flagged: HashSet<usize> = combined_by_index.iter().map(|(index, _)| *index).collect();
     let group_dirs = assign_group_dirs(&entries, &flagged);
 
+    // One cache per game: every finding here shares the same trusted root and
+    // most of the same intermediate directories, which is exactly the
+    // redundancy `SnapshotCapture` exists to remove.
+    let mut capture = SnapshotCapture::new();
     let findings = combined_by_index
         .into_iter()
         .map(|(index, combined)| {
             let entry = &entries[index];
+            let safety = capture
+                .capture(install_dir, &entry.rel_path)
+                .map_err(|reason| reason.to_string());
             PreparedFinding {
                 rel_path: entry.rel_path.clone(),
                 size: entry.size,
@@ -1246,8 +1101,10 @@ fn classify_game(
                 source: combined.source,
                 rule_id: combined.rule_id,
                 confidence: combined.confidence,
+                provenance: combined.provenance,
                 lang_tag: combined.lang_tag,
                 group_dir: group_dirs.get(&index).cloned(),
+                safety,
             }
         })
         .collect();
@@ -1337,73 +1194,6 @@ fn dir_prefixes(rel_path: &str) -> Vec<String> {
     prefixes
 }
 
-/// Persists one already-scanned-and-classified game: replaces its indexed
-/// files and inserts its findings, returning them for the UI. Uses whatever
-/// transaction (if any) is already open on `conn` - callers that want a
-/// single game per commit pass a fresh `Transaction`; the scan pipeline's
-/// writer thread instead shares one transaction across a batch of games
-/// (see `WRITE_BATCH_SIZE`).
-fn persist_prepared_game(
-    conn: &Connection,
-    prepared: &PreparedGame,
-) -> CoreResult<Vec<FindingRow>> {
-    // `findings.file_id` has no `ON DELETE CASCADE`, and `store_files_no_tx`
-    // is about to delete this game's old `files` rows - drop their findings
-    // first, while the old ids are still known.
-    conn.execute(
-        "DELETE FROM findings WHERE file_id IN (SELECT id FROM files WHERE game_id = ?1)",
-        params![prepared.game_id],
-    )?;
-
-    store_files_no_tx(conn, prepared.game_id, &prepared.entries)?;
-
-    let file_ids: HashMap<String, i64> = {
-        let mut stmt = conn.prepare("SELECT id, rel_path FROM files WHERE game_id = ?1")?;
-        let rows = stmt.query_map(params![prepared.game_id], |row| {
-            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(0)?))
-        })?;
-        rows.collect::<rusqlite::Result<_>>()?
-    };
-
-    let mut rows = Vec::with_capacity(prepared.findings.len());
-    let mut insert_finding = conn.prepare_cached(
-        "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag, group_dir) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )?;
-
-    for finding in &prepared.findings {
-        let Some(&file_id) = file_ids.get(&finding.rel_path) else {
-            continue;
-        };
-
-        insert_finding.execute(params![
-            file_id,
-            source_key(finding.source),
-            finding.rule_id,
-            finding.confidence,
-            finding.lang_tag.as_deref(),
-            finding.group_dir.as_deref(),
-        ])?;
-
-        rows.push(FindingRow {
-            file_id,
-            game_id: prepared.game_id,
-            game_name: prepared.name.clone(),
-            install_dir: prepared.install_dir.clone(),
-            rel_path: finding.rel_path.clone(),
-            size: finding.size,
-            size_on_disk: finding.size_on_disk,
-            source: finding.source,
-            rule_desc: finding.rule_id.clone(),
-            confidence: finding.confidence,
-            lang_tag: finding.lang_tag.clone(),
-            group_dir: finding.group_dir.clone(),
-        });
-    }
-
-    Ok(rows)
-}
-
 /// Scans, classifies, and persists one game in its own single-game
 /// transaction. A thin composition of [`scan_and_prepare_game`] and
 /// [`persist_prepared_game`], kept as the entry point tests exercise
@@ -1446,6 +1236,7 @@ struct CombinedFinding {
     source: FindingSource,
     rule_id: String,
     confidence: u8,
+    provenance: RuleProvenance,
     lang_tag: Option<String>,
 }
 
@@ -1473,191 +1264,18 @@ fn combine_finding(
             source: FindingSource::Rule(r.category),
             rule_id: r.rule_desc,
             confidence: r.confidence,
+            provenance: r.provenance,
             lang_tag: None,
         }),
         (None, Some(l)) => Some(CombinedFinding {
             source: FindingSource::Loc(l.kind),
             rule_id: i18n::lang_reason(ui_lang, &l.reason),
             confidence: l.confidence,
+            provenance: RuleProvenance::Builtin,
             lang_tag: Some(l.lang_tag.clone()),
         }),
         (None, None) => None,
     }
-}
-
-/// One orphaned-residue folder (GT-02) ready to persist: its absolute path,
-/// total size on disk (the sum of the files under it), and why it is residue.
-struct PreparedOrphan {
-    full_path: PathBuf,
-    /// Logical size (sum of the leftover's files' logical sizes).
-    size: u64,
-    /// On-disk allocated size (GT-05a) - the honest reclaimable figure, shown
-    /// and summed as primary.
-    size_on_disk: u64,
-    kind: OrphanKind,
-}
-
-/// Maps one discovered library to its orphan-scan spec, or `None` when the
-/// vendor has no container we can diff *safely*.
-///
-/// Only vendors with a launcher-owned container qualify. Two shapes:
-///   - **Structurally exclusive** containers - a fixed folder the launcher
-///     creates and fills alone: Steam's `steamapps/common` (derived from the
-///     library root) and Xbox's `XboxGames` (which *is* the discovered
-///     `library.path`, since `group_by_parent_dir` groups Game Pass titles
-///     under their shared `XboxGames` parent).
-///   - **Shared-root** containers made safe by an ownership marker: itch, whose
-///     install location is user-chosen and may be shared, but whose leftovers
-///     still carry a `.itch` receipt (see `orphans::itch_spec`). Here too
-///     `library.path` *is* the container (the itch location = the parent of
-///     each cave's install dir).
-///
-/// The registry-based providers (Epic, GOG, EA, Ubisoft, Battle.net, Rockstar,
-/// Riot) are deliberately absent: their `library.path` is merely the parent of
-/// wherever the user chose to install, not a launcher-exclusive folder, so a
-/// container diff there could flag the user's own unrelated folders - the exact
-/// false positive GT-02 forbids. Humble is likewise deferred: its download
-/// location is user-chosen and it leaves no per-game ownership marker to prove a
-/// folder is its residue rather than a foreign game. Tracked on the Kanban
-/// board as "GT-24 - spike: default roots of registry-based launchers".
-fn orphan_spec_for(library: &DiscoveredLibrary) -> Option<orphans::OrphanScanSpec> {
-    // `vendor` is a `&'static str` on the provider, so these are plain string
-    // compares, not heap allocations.
-    match library.vendor {
-        "steam" => Some(orphans::steam_spec(&library.path)),
-        "xbox" => Some(orphans::xbox_spec(&library.path)),
-        "itch" => Some(orphans::itch_spec(&library.path)),
-        _ => None,
-    }
-}
-
-/// Detects orphaned launcher residue across every discovered *supported* library
-/// (see [`orphan_spec_for`]) and measures each leftover's size.
-///
-/// The heavy lifting is the pure diff in `gametrimmer_core::orphans` - for each
-/// library, the managed install set is exactly that library's already-discovered
-/// games' `install_dir`s, so anything sitting in the vendor's container that no
-/// manifest points at (and, for shared-root vendors, that still carries the
-/// vendor's ownership marker) is a candidate. A game installed *past* the
-/// launcher is never even looked at, since only subfolders of the vendor's own
-/// container are considered.
-///
-/// Each candidate's size is the sum of the files under it (`scan_dir`); a
-/// candidate whose contents can't be read (permission, vanished mid-scan) is
-/// still reported at size 0 - its presence is the finding, the size secondary.
-/// `cancel` is threaded into each candidate's walk and polled between
-/// candidates so a Stop during this pass (an orphan folder can be large) is
-/// honored promptly rather than after measuring every leftover.
-fn collect_orphans(libraries: &[DiscoveredLibrary], cancel: &AtomicBool) -> Vec<PreparedOrphan> {
-    let mut prepared = Vec::new();
-    for library in libraries {
-        // Only vendors with a launcher-owned container we can diff safely are
-        // handled; the rest (registry-based providers whose install roots are
-        // arbitrary user folders) have no exclusive container and are skipped
-        // by construction - see `orphan_spec_for`.
-        let Some(spec) = orphan_spec_for(library) else {
-            continue;
-        };
-        let managed =
-            orphans::managed_dir_set(library.games.iter().map(|game| game.install_dir.as_path()));
-        for candidate in orphans::find_orphans(&spec, &managed) {
-            if cancel.load(Ordering::Relaxed) {
-                return prepared;
-            }
-            // A cancelled walk returns `Err("cancelled")`, folding to size 0
-            // here; the outer cancel check discards the whole pass before it
-            // is ever persisted, so a half-measured leftover never lands.
-            let (size, size_on_disk) = scan_dir_cancellable(&candidate.path, cancel)
-                .map(|entries| {
-                    entries.iter().fold((0u64, 0u64), |(sz, on_disk), entry| {
-                        (sz + entry.size, on_disk + entry.size_on_disk)
-                    })
-                })
-                .unwrap_or((0, 0));
-            prepared.push(PreparedOrphan {
-                full_path: candidate.path,
-                size,
-                size_on_disk,
-                kind: candidate.kind,
-            });
-        }
-    }
-    prepared
-}
-
-/// Persists the detected orphaned residue and returns it as [`FindingRow`]s for
-/// the UI. Orphan rows have no game, so they are stored with a `NULL`
-/// `files.game_id` and reconstructed with the synthetic [`ORPHAN_GAME_ID`] here
-/// and in `worker::load`.
-///
-/// The whole set of `NULL`-game rows is replaced each call: `persist_libraries`
-/// only ever wipes rows tied to a game, so without this these rows would
-/// accumulate across scans (a leftover deleted or a game reinstalled since the
-/// last scan would otherwise linger). Passing an empty `orphans` therefore
-/// doubles as "clear all orphan residue" - used when the category is disabled.
-/// One transaction so a mid-write failure can't leave a half-replaced set.
-fn persist_orphans(
-    conn: &mut Connection,
-    orphans: &[PreparedOrphan],
-    lang: Lang,
-) -> CoreResult<Vec<FindingRow>> {
-    let tx = conn.transaction()?;
-
-    // `findings` first - it references `files.id`.
-    tx.execute(
-        "DELETE FROM findings WHERE file_id IN (SELECT id FROM files WHERE game_id IS NULL)",
-        [],
-    )?;
-    tx.execute("DELETE FROM files WHERE game_id IS NULL", [])?;
-
-    let mut rows = Vec::with_capacity(orphans.len());
-    {
-        let mut insert_file = tx.prepare_cached(
-            "INSERT INTO files (game_id, rel_path, size, size_on_disk, mtime) \
-             VALUES (NULL, ?1, ?2, ?3, NULL)",
-        )?;
-        let mut insert_finding = tx.prepare_cached(
-            "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag, group_dir) \
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL)",
-        )?;
-
-        for orphan in orphans {
-            let source = FindingSource::Orphan(orphan.kind);
-            let confidence = orphan_confidence(orphan.kind);
-            let reason = i18n::orphan_reason(lang, orphan.kind);
-
-            // Stored full-path-in-`rel_path`: an orphan has no game row to hold
-            // its `install_dir`, so the row must be self-contained. `load`
-            // splits it back into the same `(install_dir, rel_path)` pair.
-            let full_path_str = orphan.full_path.to_string_lossy().to_string();
-            insert_file.execute(params![
-                full_path_str,
-                orphan.size as i64,
-                orphan.size_on_disk as i64
-            ])?;
-            let file_id = tx.last_insert_rowid();
-            insert_finding.execute(params![file_id, source_key(source), &reason, confidence])?;
-
-            let (install_dir, rel_path) = orphan_install_dir_and_name(&orphan.full_path);
-            rows.push(FindingRow {
-                file_id,
-                game_id: ORPHAN_GAME_ID,
-                game_name: String::new(),
-                install_dir,
-                rel_path,
-                size: orphan.size,
-                size_on_disk: orphan.size_on_disk,
-                source,
-                rule_desc: reason,
-                confidence,
-                lang_tag: None,
-                group_dir: None,
-            });
-        }
-    }
-
-    tx.commit()?;
-    Ok(rows)
 }
 
 #[cfg(test)]
@@ -1689,6 +1307,7 @@ mod tests {
             category: Category::DocsFile,
             rule_desc: "Файл документації (PDF/RTF)".to_string(),
             confidence: 85,
+            provenance: RuleProvenance::Builtin,
         };
 
         let combined = combine_finding(Some(rule), Some(&lang_finding_de()), Lang::En)
@@ -1824,7 +1443,7 @@ mod tests {
         lang_detector: &LangDetector,
         library: &DiscoveredLibrary,
     ) -> CoreResult<Vec<(i64, String, PathBuf)>> {
-        let games = persist_libraries(conn, std::slice::from_ref(library))?;
+        let games = persist_libraries(conn, std::slice::from_ref(library), 0)?;
         for (game_id, name, install_dir) in &games {
             scan_and_classify_game(conn, engine, lang_detector, *game_id, name, install_dir)?;
         }
@@ -1847,8 +1466,9 @@ mod tests {
         write_file(&install_dir.path().join("junk").join("b.txt"), b"b");
 
         let library = DiscoveredLibrary {
-            vendor: "steam",
+            vendor: "test",
             path: PathBuf::from("C:/Games"),
+            orphan_evidence: OrphanEvidence::Heuristic,
             games: vec![GameInstall {
                 name: "Test Game".to_string(),
                 install_dir: install_dir.path().to_path_buf(),
@@ -1876,6 +1496,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn degraded_library_findings_are_read_only_before_they_reach_the_ui() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("target.bin"), b"data");
+        let library = DiscoveredLibrary {
+            vendor: "test",
+            path: install_dir.path().to_path_buf(),
+            orphan_evidence: OrphanEvidence::Degraded,
+            games: vec![GameInstall {
+                name: "Test Game".to_string(),
+                install_dir: install_dir.path().to_path_buf(),
+                app_id: None,
+            }],
+        };
+        let scan_id = db::begin_scan(&conn, "degraded").expect("begin staging scan");
+        db::record_scan_library_evidence(&conn, scan_id, &library.path, library.vendor, "degraded")
+            .expect("record degraded evidence");
+        let games = persist_libraries(&conn, std::slice::from_ref(&library), scan_id)
+            .expect("persist library");
+        let (game_id, name, path) = &games[0];
+
+        let rows = scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path)
+            .expect("scan game");
+
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|row| {
+            row.deletion_block_reason.as_deref() == Some("library discovery was degraded")
+        }));
+    }
+
     /// Reproduces the reported bug: scanning a library a second time (data
     /// from the first scan already in the DB) used to fail with
     /// `FOREIGN KEY constraint failed`, because `persist_libraries` deleted
@@ -1892,8 +1545,9 @@ mod tests {
         write_file(&install_dir.path().join("bin").join("game.exe"), b"exe");
 
         let library = DiscoveredLibrary {
-            vendor: "steam",
+            vendor: "test",
             path: PathBuf::from("C:/Games"),
+            orphan_evidence: OrphanEvidence::Heuristic,
             games: vec![GameInstall {
                 name: "Test Game".to_string(),
                 install_dir: install_dir.path().to_path_buf(),
@@ -1958,12 +1612,13 @@ mod tests {
         let conn = db::open_in_memory().expect("open in-memory db");
 
         let library = DiscoveredLibrary {
-            vendor: "steam",
+            vendor: "test",
             path: PathBuf::from("D:/SteamLibrary"),
+            orphan_evidence: OrphanEvidence::Heuristic,
             games: vec![],
         };
 
-        persist_libraries(&conn, std::slice::from_ref(&library))
+        persist_libraries(&conn, std::slice::from_ref(&library), 0)
             .expect("first persist should succeed");
         let original_library_id = library_id_for(&conn, "D:/SteamLibrary");
 
@@ -1977,7 +1632,7 @@ mod tests {
         )
         .expect("insert unrelated operations row");
 
-        let games = persist_libraries(&conn, std::slice::from_ref(&library))
+        let games = persist_libraries(&conn, std::slice::from_ref(&library), 0)
             .expect("re-persisting the same library must not fail");
         assert!(games.is_empty(), "library has no games in this test");
 
@@ -2008,8 +1663,9 @@ mod tests {
         write_file(&dir_b.path().join("b.txt"), b"bbbb");
 
         let library_first = DiscoveredLibrary {
-            vendor: "steam",
+            vendor: "test",
             path: PathBuf::from("E:/Games"),
+            orphan_evidence: OrphanEvidence::Heuristic,
             games: vec![
                 GameInstall {
                     name: "Game A".to_string(),
@@ -2028,8 +1684,9 @@ mod tests {
 
         // Game B is gone on the second scan (e.g. uninstalled).
         let library_second = DiscoveredLibrary {
-            vendor: "steam",
+            vendor: "test",
             path: PathBuf::from("E:/Games"),
+            orphan_evidence: OrphanEvidence::Heuristic,
             games: vec![GameInstall {
                 name: "Game A".to_string(),
                 install_dir: dir_a.path().to_path_buf(),
@@ -2078,8 +1735,9 @@ mod tests {
         write_file(&install_dir.path().join("save.dat"), b"save");
 
         let vanished_library = DiscoveredLibrary {
-            vendor: "steam",
+            vendor: "test",
             path: PathBuf::from("F:/OldDrive"),
+            orphan_evidence: OrphanEvidence::Heuristic,
             games: vec![GameInstall {
                 name: "Old Game".to_string(),
                 install_dir: install_dir.path().to_path_buf(),
@@ -2094,8 +1752,9 @@ mod tests {
         let other_dir = tempfile::tempdir().expect("create temp dir");
         write_file(&other_dir.path().join("x.txt"), b"x");
         let current_library = DiscoveredLibrary {
-            vendor: "steam",
+            vendor: "test",
             path: PathBuf::from("G:/NewDrive"),
+            orphan_evidence: OrphanEvidence::Heuristic,
             games: vec![GameInstall {
                 name: "New Game".to_string(),
                 install_dir: other_dir.path().to_path_buf(),
@@ -2153,7 +1812,7 @@ mod tests {
         );
     }
 
-    /// GT-14: record now, show later. Nothing in the UI reads `build_id` yet,
+    /// build-ID history: record now, show later. Nothing in the UI reads `build_id` yet,
     /// but writing it during every scan is what lets a later release tell the
     /// user "these games came back" from their very first scan, instead of
     /// only after one more full scan.
@@ -2171,6 +1830,7 @@ mod tests {
         let library = DiscoveredLibrary {
             vendor: "steam",
             path: library_root.path().to_path_buf(),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Portal 2".to_string(),
                 install_dir,
@@ -2202,6 +1862,7 @@ mod tests {
         let library = DiscoveredLibrary {
             vendor: "gog",
             path: library_root.path().to_path_buf(),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Fallout 2".to_string(),
                 install_dir,
@@ -2231,6 +1892,7 @@ mod tests {
         let library = DiscoveredLibrary {
             vendor: "steam",
             path: library_root.path().to_path_buf(),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Other Game".to_string(),
                 install_dir,
@@ -2260,6 +1922,7 @@ mod tests {
         let library = DiscoveredLibrary {
             vendor: "steam",
             path: library_root.path().to_path_buf(),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Portal 2".to_string(),
                 install_dir,
@@ -2278,7 +1941,7 @@ mod tests {
         assert_eq!(build_id_of(&conn, "Portal 2").as_deref(), Some("17999999"));
     }
 
-    /// GT-30. A folder the user registered by hand is stored as `manual`; once
+    /// manual/discovered library reconciliation. A folder the user registered by hand is stored as `manual`; once
     /// a provider recognises that same folder as a real Steam library, the
     /// stored vendor must follow. Otherwise the library list keeps labelling
     /// it "manual", and every later scan re-enumerates it through the
@@ -2307,6 +1970,7 @@ mod tests {
         let discovered = DiscoveredLibrary {
             vendor: "steam",
             path: PathBuf::from("F:/SteamLibrary"),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Portal 2".to_string(),
                 install_dir: install_dir.path().to_path_buf(),
@@ -2328,7 +1992,7 @@ mod tests {
         );
     }
 
-    /// The other direction of GT-30, and the reason the upgrade is not a
+    /// The other direction of manual/discovered library reconciliation, and the reason the upgrade is not a
     /// plain unconditional overwrite: when a provider fails mid-scan (registry
     /// key missing, launcher config unreadable, drive briefly absent) its
     /// libraries are absent from the discovery results, and a folder the user
@@ -2347,6 +2011,7 @@ mod tests {
         let as_steam = DiscoveredLibrary {
             vendor: "steam",
             path: PathBuf::from("F:/SteamLibrary"),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Portal 2".to_string(),
                 install_dir: install_dir.path().to_path_buf(),
@@ -2652,7 +2317,7 @@ mod tests {
         FileEntry::logical_only(rel_path, 1, None)
     }
 
-    /// GT-76. An English interface used to show Ukrainian sentences in its row
+    /// localized rule descriptions. An English interface used to show Ukrainian sentences in its row
     /// tooltips and CSV export: the rule descriptions came straight out of
     /// `rules.json`, and the detector built its reasons with Ukrainian format
     /// strings. Both now go through a language, so this scans in English and
@@ -2869,7 +2534,7 @@ mod tests {
         );
     }
 
-    // -- GT-02: orphaned residue pass --
+    // -- orphan-residue safety: orphaned residue pass --
 
     /// Builds a Steam library on disk with a live game, a leftover folder, and
     /// an aborted-download service folder, returning the temp dir plus the
@@ -2897,6 +2562,7 @@ mod tests {
         let library = DiscoveredLibrary {
             vendor: "steam",
             path: root.to_path_buf(),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Live Game".to_string(),
                 install_dir: live,
@@ -2911,7 +2577,9 @@ mod tests {
         let (_dir, library) = steam_library_with_a_leftover();
         let cancel = AtomicBool::new(false);
 
-        let orphans = collect_orphans(std::slice::from_ref(&library), &cancel);
+        let collection = collect_orphans(std::slice::from_ref(&library), &cancel);
+        let orphans = collection.orphans;
+        assert!(collection.issues.is_empty());
 
         let leftover = library
             .path
@@ -2957,7 +2625,9 @@ mod tests {
         let cancel = AtomicBool::new(false);
 
         assert!(
-            collect_orphans(std::slice::from_ref(&library), &cancel).is_empty(),
+            collect_orphans(std::slice::from_ref(&library), &cancel)
+                .orphans
+                .is_empty(),
             "registry-based providers have no exclusive container and are skipped"
         );
     }
@@ -2976,6 +2646,7 @@ mod tests {
         let library = DiscoveredLibrary {
             vendor: "xbox",
             path: root.clone(),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Starfield".to_string(),
                 install_dir: live.clone(),
@@ -2984,7 +2655,9 @@ mod tests {
         };
         let cancel = AtomicBool::new(false);
 
-        let orphans = collect_orphans(std::slice::from_ref(&library), &cancel);
+        let collection = collect_orphans(std::slice::from_ref(&library), &cancel);
+        let orphans = collection.orphans;
+        assert!(collection.issues.is_empty());
 
         assert!(
             orphans
@@ -3019,6 +2692,7 @@ mod tests {
         let library = DiscoveredLibrary {
             vendor: "itch",
             path: location.clone(),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Celeste".to_string(),
                 install_dir: live.clone(),
@@ -3027,7 +2701,9 @@ mod tests {
         };
         let cancel = AtomicBool::new(false);
 
-        let orphans = collect_orphans(std::slice::from_ref(&library), &cancel);
+        let collection = collect_orphans(std::slice::from_ref(&library), &cancel);
+        let orphans = collection.orphans;
+        assert!(collection.issues.is_empty());
 
         assert!(
             orphans
@@ -3052,9 +2728,31 @@ mod tests {
         let cancel = AtomicBool::new(true);
 
         assert!(
-            collect_orphans(std::slice::from_ref(&library), &cancel).is_empty(),
+            collect_orphans(std::slice::from_ref(&library), &cancel)
+                .orphans
+                .is_empty(),
             "a pre-cancelled orphan pass must produce nothing"
         );
+    }
+
+    #[test]
+    fn orphan_enumeration_error_creates_no_finding_and_degrades_the_library() {
+        let dir = tempfile::tempdir().expect("create temp root");
+        let root = dir.path().join("XboxGames");
+        std::fs::write(&root, b"not a directory").expect("create invalid container");
+        let library = DiscoveredLibrary {
+            vendor: "xbox",
+            path: root.clone(),
+            orphan_evidence: OrphanEvidence::Authoritative,
+            games: Vec::new(),
+        };
+
+        let collection = collect_orphans(&[library], &AtomicBool::new(false));
+
+        assert!(collection.orphans.is_empty());
+        assert_eq!(collection.issues.len(), 1);
+        assert_eq!(collection.issues[0].stage, "orphan-enumeration");
+        assert_eq!(collection.issues[0].library_path, root);
     }
 
     #[test]
@@ -3063,14 +2761,16 @@ mod tests {
         let full_path = PathBuf::from(r"F:\SteamLibrary\steamapps\common\Leftover");
         let orphans = vec![PreparedOrphan {
             full_path: full_path.clone(),
+            evidence_library_path: PathBuf::from(r"F:\SteamLibrary"),
             size: 3000,
             // Deliberately distinct from the logical size: many small files
-            // round up to more clusters on disk (GT-05a).
+            // round up to more clusters on disk (allocated-size accounting).
             size_on_disk: 4096,
             kind: OrphanKind::UnmanagedFolder,
         }];
 
-        let rows = persist_orphans(&mut conn, &orphans, Lang::Uk).expect("persist should succeed");
+        let rows =
+            persist_orphans(&mut conn, &orphans, Lang::Uk, 0).expect("persist should succeed");
 
         // The returned row is shaped for the UI: sentinel game id, empty name,
         // container as install_dir, folder name as rel_path.
@@ -3079,7 +2779,7 @@ mod tests {
         assert_eq!(rows[0].size, 3000, "logical size preserved");
         assert_eq!(
             rows[0].size_on_disk, 4096,
-            "on-disk allocation is the primary orphan size (GT-05a)"
+            "on-disk allocation is the primary orphan size (allocated-size accounting)"
         );
         assert!(rows[0].game_name.is_empty());
         assert_eq!(
@@ -3123,20 +2823,22 @@ mod tests {
 
         let first = vec![PreparedOrphan {
             full_path: PathBuf::from(r"F:\lib\steamapps\common\OldLeftover"),
+            evidence_library_path: PathBuf::from(r"F:\lib"),
             size: 10,
             size_on_disk: 10,
             kind: OrphanKind::UnmanagedFolder,
         }];
-        persist_orphans(&mut conn, &first, Lang::Uk).expect("first persist");
+        persist_orphans(&mut conn, &first, Lang::Uk, 0).expect("first persist");
 
         // A later scan finds a different leftover; the old one is gone.
         let second = vec![PreparedOrphan {
             full_path: PathBuf::from(r"F:\lib\steamapps\common\NewLeftover"),
+            evidence_library_path: PathBuf::from(r"F:\lib"),
             size: 20,
             size_on_disk: 20,
             kind: OrphanKind::UnmanagedFolder,
         }];
-        persist_orphans(&mut conn, &second, Lang::Uk).expect("second persist");
+        persist_orphans(&mut conn, &second, Lang::Uk, 0).expect("second persist");
 
         let paths: Vec<String> = {
             let mut stmt = conn.prepare("SELECT rel_path FROM files").expect("prepare");
@@ -3160,14 +2862,15 @@ mod tests {
 
         let existing = vec![PreparedOrphan {
             full_path: PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
+            evidence_library_path: PathBuf::from(r"F:\lib"),
             size: 10,
             size_on_disk: 10,
             kind: OrphanKind::UnmanagedFolder,
         }];
-        persist_orphans(&mut conn, &existing, Lang::Uk).expect("seed orphan rows");
+        persist_orphans(&mut conn, &existing, Lang::Uk, 0).expect("seed orphan rows");
 
         // The empty-list call is how a disabled category clears residue.
-        let rows = persist_orphans(&mut conn, &[], Lang::Uk).expect("clear should succeed");
+        let rows = persist_orphans(&mut conn, &[], Lang::Uk, 0).expect("clear should succeed");
         assert!(rows.is_empty());
 
         let file_count: i64 = conn
@@ -3208,11 +2911,13 @@ mod tests {
             &mut conn,
             &[PreparedOrphan {
                 full_path: PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
+                evidence_library_path: PathBuf::from(r"F:\lib"),
                 size: 10,
                 size_on_disk: 10,
                 kind: OrphanKind::UnmanagedFolder,
             }],
             Lang::Uk,
+            0,
         )
         .expect("persist");
 

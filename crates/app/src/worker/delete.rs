@@ -10,7 +10,8 @@ use std::thread::JoinHandle;
 use eframe::egui;
 use gametrimmer_core::db;
 use gametrimmer_core::ops::{
-    remove_with_log_observed, OpOutcome, PermanentDelete, RecycleBin, Remover,
+    execute_delete_plans_observed, prepare_delete_plans, FsOutcome, OpOutcome, PermanentDelete,
+    RecycleBin, Remover,
 };
 use gametrimmer_core::settings::DeleteMethod;
 
@@ -18,13 +19,11 @@ use crate::i18n::{self, Lang, Verb};
 
 use super::{Notifier, RemoveOutcome, WorkerMsg};
 
-/// One file queued for removal: its `files.id` (to match the outcome back
-/// to a [`crate::model::FindingItem`]), its full path on disk, and its on-disk
-/// allocated size (GT-05a) so the post-delete summary can report how much space
-/// was actually reclaimed versus expected.
+/// One database row queued for removal. The path is deliberately not accepted
+/// from the UI: the core delete preflight reconstructs it from the active
+/// generation's immutable safety snapshot.
 pub struct DeleteItem {
     pub file_id: i64,
-    pub full_path: PathBuf,
     pub size_on_disk: u64,
 }
 
@@ -64,17 +63,32 @@ fn run_delete(
         DeleteMethod::RecycleBin => &RecycleBin,
     };
 
-    let paths: Vec<PathBuf> = items.iter().map(|item| item.full_path.clone()).collect();
+    let file_ids: Vec<i64> = items.iter().map(|item| item.file_id).collect();
+    let plans = match prepare_delete_plans(&conn, &file_ids, remover.action()) {
+        Ok(plans) if plans.len() == items.len() => plans,
+        Ok(_) => {
+            notifier.send(WorkerMsg::Error {
+                msg: i18n::delete_failed(lang, "delete preflight returned an incomplete batch"),
+            });
+            return;
+        }
+        Err(err) => {
+            notifier.send(WorkerMsg::Error {
+                msg: i18n::delete_failed(lang, err),
+            });
+            return;
+        }
+    };
 
-    let outcomes = match remove_with_log_observed(
+    let outcomes = match execute_delete_plans_observed(
         &mut conn,
         remover,
-        &paths,
+        &plans,
         |current, total, path| {
             // Slow removers (the Recycle Bin goes through the shell per file) can
             // take a noticeable moment per item, so the file currently being
             // worked on is reported before the attempt, not after - see
-            // `remove_with_log_observed`'s doc comment.
+            // `execute_delete_plans_observed`'s contract.
             let detail = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -91,9 +105,17 @@ fn run_delete(
             // can drop the file mid-batch instead of waiting for the whole
             // delete to finish - failures are only reported once at the end
             // (via `RemoveDone`) since they still need the summary dialog.
-            if outcome.error.is_none() {
+            if matches!(
+                outcome.status,
+                FsOutcome::Removed | FsOutcome::AlreadyAbsent
+            ) {
                 notifier.send(WorkerMsg::FileRemoved {
                     file_id: items[index].file_id,
+                });
+            }
+            if let Some(journal_error) = &outcome.journal_error {
+                notifier.send(WorkerMsg::Warning {
+                    msg: i18n::db_update_after_delete_failed(lang, journal_error),
                 });
             }
         },
@@ -131,22 +153,17 @@ fn run_delete(
     // Files actually removed from disk must also disappear from `files`/
     // `findings`, or the next app start (worker::load) would resurrect them
     // as selectable despite being gone - re-deleting would then just fail.
-    // A failed attempt whose path is no longer on disk (stale row from an
-    // older session, someone deleted the file manually, ...) is purged too:
-    // the end state the user asked for - "file gone" - already holds, and
-    // keeping the row would resurrect the same error on every next attempt.
-    // `symlink_metadata` (not `exists`) so a dangling link still counts as
-    // present - the link itself is a removable entry. Computed once per
-    // outcome here and carried on `RemoveOutcome::purged` so both this
-    // filter and the UI's `RemoveDone` handling reuse the same flag instead
-    // of re-checking the filesystem.
+    // Only an observed removal or an explicit NotFound result may purge the
+    // database row. Permission, sharing and other I/O failures remain visible.
     let mapped: Vec<RemoveOutcome> = items
         .iter()
         .zip(outcomes)
         .zip(nuked)
         .map(|((item, outcome), nuked)| {
-            let purged =
-                outcome.error.is_none() || std::fs::symlink_metadata(&outcome.path).is_err();
+            let purged = matches!(
+                outcome.status,
+                FsOutcome::Removed | FsOutcome::AlreadyAbsent
+            );
             RemoveOutcome {
                 file_id: item.file_id,
                 path: outcome.path,
@@ -196,7 +213,7 @@ fn run_delete(
 ///   delete, so there is nothing to reclassify.
 /// - `recycled_paths == None` (the bin could not be listed) yields all
 ///   `false`: we never assert a permanent delete we cannot prove.
-/// - Otherwise an outcome is flagged when it succeeded (`error.is_none()`) yet
+/// - Otherwise an outcome is flagged when it was removed yet
 ///   its path is absent from the bin.
 fn nuked_flags(
     method: DeleteMethod,
@@ -207,13 +224,13 @@ fn nuked_flags(
         .iter()
         .map(|outcome| {
             matches!(method, DeleteMethod::RecycleBin)
-                && outcome.error.is_none()
+                && outcome.status == FsOutcome::Removed
                 && recycled_paths.is_some_and(|paths| !paths.contains(&outcome.path))
         })
         .collect()
 }
 
-/// On-disk space (GT-05a) a delete batch reclaimed, split by *how*: what was
+/// On-disk space (allocated-size accounting) a delete batch reclaimed, split by *how*: what was
 /// expected, what was freed immediately, and what only frees once the Recycle
 /// Bin is emptied. Pure so the accounting is unit-testable without a running
 /// app (which has no test constructor).
@@ -259,6 +276,8 @@ mod tests {
         OpOutcome {
             path: PathBuf::from(path),
             error: None,
+            status: FsOutcome::Removed,
+            journal_error: None,
         }
     }
 
@@ -266,6 +285,8 @@ mod tests {
         OpOutcome {
             path: PathBuf::from(path),
             error: Some("boom".to_string()),
+            status: FsOutcome::Failed,
+            journal_error: None,
         }
     }
 

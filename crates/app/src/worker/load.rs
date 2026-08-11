@@ -35,7 +35,7 @@ pub fn spawn_load(
 }
 
 fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
-    let conn = match db::open(db_path) {
+    let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
             notifier.send(WorkerMsg::Error {
@@ -44,6 +44,41 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
             return;
         }
     };
+
+    if let Err(err) = db::cleanup_abandoned_scans(&mut conn) {
+        notifier.send(WorkerMsg::Warning {
+            msg: i18n::scan_incomplete(lang, err),
+        });
+    }
+
+    match gametrimmer_core::ops::reconcile_pending_operations(&mut conn) {
+        Ok(reconciled) if !reconciled.is_empty() => {
+            notifier.send(WorkerMsg::Warning {
+                msg: i18n::pending_delete_reconciled(lang, reconciled.len()),
+            });
+        }
+        Ok(_) => {}
+        Err(err) => notifier.send(WorkerMsg::Warning {
+            msg: i18n::db_update_after_delete_failed(lang, err),
+        }),
+    }
+
+    match load_scan_diagnostics(&conn) {
+        Ok(diagnostics) => {
+            for (provider, stage, path, message) in diagnostics {
+                let detail = match path {
+                    Some(path) => format!("{message} [{stage}: {path}]"),
+                    None => format!("{message} [{stage}]"),
+                };
+                notifier.send(WorkerMsg::Warning {
+                    msg: i18n::provider_failed(lang, provider, detail),
+                });
+            }
+        }
+        Err(err) => notifier.send(WorkerMsg::Warning {
+            msg: i18n::provider_failed(lang, "database", err),
+        }),
+    }
 
     match load_findings(&conn) {
         Ok(findings) => {
@@ -69,6 +104,27 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
     }
 }
 
+type StoredDiagnostic = (String, String, Option<String>, String);
+
+fn load_scan_diagnostics(conn: &Connection) -> CoreResult<Vec<StoredDiagnostic>> {
+    let Some(scan_id) = db::active_scan_id(conn)? else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn.prepare(
+        "SELECT provider, stage, path, message FROM scan_diagnostics
+         WHERE scan_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map([scan_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Rebuilds every persisted finding from the database left behind by a
 /// previous scan, as a single three-table join: `findings` inner-joined to
 /// its `files` row (for `rel_path`/`size`) and on to that file's `games` row
@@ -92,7 +148,7 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
 /// `db::migrate`) comes back as `None`, exactly the "no grouping" the UI
 /// tree already handles; the next scan repopulates real values.
 ///
-/// Orphaned-residue findings (GT-02) are stored with a `NULL` `files.game_id`
+/// Orphaned-residue findings (orphan-residue safety) are stored with a `NULL` `files.game_id`
 /// (there is no game), so the `games` join is a `LEFT JOIN` and the finding's
 /// own [`FindingSource`] - not the join's nullness - decides how a row is
 /// rebuilt: an `Orphan` source takes the synthetic [`ORPHAN_GAME_ID`] and
@@ -106,10 +162,28 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         "SELECT g.id, g.name, g.install_dir, \
                 fi.file_id, f.rel_path, f.size, \
                 fi.category, fi.rule_id, fi.confidence, fi.lang_tag, fi.group_dir, \
-                COALESCE(f.size_on_disk, f.size) \
+                COALESCE(f.size_on_disk, f.size), \
+                CASE \
+                  WHEN f.scan_id = 0 THEN 'legacy snapshot is read-only' \
+                  WHEN fs.file_id IS NULL THEN 'missing filesystem safety evidence' \
+                  WHEN fs.block_reason IS NOT NULL THEN fs.block_reason \
+                  WHEN fs.root_identity IS NULL OR fs.target_identity IS NULL \
+                    THEN 'missing filesystem identity' \
+                  WHEN sle.status IS NULL THEN 'missing library discovery evidence' \
+                  WHEN sle.status = 'degraded' THEN 'library discovery was degraded' \
+                  WHEN f.game_id IS NULL AND sle.status <> 'complete' \
+                    THEN 'orphan inventory is not authoritative' \
+                  ELSE NULL \
+                END, COALESCE(fi.provenance, 'builtin') \
          FROM findings fi \
          JOIN files f ON f.id = fi.file_id \
-         LEFT JOIN games g ON g.id = f.game_id",
+         LEFT JOIN games g ON g.id = f.game_id \
+         LEFT JOIN game_libraries gl ON gl.id = g.library_id \
+         LEFT JOIN file_safety fs ON fs.file_id = f.id \
+         LEFT JOIN scan_library_evidence sle \
+           ON sle.scan_id = f.scan_id \
+          AND sle.library_path = COALESCE(gl.path, fs.evidence_library_path) \
+         WHERE f.scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1)",
     )?;
 
     let mut rows = Vec::new();
@@ -130,6 +204,8 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         let confidence = row.get::<_, i64>(8)? as u8;
         let lang_tag: Option<String> = row.get(9)?;
         let size_on_disk = row.get::<_, i64>(11)? as u64;
+        let deletion_block_reason: Option<String> = row.get(12)?;
+        let imported_untrusted = row.get::<_, String>(13)? == "imported_untrusted";
 
         if matches!(source, FindingSource::Orphan(_)) {
             // The orphan's full path lives in `rel_path`; split it back into the
@@ -149,6 +225,8 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                 confidence,
                 lang_tag,
                 group_dir: None,
+                deletion_block_reason,
+                imported_untrusted,
             });
             continue;
         }
@@ -175,6 +253,8 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
             confidence,
             lang_tag,
             group_dir: row.get(10)?,
+            deletion_block_reason,
+            imported_untrusted,
         });
     }
 
@@ -388,7 +468,7 @@ mod tests {
         );
     }
 
-    /// An orphaned-residue finding (GT-02) is stored with a `NULL`
+    /// An orphaned-residue finding (orphan-residue safety) is stored with a `NULL`
     /// `files.game_id` and the leftover's full path in `files.rel_path`. Load
     /// must reconstruct it as the synthetic orphan branch: `ORPHAN_GAME_ID`,
     /// empty game name, and the full path split back into install_dir + name.
