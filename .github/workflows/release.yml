@@ -13,9 +13,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: Tag to build (for a dry run without pushing a tag)
-        required: false
+      ref:
+        description: Git tag, branch, or commit to build
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,35 +27,51 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
 
       - name: Install the Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Resolve source and verify a release tag
+        id: source
+        shell: pwsh
+        run: |
+          $requested = if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            "${{ inputs.ref }}"
+          } else {
+            "${{ github.ref_name }}"
+          }
+          $sha = (git rev-parse HEAD).Trim()
+          $tagCandidate = $requested -replace '^refs/tags/', ''
+          $matchingTag = git tag --list --format='%(refname:short)' -- $tagCandidate |
+            Where-Object { $_ -ceq $tagCandidate } |
+            Select-Object -First 1
+          $tagSha = if ($matchingTag) { (git rev-list -n 1 "refs/tags/$matchingTag").Trim() } else { "" }
+          $isTag = [bool]$matchingTag -and $tagSha -eq $sha
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ($isTag -and $version -ne ($tagCandidate -replace '^v', '')) {
+            throw "tag $tagCandidate does not match Cargo.toml version $version"
+          }
+          "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "is_tag=$($isTag.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=$tagCandidate" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "Resolved $requested to $sha (tag=$isTag)"
 
       # The same suite CI runs. A tag that cannot pass its own tests must not
       # produce a downloadable exe.
       - name: Tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-targets --all-features --locked
 
       - name: Package
         shell: pwsh
         run: pwsh -File scripts/package-portable.ps1
-
-      # The version in the zip name comes from Cargo.toml; the tag comes from
-      # git. If they disagree, the release would advertise a version the
-      # binary does not report - fail loudly instead.
-      - name: Check that the tag matches the version in Cargo.toml
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        run: |
-          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-          $tag = "${{ github.ref_name }}" -replace '^v', ''
-          if ($version -ne $tag) {
-            throw "tag v$tag does not match Cargo.toml version $version"
-          }
-          "matched: $version"
 
       - name: Checksum
         shell: pwsh
@@ -65,7 +81,7 @@ jobs:
           "$hash  $($zip.Name)" | Out-File -FilePath "dist/SHA256SUMS.txt" -Encoding ascii
           Get-Content dist/SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: portable-zip
           path: |
@@ -73,9 +89,10 @@ jobs:
             dist/SHA256SUMS.txt
 
       - name: Draft the GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        if: steps.source.outputs.is_tag == 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          tag_name: ${{ steps.source.outputs.tag }}
           draft: true
           generate_release_notes: true
           files: |

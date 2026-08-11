@@ -13,6 +13,7 @@
 #       |                      release zip read)
 #       |-- README.uk.md      (Ukrainian; both files ship, because inside an
 #       |                      archive there is no link to follow between them)
+#       |-- BUILDINFO.txt     (version, source SHA/ref/tag and rustc version)
 #       |-- LICENSE
 #       `-- THIRD-PARTY-NOTICES.md  (the MIT licence of TikiOne Steam Cleaner,
 #                                    whose redistributable list seeded these
@@ -50,11 +51,11 @@ try {
     $version = $Matches[1]
 
     # 2. Release build
-    cargo build --release -p gametrimmer
+    cargo build --release -p gametrimmer --locked
     if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed" }
 
     # 3. The real target-dir, as the build itself sees it
-    $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+    $metadata = cargo metadata --format-version 1 --no-deps --locked | ConvertFrom-Json
     $targetDir = $metadata.target_directory
     $exePath = Join-Path $targetDir "release\gametrimmer.exe"
     if (-not (Test-Path $exePath)) {
@@ -64,6 +65,11 @@ try {
     # 4. Assemble the package contents
     $distDir = Join-Path $repoRoot "dist"
     $stageDir = Join-Path $distDir "GameTrimmer-$version"
+    $resolvedDist = [IO.Path]::GetFullPath($distDir).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $resolvedStage = [IO.Path]::GetFullPath($stageDir)
+    if (-not $resolvedStage.StartsWith($resolvedDist + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "refusing to clean a stage directory outside dist: $resolvedStage"
+    }
     # The directory's contents, not the directory itself: while an Explorer
     # window or a shell sits inside it, Windows refuses to REMOVE the directory
     # but happily lets files be created in it. Removing it outright failed here
@@ -81,6 +87,26 @@ try {
     Copy-Item "$repoRoot\README.uk.md" (Join-Path $stageDir "README.uk.md")
     Copy-Item "$repoRoot\LICENSE" (Join-Path $stageDir "LICENSE")
     Copy-Item "$repoRoot\THIRD-PARTY-NOTICES.md" (Join-Path $stageDir "THIRD-PARTY-NOTICES.md")
+
+    $sourceCommit = (git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "could not resolve the source commit" }
+    $sourceTag = (git tag --points-at HEAD | Select-Object -First 1)
+    $sourceRef = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { (git branch --show-current).Trim() }
+    if (-not $sourceRef) { $sourceRef = $sourceCommit }
+    $sourceDirty = [bool](git status --porcelain --untracked-files=normal)
+    $rustcVersion = (rustc --version).Trim()
+    $buildInfo = @(
+        "version=$version"
+        "source_commit=$sourceCommit"
+        "source_ref=$sourceRef"
+        "source_tag=$sourceTag"
+        "source_dirty=$($sourceDirty.ToString().ToLowerInvariant())"
+        "rustc=$rustcVersion"
+    ) -join "`n"
+    [IO.File]::WriteAllText(
+        (Join-Path $stageDir "BUILDINFO.txt"),
+        $buildInfo + "`n",
+        [Text.UTF8Encoding]::new($false))
 
     # 5. Zip - through .NET ZipFile rather than Compress-Archive: the cmdlet
     # offers no compression level above Optimal, whereas SmallestSize (deflate

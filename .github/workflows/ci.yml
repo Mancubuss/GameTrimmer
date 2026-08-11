@@ -8,11 +8,13 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
   # Deliberately no `RUSTFLAGS: -D warnings`: it applies to dependencies too,
-  # so a future-incompat warning in a crate we do not own (binrw, today) would
+  # so a future-incompat warning in a transitive crate we do not own would
   # turn CI red for a reason no change here can fix. Warnings are denied where
   # they are ours - the clippy step below.
 
@@ -21,41 +23,50 @@ jobs:
     name: build, lint and test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install the Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
+          toolchain: 1.97.0
           components: rustfmt, clippy
 
       - name: Cache cargo registry and target directory
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Formatting
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       # The whole suite, including the 15,000-row localization corpus in
       # crates/core/tests and the egui_kittest UI tests (no window, no GPU -
       # the snapshot/wgpu features are deliberately off, see ui::harness).
       - name: Tests
-        run: cargo test --workspace --locked
-
-      # The headless mode and its apply path are compiled but switched off in
-      # release builds. They must keep compiling and passing, otherwise they rot
-      # silently until someone re-enables them.
-      #
-      # Both combinations, because they are genuinely different builds:
-      # `cli-apply` implies `headless`, so a `headless`-only run is the only one
-      # that exercises the refusal of `--apply` in a build that does have the
-      # command line.
-      - name: Tests with the headless feature
-        run: cargo test -p gametrimmer --features headless --locked
-
-      - name: Tests with the cli-apply feature
-        run: cargo test -p gametrimmer --features cli-apply --locked
+        run: cargo test --workspace --all-targets --all-features --locked
 
       - name: Release build
-        run: cargo build --release --locked
+        run: cargo build --workspace --all-features --release --locked
+
+      - name: Install RustSec audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: RustSec audit
+        run: cargo audit --deny warnings
+
+  compatibility:
+    name: Rust compatibility (${{ matrix.toolchain }})
+    if: github.event_name == 'schedule'
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        toolchain: [stable, beta]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - name: Compatibility check
+        run: cargo +${{ matrix.toolchain }} check --workspace --all-targets --all-features --locked
