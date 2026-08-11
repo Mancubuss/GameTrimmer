@@ -8,7 +8,10 @@ use winreg::RegKey;
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 pub struct SteamProvider;
 
@@ -17,54 +20,195 @@ impl LibraryProvider for SteamProvider {
         "steam"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let Some(root) = find_steam_root() else {
-            return Ok(Vec::new());
-        };
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_steam().data)
+    }
 
-        let mut library_roots = vec![root.clone()];
-        let libraryfolders_path = root.join("steamapps").join("libraryfolders.vdf");
-        if let Ok(contents) = std::fs::read_to_string(&libraryfolders_path) {
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_steam()
+    }
+}
+
+fn discover_steam() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let Some(root) = find_steam_root() else {
+        return DiscoveryReport::not_installed(Vec::new());
+    };
+
+    let mut diagnostics = Vec::new();
+    let mut library_roots = vec![root.clone()];
+    let libraryfolders_path = root.join("steamapps").join("libraryfolders.vdf");
+    match std::fs::read_to_string(&libraryfolders_path) {
+        Ok(contents) if vdf_well_formed(&contents) => {
             library_roots.extend(parse_libraryfolders(&contents));
         }
+        Ok(_) => diagnostics.push(diagnostic(
+            "libraryfolders-parse",
+            &libraryfolders_path,
+            "malformed libraryfolders.vdf",
+        )),
+        Err(err) => diagnostics.push(diagnostic("libraryfolders-read", &libraryfolders_path, err)),
+    }
 
-        let mut seen = HashSet::new();
-        let unique_roots: Vec<PathBuf> = library_roots
-            .into_iter()
-            .filter(|path| seen.insert(path.to_string_lossy().to_lowercase()))
-            .collect();
+    let mut seen = HashSet::new();
+    let unique_roots: Vec<PathBuf> = library_roots
+        .into_iter()
+        .filter(|path| seen.insert(path.to_string_lossy().to_lowercase()))
+        .collect();
 
-        let libraries = unique_roots
-            .into_iter()
-            .filter_map(|library_root| discover_library(&library_root))
-            .collect();
+    let mut libraries = Vec::new();
+    for library_root in unique_roots {
+        let (library, mut library_diagnostics) = discover_library(&library_root);
+        diagnostics.append(&mut library_diagnostics);
+        if let Some(library) = library {
+            libraries.push(library);
+        }
+    }
 
-        Ok(libraries)
+    if diagnostics.is_empty() {
+        DiscoveryReport::complete(libraries)
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
+    }
+}
+
+fn diagnostic(
+    stage: &'static str,
+    path: &Path,
+    message: impl std::fmt::Display,
+) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "steam",
+        stage,
+        path: Some(path.to_path_buf()),
+        message: message.to_string(),
     }
 }
 
 /// Reads one library's `steamapps` directory and returns its discovered games.
 /// Returns `None` if the library root or its `steamapps` folder doesn't exist.
-fn discover_library(library_root: &Path) -> Option<DiscoveredLibrary> {
+fn discover_library(library_root: &Path) -> (Option<DiscoveredLibrary>, Vec<DiscoveryDiagnostic>) {
     let steamapps_dir = library_root.join("steamapps");
     if !steamapps_dir.is_dir() {
-        return None;
+        return (
+            None,
+            vec![diagnostic(
+                "library-root",
+                &steamapps_dir,
+                "declared Steam library is unavailable",
+            )],
+        );
     }
 
-    let entries = std::fs::read_dir(&steamapps_dir).ok()?;
-    let games = entries
-        .flatten()
-        .filter(|entry| is_appmanifest(&entry.path()))
-        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-        .filter_map(|contents| parse_appmanifest(&contents, library_root))
-        .filter(|game| game.install_dir.is_dir())
-        .collect();
+    let entries = match std::fs::read_dir(&steamapps_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            return (
+                None,
+                vec![diagnostic("manifest-enumeration", &steamapps_dir, err)],
+            )
+        }
+    };
+    let mut games = Vec::new();
+    let mut diagnostics = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                diagnostics.push(diagnostic("manifest-entry", &steamapps_dir, err));
+                continue;
+            }
+        };
+        let path = entry.path();
+        if !is_appmanifest(&path) {
+            continue;
+        }
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                diagnostics.push(diagnostic("manifest-read", &path, err));
+                continue;
+            }
+        };
+        if !vdf_well_formed(&contents) {
+            diagnostics.push(diagnostic("manifest-parse", &path, "malformed VDF"));
+            continue;
+        }
+        let Some(game) = parse_appmanifest(&contents, library_root) else {
+            diagnostics.push(diagnostic(
+                "manifest-parse",
+                &path,
+                "missing required AppState fields",
+            ));
+            continue;
+        };
+        // A manifest whose install dir is simply not there is normal (a queued
+        // or paused download), and a folder that does not exist cannot be
+        // mistaken for an orphan either. A folder we merely failed to read is
+        // the dangerous case: it stays on disk, drops out of `games`, and
+        // `unmanaged_subdirs` would then call it residue. Diagnose it.
+        match super::try_is_dir(&game.install_dir) {
+            Ok(true) => games.push(game),
+            Ok(false) => {}
+            Err(err) => diagnostics.push(diagnostic("game-path", &game.install_dir, err)),
+        }
+    }
 
-    Some(DiscoveredLibrary {
-        vendor: "steam",
-        path: library_root.to_path_buf(),
-        games,
-    })
+    let evidence = if diagnostics.is_empty() {
+        OrphanEvidence::Authoritative
+    } else {
+        OrphanEvidence::Degraded
+    };
+    (
+        Some(DiscoveredLibrary {
+            vendor: "steam",
+            path: library_root.to_path_buf(),
+            games,
+            orphan_evidence: evidence,
+        }),
+        diagnostics,
+    )
+}
+
+/// Strict enough to distinguish a truncated/unbalanced Valve KeyValues file
+/// from a syntactically complete file before the permissive parser runs.
+fn vdf_well_formed(input: &str) -> bool {
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            quoted = true;
+        } else if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            for comment in chars.by_ref() {
+                if comment == '\n' {
+                    break;
+                }
+            }
+        } else if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            let Some(next) = depth.checked_sub(1) else {
+                return false;
+            };
+            depth = next;
+        }
+    }
+    !quoted && depth == 0
 }
 
 fn is_appmanifest(path: &Path) -> bool {
@@ -182,7 +326,7 @@ pub fn parse_appmanifest(acf: &str, library_root: &Path) -> Option<GameInstall> 
     })
 }
 
-/// The cheap *state* subset of an `appmanifest_*.acf` (GT-09): just enough to
+/// The cheap *state* subset of an `appmanifest_*.acf` (game-state tracking): just enough to
 /// tell whether a game changed since the last scan, without walking a single
 /// file of it.
 ///
@@ -247,18 +391,32 @@ pub fn parse_manifest_state(acf: &str) -> Option<ManifestState> {
 /// directory walk of the games themselves - so this is cheap enough to run on
 /// every startup (that is the whole point: detecting "what changed" must not
 /// cost a scan). An unreadable manifest is skipped, never fatal.
-pub fn manifest_states(library_root: &Path) -> Vec<ManifestState> {
+pub fn manifest_states(library_root: &Path) -> Result<Vec<ManifestState>> {
     let steamapps = library_root.join("steamapps");
-    let Ok(entries) = std::fs::read_dir(&steamapps) else {
-        return Vec::new();
-    };
-
-    entries
-        .flatten()
-        .filter(|entry| is_appmanifest(&entry.path()))
-        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-        .filter_map(|contents| parse_manifest_state(&contents))
-        .collect()
+    let entries = std::fs::read_dir(&steamapps)?;
+    let mut states = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !is_appmanifest(&path) {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&path)?;
+        if !vdf_well_formed(&contents) {
+            return Err(crate::error::CoreError::Other(format!(
+                "malformed Steam manifest: {}",
+                path.display()
+            )));
+        }
+        let state = parse_manifest_state(&contents).ok_or_else(|| {
+            crate::error::CoreError::Other(format!(
+                "Steam manifest has no usable app id: {}",
+                path.display()
+            ))
+        })?;
+        states.push(state);
+    }
+    Ok(states)
 }
 
 /// A minimal in-memory representation of Valve's KeyValues (VDF) text format:
@@ -394,6 +552,79 @@ fn parse_vdf(input: &str) -> VdfValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn manifest_with_installdir(name: &str, installdir: &str) -> String {
+        format!(
+            "\"AppState\"\n{{\n\t\"appid\"\t\t\"1\"\n\t\"name\"\t\t\"{name}\"\n\t\"installdir\"\t\t\"{installdir}\"\n}}\n"
+        )
+    }
+
+    #[test]
+    fn malformed_manifest_degrades_library_and_never_authorizes_orphans() {
+        let root = tempfile::tempdir().unwrap();
+        let steamapps = root.path().join("steamapps");
+        std::fs::create_dir(&steamapps).unwrap();
+        std::fs::write(steamapps.join("appmanifest_1.acf"), "\"AppState\" {").unwrap();
+
+        let (library, diagnostics) = discover_library(root.path());
+        let library = library.expect("the declared library is still reported");
+        assert_eq!(library.orphan_evidence, OrphanEvidence::Degraded);
+        assert!(library.games.is_empty());
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.stage == "manifest-parse"));
+    }
+
+    /// An install directory that cannot be examined - as opposed to one that
+    /// is provably absent - must degrade the library. Dropping the game
+    /// silently would leave its live folder in `steamapps\common` with nothing
+    /// claiming it, which is precisely how orphan detection invents residue.
+    #[test]
+    fn an_unexaminable_install_dir_degrades_the_library() {
+        let root = tempfile::tempdir().unwrap();
+        let steamapps = root.path().join("steamapps");
+        std::fs::create_dir_all(steamapps.join("common")).unwrap();
+        // `<` is invalid in a Windows path component, so the probe fails with
+        // ERROR_INVALID_NAME rather than "not found" - a stand-in for the real
+        // cases (DACL denial, offline placeholder, drive not ready) that no
+        // test can create portably.
+        std::fs::write(
+            steamapps.join("appmanifest_1.acf"),
+            manifest_with_installdir("Broken", "bad<name"),
+        )
+        .unwrap();
+
+        let (library, diagnostics) = discover_library(root.path());
+        let library = library.expect("the declared library is still reported");
+        assert_eq!(library.orphan_evidence, OrphanEvidence::Degraded);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.stage == "game-path"),
+            "the failed probe must be visible, not silently dropped: {diagnostics:?}"
+        );
+    }
+
+    /// The counterpart: a manifest for a game that is queued but not yet
+    /// downloaded is ordinary, and an absent folder cannot be mistaken for
+    /// residue - so it must not degrade the library.
+    #[test]
+    fn a_manifest_for_a_not_yet_downloaded_game_keeps_the_library_authoritative() {
+        let root = tempfile::tempdir().unwrap();
+        let steamapps = root.path().join("steamapps");
+        std::fs::create_dir(&steamapps).unwrap();
+        std::fs::write(
+            steamapps.join("appmanifest_1.acf"),
+            manifest_with_installdir("Queued", "NotThereYet"),
+        )
+        .unwrap();
+
+        let (library, diagnostics) = discover_library(root.path());
+        let library = library.expect("the declared library is still reported");
+        assert_eq!(library.orphan_evidence, OrphanEvidence::Authoritative);
+        assert!(library.games.is_empty());
+        assert!(diagnostics.is_empty(), "unexpected: {diagnostics:?}");
+    }
 
     #[test]
     fn parse_libraryfolders_reads_all_numbered_blocks_with_escaped_backslashes() {
@@ -542,8 +773,8 @@ mod tests {
     }
 
     #[test]
-    fn manifest_states_on_a_missing_library_root_is_empty_not_an_error() {
-        assert!(manifest_states(Path::new(r"Z:\definitely\not\a\steam\library")).is_empty());
+    fn manifest_states_on_a_missing_library_root_is_an_error() {
+        assert!(manifest_states(Path::new(r"Z:\definitely\not\a\steam\library")).is_err());
     }
 
     #[test]

@@ -30,6 +30,80 @@ pub struct GameInstall {
     pub app_id: Option<String>,
 }
 
+/// Whether a provider supplied enough authoritative evidence to prove that a
+/// directory is no longer managed by that provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OrphanEvidence {
+    /// Folder-name heuristics can find content, but cannot prove launcher
+    /// ownership or absence and therefore never authorize orphan deletion.
+    Heuristic,
+    /// Some launcher evidence was unreadable or malformed.
+    Degraded,
+    /// The launcher's inventory for this library was read without omissions.
+    Authoritative,
+}
+
+/// Completeness of one provider discovery attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryStatus {
+    NotInstalled,
+    Complete,
+    Degraded,
+    Failed,
+}
+
+/// Machine-readable evidence explaining why discovery is not complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryDiagnostic {
+    pub provider: &'static str,
+    pub stage: &'static str,
+    pub path: Option<PathBuf>,
+    pub message: String,
+}
+
+/// Provider data plus an explicit statement about its completeness.
+#[derive(Debug, Clone)]
+pub struct DiscoveryReport<T> {
+    pub data: T,
+    pub status: DiscoveryStatus,
+    pub diagnostics: Vec<DiscoveryDiagnostic>,
+}
+
+impl<T> DiscoveryReport<T> {
+    pub fn complete(data: T) -> Self {
+        Self {
+            data,
+            status: DiscoveryStatus::Complete,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    pub fn not_installed(data: T) -> Self {
+        Self {
+            data,
+            status: DiscoveryStatus::NotInstalled,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    pub fn degraded(data: T, diagnostics: Vec<DiscoveryDiagnostic>) -> Self {
+        debug_assert!(!diagnostics.is_empty());
+        Self {
+            data,
+            status: DiscoveryStatus::Degraded,
+            diagnostics,
+        }
+    }
+
+    pub fn failed(data: T, diagnostic: DiscoveryDiagnostic) -> Self {
+        Self {
+            data,
+            status: DiscoveryStatus::Failed,
+            diagnostics: vec![diagnostic],
+        }
+    }
+}
+
 /// A discovered game library (one root folder of one vendor).
 #[derive(Debug, Clone)]
 pub struct DiscoveredLibrary {
@@ -38,13 +112,34 @@ pub struct DiscoveredLibrary {
     /// Absolute path to the library root, e.g. `F:\SteamLibrary`.
     pub path: PathBuf,
     pub games: Vec<GameInstall>,
+    pub orphan_evidence: OrphanEvidence,
 }
 
 /// A source of game libraries (Steam, Epic, GOG, ...).
 pub trait LibraryProvider {
     fn name(&self) -> &'static str;
-    /// Discover all libraries of this vendor present on the machine.
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>>;
+    /// Legacy fallible implementation used by providers that have no partial
+    /// result to preserve. Providers with item-level failures override
+    /// [`Self::discover`] and return diagnostics for every skipped record.
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>>;
+
+    /// Discover all libraries of this vendor present on the machine without
+    /// confusing "not installed" with unreadable evidence.
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        match self.try_discover() {
+            Ok(libraries) if libraries.is_empty() => DiscoveryReport::not_installed(libraries),
+            Ok(libraries) => DiscoveryReport::complete(libraries),
+            Err(err) => DiscoveryReport::failed(
+                Vec::new(),
+                DiscoveryDiagnostic {
+                    provider: self.name(),
+                    stage: "provider",
+                    path: None,
+                    message: err.to_string(),
+                },
+            ),
+        }
+    }
 }
 
 /// All built-in providers, in discovery order. A provider whose launcher is
@@ -101,33 +196,33 @@ const INSTALL_PROBE_DEPTH: u32 = 3;
 /// Cycles are safe because [`INSTALL_PROBE_DEPTH`] bounds the descent, not
 /// because links go unfollowed.
 pub fn holds_installed_files(dir: &Path) -> bool {
+    try_holds_installed_files(dir).unwrap_or(false)
+}
+
+pub fn try_holds_installed_files(dir: &Path) -> std::io::Result<bool> {
     let mut pending = vec![(dir.to_path_buf(), 0u32)];
 
     while let Some((current, depth)) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            // Unreadable (permissions, vanished mid-scan): nothing to prove a
-            // game with, same silent-skip policy as `scanner::scan_dir`.
-            continue;
-        };
+        let entries = std::fs::read_dir(&current)?;
 
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
+        for entry in entries {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
 
             // `file_type` comes free with the directory enumeration; the extra
             // `metadata` syscall is paid only for the rare reparse-point entry.
             let is_dir = if file_type.is_symlink() {
                 match std::fs::metadata(entry.path()) {
                     Ok(resolved) => resolved.is_dir(),
-                    Err(_) => continue,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => return Err(err),
                 }
             } else {
                 file_type.is_dir()
             };
 
             if !is_dir {
-                return true;
+                return Ok(true);
             }
             if depth < INSTALL_PROBE_DEPTH {
                 pending.push((entry.path(), depth + 1));
@@ -135,7 +230,39 @@ pub fn holds_installed_files(dir: &Path) -> bool {
         }
     }
 
-    false
+    Ok(false)
+}
+
+/// Whether `path` exists and is a directory, keeping "definitely not there"
+/// and "could not find out" apart.
+///
+/// [`Path::is_dir`] collapses both into `false`, which is fail-open in a tool
+/// that deletes files. A manifest-backed game whose install directory cannot
+/// be read - a per-folder DACL denial, an offline cloud placeholder, a drive
+/// that has not spun up, a corrupt entry - would drop out of the managed set
+/// while its folder is still sitting on disk. Orphan detection then diffs the
+/// library against that incomplete set and classifies the live installation as
+/// unmanaged residue.
+///
+/// So the probe reports absence only for `NotFound`, and every other error is
+/// handed to the caller, which must turn it into a discovery diagnostic. A
+/// diagnostic downgrades the library to [`OrphanEvidence::Degraded`], which is
+/// what actually stops orphan classification for it.
+pub fn try_is_dir(path: &Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// The [`try_is_dir`] contract for a regular file.
+pub fn try_is_file(path: &Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 /// Merges libraries that share the same root path (case-insensitive, since
@@ -155,6 +282,7 @@ pub fn merge_libraries_by_path(libraries: Vec<DiscoveredLibrary>) -> Vec<Discove
 
         match existing {
             Some(target) => {
+                target.orphan_evidence = target.orphan_evidence.min(library.orphan_evidence);
                 for game in library.games {
                     let already_known = target.games.iter().any(|known| {
                         known
@@ -186,7 +314,7 @@ pub fn merge_libraries_by_path(libraries: Vec<DiscoveredLibrary>) -> Vec<Discove
 /// "discovery is broken", which is a support question the user has to ask to
 /// resolve.
 ///
-/// Safe with respect to orphan detection (GT-02) because the two vendors this
+/// Safe with respect to orphan detection (orphan-residue safety) because the two vendors this
 /// applies to cannot mass-flag an empty root: Humble has no orphan spec at all,
 /// and itch's requires a per-folder `.itch` receipt to call anything residue.
 pub(crate) fn register_root(
@@ -204,6 +332,7 @@ pub(crate) fn register_root(
             vendor,
             path: root,
             games: Vec::new(),
+            orphan_evidence: OrphanEvidence::Authoritative,
         });
     }
 }
@@ -246,6 +375,7 @@ pub fn dedupe_games_across_libraries(libraries: Vec<DiscoveredLibrary>) -> Vec<D
                 vendor,
                 path,
                 games,
+                orphan_evidence,
             } = library;
             let was_derived_from_games = !games.is_empty();
 
@@ -269,6 +399,7 @@ pub fn dedupe_games_across_libraries(libraries: Vec<DiscoveredLibrary>) -> Vec<D
                 vendor,
                 path,
                 games,
+                orphan_evidence,
             })
         })
         .collect()
@@ -347,6 +478,7 @@ pub(crate) fn group_by_parent_dir(
                 vendor,
                 path: parent,
                 games: vec![game],
+                orphan_evidence: OrphanEvidence::Authoritative,
             }),
         }
     }
@@ -540,11 +672,13 @@ mod tests {
         let from_metadata = DiscoveredLibrary {
             vendor: "epic",
             path: PathBuf::from(r"F:\Epic"),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![game("Celeste (official name)", r"F:\Epic\Celeste")],
         };
         let from_folderscan = DiscoveredLibrary {
             vendor: "epic",
             path: PathBuf::from(r"f:\epic"),
+            orphan_evidence: OrphanEvidence::Heuristic,
             games: vec![
                 game("Celeste", r"f:\epic\Celeste"),
                 game("Inside", r"f:\epic\Inside"),
@@ -579,6 +713,7 @@ mod tests {
         let mut libraries = vec![DiscoveredLibrary {
             vendor: "humble",
             path: PathBuf::from(r"H:\Humble"),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![game("FTL", r"H:\Humble\FTL")],
         }];
         register_root(&mut libraries, "humble", PathBuf::from(r"h:\humble"));
@@ -597,6 +732,7 @@ mod tests {
             DiscoveredLibrary {
                 vendor: "steam",
                 path: PathBuf::from(r"F:\SteamLibrary"),
+                orphan_evidence: OrphanEvidence::Authoritative,
                 games: vec![game(
                     "Dragon Age Inquisition",
                     r"F:\SteamLibrary\steamapps\common\Dragon Age Inquisition",
@@ -605,6 +741,7 @@ mod tests {
             DiscoveredLibrary {
                 vendor: "ea",
                 path: PathBuf::from(r"F:\SteamLibrary\steamapps\common"),
+                orphan_evidence: OrphanEvidence::Heuristic,
                 games: vec![game(
                     "Dragon Age\u{2122}: Inquisition",
                     r"f:\steamlibrary\steamapps\common\dragon age inquisition",
@@ -631,6 +768,7 @@ mod tests {
         let deduped = dedupe_games_across_libraries(vec![DiscoveredLibrary {
             vendor: "riot",
             path: PathBuf::from(r"H:\Riot Games"),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![
                 game("VALORANT", r"H:\Riot Games\VALORANT\live"),
                 game("VALORANT", r"H:\Riot Games\VALORANT"),
@@ -671,6 +809,7 @@ mod tests {
         let deduped = dedupe_games_across_libraries(vec![DiscoveredLibrary {
             vendor: "steam",
             path: PathBuf::from(r"F:\SteamLibrary\steamapps\common"),
+            orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![
                 game("Portal", r"F:\SteamLibrary\steamapps\common\Portal"),
                 game("Portal 2", r"F:\SteamLibrary\steamapps\common\Portal 2"),
@@ -689,11 +828,13 @@ mod tests {
             DiscoveredLibrary {
                 vendor: "humble",
                 path: PathBuf::from(r"H:\Humble"),
+                orphan_evidence: OrphanEvidence::Authoritative,
                 games: Vec::new(),
             },
             DiscoveredLibrary {
                 vendor: "steam",
                 path: PathBuf::from(r"F:\SteamLibrary"),
+                orphan_evidence: OrphanEvidence::Authoritative,
                 games: vec![game("Alpha", r"F:\SteamLibrary\steamapps\common\Alpha")],
             },
         ]);
@@ -709,11 +850,13 @@ mod tests {
             DiscoveredLibrary {
                 vendor: "steam",
                 path: PathBuf::from(r"F:\SteamLibrary"),
+                orphan_evidence: OrphanEvidence::Authoritative,
                 games: vec![game("Alpha", r"F:\SteamLibrary\steamapps\common\Alpha")],
             },
             DiscoveredLibrary {
                 vendor: "ea",
                 path: PathBuf::from(r"H:\EA"),
+                orphan_evidence: OrphanEvidence::Authoritative,
                 games: vec![game("Beta", r"H:\EA\Beta")],
             },
         ]);
@@ -728,15 +871,48 @@ mod tests {
             DiscoveredLibrary {
                 vendor: "epic",
                 path: PathBuf::from(r"F:\Epic"),
+                orphan_evidence: OrphanEvidence::Authoritative,
                 games: vec![game("Alpha", r"F:\Epic\Alpha")],
             },
             DiscoveredLibrary {
                 vendor: "gog",
                 path: PathBuf::from(r"F:\GOG"),
+                orphan_evidence: OrphanEvidence::Authoritative,
                 games: vec![game("Beta", r"F:\GOG\Beta")],
             },
         ]);
 
         assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn try_is_dir_reports_absence_only_for_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(try_is_dir(temp.path()).unwrap());
+        assert!(!try_is_dir(&temp.path().join("nothing-here")).unwrap());
+
+        // An invalid component makes the probe fail with something other than
+        // "not found" - the portable stand-in for a folder that exists but
+        // cannot be examined. It must surface as `Err`, never as "absent".
+        let unexaminable = temp.path().join("bad<name");
+        assert!(
+            try_is_dir(&unexaminable).is_err(),
+            "an unexaminable path must not be reported as absent"
+        );
+    }
+
+    #[test]
+    fn try_is_file_reports_absence_only_for_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("marker.txt");
+        std::fs::write(&file, b"x").unwrap();
+
+        assert!(try_is_file(&file).unwrap());
+        assert!(!try_is_file(&temp.path().join("nothing-here")).unwrap());
+        assert!(
+            !try_is_file(temp.path()).unwrap(),
+            "a directory is not a file"
+        );
+        assert!(try_is_file(&temp.path().join("bad<name")).is_err());
     }
 }

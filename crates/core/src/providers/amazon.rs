@@ -11,7 +11,10 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 const DATABASE_RELATIVE_PATH: &str = r"Amazon Games\Data\Games\Sql\GameInstallInfo.sqlite";
 
@@ -22,19 +25,92 @@ impl LibraryProvider for AmazonProvider {
         "amazon"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let Some(db_path) = database_path().filter(|path| path.is_file()) else {
-            // Amazon Games not installed - not an error.
-            return Ok(Vec::new());
-        };
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_amazon().data)
+    }
 
-        let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let games = read_games(&conn)?
-            .into_iter()
-            .filter(|game| game.install_dir.is_dir())
-            .collect();
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_amazon()
+    }
+}
 
-        Ok(super::group_by_parent_dir("amazon", games))
+fn diagnostic(
+    stage: &'static str,
+    path: Option<PathBuf>,
+    message: impl std::fmt::Display,
+) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "amazon",
+        stage,
+        path,
+        message: message.to_string(),
+    }
+}
+
+fn discover_amazon() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let Some(db_path) = database_path() else {
+        return DiscoveryReport::not_installed(Vec::new());
+    };
+    match std::fs::metadata(&db_path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic(
+                    "database-path",
+                    Some(db_path),
+                    "database path is not a file",
+                ),
+            )
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return DiscoveryReport::not_installed(Vec::new())
+        }
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic("database-metadata", Some(db_path), err),
+            )
+        }
+    }
+    let conn = match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(conn) => conn,
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic("database-open", Some(db_path), err),
+            )
+        }
+    };
+    let (rows, mut diagnostics) = match read_games_report(&conn) {
+        Ok(report) => report,
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic("games-query", Some(db_path), err),
+            )
+        }
+    };
+    let mut games = Vec::new();
+    for game in rows {
+        if game.install_dir.is_dir() {
+            games.push(game);
+        } else {
+            diagnostics.push(diagnostic(
+                "game-path",
+                Some(game.install_dir),
+                "configured Amazon Games install is unavailable",
+            ));
+        }
+    }
+    let mut libraries = super::group_by_parent_dir("amazon", games);
+    if diagnostics.is_empty() {
+        DiscoveryReport::complete(libraries)
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
     }
 }
 
@@ -44,7 +120,14 @@ fn database_path() -> Option<PathBuf> {
 }
 
 /// Reads installed games from an open `GameInstallInfo.sqlite` connection.
+#[cfg(test)]
 fn read_games(conn: &Connection) -> rusqlite::Result<Vec<GameInstall>> {
+    read_games_report(conn).map(|(games, _)| games)
+}
+
+fn read_games_report(
+    conn: &Connection,
+) -> rusqlite::Result<(Vec<GameInstall>, Vec<DiscoveryDiagnostic>)> {
     let mut stmt =
         conn.prepare("SELECT Id, ProductTitle, InstallDirectory FROM DbSet WHERE Installed = 1")?;
 
@@ -56,7 +139,30 @@ fn read_games(conn: &Connection) -> rusqlite::Result<Vec<GameInstall>> {
         })
     })?;
 
-    Ok(rows.flatten().filter_map(build_game_install).collect())
+    let mut games = Vec::new();
+    let mut diagnostics = Vec::new();
+    for (index, row) in rows.enumerate() {
+        let entry = match row {
+            Ok(entry) => entry,
+            Err(err) => {
+                diagnostics.push(diagnostic(
+                    "row-decode",
+                    None,
+                    format!("row {index}: {err}"),
+                ));
+                continue;
+            }
+        };
+        match build_game_install(entry) {
+            Some(game) => games.push(game),
+            None => diagnostics.push(diagnostic(
+                "game-entry",
+                None,
+                format!("row {index}: installed game has no usable path or name"),
+            )),
+        }
+    }
+    Ok((games, diagnostics))
 }
 
 /// One raw `DbSet` row (or a synthetic stand-in in tests).

@@ -8,7 +8,10 @@ use winreg::RegKey;
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 const REGISTRY_KEY: &str = r"SOFTWARE\WOW6432Node\GOG.com\Games";
 
@@ -19,29 +22,89 @@ impl LibraryProvider for GogProvider {
         "gog"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let Ok(games_key) = hklm.open_subkey(REGISTRY_KEY) else {
-            // GOG Galaxy not installed, or no games registered - not an error.
-            return Ok(Vec::new());
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_gog().data)
+    }
+
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_gog()
+    }
+}
+
+fn diagnostic(
+    stage: &'static str,
+    path: Option<PathBuf>,
+    message: impl std::fmt::Display,
+) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "gog",
+        stage,
+        path,
+        message: message.to_string(),
+    }
+}
+
+fn discover_gog() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let games_key = match hklm.open_subkey(REGISTRY_KEY) {
+        Ok(key) => key,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return DiscoveryReport::not_installed(Vec::new())
+        }
+        Err(err) => {
+            return DiscoveryReport::failed(Vec::new(), diagnostic("registry-open", None, err))
+        }
+    };
+
+    let mut games = Vec::new();
+    let mut diagnostics = Vec::new();
+    for app_id in games_key.enum_keys() {
+        let app_id = match app_id {
+            Ok(app_id) => app_id,
+            Err(err) => {
+                diagnostics.push(diagnostic("registry-enumeration", None, err));
+                continue;
+            }
         };
+        let subkey = match games_key.open_subkey(&app_id) {
+            Ok(subkey) => subkey,
+            Err(err) => {
+                diagnostics.push(diagnostic("game-key-open", None, err));
+                continue;
+            }
+        };
+        let entry = RawGogEntry {
+            app_id: app_id.clone(),
+            game_name: subkey.get_value::<String, _>("gameName").ok(),
+            path: subkey.get_value::<String, _>("path").ok(),
+        };
+        let Some(game) = build_game_install(entry) else {
+            diagnostics.push(diagnostic(
+                "game-entry",
+                None,
+                format!("GOG registry entry {app_id} has no usable name or path"),
+            ));
+            continue;
+        };
+        if game.install_dir.is_dir() {
+            games.push(game);
+        } else {
+            diagnostics.push(diagnostic(
+                "game-path",
+                Some(game.install_dir),
+                "configured GOG install is unavailable",
+            ));
+        }
+    }
 
-        let games: Vec<GameInstall> = games_key
-            .enum_keys()
-            .flatten()
-            .filter_map(|app_id| {
-                let subkey = games_key.open_subkey(&app_id).ok()?;
-                let entry = RawGogEntry {
-                    app_id,
-                    game_name: subkey.get_value::<String, _>("gameName").ok(),
-                    path: subkey.get_value::<String, _>("path").ok(),
-                };
-                build_game_install(entry)
-            })
-            .filter(|game| game.install_dir.is_dir())
-            .collect();
-
-        Ok(super::group_by_parent_dir("gog", games))
+    let mut libraries = super::group_by_parent_dir("gog", games);
+    if diagnostics.is_empty() {
+        DiscoveryReport::complete(libraries)
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
     }
 }
 

@@ -23,7 +23,10 @@ use winreg::RegKey;
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 const ORIGIN_GAMES_KEY: &str = r"SOFTWARE\WOW6432Node\Origin Games";
 const EA_DESKTOP_INSTALLED_GAMES_KEY: &str =
@@ -43,19 +46,71 @@ impl LibraryProvider for EaProvider {
         "ea"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let mut games = read_registry_games(ORIGIN_GAMES_KEY);
-        games.extend(read_registry_games(EA_DESKTOP_INSTALLED_GAMES_KEY));
-        games.extend(read_uninstall_games());
-
-        let games = super::dedupe_by_install_dir(games)
-            .into_iter()
-            .filter(|game| game.install_dir.is_dir())
-            .map(refine_name_from_installer_xml)
-            .collect();
-
-        Ok(super::group_by_parent_dir("ea", games))
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_ea().data)
     }
+
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_ea()
+    }
+}
+
+#[derive(Default)]
+struct ProviderRead {
+    games: Vec<GameInstall>,
+    diagnostics: Vec<DiscoveryDiagnostic>,
+    ea_evidence_found: bool,
+}
+
+fn diagnostic(stage: &'static str, message: impl std::fmt::Display) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "ea",
+        stage,
+        path: None,
+        message: message.to_string(),
+    }
+}
+
+fn discover_ea() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let mut report = read_registry_games_report(ORIGIN_GAMES_KEY);
+    merge_read(
+        &mut report,
+        read_registry_games_report(EA_DESKTOP_INSTALLED_GAMES_KEY),
+    );
+    merge_read(&mut report, read_uninstall_games_report());
+
+    let mut games = Vec::new();
+    for game in super::dedupe_by_install_dir(report.games) {
+        if game.install_dir.is_dir() {
+            games.push(refine_name_from_installer_xml(game));
+        } else {
+            report.diagnostics.push(DiscoveryDiagnostic {
+                provider: "ea",
+                stage: "game-path",
+                path: Some(game.install_dir),
+                message: "configured EA install is unavailable".into(),
+            });
+        }
+    }
+    let mut libraries = super::group_by_parent_dir("ea", games);
+    if report.diagnostics.is_empty() {
+        if report.ea_evidence_found {
+            DiscoveryReport::complete(libraries)
+        } else {
+            DiscoveryReport::not_installed(libraries)
+        }
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, report.diagnostics)
+    }
+}
+
+fn merge_read(target: &mut ProviderRead, mut incoming: ProviderRead) {
+    target.games.append(&mut incoming.games);
+    target.diagnostics.append(&mut incoming.diagnostics);
+    target.ea_evidence_found |= incoming.ea_evidence_found;
 }
 
 /// The three registry roots where Windows uninstall entries live.
@@ -78,29 +133,76 @@ fn uninstall_roots() -> Vec<(RegKey, &'static str)> {
 
 /// Every EA-published game described by the Windows uninstall registry. A
 /// missing root (possible for HKCU) contributes nothing.
-fn read_uninstall_games() -> Vec<GameInstall> {
-    uninstall_roots()
-        .into_iter()
-        .flat_map(|(root, path)| {
-            let Ok(uninstall_key) = root.open_subkey(path) else {
-                return Vec::new();
+fn read_uninstall_games_report() -> ProviderRead {
+    let mut report = ProviderRead::default();
+    for (root, path) in uninstall_roots() {
+        let uninstall_key = match root.open_subkey(path) {
+            Ok(key) => key,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                report
+                    .diagnostics
+                    .push(diagnostic("uninstall-root-open", err));
+                continue;
+            }
+        };
+        for key_name in uninstall_key.enum_keys() {
+            let key_name = match key_name {
+                Ok(name) => name,
+                Err(err) => {
+                    report
+                        .diagnostics
+                        .push(diagnostic("uninstall-enumeration", err));
+                    continue;
+                }
             };
-
-            uninstall_key
-                .enum_keys()
-                .flatten()
-                .filter_map(|key_name| {
-                    let subkey = uninstall_key.open_subkey(&key_name).ok()?;
-                    build_from_uninstall_entry(RawUninstallEntry {
-                        key_name,
-                        display_name: subkey.get_value::<String, _>("DisplayName").ok(),
-                        publisher: subkey.get_value::<String, _>("Publisher").ok(),
-                        install_location: subkey.get_value::<String, _>("InstallLocation").ok(),
-                    })
-                })
-                .collect()
-        })
-        .collect()
+            let subkey = match uninstall_key.open_subkey(&key_name) {
+                Ok(key) => key,
+                Err(err) => {
+                    report
+                        .diagnostics
+                        .push(diagnostic("uninstall-entry-open", err));
+                    continue;
+                }
+            };
+            let publisher = match subkey.get_value::<String, _>("Publisher") {
+                Ok(publisher) => publisher,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    report.diagnostics.push(diagnostic("publisher-read", err));
+                    continue;
+                }
+            };
+            if !publisher.trim().starts_with(PUBLISHER_PREFIX) {
+                continue;
+            }
+            report.ea_evidence_found = true;
+            let entry = RawUninstallEntry {
+                key_name: key_name.clone(),
+                display_name: subkey.get_value::<String, _>("DisplayName").ok(),
+                publisher: Some(publisher),
+                install_location: subkey.get_value::<String, _>("InstallLocation").ok(),
+            };
+            match build_from_uninstall_entry(entry) {
+                Some(game) => report.games.push(game),
+                None => {
+                    let display_name = subkey
+                        .get_value::<String, _>("DisplayName")
+                        .unwrap_or_else(|_| key_name.clone());
+                    if !NON_GAME_NAMES
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(display_name.trim()))
+                    {
+                        report.diagnostics.push(diagnostic(
+                            "uninstall-entry",
+                            format!("{key_name} has no usable InstallLocation"),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    report
 }
 
 /// One raw uninstall registry entry (or a synthetic stand-in in tests).
@@ -147,25 +249,51 @@ fn build_from_uninstall_entry(entry: RawUninstallEntry) -> Option<GameInstall> {
 /// `GameInstall`s it describes. Returns an empty vec if the key itself
 /// doesn't exist - that's expected when this particular launcher generation
 /// isn't installed.
-fn read_registry_games(registry_key: &str) -> Vec<GameInstall> {
+fn read_registry_games_report(registry_key: &str) -> ProviderRead {
+    let mut report = ProviderRead::default();
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let Ok(games_key) = hklm.open_subkey(registry_key) else {
-        return Vec::new();
+    let games_key = match hklm.open_subkey(registry_key) {
+        Ok(key) => {
+            report.ea_evidence_found = true;
+            key
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return report,
+        Err(err) => {
+            report.diagnostics.push(diagnostic("games-root-open", err));
+            return report;
+        }
     };
-
-    games_key
-        .enum_keys()
-        .flatten()
-        .filter_map(|id| {
-            let subkey = games_key.open_subkey(&id).ok()?;
-            let entry = RawEaEntry {
-                id,
-                display_name: subkey.get_value::<String, _>("DisplayName").ok(),
-                install_dir: subkey.get_value::<String, _>("Install Dir").ok(),
-            };
-            build_game_install(entry)
-        })
-        .collect()
+    for id in games_key.enum_keys() {
+        let id = match id {
+            Ok(id) => id,
+            Err(err) => {
+                report
+                    .diagnostics
+                    .push(diagnostic("games-enumeration", err));
+                continue;
+            }
+        };
+        let subkey = match games_key.open_subkey(&id) {
+            Ok(key) => key,
+            Err(err) => {
+                report.diagnostics.push(diagnostic("game-key-open", err));
+                continue;
+            }
+        };
+        let entry = RawEaEntry {
+            id: id.clone(),
+            display_name: subkey.get_value::<String, _>("DisplayName").ok(),
+            install_dir: subkey.get_value::<String, _>("Install Dir").ok(),
+        };
+        match build_game_install(entry) {
+            Some(game) => report.games.push(game),
+            None => report.diagnostics.push(diagnostic(
+                "game-entry",
+                format!("{id} has no usable Install Dir"),
+            )),
+        }
+    }
+    report
 }
 
 /// One raw entry read from an `Origin Games`/`EA Desktop\InstalledGames`

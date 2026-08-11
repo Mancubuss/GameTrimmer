@@ -12,7 +12,10 @@ use winreg::RegKey;
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 const REGISTRY_KEY: &str = r"SOFTWARE\WOW6432Node\Rockstar Games";
 
@@ -26,28 +29,92 @@ impl LibraryProvider for RockstarProvider {
         "rockstar"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let Ok(root_key) = hklm.open_subkey(REGISTRY_KEY) else {
-            // Rockstar Games Launcher not installed - not an error.
-            return Ok(Vec::new());
-        };
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_rockstar().data)
+    }
 
-        let games: Vec<GameInstall> = root_key
-            .enum_keys()
-            .flatten()
-            .filter_map(|name| {
-                let subkey = root_key.open_subkey(&name).ok()?;
-                let install_folder = subkey.get_value::<String, _>("InstallFolder").ok();
-                build_game_install(&name, install_folder)
-            })
-            .filter(|game| game.install_dir.is_dir())
-            .collect();
-
-        Ok(super::group_by_parent_dir("rockstar", games))
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_rockstar()
     }
 }
 
+fn discover_rockstar() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let root_key = match hklm.open_subkey(REGISTRY_KEY) {
+        Ok(key) => key,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return DiscoveryReport::not_installed(Vec::new())
+        }
+        Err(err) => return DiscoveryReport::failed(Vec::new(), diagnostic("registry-open", err)),
+    };
+    let mut games = Vec::new();
+    let mut diagnostics = Vec::new();
+    for name in root_key.enum_keys() {
+        let name = match name {
+            Ok(name) => name,
+            Err(err) => {
+                diagnostics.push(diagnostic("registry-enumeration", err));
+                continue;
+            }
+        };
+        let subkey = match root_key.open_subkey(&name) {
+            Ok(key) => key,
+            Err(err) => {
+                diagnostics.push(diagnostic("game-key-open", err));
+                continue;
+            }
+        };
+        let install_folder = subkey.get_value::<String, _>("InstallFolder").ok();
+        let Some(game) = build_game_install(&name, install_folder) else {
+            if !NON_GAME_SUBKEYS
+                .iter()
+                .any(|excluded| excluded.eq_ignore_ascii_case(&name))
+            {
+                diagnostics.push(diagnostic(
+                    "game-entry",
+                    format!("{name} has no usable InstallFolder"),
+                ));
+            }
+            continue;
+        };
+        if game.install_dir.is_dir() {
+            games.push(game);
+        } else {
+            diagnostics.push(DiscoveryDiagnostic {
+                provider: "rockstar",
+                stage: "game-path",
+                path: Some(game.install_dir),
+                message: "configured Rockstar install is unavailable".into(),
+            });
+        }
+    }
+    finish_report("rockstar", games, diagnostics)
+}
+
+fn diagnostic(stage: &'static str, message: impl std::fmt::Display) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "rockstar",
+        stage,
+        path: None,
+        message: message.to_string(),
+    }
+}
+
+fn finish_report(
+    provider: &'static str,
+    games: Vec<GameInstall>,
+    diagnostics: Vec<DiscoveryDiagnostic>,
+) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let mut libraries = super::group_by_parent_dir(provider, games);
+    if diagnostics.is_empty() {
+        DiscoveryReport::complete(libraries)
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
+    }
+}
 /// Builds a `GameInstall` from a raw registry entry: `name` is the subkey name
 /// (the game title), `install_folder` is the `InstallFolder` value if present.
 /// Returns `None` for launcher-infrastructure subkeys and for entries without

@@ -15,7 +15,10 @@ use serde::Deserialize;
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 const CONFIG_RELATIVE_PATH: &str = r"Humble App\config.json";
 
@@ -29,26 +32,92 @@ impl LibraryProvider for HumbleProvider {
         "humble"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let Some(config_path) = config_path().filter(|path| path.is_file()) else {
-            // Humble App not installed - not an error.
-            return Ok(Vec::new());
-        };
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_humble().data)
+    }
 
-        let contents = std::fs::read_to_string(config_path)?;
-        let config = parse_config(&contents);
-        let games = config
-            .games
-            .into_iter()
-            .filter(|game| game.install_dir.is_dir())
-            .collect();
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_humble()
+    }
+}
 
-        let mut libraries = super::group_by_parent_dir("humble", games);
-        if let Some(root) = config.download_location.filter(|path| path.is_dir()) {
-            super::register_root(&mut libraries, "humble", root);
+fn diagnostic(
+    stage: &'static str,
+    path: Option<PathBuf>,
+    message: impl std::fmt::Display,
+) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "humble",
+        stage,
+        path,
+        message: message.to_string(),
+    }
+}
+
+fn discover_humble() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let Some(config_path) = config_path().filter(|path| path.is_file()) else {
+        return DiscoveryReport::not_installed(Vec::new());
+    };
+
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic("config-read", Some(config_path), err),
+            )
         }
+    };
+    let (config, invalid_entries) = match parse_config_report(&contents) {
+        Ok(config) => config,
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic("config-parse", Some(config_path), err),
+            )
+        }
+    };
+    let mut diagnostics = Vec::new();
+    if invalid_entries != 0 {
+        diagnostics.push(diagnostic(
+            "game-entry",
+            Some(config_path),
+            format!("{invalid_entries} installed Humble row(s) had no usable path or name"),
+        ));
+    }
+    let mut games = Vec::new();
+    for game in config.games {
+        if game.install_dir.is_dir() {
+            games.push(game);
+        } else {
+            diagnostics.push(diagnostic(
+                "game-path",
+                Some(game.install_dir),
+                "configured Humble install is unavailable",
+            ));
+        }
+    }
 
-        Ok(libraries)
+    let mut libraries = super::group_by_parent_dir("humble", games);
+    if let Some(root) = config.download_location {
+        if root.is_dir() {
+            super::register_root(&mut libraries, "humble", root);
+        } else {
+            diagnostics.push(diagnostic(
+                "download-location",
+                Some(root),
+                "configured Humble download location is unavailable",
+            ));
+        }
+    }
+
+    if diagnostics.is_empty() {
+        DiscoveryReport::complete(libraries)
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
     }
 }
 
@@ -94,23 +163,41 @@ struct HumbleGame {
 /// Parses the config JSON into the download location and installed games it
 /// describes. Malformed JSON yields the empty result - the config is
 /// launcher-owned state, not user input worth surfacing an error for.
+#[cfg(test)]
 fn parse_config(json: &str) -> ParsedConfig {
-    let Ok(config) = serde_json::from_str::<HumbleConfig>(json) else {
-        return ParsedConfig::default();
-    };
+    parse_config_report(json)
+        .map(|(config, _)| config)
+        .unwrap_or_default()
+}
 
-    ParsedConfig {
-        download_location: config
-            .settings
-            .download_location
-            .filter(|path| !path.trim().is_empty())
-            .map(|path| PathBuf::from(path.trim().trim_end_matches(['\\', '/']))),
-        games: config
-            .game_collection
-            .into_iter()
-            .filter_map(build_game_install)
-            .collect(),
+fn parse_config_report(json: &str) -> serde_json::Result<(ParsedConfig, usize)> {
+    let config = serde_json::from_str::<HumbleConfig>(json)?;
+    let mut games = Vec::new();
+    let mut invalid_entries = 0;
+    for game in config.game_collection {
+        let installed = game.status.as_deref().is_some_and(|status| {
+            INSTALLED_STATUSES
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(status.trim()))
+        });
+        match build_game_install(game) {
+            Some(game) => games.push(game),
+            None if installed => invalid_entries += 1,
+            None => {}
+        }
     }
+
+    Ok((
+        ParsedConfig {
+            download_location: config
+                .settings
+                .download_location
+                .filter(|path| !path.trim().is_empty())
+                .map(|path| PathBuf::from(path.trim().trim_end_matches(['\\', '/']))),
+            games,
+        },
+        invalid_entries,
+    ))
 }
 
 /// Builds a `GameInstall` from one collection entry. Requires an

@@ -15,7 +15,10 @@ use winreg::RegKey;
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 const PUBLISHER: &str = "Blizzard Entertainment";
 
@@ -29,18 +32,105 @@ impl LibraryProvider for BattleNetProvider {
         "battlenet"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let games: Vec<GameInstall> = uninstall_roots()
-            .into_iter()
-            .flat_map(|(root, path)| read_uninstall_games(&root, path))
-            .collect();
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_battlenet().data)
+    }
 
-        let games = super::dedupe_by_install_dir(games)
-            .into_iter()
-            .filter(|game| game.install_dir.is_dir())
-            .collect();
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_battlenet()
+    }
+}
 
-        Ok(super::group_by_parent_dir("battlenet", games))
+fn diagnostic(stage: &'static str, message: impl std::fmt::Display) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "battlenet",
+        stage,
+        path: None,
+        message: message.to_string(),
+    }
+}
+
+fn discover_battlenet() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let mut games = Vec::new();
+    let mut diagnostics = Vec::new();
+    for (root, path) in uninstall_roots() {
+        let uninstall_key = match root.open_subkey(path) {
+            Ok(key) => key,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                diagnostics.push(diagnostic("registry-root-open", err));
+                continue;
+            }
+        };
+        for key_name in uninstall_key.enum_keys() {
+            let key_name = match key_name {
+                Ok(name) => name,
+                Err(err) => {
+                    diagnostics.push(diagnostic("registry-enumeration", err));
+                    continue;
+                }
+            };
+            let subkey = match uninstall_key.open_subkey(&key_name) {
+                Ok(key) => key,
+                Err(err) => {
+                    diagnostics.push(diagnostic("game-key-open", err));
+                    continue;
+                }
+            };
+            let publisher = match subkey.get_value::<String, _>("Publisher") {
+                Ok(publisher) => publisher,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    diagnostics.push(diagnostic("publisher-read", err));
+                    continue;
+                }
+            };
+            if publisher.trim() != PUBLISHER {
+                continue;
+            }
+            let entry = RawUninstallEntry {
+                key_name: key_name.clone(),
+                display_name: subkey.get_value::<String, _>("DisplayName").ok(),
+                publisher: Some(publisher),
+                install_location: subkey.get_value::<String, _>("InstallLocation").ok(),
+            };
+            let Some(game) = build_game_install(entry) else {
+                if !NON_GAME_NAMES
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(&key_name))
+                {
+                    diagnostics.push(diagnostic(
+                        "game-entry",
+                        format!("{key_name} has no usable InstallLocation"),
+                    ));
+                }
+                continue;
+            };
+            if game.install_dir.is_dir() {
+                games.push(game);
+            } else {
+                diagnostics.push(DiscoveryDiagnostic {
+                    provider: "battlenet",
+                    stage: "game-path",
+                    path: Some(game.install_dir),
+                    message: "configured Battle.net install is unavailable".into(),
+                });
+            }
+        }
+    }
+    let games = super::dedupe_by_install_dir(games);
+    let mut libraries = super::group_by_parent_dir("battlenet", games);
+    if diagnostics.is_empty() {
+        if libraries.is_empty() {
+            DiscoveryReport::not_installed(libraries)
+        } else {
+            DiscoveryReport::complete(libraries)
+        }
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
     }
 }
 
@@ -64,27 +154,6 @@ fn uninstall_roots() -> Vec<(RegKey, &'static str)> {
 
 /// Reads every uninstall subkey under one root and keeps the Blizzard games.
 /// A missing root (possible for HKCU) is simply an empty result.
-fn read_uninstall_games(root: &RegKey, path: &str) -> Vec<GameInstall> {
-    let Ok(uninstall_key) = root.open_subkey(path) else {
-        return Vec::new();
-    };
-
-    uninstall_key
-        .enum_keys()
-        .flatten()
-        .filter_map(|key_name| {
-            let subkey = uninstall_key.open_subkey(&key_name).ok()?;
-            let entry = RawUninstallEntry {
-                key_name,
-                display_name: subkey.get_value::<String, _>("DisplayName").ok(),
-                publisher: subkey.get_value::<String, _>("Publisher").ok(),
-                install_location: subkey.get_value::<String, _>("InstallLocation").ok(),
-            };
-            build_game_install(entry)
-        })
-        .collect()
-}
-
 /// One raw uninstall registry entry (or a synthetic stand-in in tests).
 struct RawUninstallEntry {
     key_name: String,

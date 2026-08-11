@@ -15,7 +15,10 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 const DATABASE_RELATIVE_PATH: &str = r"itch\db\butler.db";
 
@@ -26,47 +29,133 @@ impl LibraryProvider for ItchProvider {
         "itch"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let Some(db_path) = database_path().filter(|path| path.is_file()) else {
-            // itch app not installed - not an error.
-            return Ok(Vec::new());
-        };
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_itch().data)
+    }
 
-        let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let games = read_games(&conn)?
-            .into_iter()
-            .filter(|game| game.install_dir.is_dir())
-            .collect();
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_itch()
+    }
+}
 
-        let mut libraries = super::group_by_parent_dir("itch", games);
-        // `install_locations` is itch's own list of roots, independent of what
-        // is currently installed in them - so a location the user emptied is
-        // still reportable rather than silently vanishing. It is also exactly
-        // where `orphans::itch_spec` looks for `.itch` receipts, which is the
-        // case worth surfacing: every game removed, the folders left behind.
-        for root in read_install_locations(&conn)? {
-            if root.is_dir() {
-                super::register_root(&mut libraries, "itch", root);
-            }
+fn discover_itch() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let Some(db_path) = database_path().filter(|path| path.is_file()) else {
+        return DiscoveryReport::not_installed(Vec::new());
+    };
+
+    let conn = match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(conn) => conn,
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                itch_diagnostic("database-open", Some(db_path), err),
+            )
         }
+    };
+    let (read_games, mut diagnostics) = match read_games_report(&conn) {
+        Ok(report) => report,
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                itch_diagnostic("games-query", Some(db_path), err),
+            )
+        }
+    };
+    let mut games = Vec::new();
+    for game in read_games {
+        if game.install_dir.is_dir() {
+            games.push(game);
+        } else {
+            diagnostics.push(itch_diagnostic(
+                "game-path",
+                Some(game.install_dir.clone()),
+                "configured itch cave is unavailable",
+            ));
+        }
+    }
 
-        Ok(libraries)
+    let mut libraries = super::group_by_parent_dir("itch", games);
+    // `install_locations` is itch's own list of roots, independent of what
+    // is currently installed in them - so a location the user emptied is
+    // still reportable rather than silently vanishing. It is also exactly
+    // where `orphans::itch_spec` looks for `.itch` receipts, which is the
+    // case worth surfacing: every game removed, the folders left behind.
+    let (roots, mut root_diagnostics) = match read_install_locations_report(&conn) {
+        Ok(report) => report,
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                itch_diagnostic("locations-query", Some(db_path), err),
+            )
+        }
+    };
+    diagnostics.append(&mut root_diagnostics);
+    for root in roots {
+        if root.is_dir() {
+            super::register_root(&mut libraries, "itch", root);
+        } else {
+            diagnostics.push(itch_diagnostic(
+                "location-path",
+                Some(root),
+                "configured itch install location is unavailable",
+            ));
+        }
+    }
+
+    if diagnostics.is_empty() {
+        DiscoveryReport::complete(libraries)
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
+    }
+}
+
+fn itch_diagnostic(
+    stage: &'static str,
+    path: Option<PathBuf>,
+    message: impl std::fmt::Display,
+) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "itch",
+        stage,
+        path,
+        message: message.to_string(),
     }
 }
 
 /// Reads itch's configured install locations from an open `butler.db`.
+#[cfg(test)]
 fn read_install_locations(conn: &Connection) -> rusqlite::Result<Vec<PathBuf>> {
+    read_install_locations_report(conn).map(|(locations, _)| locations)
+}
+
+fn read_install_locations_report(
+    conn: &Connection,
+) -> rusqlite::Result<(Vec<PathBuf>, Vec<DiscoveryDiagnostic>)> {
     let mut stmt = conn.prepare("SELECT path FROM install_locations")?;
     let rows = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?;
-
-    // Two flattens, not one: the rows are `Result<Option<String>>` - the outer
-    // drops read errors, the inner drops SQL NULLs.
-    Ok(rows
-        .flatten()
-        .flatten()
-        .filter(|path| !path.trim().is_empty())
-        .map(|path| PathBuf::from(path.trim().trim_end_matches(['\\', '/'])))
-        .collect())
+    let mut locations = Vec::new();
+    let mut diagnostics = Vec::new();
+    for (index, row) in rows.enumerate() {
+        match row {
+            Ok(Some(path)) if !path.trim().is_empty() => {
+                locations.push(PathBuf::from(path.trim().trim_end_matches(['\\', '/'])))
+            }
+            Ok(_) => diagnostics.push(itch_diagnostic(
+                "location-row",
+                None,
+                format!("row #{index} has no usable path"),
+            )),
+            Err(err) => diagnostics.push(itch_diagnostic(
+                "location-row",
+                None,
+                format!("row #{index} could not be decoded: {err}"),
+            )),
+        }
+    }
+    Ok((locations, diagnostics))
 }
 
 fn database_path() -> Option<PathBuf> {
@@ -75,7 +164,14 @@ fn database_path() -> Option<PathBuf> {
 }
 
 /// Reads installed games from an open `butler.db` connection.
+#[cfg(test)]
 fn read_games(conn: &Connection) -> rusqlite::Result<Vec<GameInstall>> {
+    read_games_report(conn).map(|(games, _)| games)
+}
+
+fn read_games_report(
+    conn: &Connection,
+) -> rusqlite::Result<(Vec<GameInstall>, Vec<DiscoveryDiagnostic>)> {
     let mut stmt = conn.prepare(
         "SELECT games.title, caves.game_id, install_locations.path, caves.install_folder_name
          FROM caves
@@ -92,7 +188,26 @@ fn read_games(conn: &Connection) -> rusqlite::Result<Vec<GameInstall>> {
         })
     })?;
 
-    Ok(rows.flatten().filter_map(build_game_install).collect())
+    let mut games = Vec::new();
+    let mut diagnostics = Vec::new();
+    for (index, row) in rows.enumerate() {
+        match row {
+            Ok(raw) => match build_game_install(raw) {
+                Some(game) => games.push(game),
+                None => diagnostics.push(itch_diagnostic(
+                    "game-row",
+                    None,
+                    format!("row #{index} is missing its location or folder name"),
+                )),
+            },
+            Err(err) => diagnostics.push(itch_diagnostic(
+                "game-row",
+                None,
+                format!("row #{index} could not be decoded: {err}"),
+            )),
+        }
+    }
+    Ok((games, diagnostics))
 }
 
 /// One raw joined row (or a synthetic stand-in in tests).

@@ -22,7 +22,10 @@ use serde::Deserialize;
 
 use crate::error::Result;
 
-use super::{holds_installed_files, DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    try_holds_installed_files, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport,
+    GameInstall, LibraryProvider, OrphanEvidence,
+};
 
 /// Vendor tag -> folder names (relative to a container directory) that hold
 /// that vendor's games.
@@ -61,20 +64,58 @@ impl LibraryProvider for FolderScanProvider {
         "folderscan"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let mut libraries = Vec::new();
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_folder_scan().data)
+    }
 
-        for drive in drive_roots() {
-            if !drive.is_dir() {
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_folder_scan()
+    }
+}
+
+fn diagnostic(
+    provider: &'static str,
+    stage: &'static str,
+    path: &Path,
+    message: impl std::fmt::Display,
+) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider,
+        stage,
+        path: Some(path.to_path_buf()),
+        message: message.to_string(),
+    }
+}
+
+fn discover_folder_scan() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let mut libraries = Vec::new();
+    let mut diagnostics = Vec::new();
+    for drive in drive_roots() {
+        match std::fs::metadata(&drive) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                diagnostics.push(diagnostic("folderscan", "drive-metadata", &drive, err));
                 continue;
             }
-            libraries.extend(scan_container(&drive));
-            for container in GAMES_CONTAINERS {
-                libraries.extend(scan_container(&drive.join(container)));
-            }
         }
-
-        Ok(libraries)
+        let (mut found, mut issues) = scan_container_report(&drive);
+        libraries.append(&mut found);
+        diagnostics.append(&mut issues);
+        for container in GAMES_CONTAINERS {
+            let (mut found, mut issues) = scan_container_report(&drive.join(container));
+            libraries.append(&mut found);
+            diagnostics.append(&mut issues);
+        }
+    }
+    if diagnostics.is_empty() {
+        DiscoveryReport::complete(libraries)
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
     }
 }
 
@@ -85,44 +126,106 @@ fn drive_roots() -> impl Iterator<Item = PathBuf> {
 }
 
 /// Scans one container directory for vendor-named library folders.
+#[cfg(test)]
 fn scan_container(container: &Path) -> Vec<DiscoveredLibrary> {
-    VENDOR_ROOTS
-        .iter()
-        .flat_map(|(vendor, names)| {
-            names
-                .iter()
-                .map(move |name| (*vendor, container.join(name)))
-        })
-        .filter(|(_, root)| root.is_dir())
-        .filter_map(|(vendor, root)| read_vendor_library(vendor, &root))
-        .collect()
+    scan_container_report(container).0
+}
+
+fn scan_container_report(container: &Path) -> (Vec<DiscoveredLibrary>, Vec<DiscoveryDiagnostic>) {
+    let mut libraries = Vec::new();
+    let mut diagnostics = Vec::new();
+    for (vendor, names) in VENDOR_ROOTS {
+        for name in *names {
+            let root = container.join(name);
+            match std::fs::metadata(&root) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    diagnostics.push(diagnostic(vendor, "vendor-root-metadata", &root, err));
+                    continue;
+                }
+            }
+            let (library, mut issues) = read_vendor_library_report(vendor, &root);
+            diagnostics.append(&mut issues);
+            if let Some(library) = library {
+                libraries.push(library);
+            }
+        }
+    }
+    (libraries, diagnostics)
 }
 
 /// Builds one library from a vendor root folder: every non-infrastructure
 /// subfolder that actually holds files is a game. Returns `None` when no games
 /// remain - an empty vendor folder is not worth registering as a library.
 ///
-/// The `holds_installed_files` filter is GT-29: without it a contentless
+/// The `holds_installed_files` filter is installed-content validation: without it a contentless
 /// subfolder became a phantom game, counted in the totals of a tool that
 /// deletes files. Unlike the metadata providers, folder-name discovery has no
 /// launcher to ask whether a game is installed - the files on disk are the
 /// only evidence there is.
+#[cfg(test)]
 fn read_vendor_library(vendor: &'static str, root: &Path) -> Option<DiscoveredLibrary> {
-    let entries = std::fs::read_dir(root).ok()?;
+    read_vendor_library_report(vendor, root).0
+}
 
-    let games: Vec<GameInstall> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && !is_infrastructure_dir(path))
-        .filter(|dir| holds_installed_files(dir))
-        .filter_map(|dir| build_game(vendor, dir))
-        .collect();
+fn read_vendor_library_report(
+    vendor: &'static str,
+    root: &Path,
+) -> (Option<DiscoveredLibrary>, Vec<DiscoveryDiagnostic>) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) => {
+            return (
+                None,
+                vec![diagnostic(vendor, "vendor-root-enumeration", root, err)],
+            )
+        }
+    };
+    let mut games = Vec::new();
+    let mut diagnostics = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                diagnostics.push(diagnostic(vendor, "vendor-root-entry", root, err));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) => {
+                diagnostics.push(diagnostic(vendor, "game-entry-type", &path, err));
+                continue;
+            }
+        };
+        if !file_type.is_dir() || is_infrastructure_dir(&path) {
+            continue;
+        }
+        match try_holds_installed_files(&path) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(err) => {
+                diagnostics.push(diagnostic(vendor, "game-content-probe", &path, err));
+                continue;
+            }
+        }
+        let (game, mut issues) = build_game_report(vendor, path);
+        diagnostics.append(&mut issues);
+        if let Some(game) = game {
+            games.push(game);
+        }
+    }
 
-    (!games.is_empty()).then(|| DiscoveredLibrary {
+    let library = (!games.is_empty()).then(|| DiscoveredLibrary {
         vendor,
         path: root.to_path_buf(),
         games,
-    })
+        orphan_evidence: OrphanEvidence::Heuristic,
+    });
+    (library, diagnostics)
 }
 
 /// Hidden/system folders and launcher clients are not games.
@@ -141,40 +244,99 @@ fn is_infrastructure_dir(dir: &Path) -> bool {
 /// Builds a `GameInstall` for one game subfolder. GOG folders get their real
 /// name/id from the `goggame-*.info` manifest when present; everything else
 /// (and GOG folders without a manifest) uses the folder name.
-fn build_game(vendor: &str, install_dir: PathBuf) -> Option<GameInstall> {
-    let folder_name = install_dir.file_name()?.to_string_lossy().into_owned();
+#[cfg(test)]
+fn build_game(vendor: &'static str, install_dir: PathBuf) -> Option<GameInstall> {
+    build_game_report(vendor, install_dir).0
+}
 
+fn build_game_report(
+    vendor: &'static str,
+    install_dir: PathBuf,
+) -> (Option<GameInstall>, Vec<DiscoveryDiagnostic>) {
+    let mut diagnostics = Vec::new();
+    let Some(folder_name) = install_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+    else {
+        diagnostics.push(diagnostic(
+            vendor,
+            "game-name",
+            &install_dir,
+            "game path has no usable folder name",
+        ));
+        return (None, diagnostics);
+    };
     let (name, app_id) = match vendor {
-        "gog" => read_gog_info(&install_dir).unwrap_or((folder_name, None)),
+        "gog" => {
+            let (info, mut issues) = read_gog_info_report(&install_dir);
+            diagnostics.append(&mut issues);
+            info.unwrap_or((folder_name, None))
+        }
         _ => (folder_name, None),
     };
-
-    Some(GameInstall {
-        name,
-        install_dir,
-        app_id,
-    })
+    (
+        Some(GameInstall {
+            name,
+            install_dir,
+            app_id,
+        }),
+        diagnostics,
+    )
 }
 
 /// Reads the base game's `goggame-<id>.info` manifest from a GOG install
 /// directory. A directory can hold several manifests (base game + DLCs);
 /// the one whose `gameId` equals `rootGameId` is the base game.
+#[cfg(test)]
 fn read_gog_info(dir: &Path) -> Option<(String, Option<String>)> {
-    let entries = std::fs::read_dir(dir).ok()?;
+    read_gog_info_report(dir).0
+}
 
-    let parsed: Vec<GogInfo> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| is_gog_info_file(path))
-        .filter_map(|path| std::fs::read_to_string(path).ok())
-        .filter_map(|contents| serde_json::from_str::<GogInfo>(&contents).ok())
-        .collect();
+fn read_gog_info_report(
+    dir: &Path,
+) -> (Option<(String, Option<String>)>, Vec<DiscoveryDiagnostic>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            return (
+                None,
+                vec![diagnostic("gog", "manifest-enumeration", dir, err)],
+            )
+        }
+    };
+    let mut parsed = Vec::new();
+    let mut diagnostics = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                diagnostics.push(diagnostic("gog", "manifest-entry", dir, err));
+                continue;
+            }
+        };
+        let path = entry.path();
+        if !is_gog_info_file(&path) {
+            continue;
+        }
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                diagnostics.push(diagnostic("gog", "manifest-read", &path, err));
+                continue;
+            }
+        };
+        match serde_json::from_str::<GogInfo>(&contents) {
+            Ok(info) => parsed.push(info),
+            Err(err) => diagnostics.push(diagnostic("gog", "manifest-parse", &path, err)),
+        }
+    }
 
-    parsed
+    let info = parsed
         .iter()
         .find(|info| info.is_base_game())
         .or_else(|| parsed.first())
-        .and_then(GogInfo::name_and_id)
+        .and_then(GogInfo::name_and_id);
+    (info, diagnostics)
 }
 
 fn is_gog_info_file(path: &Path) -> bool {
@@ -222,7 +384,7 @@ mod tests {
 
     /// Creates a game folder that looks installed - i.e. with a file in it.
     /// Fixtures here used to be bare directories, which only passed because
-    /// contentless folders were wrongly accepted as games (GT-29).
+    /// contentless folders were wrongly accepted as games (installed-content validation).
     fn create_installed_game(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
         write_file(&dir.join("game.exe"), "MZ");
@@ -265,7 +427,7 @@ mod tests {
         assert_eq!(library.games[0].name, "Diablo III");
     }
 
-    /// GT-29. A contentless subfolder of a vendor root used to be registered
+    /// installed-content validation. A contentless subfolder of a vendor root used to be registered
     /// as an installed game. It is residue - typically the directory skeleton
     /// a removed install leaves behind - and a phantom entry in the model of a
     /// tool that deletes files must not exist, even when the phantom itself is

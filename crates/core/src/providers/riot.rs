@@ -22,7 +22,10 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 const METADATA_RELATIVE_PATH: &str = r"Riot Games\Metadata";
 const DEFAULT_PROGRAM_DATA: &str = r"C:\ProgramData";
@@ -53,22 +56,86 @@ impl LibraryProvider for RiotProvider {
         "riot"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let metadata_dir = program_data_dir().join(METADATA_RELATIVE_PATH);
-        let Ok(entries) = std::fs::read_dir(&metadata_dir) else {
-            // Riot Client not installed - not an error.
-            return Ok(Vec::new());
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_riot().data)
+    }
+
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_riot()
+    }
+}
+
+fn diagnostic(
+    stage: &'static str,
+    path: Option<PathBuf>,
+    message: impl std::fmt::Display,
+) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "riot",
+        stage,
+        path,
+        message: message.to_string(),
+    }
+}
+
+fn discover_riot() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let metadata_dir = program_data_dir().join(METADATA_RELATIVE_PATH);
+    let entries = match std::fs::read_dir(&metadata_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return DiscoveryReport::not_installed(Vec::new())
+        }
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic("metadata-enumeration", Some(metadata_dir), err),
+            )
+        }
+    };
+    let mut products = Vec::new();
+    let mut diagnostics = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                diagnostics.push(diagnostic(
+                    "metadata-entry",
+                    Some(metadata_dir.clone()),
+                    err,
+                ));
+                continue;
+            }
         };
-
-        let products: Vec<ProductEntry> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.is_dir())
-            .filter_map(|product_dir| read_product(&product_dir))
-            .filter(|product| product.game.install_dir.is_dir())
-            .collect();
-
-        Ok(group_by_declared_root(products))
+        let product_dir = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) => {
+                diagnostics.push(diagnostic("metadata-entry-type", Some(product_dir), err));
+                continue;
+            }
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        match read_product(&product_dir) {
+            Ok(Some(product)) if product.game.install_dir.is_dir() => products.push(product),
+            Ok(Some(product)) => diagnostics.push(diagnostic(
+                "game-path",
+                Some(product.game.install_dir),
+                "configured Riot install is unavailable",
+            )),
+            Ok(None) => {}
+            Err(err) => diagnostics.push(diagnostic("product-settings", Some(product_dir), err)),
+        }
+    }
+    let mut libraries = group_by_declared_root(products);
+    if diagnostics.is_empty() {
+        DiscoveryReport::complete(libraries)
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
     }
 }
 
@@ -105,6 +172,7 @@ fn group_by_declared_root(products: Vec<ProductEntry>) -> Vec<DiscoveredLibrary>
                 vendor: "riot",
                 path: root,
                 games: vec![product.game],
+                orphan_evidence: OrphanEvidence::Authoritative,
             }),
         }
     }
@@ -120,8 +188,12 @@ fn program_data_dir() -> PathBuf {
 
 /// Reads one `Metadata\<product>.<region>` directory into a [`ProductEntry`],
 /// if it describes an installed game.
-fn read_product(product_dir: &Path) -> Option<ProductEntry> {
-    let dir_name = product_dir.file_name()?.to_string_lossy().into_owned();
+fn read_product(product_dir: &Path) -> std::result::Result<Option<ProductEntry>, String> {
+    let dir_name = product_dir
+        .file_name()
+        .ok_or_else(|| "metadata directory has no name".to_string())?
+        .to_string_lossy()
+        .into_owned();
     let slug = dir_name.split('.').next().unwrap_or(&dir_name);
 
     let normalized = normalized_slug(slug);
@@ -129,22 +201,23 @@ fn read_product(product_dir: &Path) -> Option<ProductEntry> {
         .iter()
         .any(|excluded| *excluded == normalized)
     {
-        return None;
+        return Ok(None);
     }
 
     let settings_path = product_dir.join(format!("{dir_name}.product_settings.yaml"));
-    let contents = std::fs::read_to_string(settings_path).ok()?;
-    let install_path = extract_path(&contents, INSTALL_PATH_KEY)?;
+    let contents = std::fs::read_to_string(settings_path).map_err(|err| err.to_string())?;
+    let install_path = extract_path(&contents, INSTALL_PATH_KEY)
+        .ok_or_else(|| "missing product_install_full_path".to_string())?;
     let path = PathBuf::from(install_path);
 
-    Some(ProductEntry {
+    Ok(Some(ProductEntry {
         game: GameInstall {
             name: display_name_for(slug, &path),
             install_dir: path,
             app_id: Some(dir_name),
         },
         root: extract_path(&contents, INSTALL_ROOT_KEY).map(PathBuf::from),
-    })
+    }))
 }
 
 /// Extracts one `key: "value"` line from the settings YAML - a flat file whose

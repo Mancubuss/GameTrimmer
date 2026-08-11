@@ -13,7 +13,10 @@ use winreg::RegKey;
 
 use crate::error::Result;
 
-use super::{DiscoveredLibrary, GameInstall, LibraryProvider};
+use super::{
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
+    OrphanEvidence,
+};
 
 const REGISTRY_KEY: &str = r"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs";
 
@@ -24,28 +27,79 @@ impl LibraryProvider for UbisoftProvider {
         "ubisoft"
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredLibrary>> {
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let Ok(installs_key) = hklm.open_subkey(REGISTRY_KEY) else {
-            // Ubisoft Connect not installed, or no games registered - not an error.
-            return Ok(Vec::new());
-        };
+    fn try_discover(&self) -> Result<Vec<DiscoveredLibrary>> {
+        Ok(discover_ubisoft().data)
+    }
 
-        let games: Vec<GameInstall> = installs_key
-            .enum_keys()
-            .flatten()
-            .filter_map(|id| {
-                let subkey = installs_key.open_subkey(&id).ok()?;
-                let install_dir = subkey.get_value::<String, _>("InstallDir").ok();
-                build_game_install(&id, install_dir)
-            })
-            .filter(|game| game.install_dir.is_dir())
-            .collect();
-
-        Ok(super::group_by_parent_dir("ubisoft", games))
+    fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+        discover_ubisoft()
     }
 }
 
+fn discover_ubisoft() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let installs_key = match hklm.open_subkey(REGISTRY_KEY) {
+        Ok(key) => key,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return DiscoveryReport::not_installed(Vec::new())
+        }
+        Err(err) => return DiscoveryReport::failed(Vec::new(), diagnostic("registry-open", err)),
+    };
+    let mut games = Vec::new();
+    let mut diagnostics = Vec::new();
+    for id in installs_key.enum_keys() {
+        let id = match id {
+            Ok(id) => id,
+            Err(err) => {
+                diagnostics.push(diagnostic("registry-enumeration", err));
+                continue;
+            }
+        };
+        let subkey = match installs_key.open_subkey(&id) {
+            Ok(key) => key,
+            Err(err) => {
+                diagnostics.push(diagnostic("game-key-open", err));
+                continue;
+            }
+        };
+        let install_dir = subkey.get_value::<String, _>("InstallDir").ok();
+        let Some(game) = build_game_install(&id, install_dir) else {
+            diagnostics.push(diagnostic(
+                "game-entry",
+                format!("{id} has no usable InstallDir"),
+            ));
+            continue;
+        };
+        if game.install_dir.is_dir() {
+            games.push(game);
+        } else {
+            diagnostics.push(DiscoveryDiagnostic {
+                provider: "ubisoft",
+                stage: "game-path",
+                path: Some(game.install_dir),
+                message: "configured Ubisoft install is unavailable".into(),
+            });
+        }
+    }
+    let mut libraries = super::group_by_parent_dir("ubisoft", games);
+    if diagnostics.is_empty() {
+        DiscoveryReport::complete(libraries)
+    } else {
+        for library in &mut libraries {
+            library.orphan_evidence = OrphanEvidence::Degraded;
+        }
+        DiscoveryReport::degraded(libraries, diagnostics)
+    }
+}
+
+fn diagnostic(stage: &'static str, message: impl std::fmt::Display) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider: "ubisoft",
+        stage,
+        path: None,
+        message: message.to_string(),
+    }
+}
 /// Builds a `GameInstall` from a raw registry entry: `id` is the subkey name
 /// (Ubisoft's internal game id), `install_dir` is the `InstallDir` value if
 /// present. Returns `None` when `install_dir` is missing/empty, or has no
