@@ -15,6 +15,12 @@ use crate::localized::{LocalizedText, DEFAULT_LANG};
 /// folders live at the root or in a first/second-level folder, not deep
 /// inside asset or engine trees such as `Launcher\QtQuick\Extras`).
 const MAX_SHALLOW_DEPTH: usize = 2;
+pub const MAX_RULE_PACK_BYTES: usize = 1024 * 1024;
+pub const MAX_RULES: usize = 2_000;
+pub const MAX_REGEX_BYTES: usize = 512;
+pub const MAX_RULE_DEPTH: usize = 32;
+pub const MAX_EXTENSIONS: usize = 32;
+pub const MAX_EXTENSION_BYTES: usize = 16;
 
 /// The repo's rules.json embedded at build time - the seed for the external
 /// file the app materializes next to the executable on first use, so users
@@ -36,7 +42,30 @@ pub enum Category {
     DevLeftovers,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleProvenance {
+    #[default]
+    Builtin,
+    ImportedUntrusted,
+}
+
+fn is_builtin_provenance(provenance: &RuleProvenance) -> bool {
+    *provenance == RuleProvenance::Builtin
+}
+
 impl Category {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::RedistFolder => "redist_folder",
+            Category::RedistFile => "redist_file",
+            Category::DocsFolder => "docs_folder",
+            Category::DocsFile => "docs_file",
+            Category::Bonus => "bonus",
+            Category::DevLeftovers => "dev_leftovers",
+        }
+    }
+
     /// Whether rules of this category match against directory segments
     /// (as opposed to the final file name segment).
     fn matches_folder_segments(self) -> bool {
@@ -78,6 +107,7 @@ impl Category {
 /// the "Export rules"/"Import rules" flow (see
 /// `crate::packs`), which rewrites the merged list back to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     pub category: Category,
     /// Case-insensitive regex. Folder rules match one path segment,
@@ -88,6 +118,8 @@ pub struct Rule {
     pub desc: LocalizedText,
     /// 0-100.
     pub confidence: u8,
+    #[serde(default, skip_serializing_if = "is_builtin_provenance")]
+    pub provenance: RuleProvenance,
     /// Optional per-rule override of the category's default depth limit
     /// ([`MAX_SHALLOW_DEPTH`] for redist/bonus rules, unlimited otherwise).
     /// Lets a highly specific pattern (e.g. `vc_redist.*.exe`) match inside
@@ -119,6 +151,7 @@ pub struct Finding {
     pub category: Category,
     pub rule_desc: String,
     pub confidence: u8,
+    pub provenance: RuleProvenance,
 }
 
 /// A rule with its pattern already compiled to a case-insensitive [`Regex`].
@@ -128,6 +161,7 @@ struct CompiledRule {
     regex: Regex,
     desc: String,
     confidence: u8,
+    provenance: RuleProvenance,
     /// The effective depth limit for this rule: the rule's own `max_depth`
     /// if given, otherwise the category default (see [`Rule::max_depth`]).
     max_depth: usize,
@@ -154,10 +188,54 @@ impl RuleEngine {
     /// over every file of every game, and the engine is rebuilt whenever the
     /// interface language changes anyway.
     pub fn from_json_in(json: &str, lang: &str) -> Result<Self> {
+        if json.len() > MAX_RULE_PACK_BYTES {
+            return Err(CoreError::Other(format!(
+                "rules.json exceeds the {} byte limit",
+                MAX_RULE_PACK_BYTES
+            )));
+        }
         let raw_rules = parse_rule_list(json)?;
+        if raw_rules.len() > MAX_RULES {
+            return Err(CoreError::Other(format!(
+                "rules.json contains {} rules; the limit is {MAX_RULES}",
+                raw_rules.len()
+            )));
+        }
 
         let mut rules = Vec::with_capacity(raw_rules.len());
         for (index, rule) in raw_rules.into_iter().enumerate() {
+            if rule.pattern.len() > MAX_REGEX_BYTES {
+                return Err(CoreError::Other(format!(
+                    "rules.json: rule #{index} regex exceeds {MAX_REGEX_BYTES} bytes"
+                )));
+            }
+            if rule.confidence > 100 {
+                return Err(CoreError::Other(format!(
+                    "rules.json: rule #{index} confidence must be in 0..=100"
+                )));
+            }
+            if rule.max_depth.is_some_and(|depth| depth > MAX_RULE_DEPTH) {
+                return Err(CoreError::Other(format!(
+                    "rules.json: rule #{index} max_depth exceeds {MAX_RULE_DEPTH}"
+                )));
+            }
+            if let Some(extensions) = &rule.extensions {
+                if extensions.len() > MAX_EXTENSIONS {
+                    return Err(CoreError::Other(format!(
+                        "rules.json: rule #{index} has more than {MAX_EXTENSIONS} extensions"
+                    )));
+                }
+                for extension in extensions {
+                    if extension.is_empty()
+                        || extension.len() > MAX_EXTENSION_BYTES
+                        || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                    {
+                        return Err(CoreError::Other(format!(
+                            "rules.json: rule #{index} has invalid extension `{extension}`"
+                        )));
+                    }
+                }
+            }
             if rule.desc.is_empty() {
                 return Err(CoreError::Other(format!(
                     "rules.json: rule #{index} (category {:?}, pattern `{}`) has no description; \
@@ -168,6 +246,7 @@ impl RuleEngine {
             let desc = rule.desc.get(lang).to_string();
             let regex = RegexBuilder::new(&rule.pattern)
                 .case_insensitive(true)
+                .size_limit(MAX_RULE_PACK_BYTES)
                 .build()
                 .map_err(|err| {
                     CoreError::Other(format!(
@@ -186,6 +265,7 @@ impl RuleEngine {
                 regex,
                 desc,
                 confidence: rule.confidence,
+                provenance: rule.provenance,
                 max_depth: rule.max_depth.unwrap_or(default_depth),
                 extensions: rule.extensions.map(|list| {
                     list.into_iter()
@@ -269,6 +349,7 @@ impl RuleEngine {
                     category: rule.category,
                     rule_desc: rule.desc.clone(),
                     confidence: rule.confidence,
+                    provenance: rule.provenance,
                 });
             }
         }
@@ -475,7 +556,7 @@ mod tests {
         );
     }
 
-    /// GT-76: the shipped rules were written in Ukrainian, and an English
+    /// The shipped rules were written in Ukrainian, and an English
     /// interface showed them untranslated in its row tooltips and CSV export.
     /// A new rule added Ukrainian-only would bring the bug straight back, so
     /// the data file is checked rather than only the machinery that reads it.
@@ -545,6 +626,43 @@ mod tests {
         let engine = RuleEngine::from_json(BUILTIN_RULES_JSON)
             .expect("embedded builtin rules must always compile");
         assert!(!engine.rules.is_empty());
+    }
+
+    #[test]
+    fn strict_schema_and_numeric_bounds_are_enforced() {
+        let unknown =
+            r#"[{"category":"bonus","pattern":"x","desc":"x","confidence":80,"surprise":true}]"#;
+        assert!(RuleEngine::from_json(unknown).is_err());
+
+        let confidence = r#"[{"category":"bonus","pattern":"x","desc":"x","confidence":101}]"#;
+        assert!(RuleEngine::from_json(confidence).is_err());
+
+        let depth =
+            r#"[{"category":"bonus","pattern":"x","desc":"x","confidence":80,"max_depth":33}]"#;
+        assert!(RuleEngine::from_json(depth).is_err());
+
+        let extension = r#"[{"category":"bonus","pattern":"x","desc":"x","confidence":80,"extensions":["thisextensionistoolong"]}]"#;
+        assert!(RuleEngine::from_json(extension).is_err());
+    }
+
+    #[test]
+    fn regex_rule_and_file_count_limits_are_enforced() {
+        let pattern = "x".repeat(MAX_REGEX_BYTES + 1);
+        let oversized_regex =
+            format!(r#"[{{"category":"bonus","pattern":"{pattern}","desc":"x","confidence":80}}]"#);
+        assert!(RuleEngine::from_json(&oversized_regex).is_err());
+
+        let rule = r#"{"category":"bonus","pattern":"x","desc":"x","confidence":80}"#;
+        let too_many = format!(
+            "[{}]",
+            std::iter::repeat_n(rule, MAX_RULES + 1)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(RuleEngine::from_json(&too_many).is_err());
+
+        let oversized_file = " ".repeat(MAX_RULE_PACK_BYTES + 1);
+        assert!(RuleEngine::from_json(&oversized_file).is_err());
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use crate::error::{CoreError, Result};
 use crate::langdetect::LangPack;
-use crate::rules::{parse_rule_list, Rule, RuleEngine};
+use crate::rules::{parse_rule_list, Rule, RuleEngine, RuleProvenance};
 
 /// Which of the two pack files a picked JSON file is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,8 @@ pub fn merge_category_rules(base_json: &str, incoming_json: &str) -> Result<(Str
     let mut merged: Vec<Rule> = base;
     let mut added = 0;
     let mut updated = 0;
-    for rule in incoming {
+    for mut rule in incoming {
+        rule.provenance = RuleProvenance::ImportedUntrusted;
         match merged
             .iter_mut()
             .find(|existing| existing.category == rule.category && existing.pattern == rule.pattern)
@@ -74,6 +75,7 @@ pub fn merge_category_rules(base_json: &str, incoming_json: &str) -> Result<(Str
     }
 
     let json = serde_json::to_string_pretty(&merged)?;
+    RuleEngine::from_json(&json)?;
     Ok((json, MergeStats { added, updated }))
 }
 
@@ -135,7 +137,9 @@ mod tests {
         // The replaced rule keeps its position and takes the new tuning.
         assert_eq!(merged[1].desc.get("en"), "Bonus retuned");
         assert_eq!(merged[1].confidence, 85);
+        assert_eq!(merged[1].provenance, RuleProvenance::ImportedUntrusted);
         assert_eq!(merged[2].desc.get("en"), "Manuals");
+        assert_eq!(merged[2].provenance, RuleProvenance::ImportedUntrusted);
         // The merged output still compiles into an engine.
         RuleEngine::from_json(&json).expect("merged rules compile");
     }
