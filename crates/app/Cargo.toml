@@ -40,11 +40,15 @@ winresource = "0.1.23"
 
 [dependencies]
 dunce = "1.0.5"
-eframe = "0.35.0"
+eframe = { version = "0.35.0", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "wgpu",
+] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 gametrimmer-core = { path = "../core" }
 rayon = "1.12.0"
-rfd = "0.17.2"
+rfd = { version = "0.17.2", default-features = false }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
