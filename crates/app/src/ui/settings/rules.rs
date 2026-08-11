@@ -3,7 +3,7 @@
 //!
 //! The validity line is the point of the section. A hand-edited
 //! `rules.json` that no longer parses used to fail silently at scan time -
-//! the app simply ran with fewer rules and said nothing (audit §6.6). Here
+//! the app simply ran with fewer rules and said nothing. Here
 //! the state of each pack is visible before a scan is started, and the
 //! per-pack restore is the way back out, which previously required knowing
 //! where the file lived and deleting it.

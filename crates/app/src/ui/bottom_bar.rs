@@ -31,7 +31,7 @@ fn profile_label(s: &i18n::Strings, profile: SelectionProfile) -> &'static str {
 /// Share of the row's width the selection summary may claim before it
 /// truncates. The delete button is laid out right-to-left after it, so this
 /// is what guarantees the primary action keeps its full label at any window
-/// width instead of being pushed off the edge (audit §5.1).
+/// width instead of being pushed off the edge.
 const SUMMARY_WIDTH_SHARE: f32 = 0.55;
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
@@ -41,7 +41,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let has_findings = app.findings.iter().any(|item| !item.removed);
     // Before the first scan there is nothing to select and nothing to delete,
     // so the panel showed zeroed totals and a row of dead buttons under an
-    // empty screen (audit §5.3). The scan-timing readout is the one thing
+    // empty screen. The scan-timing readout is the one thing
     // worth keeping without findings - a scan that found nothing still took
     // time, and saying so is the difference between "done, nothing here" and
     // "did anything happen?".
@@ -53,19 +53,12 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.add_space(4.0);
 
         if has_findings {
-            let selected_items: Vec<&crate::model::FindingItem> = app
-                .findings
-                .iter()
-                .filter(|item| item.selected && !item.removed)
-                .collect();
-            let selected_count = selected_items.len();
-            // On-disk allocation (GT-05a): the honest "space that will be
+            let selection = crate::deletion_controller::selection_summary(&app.findings);
+            let selected_count = selection.count;
+            // On-disk allocation (allocated-size accounting): the honest "space that will be
             // freed" figure, matching the per-row and per-node totals and the
             // occupancy denominator (both on-disk).
-            let selected_bytes: u64 = selected_items
-                .iter()
-                .map(|item| item.row.size_on_disk)
-                .sum();
+            let selected_bytes = selection.bytes_on_disk;
 
             let busy = app.busy.then_some(s.disabled_busy);
             let needs_selection = busy
@@ -122,7 +115,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
                 ui.add_space(12.0);
 
-                // Selection profile (GT-04): a one-click policy for which
+                // Selection profile (selection profiles): a one-click policy for which
                 // findings arrive pre-checked. Switching re-checks the current
                 // findings in place (no re-scan).
                 ui.label(s.profile_label).on_hover_text(s.profile_hint);
@@ -193,7 +186,7 @@ mod tests {
 
     use crate::ui::harness::{UiTest, NARROW_VIEWPORT, STANDARD_VIEWPORT};
 
-    /// The bug this panel was rebuilt for (audit §5.1). Measured before the
+    /// The bug this panel was rebuilt for. Measured before the
     /// fix at the standard 900x600 window: the delete button ran to x=924.8
     /// with no findings at all, and to x=954.0 with results - 25pt and 54pt
     /// past the right edge. The primary, destructive action was clipped.

@@ -42,7 +42,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             // Only for a job that actually stops when asked - `cancel_scan`
             // sets the scan's token and nothing else reads it, so during a
             // delete, compaction, database clear or rules import this button
-            // used to look actionable and do nothing (audit §5.4).
+            // used to look actionable and do nothing.
             if app.can_cancel() && ui.button(s.btn_cancel).clicked() {
                 app.cancel_scan();
             }
@@ -142,17 +142,6 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             }
         }
 
-        if !app.warnings.is_empty() {
-            let count = app.warnings.len();
-            egui::CollapsingHeader::new(i18n::warnings_header(lang, count))
-                .default_open(false)
-                .show(ui, |ui| {
-                    for warning in app.warnings.clone() {
-                        ui.label(warning);
-                    }
-                });
-        }
-
         ui.add_space(4.0);
     });
 }
@@ -164,6 +153,7 @@ mod tests {
     use crate::app::{GameTrimmerApp, ProgressState};
     use crate::i18n;
     use crate::ui::harness::UiTest;
+    use crate::worker::WorkerMsg;
 
     /// The window's own title bar already says "GameTrimmer"; a heading here
     /// restated it one row below, spending a line of the most crowded panel
@@ -174,6 +164,37 @@ mod tests {
         test.run();
 
         test.assert_no_label(crate::app::APP_TITLE);
+    }
+
+    /// Scan-time diagnostics name app ids and manifest fields. They belong in
+    /// the log, where a bug report can carry them - not on the window, where
+    /// they pushed everything else down after every single scan and told the
+    /// user nothing they could act on.
+    #[test]
+    fn scan_diagnostics_do_not_reach_the_window() {
+        let mut test = UiTest::new(show);
+        test.app_mut().apply_message(WorkerMsg::Warning {
+            msg: "Provider \"ubisoft\": 1081 has no usable InstallDir [game-entry]".to_string(),
+        });
+        test.run();
+
+        test.assert_no_label_containing("1081");
+        test.assert_no_label_containing("game-entry");
+    }
+
+    /// The counterpart, and the risk in removing that list: a failed export is
+    /// the answer to a button the user just pressed. It has to land on the
+    /// status line, or the click looks like it worked.
+    #[test]
+    fn a_failed_export_still_reaches_the_window() {
+        let mut test = UiTest::new(show);
+        test.app_mut().apply_message(WorkerMsg::ExportDone {
+            path: None,
+            error: Some("disk is full".to_string()),
+        });
+        test.run();
+
+        test.assert_label_containing("disk is full");
     }
 
     /// Idle: nothing to cancel, so no button.

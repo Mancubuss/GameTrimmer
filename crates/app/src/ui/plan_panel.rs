@@ -1,8 +1,8 @@
-//! The one-line plan summary (GT-12), rendered inline at the top of the
+//! The one-line plan summary (plan summary), rendered inline at the top of the
 //! findings-tree region (see `ui::tree_view::show`) - directly above the tree,
 //! not as a separate panel.
 //!
-//! This replaces the six-card strip of GT-03. The cards carried one piece of
+//! This replaces the six-card strip of plan-action filtering. The cards carried one piece of
 //! real value - drill down into a single display category - and that fits in a
 //! row: "Found X in N games · Show: [all categories]". They also cost the only
 //! known UI bug in the app: laid out with `horizontal_wrapped`, a card that
@@ -113,7 +113,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             ui.small(i18n::plan_risk_label(lang, model::category_risk(category)));
         }
 
-        // Name search (GT-18) rides at the row's right edge rather than after
+        // Name search (name search) rides at the row's right edge rather than after
         // the category controls: laid out right-to-left it keeps its own width
         // as the window narrows, and the summary label to its left - which
         // already truncates - is what gives way. Searching by name and

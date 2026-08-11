@@ -1,5 +1,4 @@
-//! "Selection & deletion": three switches the audit found conflated in the
-//! old dialog - what a fresh scan pre-selects
+//! "Selection & deletion": three independent switches - what a fresh scan pre-selects
 //! (`default_selection_profile`), how a delete disposes of files
 //! (`delete_method`), and when the confirmation is shown
 //! (`confirm_behavior`).

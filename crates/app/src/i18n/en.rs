@@ -151,7 +151,7 @@ pub(super) const STRINGS: Strings = Strings {
          administrator rights - without them every drive is walked instead, which is why \
          GameTrimmer offers to restart elevated only when a library sits on a hard drive.",
     // Not "Always": elevation, volume-letter and canonical-path gates all
-    // still send a game to the folder walk under this mode (audit §6.8).
+    // still send a game to the folder walk under this mode.
     scan_routing_force_mft_label: "Prefer the MFT index where available",
     scan_routing_force_mft_hint: "Uses the MFT index even on SSDs/NVMe, where a folder walk is \
          normally faster. Requires administrator rights; volumes that can't be read this way \

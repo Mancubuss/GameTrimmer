@@ -156,6 +156,26 @@ impl UiTest {
         );
     }
 
+    /// Asserts some widget's label contains this text - for messages built by
+    /// `format!`, where the test cares about the part that carries the
+    /// information rather than the whole rendered sentence.
+    #[track_caller]
+    pub fn assert_label_containing(&self, text: &str) {
+        assert!(
+            self.count_labels_containing(text) > 0,
+            "expected a widget whose label contains {text:?} to be on screen",
+        );
+    }
+
+    /// The other half: nothing on screen mentions this text at all.
+    #[track_caller]
+    pub fn assert_no_label_containing(&self, text: &str) {
+        assert!(
+            self.count_labels_containing(text) == 0,
+            "did not expect any widget label to contain {text:?}",
+        );
+    }
+
     /// The on-screen rectangle of the widget with this label. Used for the
     /// geometry invariants that the four failed rounds had no way to state:
     /// "the delete button fits inside the window", "the modal does not move
@@ -196,6 +216,8 @@ impl UiTest {
                     confidence: 90,
                     lang_tag: Some("de".to_string()),
                     group_dir: None,
+                    deletion_block_reason: None,
+                    imported_untrusted: false,
                 },
                 selected: true,
                 removed: false,
@@ -265,8 +287,8 @@ impl UiTest {
     /// [`egui::ScrollArea`]'s clip rect - so clicking a widget that is present
     /// in the accessibility tree but scrolled out of view does *nothing*, and
     /// the assertion afterwards passes or fails for reasons unrelated to what
-    /// it claims to test. This dialog has two nested scroll areas (the audit's
-    /// §6.3 complaint), so that is the common case here, not a corner case.
+    /// it claims to test. This dialog has two nested scroll areas, so that is
+    /// the common case here, not a corner case.
     ///
     /// Scrolling moves the widget, so the node has to be looked up again
     /// before the click: the first lookup's rect is stale by then.
@@ -285,7 +307,7 @@ impl UiTest {
 
     /// Clicks at an absolute position instead of on a named widget - for the
     /// claims that are about *space* rather than about a control: "the empty
-    /// part of this row is still the row" (GT-32).
+    /// part of this row is still the row" (whole-row interaction).
     ///
     /// Mirrors what [`egui_kittest::Node::click`] does at a node's centre:
     /// move the pointer there first, then press and release. egui resolves a

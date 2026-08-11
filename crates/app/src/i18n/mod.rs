@@ -53,13 +53,13 @@ pub struct Strings {
     pub label_saved: &'static str,
 
     /// When a setting takes effect, shown beside the control it belongs to.
-    /// The old dialog left this implicit and the audit (§6.4) found users
+    /// The old dialog left this implicit, so users could not tell whether
     /// could not tell an immediate switch from one that only applies to the
     /// next scan. Sections that persist on change tag their rows with this.
     pub badge_immediately: &'static str,
 
     /// When a setting takes effect only on the next run of something. The
-    /// counterpart to [`Self::badge_immediately`]; the audit's complaint was
+    /// counterpart to [`Self::badge_immediately`]; this distinction prevents
     /// precisely that the old dialog mixed the two without saying so.
     pub badge_next_scan: &'static str,
     pub badge_next_delete: &'static str,
@@ -73,13 +73,13 @@ pub struct Strings {
     pub confirm_behavior_hint: &'static str,
     /// Spells out that scanning, auto-selection and deletion are three
     /// separate decisions - the section is arranged around that, but the
-    /// audit found users read the three groups as one pipeline.
+    /// users from reading the three independent groups as one pipeline.
     pub selection_independent_switches_hint: &'static str,
 
     /// "Scanning": the keep-list search box and the category table's
     /// headings. The table replaces a wall of 36 bare checkboxes with rows
     /// that say what each category costs to remove and whether the default
-    /// profile would pick it up (audit §6.2).
+    /// profile would pick it up.
     pub keep_languages_add_placeholder: &'static str,
     pub categories_table_header_category: &'static str,
     pub categories_table_header_risk: &'static str,
@@ -88,16 +88,16 @@ pub struct Strings {
     pub profile_behavior_manual: &'static str,
     /// Why the last remaining keep-language or category cannot be switched
     /// off. The old dialog silently reverted the click, which reads as a
-    /// broken checkbox rather than as a floor (audit §6.2).
+    /// broken checkbox rather than as a floor.
     pub disabled_last_keep_language: &'static str,
     pub disabled_last_category: &'static str,
-    /// The keep-list's one dangerous edit (GT-59), which is why these live
+    /// The keep-list's one dangerous edit (protected-language editing), which is why these live
     /// inside a red frame rather than beside the other chips.
     ///
     /// The danger is *deferred* and the wording has to say so: taking English
     /// off the list deletes nothing by itself, it changes what the next scan
     /// proposes - including interface text, because findings are not yet
-    /// split by resource type (the spike "GT-62 - splitting localization by
+    /// split by resource type (the spike "resource-type localization split - splitting localization by
     /// resource type"). "This will delete files" would be false, and a
     /// warning the user can catch lying is worth less than none.
     pub keep_english_warning: &'static str,
@@ -114,7 +114,7 @@ pub struct Strings {
     pub db_path_label: &'static str,
     pub btn_copy: &'static str,
     pub btn_open_folder: &'static str,
-    /// Heading of the red-framed block around "Clear database". The audit
+    /// Heading of the red-framed block around "Clear database". The label
     /// (§6.5) found it sitting inline beside "Compact", one tab-stop away and
     /// visually identical to a recoverable action.
     pub danger_zone_label: &'static str,
@@ -130,7 +130,7 @@ pub struct Strings {
     /// disclaimer is accepted - see `GameTrimmerApp::blocked_by_disclaimer`.
     pub disabled_disclaimer: &'static str,
 
-    /// Label preceding the selection-profile picker (GT-04).
+    /// Label preceding the selection-profile picker (selection profiles).
     pub profile_label: &'static str,
     pub profile_cautious: &'static str,
     pub profile_balanced: &'static str,
@@ -151,7 +151,7 @@ pub struct Strings {
     pub profile_aggressive_hint: &'static str,
     pub profile_custom_hint: &'static str,
 
-    // -- plan_panel (GT-12) --
+    // -- plan_panel (plan summary) --
     /// Label in front of the category selector on the summary row above the
     /// tree.
     pub plan_filter_label: &'static str,
@@ -160,7 +160,7 @@ pub struct Strings {
     /// Deletes every finding of the currently selected category. Only offered
     /// while a category is selected, so it can never mean "delete everything".
     pub btn_remove_category: &'static str,
-    /// Placeholder inside the empty name-search field (GT-18).
+    /// Placeholder inside the empty name-search field (name search).
     pub search_hint: &'static str,
     /// Tooltip on the button that empties the search field. Offered only while
     /// the field has something in it (MT-F05).
@@ -189,7 +189,7 @@ pub struct Strings {
 
     // -- settings --
     pub settings_heading: &'static str,
-    /// Collapsed-by-default section heading (GT-13) gathering the technical
+    /// Collapsed-by-default section heading (collapsed technical-details section) gathering the technical
     /// knobs (scan routing, database maintenance, rule packs, logging) that
     /// aren't decisions a user makes on every visit.
     pub delete_method_label: &'static str,
@@ -247,7 +247,7 @@ pub struct Strings {
     pub no_libraries_registered: &'static str,
     pub btn_remove: &'static str,
 
-    // -- onboarding (GT-34) --
+    // -- onboarding (first-run onboarding) --
     /// The first-run explanation, shown in the empty tree area until the user
     /// has started a scan once. Covers the order of operations, the one word
     /// the main screen otherwise uses without defining ("profile") and the
@@ -347,7 +347,7 @@ pub struct Strings {
     pub category_other: &'static str,
     pub category_orphan: &'static str,
 
-    // -- tree_view.rs: the synthetic orphan-branch pseudo-game label (GT-02) --
+    // -- tree_view.rs: the synthetic orphan-branch pseudo-game label (orphan-residue safety) --
     pub orphan_branch_label: &'static str,
 
     // -- model.rs: size units --
@@ -661,7 +661,7 @@ mod tests {
     /// `ForceMft` is not absolute: `worker::scan_route` still falls back to a
     /// folder walk without elevation, on a volume with no drive letter, on a
     /// network path, and when the canonical path check fails. A label
-    /// promising "always" is a promise the scanner does not keep (audit §6.8).
+    /// promising "always" is a promise the scanner does not keep.
     ///
     /// `ForceWalkdir` is the control: it genuinely has no fallback, so it is
     /// allowed to say "always" and this test would be vacuous without it.

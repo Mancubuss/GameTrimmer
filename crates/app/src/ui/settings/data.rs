@@ -1,13 +1,13 @@
 //! "Data & diagnostics": the database file - where it is, how big, and the
 //! two ways to maintain it - plus the diagnostic-logging toggle.
 //!
-//! The database path is shown at all, which is the audit's §6.5: it used to
+//! The database path is shown because it used to
 //! be findable only by guessing where the exe lives, making "attach your
 //! database" an unanswerable request in a bug report.
 //!
 //! # Why "Clear database" is not in a danger frame
 //!
-//! It was, and the frame was wrong (GT-60). `clear_scan_data` wipes
+//! It was, and the frame was wrong (scan-data reset semantics). `clear_scan_data` wipes
 //! findings, files, games and the operations journal and keeps libraries and
 //! settings; of those, only the journal does not come back from a rescan -
 //! and nothing reads it. Every `SELECT ... FROM operations` in the repository
@@ -17,7 +17,7 @@
 //! has to mean "you can lose something you will not get back", or it means
 //! nothing.
 //!
-//! That distinction stopped being academic with GT-59, which puts a red frame
+//! That distinction stopped being academic with protected-language editing, which puts a red frame
 //! around dropping English from the keep-list. A frame that cries wolf next
 //! to it would devalue the one warning in this release that has to be
 //! believed. The modal confirmation stays - the click is still worth a
@@ -193,7 +193,7 @@ mod tests {
         test.assert_label(&shown);
     }
 
-    /// GT-60, and the reverse of what this section asserted before it: the
+    /// scan-data reset semantics, and the reverse of what this section asserted before it: the
     /// clear button belongs with "Compact", in ordinary maintenance, because
     /// what it costs is a rescan and nothing else. Red is spent on the one
     /// warning in this release that has to be believed - the English block in

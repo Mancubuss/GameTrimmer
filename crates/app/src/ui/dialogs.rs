@@ -258,7 +258,7 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         match method {
             DeleteMethod::Permanent => {
                 ui.label(i18n::success_line_permanent(lang, succeeded));
-                // Honest freed-vs-expected on-disk space (GT-05a): "of the
+                // Honest freed-vs-expected on-disk space (allocated-size accounting): "of the
                 // expected Y" only when they diverge - i.e. some files failed;
                 // otherwise the shorter "Freed X" reads cleaner.
                 ui.label(i18n::freed_summary_line(
@@ -273,7 +273,7 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 // report those honestly as "space frees after you empty it".
                 let recycled = succeeded - nuked;
                 ui.label(i18n::success_line_recycle(lang, recycled));
-                // Bin-bound bytes only free once the bin is emptied (GT-05a);
+                // Bin-bound bytes only free once the bin is emptied (allocated-size accounting);
                 // spell out the amount so the pre-delete estimate is reconciled.
                 if recycled_pending_bytes > 0 {
                     ui.label(i18n::recycle_pending_size_line(

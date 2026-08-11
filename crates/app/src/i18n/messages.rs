@@ -63,7 +63,7 @@ pub fn risk_level_bare_label(lang: Lang, risk: RiskLevel) -> &'static str {
     }
 }
 
-/// Localized risk badge for a plan card (GT-03): "Risk: none/low/medium".
+/// Localized risk badge for a plan card (plan-action filtering): "Risk: none/low/medium".
 pub fn plan_risk_label(lang: Lang, risk: RiskLevel) -> &'static str {
     match (lang, risk) {
         (Lang::En, RiskLevel::None) => "Risk: none",
@@ -75,7 +75,7 @@ pub fn plan_risk_label(lang: Lang, risk: RiskLevel) -> &'static str {
     }
 }
 
-/// The summary that opens the row above the tree (GT-12): "Found N item(s)
+/// The summary that opens the row above the tree (plan summary): "Found N item(s)
 /// in M game(s)". `game_count` counts distinct games across every category,
 /// so it is never the sum of the per-category figures - see
 /// [`crate::model::plan_totals`].
@@ -285,6 +285,17 @@ pub fn write_thread_crashed(lang: Lang) -> String {
     }
 }
 
+pub fn scan_incomplete(lang: Lang, err: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => format!(
+            "The scan was not activated because it was incomplete: {err}. The previous snapshot was preserved."
+        ),
+        Lang::Uk => format!(
+            "Сканування не активовано, бо воно було неповним: {err}. Попередній знімок збережено."
+        ),
+    }
+}
+
 /// The classification reason (persisted into `findings.rule_id`, shown in the
 /// row tooltip) for an orphaned-residue finding - see `worker::scan`'s orphan
 /// pass and `gametrimmer_core::orphans::OrphanKind`.
@@ -309,7 +320,7 @@ pub fn orphan_reason(lang: Lang, kind: gametrimmer_core::orphans::OrphanKind) ->
 }
 
 /// Non-fatal warning: the game scan succeeded but persisting the orphaned-
-/// residue findings (GT-02) failed. The rest of the results are intact; only
+/// residue findings (orphan-residue safety) failed. The rest of the results are intact; only
 /// the orphan branch is missing until the next scan.
 pub fn orphans_persist_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
@@ -340,6 +351,70 @@ pub fn manual_library_unavailable(lang: Lang, path: impl std::fmt::Display) -> S
 
 // -- worker::delete --
 
+pub fn deletion_block_reason(lang: Lang, reason: &str) -> String {
+    if lang == Lang::En {
+        return reason.to_string();
+    }
+    if reason.starts_with("invalid relative path:") {
+        return "Недійсний відносний шлях у знімку сканування".to_string();
+    }
+    if reason.starts_with("reparse point is not deletable:") {
+        return "Шлях містить symlink, junction, mount point або іншу точку повторної обробки"
+            .to_string();
+    }
+    if reason.starts_with("filesystem state could not be verified:") {
+        return "Не вдалося перевірити поточний стан файлової системи".to_string();
+    }
+    match reason {
+        "target is outside its trusted root" => "Ціль перебуває поза довіреним коренем".to_string(),
+        "target no longer exists" => "Ціль більше не існує".to_string(),
+        "trusted root identity changed since the scan" => {
+            "Ідентичність довіреного кореня змінилася після сканування".to_string()
+        }
+        "target identity changed since the scan" => {
+            "Ідентичність цілі змінилася після сканування".to_string()
+        }
+        "directory contents changed since the scan" => {
+            "Вміст каталогу змінився після сканування".to_string()
+        }
+        "a fresh safety scan is required" | "legacy snapshot is read-only" => {
+            "Потрібне нове перевірене сканування; цей знімок доступний лише для перегляду"
+                .to_string()
+        }
+        "launcher discovery was incomplete" | "library discovery was degraded" => {
+            "Дані лаунчера для цієї бібліотеки неповні".to_string()
+        }
+        "scan-time filesystem identity is missing"
+        | "missing filesystem safety evidence"
+        | "missing filesystem identity" => {
+            "Відсутні scan-time дані ідентичності файлової системи".to_string()
+        }
+        "missing library discovery evidence" => {
+            "Відсутні підтверджені дані discovery для бібліотеки".to_string()
+        }
+        "orphan inventory is not authoritative" => {
+            "Inventory лаунчера не є авторитетним для визначення orphan-залишків".to_string()
+        }
+        "the selected database row is no longer active"
+        | "the selected row is no longer active"
+        | "the selected row no longer exists" => {
+            "Вибраний рядок більше не належить активному знімку".to_string()
+        }
+        "the delete batch contains a duplicate row" => {
+            "Пакет видалення містить дубльований рядок".to_string()
+        }
+        _ => format!("Перевірка безпеки заблокувала видалення: {reason}"),
+    }
+}
+
+pub fn deletion_blocked(lang: Lang, reason: &str) -> String {
+    let reason = deletion_block_reason(lang, reason);
+    match lang {
+        Lang::En => format!("Deletion blocked: {reason}"),
+        Lang::Uk => format!("Видалення заблоковано: {reason}"),
+    }
+}
+
 pub fn delete_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En => format!("Deletion failed: {err}"),
@@ -351,6 +426,17 @@ pub fn db_update_after_delete_failed(lang: Lang, err: impl std::fmt::Display) ->
     match lang {
         Lang::En => format!("Failed to update the database after deletion: {err}"),
         Lang::Uk => format!("Не вдалося оновити базу даних після видалення: {err}"),
+    }
+}
+
+pub fn pending_delete_reconciled(lang: Lang, count: usize) -> String {
+    match lang {
+        Lang::En => {
+            format!("Reconciled {count} interrupted deletion intent(s); no deletion was retried.")
+        }
+        Lang::Uk => format!(
+            "Узгоджено {count} перерваних намірів видалення; повторне видалення не запускалося."
+        ),
     }
 }
 
@@ -425,13 +511,6 @@ pub fn read_file_failed(
     }
 }
 
-pub fn previous_files_already_imported(lang: Lang, index: usize) -> String {
-    match lang {
-        Lang::En => format!(" ({index} previous file(s) already imported)"),
-        Lang::Uk => format!(" (попередні {index} файл(и) вже імпортовано)"),
-    }
-}
-
 pub fn read_picked_file_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En => format!("failed to read the file: {err}"),
@@ -453,6 +532,7 @@ pub fn prepare_l10n_rules_failed(lang: Lang, err: impl std::fmt::Display) -> Str
     }
 }
 
+#[cfg(test)]
 pub fn backup_failed(
     lang: Lang,
     path: impl std::fmt::Display,
@@ -569,7 +649,7 @@ pub fn success_line_nuked(lang: Lang, nuked: usize) -> String {
     }
 }
 
-/// Post-delete "freed X of the expected Y" line (GT-05a): closes the loop on
+/// Post-delete "freed X of the expected Y" line (allocated-size accounting): closes the loop on
 /// the confirm dialog's "will free {size}" promise with the on-disk space that
 /// was actually reclaimed. When nothing failed (`freed == expected`), the
 /// caller passes `show_expected = false` for the shorter "Freed X". `freed`
@@ -583,7 +663,7 @@ pub fn freed_summary_line(lang: Lang, freed: &str, expected: &str, show_expected
     }
 }
 
-/// Recycle summary line (GT-05a): on-disk bytes that will free only once the
+/// Recycle summary line (allocated-size accounting): on-disk bytes that will free only once the
 /// Recycle Bin is emptied - they still sit on the same volume until then.
 /// `size` is a pre-formatted size string.
 pub fn recycle_pending_size_line(lang: Lang, size: &str) -> String {
@@ -593,7 +673,7 @@ pub fn recycle_pending_size_line(lang: Lang, size: &str) -> String {
     }
 }
 
-/// Recycle summary line (GT-05a): on-disk bytes freed immediately because
+/// Recycle summary line (allocated-size accounting): on-disk bytes freed immediately because
 /// Windows permanently deleted over-quota items (the `nuked` ones). `size` is a
 /// pre-formatted size string.
 pub fn freed_now_size_line(lang: Lang, size: &str) -> String {
@@ -693,13 +773,6 @@ pub fn scan_timing_summary(lang: Lang, scan: &str, analyze: &str, total: &str) -
 }
 
 // -- ui::top_bar --
-
-pub fn warnings_header(lang: Lang, count: usize) -> String {
-    match lang {
-        Lang::En => format!("Warnings ({count})"),
-        Lang::Uk => format!("Попередження ({count})"),
-    }
-}
 
 // -- ui::tree_view --
 
@@ -827,7 +900,7 @@ pub fn hover_lang_suffix(lang: Lang, lang_tag: &str) -> String {
     }
 }
 
-/// Tooltip line spelling out the logical size (GT-05a): the row and totals show
+/// Tooltip line spelling out the logical size (allocated-size accounting): the row and totals show
 /// the on-disk allocated size as primary - the honest "space freed" figure -
 /// so this adds the logical size for context. Only shown when the two differ
 /// (`logical` is a pre-formatted size string).

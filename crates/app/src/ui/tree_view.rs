@@ -34,7 +34,7 @@
 //! `Home`/`End`, `→`/`←` (expand/collapse; `←` on a collapsed node jumps to
 //! its parent), and `Space`/`Enter` (toggle selection of the cursor row).
 //! The cursor row is highlighted; clicking anywhere on a row places the
-//! cursor there (GT-32).
+//! cursor there (whole-row interaction).
 //!
 //! # Why the row is one click target
 //!
@@ -141,7 +141,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     egui::CentralPanel::default().show(ui, |ui| {
         // Before the first scan - and before the disclaimer is accepted -
-        // this space carries the introduction (GT-34) rather than one line of
+        // this space carries the introduction (first-run onboarding) rather than one line of
         // hint text. See `ui::onboarding` for why it lives here and not in a
         // screen of its own.
         //
@@ -154,7 +154,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             return;
         }
 
-        // GT-03 plan cards ride at the top of this panel, directly above the
+        // plan-action filtering plan cards ride at the top of this panel, directly above the
         // tree, so the summary and the drill-down live in one always-visible
         // region (a no-op with no findings). The tree's own scroll area below
         // takes whatever height remains.
@@ -258,7 +258,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     });
 
     // The profile picker claims to describe what is checked. Once the user
-    // has hand-edited any of it, only "Custom" is still true (audit §5.5).
+    // has hand-edited any of it, only "Custom" is still true.
     if model::selection_fingerprint(&app.findings) != selection_before {
         app.mark_selection_custom();
     }
@@ -340,7 +340,7 @@ fn show_review_mark(ui: &mut egui::Ui, needs_review: bool, hint: &str) {
 /// disk/game/category/folder, and collects every structurally-visible row.
 /// O(number of rows produced): closed subtrees are never descended into, so
 /// this stays cheap even when the tree holds tens of thousands of findings.
-/// Whether a game has any node under the active plan-card filter (GT-03).
+/// Whether a game has any node under the active plan-card filter (plan-action filtering).
 /// `None` filter matches everything.
 fn game_matches_filter(game: &crate::model::GameNode, filter: Option<DisplayCategory>) -> bool {
     match filter {
@@ -349,7 +349,7 @@ fn game_matches_filter(game: &crate::model::GameNode, filter: Option<DisplayCate
     }
 }
 
-/// Whether a disk has any game with a node under the active filter (GT-03).
+/// Whether a disk has any game with a node under the active filter (plan-action filtering).
 fn disk_matches_filter(disk_group: &DiskGroup, filter: Option<DisplayCategory>) -> bool {
     disk_group
         .games
@@ -357,7 +357,7 @@ fn disk_matches_filter(disk_group: &DiskGroup, filter: Option<DisplayCategory>) 
         .any(|game| game_matches_filter(game, filter))
 }
 
-/// Whether a game still has content under the active name search (GT-18).
+/// Whether a game still has content under the active name search (name search).
 ///
 /// Real games answer this in O(1) from the pre-built id set. The orphan branch
 /// cannot: every disk's branch shares the one [`is_orphan_branch`] sentinel id,
@@ -605,7 +605,9 @@ fn toggle_row_selection(tree: &[DiskGroup], findings: &mut [FindingItem], row: R
         }
         Row::File { d, g, c, n, member } => {
             let index = file_row_index(tree, d, g, c, n, member);
-            findings[index].selected = !findings[index].selected;
+            if findings[index].row.deletion_block_reason.is_none() {
+                findings[index].selected = !findings[index].selected;
+            }
         }
     }
 }
@@ -770,7 +772,7 @@ fn show_row(
         egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
     );
 
-    // GT-32: the whole row is a click target. Registered here, before the
+    // whole-row interaction: the whole row is a click target. Registered here, before the
     // row's own widgets, so those stay on top and keep their own clicks -
     // see this module's "Why the row is one click target".
     let background = ui.interact(
@@ -891,7 +893,7 @@ fn show_game_row(
     let disk_group = &tree[d];
     let game = &disk_group.games[g];
     let key = game_key(&disk_group.disk, game.game_id);
-    // The orphan branch (GT-02) has no real game name - render a localized
+    // The orphan branch (orphan-residue safety) has no real game name - render a localized
     // "orphaned residue" label instead of a quoted game title. Computed live
     // off the sentinel id, so it follows the current UI language even though
     // the stored `game_name` is empty.
@@ -916,7 +918,7 @@ fn show_game_row(
         lang,
     );
     // The game's install dir, taken from any of its findings (they all share
-    // it). Absent on the orphan branch (GT-02): its findings are residue from
+    // it). Absent on the orphan branch (orphan-residue safety): its findings are residue from
     // different games, so there is no one folder the row could stand for.
     let target = if is_orphan_branch(game.game_id) {
         None
@@ -944,7 +946,7 @@ fn show_game_row(
 }
 
 /// The label shown for a game node: the orphan branch's localized
-/// "orphaned residue" heading (GT-02) when this is the synthetic orphan
+/// "orphaned residue" heading (orphan-residue safety) when this is the synthetic orphan
 /// pseudo-game, otherwise the real game's own name.
 fn game_branch_label(lang: Lang, game: &GameNode) -> String {
     if is_orphan_branch(game.game_id) {
@@ -1325,7 +1327,7 @@ fn show_file_row(
     if let Some(lang_tag) = &item.row.lang_tag {
         hover.push_str(&i18n::hover_lang_suffix(lang, lang_tag));
     }
-    // The row shows the on-disk allocated size as primary (GT-05a); when the
+    // The row shows the on-disk allocated size as primary (allocated-size accounting); when the
     // logical size differs (cluster slack, NTFS compression), spell it out in
     // the tooltip so the two figures are both available without cluttering the
     // row.
@@ -1343,7 +1345,13 @@ fn show_file_row(
         egui::RichText::new(format_size(lang, item.row.size_on_disk)),
         |ui| {
             ui.add_space(INDENT_PX * level as f32);
-            ui.checkbox(&mut item.selected, "");
+            let checkbox = ui.add_enabled(
+                item.row.deletion_block_reason.is_none(),
+                egui::Checkbox::new(&mut item.selected, ""),
+            );
+            if let Some(reason) = &item.row.deletion_block_reason {
+                checkbox.on_disabled_hover_text(i18n::deletion_block_reason(lang, reason));
+            }
             show_review_mark(ui, needs_review, review_hint);
             let response = ui
                 .add(
@@ -1620,7 +1628,7 @@ mod tests {
         );
     }
 
-    /// The bug (audit §6.12): the tree's own modal list named three of the
+    /// The bug: the tree's own modal list named three of the
     /// five dialogs, so keys still reached it behind Settings and behind the
     /// clear-database confirmation. Every modal is checked here, not just the
     /// two that were missing - the point of routing through
@@ -1682,7 +1690,7 @@ mod tests {
         test
     }
 
-    /// The audit's §5.5: the picker said "Balanced" while the checkboxes had
+    /// The picker said "Balanced" while the checkboxes had
     /// been hand-edited into something else. `SelectionProfile::Custom` was
     /// documented as the state for exactly this and nothing ever set it.
     ///
@@ -1750,12 +1758,12 @@ mod tests {
     }
 
     /// A point inside `row` that is past the row's name and short of the
-    /// right-aligned columns - the dead width GT-32 is about.
+    /// right-aligned columns - the dead width whole-row interaction is about.
     fn empty_space_right_of(name_rect: egui::Rect) -> egui::Pos2 {
         egui::pos2(name_rect.max.x + 24.0, name_rect.center().y)
     }
 
-    /// GT-32: the row, not just its name, is the click target.
+    /// whole-row interaction: the row, not just its name, is the click target.
     #[test]
     fn a_click_beside_the_name_places_the_cursor_on_that_row() {
         let mut test = tree_of_three_rows();
@@ -1789,7 +1797,7 @@ mod tests {
         );
     }
 
-    /// The safety half of GT-32: a wide, easily-hit target moves the cursor
+    /// The safety half of whole-row interaction: a wide, easily-hit target moves the cursor
     /// and nothing else. If a row click also ticked the row's checkbox, a
     /// stray click anywhere on the panel would mark files for deletion.
     #[test]

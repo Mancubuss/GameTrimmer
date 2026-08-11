@@ -58,7 +58,7 @@ pub fn gated_button(
 
 /// A red-framed block under a danger heading.
 ///
-/// Danger is a *treatment*, not a place (GT-59): the control that earns the
+/// Danger is a *treatment*, not a place (protected-language editing): the control that earns the
 /// frame is the one that has to sit next to the rest of its own setting, and
 /// moving it into a single global "danger" section would split one mental
 /// model across two screens. So the frame travels to the control instead.

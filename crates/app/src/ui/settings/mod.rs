@@ -93,7 +93,7 @@ const CLOSE_GLYPH: &str = "\u{2715}";
 
 /// Width the left nav column claims, fixed regardless of dialog width - the
 /// section labels are short and translated text stays well under this even
-/// with the +30% length headroom the audit calls for.
+/// with 30% length headroom for translated labels.
 const NAV_WIDTH_PX: f32 = 160.0;
 
 /// Height of the section viewport for a window `window_height` points tall.
@@ -179,7 +179,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
                 ui.separator();
 
-                // Exactly one scroll area, never nested - the audit's core
+                // Exactly one scroll area, never nested - the key
                 // complaint about the old dialog.
                 egui::ScrollArea::vertical()
                     .id_salt(("gt_settings_scroll", app.settings_section))
@@ -259,7 +259,7 @@ fn show_save_state(app: &GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::Strings) {
 
 /// A setting's label with its "when does this take effect" badge beside it.
 ///
-/// The badge is what the audit (§6.4) asked for: the old dialog applied some
+/// The badge makes timing explicit: the old dialog applied some
 /// switches the instant they changed and others only on the next scan, and
 /// gave the user no way to tell which was which. Shared by every section so
 /// the badge always sits in the same place relative to its control.

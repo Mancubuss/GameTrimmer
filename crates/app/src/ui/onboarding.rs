@@ -1,4 +1,4 @@
-//! The first-run screen (GT-34): what the app does, in what order, how it
+//! The first-run screen (first-run onboarding): what the app does, in what order, how it
 //! decides, what it will not promise - and the one thing the user has to
 //! agree to before it will touch a disk.
 //!

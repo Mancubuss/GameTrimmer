@@ -134,7 +134,7 @@ mod tests {
         }
     }
 
-    /// GT-68's tail: the first-run screen retires itself for good after one
+    /// persisted onboarding completion's tail: the first-run screen retires itself for good after one
     /// scan, so without a second home the acknowledgements become unreachable
     /// the moment the user does the thing the app exists for.
     ///
@@ -173,7 +173,7 @@ mod tests {
         test.assert_label(i18n::strings(Lang::Uk).theme_label);
     }
 
-    /// GT-71. Out of the box the app follows Windows rather than insisting on
+    /// system-theme default. Out of the box the app follows Windows rather than insisting on
     /// English - and the picker says which of the three it is on, instead of
     /// showing a language the user never chose.
     #[test]

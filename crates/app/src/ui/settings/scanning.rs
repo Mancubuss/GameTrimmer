@@ -3,10 +3,10 @@
 //! the scan keeps findings for, and how file enumeration routes between the
 //! MFT index and a directory walk.
 //!
-//! Three things change relative to the old dialog, all from the audit:
+//! Three choices keep the old dialog's behavior understandable:
 //!
 //! * The keep-list is chips plus a search box rather than 36 checkboxes in a
-//!   wrapped block (§6.2). Only the kept languages are on screen; the rest
+//!   wrapped block. Only the kept languages are on screen; the rest
 //!   are one search away.
 //! * Categories are a table with a risk column and what the default profile
 //!   does with each, instead of bare checkboxes that said nothing about what
@@ -124,13 +124,13 @@ fn show_keep_languages(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             for code in kept.clone() {
                 // English is not an ordinary chip - it has its own block
                 // below, and leaving a second, unmarked way to remove it
-                // would make that block decorative (GT-59).
+                // would make that block decorative (protected-language editing).
                 if code == ENGLISH {
                     continue;
                 }
                 // The button *is* the chip: its own label already names the
                 // language (see `remove_chip_label`), so a label beside it
-                // drew every kept language twice - GT-58.
+                // drew every kept language twice - single-label language chips.
                 let blocked = is_last.then_some(s.disabled_last_keep_language);
                 if gated_button(ui, &remove_chip_label(&code), blocked).clicked() {
                     kept.retain(|kept_code| kept_code != &code);
@@ -174,13 +174,13 @@ fn show_keep_languages(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     }
 }
 
-/// English, alone inside a red frame directly under the chips (GT-59).
+/// English, alone inside a red frame directly under the chips (protected-language editing).
 ///
 /// Why it is framed at all: localization findings are not split by resource
 /// type yet, so dropping English from the keep-list makes the scanner propose
 /// English *interface* files along with the voice-over and video that were
 /// the point - and most games will not start without them. Until the spike
-/// "GT-62 - splitting localization by resource type" answers whether rules
+/// "resource-type localization split - splitting localization by resource type" answers whether rules
 /// can tell those apart, this is the most dangerous path in the app, and it
 /// used to be an ordinary cross indistinguishable from Spanish's.
 ///
@@ -224,7 +224,7 @@ fn show_english_danger(
 /// The chip: a remove button carrying the language name. The name is on the
 /// button rather than beside it so a row of chips stays distinguishable - a
 /// column of identical crosses says nothing about which one removes what, on
-/// screen or to a screen reader - and so the name is drawn once (GT-58).
+/// screen or to a screen reader - and so the name is drawn once (single-label language chips).
 fn remove_chip_label(code: &str) -> String {
     format!("\u{2715} {}", i18n::lang_display_name(code))
 }
@@ -233,7 +233,7 @@ fn remove_chip_label(code: &str) -> String {
 ///
 /// An empty query offers **nothing**, which is the whole point of the
 /// rework: listing all 36 languages the moment the section opens is the
-/// wall of checkboxes the audit objected to, merely rendered as buttons.
+/// wall of checkboxes, merely rendered as buttons.
 ///
 /// Matching runs over the display name, which is the language's own native
 /// name with its code in brackets ("Français (fr)"), so typing either finds
@@ -407,7 +407,7 @@ fn show_routing(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     // preference, not a promise - without this a user who turned it on and
     // saw no speed-up had no way to learn that the app is not elevated, or
     // that their library sits on an SSD where walking is the faster route
-    // anyway (audit §5.2).
+    // anyway.
     if !app.last_routing_breakdown.is_empty() {
         ui.add_space(6.0);
         ui.small(&app.last_routing_breakdown);
@@ -497,7 +497,7 @@ mod tests {
         test.assert_label(&i18n::lang_display_name("fr"));
     }
 
-    /// GT-58: the chip drew its language twice - once as a plain label, then
+    /// single-label language chips: the chip drew its language twice - once as a plain label, then
     /// again inside the remove button whose label already names it, so the
     /// screen read "Ukrainian (uk)  \u{2715} Ukrainian (uk)".
     #[test]
@@ -538,7 +538,7 @@ mod tests {
     }
 
     /// The rework's actual claim. Offering all 36 languages the moment the
-    /// section opens would be the wall of checkboxes the audit objected to,
+    /// section opens would be the same wall of checkboxes,
     /// merely rendered as buttons.
     #[test]
     fn an_empty_search_offers_nothing() {
@@ -568,7 +568,7 @@ mod tests {
         test.assert_label(s.disabled_last_keep_language);
     }
 
-    /// GT-59: English used to be an ordinary chip with an ordinary cross,
+    /// protected-language editing: English used to be an ordinary chip with an ordinary cross,
     /// beside Spanish and German, though removing it is the one edit here
     /// that can leave a game unable to start. The only way to take it off
     /// has to be the framed one.

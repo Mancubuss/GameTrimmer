@@ -76,7 +76,7 @@ pub(super) const STRINGS: Strings = Strings {
     profile_balanced: "Збалансований",
     profile_aggressive: "Агресивний",
     // The name of a state, not a command. "Налаштувати" read as an
-    // instruction to open an editor (audit §5.6).
+    // instruction to open an editor.
     profile_custom: "Власний",
     profile_hint: "Що позначається наперед. Перемикання перепозначає поточні знахідки — ніщо \
          не сканується заново і ніщо не видаляється. Кожен профіль описано в \
@@ -150,7 +150,7 @@ pub(super) const STRINGS: Strings = Strings {
          і саме тому GameTrimmer пропонує перезапуск з підвищеними правами лише тоді, \
          коли бібліотека лежить на жорсткому диску.",
     // Not "Завжди": elevation, volume-letter and canonical-path gates all
-    // still send a game to the folder walk under this mode (audit §6.8).
+    // still send a game to the folder walk under this mode.
     scan_routing_force_mft_label: "Надавати перевагу MFT, де доступно",
     scan_routing_force_mft_hint: "Використовує MFT-індекс навіть на SSD/NVMe, де обхід тек \
          зазвичай швидший. Потребує прав адміністратора; томи, які неможливо прочитати цим \
