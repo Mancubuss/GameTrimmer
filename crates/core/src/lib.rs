@@ -1,3 +1,4 @@
+pub mod atomic_file;
 pub mod db;
 pub mod error;
 pub mod gamestate;
@@ -10,6 +11,7 @@ pub mod orphans;
 pub mod packs;
 pub mod providers;
 pub mod rules;
+pub mod safety;
 pub mod scanner;
 pub mod settings;
 
