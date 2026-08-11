@@ -217,13 +217,12 @@ fn main() {
 
     // --- discover -----------------------------------------------------
     let t0 = Instant::now();
-    let libraries = match SteamProvider.discover() {
-        Ok(libraries) => libraries,
-        Err(err) => {
-            eprintln!("Помилка пошуку бібліотек Steam: {err}");
-            std::process::exit(1);
-        }
-    };
+    let report = SteamProvider.discover();
+    if report.status == gametrimmer_core::providers::DiscoveryStatus::Failed {
+        eprintln!("Помилка пошуку бібліотек Steam: {:#?}", report.diagnostics);
+        std::process::exit(1);
+    }
+    let libraries = report.data;
     let Some(library) = libraries
         .iter()
         .find(|lib| paths_equal(&lib.path, &args.dir))

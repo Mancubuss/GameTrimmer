@@ -212,10 +212,7 @@ fn discover_games(library_path: &Path) -> Vec<(i64, String, PathBuf)> {
 
     let mut games: Vec<GameInstall> = Vec::new();
     for provider in providers::all() {
-        let Ok(libraries) = provider.discover() else {
-            continue;
-        };
-        for library in libraries {
+        for library in provider.discover().data {
             if library.path.to_string_lossy().to_lowercase() == target {
                 games.extend(library.games);
             }

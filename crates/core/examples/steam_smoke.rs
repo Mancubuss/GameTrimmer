@@ -18,43 +18,43 @@ fn main() {
     for provider in &providers {
         println!("== {} ==", provider.name());
 
-        match provider.discover() {
-            Ok(libraries) => {
-                if libraries.is_empty() {
-                    println!("  (no libraries found)");
-                    println!();
-                    continue;
-                }
+        let report = provider.discover();
+        for diagnostic in &report.diagnostics {
+            eprintln!("  [{}] {}", diagnostic.stage, diagnostic.message);
+        }
+        let libraries = report.data;
+        {
+            if libraries.is_empty() {
+                println!("  (no libraries found)");
+                println!();
+                continue;
+            }
 
-                for library in &libraries {
-                    println!(
-                        "  - {} ({} game(s))",
-                        library.path.display(),
-                        library.games.len()
-                    );
-                    for game in &library.games {
-                        println!(
-                            "      [{}] {} -> {}",
-                            game.app_id.as_deref().unwrap_or("?"),
-                            game.name,
-                            game.install_dir.display()
-                        );
-                    }
-                }
-
-                let total_games: usize = libraries.iter().map(|lib| lib.games.len()).sum();
+            for library in &libraries {
                 println!(
-                    "  Subtotal: {} librar(y/ies), {} game(s).",
-                    libraries.len(),
-                    total_games
+                    "  - {} ({} game(s))",
+                    library.path.display(),
+                    library.games.len()
                 );
-                grand_total_libraries += libraries.len();
-                grand_total_games += total_games;
-                all_libraries.extend(libraries);
+                for game in &library.games {
+                    println!(
+                        "      [{}] {} -> {}",
+                        game.app_id.as_deref().unwrap_or("?"),
+                        game.name,
+                        game.install_dir.display()
+                    );
+                }
             }
-            Err(err) => {
-                eprintln!("  {} discovery failed: {err}", provider.name());
-            }
+
+            let total_games: usize = libraries.iter().map(|lib| lib.games.len()).sum();
+            println!(
+                "  Subtotal: {} librar(y/ies), {} game(s).",
+                libraries.len(),
+                total_games
+            );
+            grand_total_libraries += libraries.len();
+            grand_total_games += total_games;
+            all_libraries.extend(libraries);
         }
         println!();
     }

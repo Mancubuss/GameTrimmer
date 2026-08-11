@@ -621,13 +621,12 @@ fn pick_examples<'a>(rows: &'a [Row], label: &str, want: usize) -> Vec<&'a Row> 
 fn main() {
     let locale_re = Regex::new(r"(?i)\b([a-zA-Z]{2,3})[-_]([a-zA-Z]{2})\b").expect("valid regex");
 
-    let libraries = match SteamProvider.discover() {
-        Ok(libs) => libs,
-        Err(err) => {
-            eprintln!("Steam discovery failed: {err}");
-            std::process::exit(1);
-        }
-    };
+    let report = SteamProvider.discover();
+    if report.status == gametrimmer_core::providers::DiscoveryStatus::Failed {
+        eprintln!("Steam discovery failed: {:#?}", report.diagnostics);
+        std::process::exit(1);
+    }
+    let libraries = report.data;
 
     if libraries.is_empty() {
         println!("No Steam libraries found.");
