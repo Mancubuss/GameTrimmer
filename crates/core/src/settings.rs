@@ -7,10 +7,10 @@
 //! back to the database.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -294,8 +294,8 @@ impl SelectionProfile {
 /// One of the three independent switches in the settings dialog's "Selection
 /// & deletion" section, alongside [`Settings::default_selection_profile`]
 /// (what a scan pre-checks) and [`DeleteMethod`] (how a file is disposed of).
-/// The audit found the old dialog blurred the three together; none of them
-/// affects the others.
+/// The old dialog blurred the three together, although none of them affects
+/// the others.
 ///
 /// [`Always`](Self::Always) is the default - skipping the confirmation is a
 /// choice a user should have to make deliberately, not one an accidental
@@ -480,7 +480,7 @@ pub struct Settings {
     /// needs investigating; users can switch it off at any time.
     pub logging_enabled: bool,
     /// Whether the user has ever started a scan. The only thing it drives is
-    /// the first-run explanation (GT-34), which occupies the empty tree area
+    /// the first-run explanation, which occupies the empty tree area
     /// until then and never comes back afterwards.
     ///
     /// Set when a scan *starts*, not when one finishes: the explanation has
@@ -723,17 +723,18 @@ pub fn save_file(path: &Path, settings: &Settings) -> Result<()> {
         body.push('\n');
     }
 
-    let tmp_path = temporary_path(path);
-    let write_result = (|| -> std::io::Result<()> {
-        let mut file = File::create(&tmp_path)?;
-        file.write_all(body.as_bytes())?;
-        file.sync_all()?;
-        atomic_replace(&tmp_path, path)
-    })();
-    if write_result.is_err() {
-        let _ = fs::remove_file(&tmp_path);
-    }
-    Ok(write_result?)
+    crate::atomic_file::atomic_write_with_backup(path, body.as_bytes(), |_path, bytes| {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        if !text.contains("[settings]") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "settings section missing after write",
+            ));
+        }
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn parse_ini(text: &str) -> HashMap<String, String> {
@@ -771,35 +772,11 @@ fn parse_ini(text: &str) -> HashMap<String, String> {
     values
 }
 
+#[cfg(test)]
 fn temporary_path(path: &Path) -> PathBuf {
-    let mut name: OsString = path.as_os_str().to_owned();
-    name.push(".tmp");
-    PathBuf::from(name)
-}
-
-#[cfg(windows)]
-fn atomic_replace(from: &Path, to: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
-    unsafe {
-        MoveFileExW(
-            PCWSTR(from.as_ptr()),
-            PCWSTR(to.as_ptr()),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    }
-    .map_err(|_| std::io::Error::last_os_error())
-}
-
-#[cfg(not(windows))]
-fn atomic_replace(from: &Path, to: &Path) -> std::io::Result<()> {
-    fs::rename(from, to)
+    let mut path = path.as_os_str().to_owned();
+    path.push(".replace-tmp");
+    PathBuf::from(path)
 }
 
 #[cfg(test)]
@@ -1156,7 +1133,7 @@ mod tests {
         assert_eq!(
             settings.selection_profile,
             SelectionProfile::Balanced,
-            "Balanced is the default aggressiveness profile (GT-04)"
+            "Balanced is the default aggressiveness profile"
         );
     }
 
@@ -1334,7 +1311,7 @@ mod tests {
         }
     }
 
-    /// GT-34's flag. The default matters as much as the round-trip: a
+    /// The first-run onboarding flag. The default matters as much as the round-trip: a
     /// database written before this key existed has to read as "never
     /// scanned" so an upgrading user is not shown a first-run introduction,
     /// nor - the other direction - denied it on a genuinely fresh install.

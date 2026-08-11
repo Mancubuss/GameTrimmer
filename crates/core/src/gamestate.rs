@@ -1,4 +1,4 @@
-//! Per-game state between scans (GT-09): telling what changed since the last
+//! Per-game state between scans (game-state tracking): telling what changed since the last
 //! scan *without* rescanning.
 //!
 //! The expensive part of a scan is enumerating files; detecting that a game

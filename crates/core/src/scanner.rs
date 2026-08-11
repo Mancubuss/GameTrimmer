@@ -64,9 +64,8 @@ pub(crate) const CANCEL_POLL_INTERVAL: usize = 1024;
 /// Recursively walks `dir` (not following symlinks/junctions) and returns all
 /// regular files, paths relative to `dir`.
 ///
-/// Individual entries that cannot be accessed (e.g. permission denied) are
-/// skipped rather than failing the whole scan. Only a problem with `dir`
-/// itself (e.g. it does not exist) results in an `Err`.
+/// Any enumeration or metadata error fails the game scan. A partial file list
+/// must never be persisted as a complete, deletable generation.
 ///
 /// Never cancellable: a thin wrapper over [`scan_dir_cancellable`] with a
 /// flag that is never set. Callers that need to abort a running walk should
@@ -80,12 +79,9 @@ pub fn scan_dir(dir: &Path) -> Result<Vec<FileEntry>> {
 /// `Err(CoreError::Other("cancelled"))` once it is observed set, instead of
 /// always enumerating the whole tree to completion.
 ///
-/// This is the strategy-agnostic enumeration+cancel point: the cancellable
-/// collection step ([`collect_cancellable`]) is written against a plain
-/// `&AtomicBool` and a generic `Iterator<Item = FileEntry>`, with no
-/// `walkdir`-specific logic of its own, specifically so the future
-/// USN-journal incremental-scan path can reuse the exact same
-/// enumeration+cancel mechanism over its own entry stream instead of `walkdir`.
+/// The walk uses the same bounded polling cadence as [`collect_cancellable`].
+/// The generic helper remains available for future non-`walkdir` producers,
+/// while this path additionally propagates iterator and metadata errors.
 pub fn scan_dir_cancellable(dir: &Path, cancel: &AtomicBool) -> Result<Vec<FileEntry>> {
     let metadata = std::fs::metadata(dir)?;
     if !metadata.is_dir() {
@@ -99,34 +95,57 @@ pub fn scan_dir_cancellable(dir: &Path, cancel: &AtomicBool) -> Result<Vec<FileE
     // for every file, rather than paying a `GetDiskFreeSpaceW` per file.
     let cluster = crate::ondisk::cluster_size(dir);
 
-    let entries = WalkDir::new(dir)
+    let mut entries = Vec::new();
+    for (index, entry) in WalkDir::new(dir)
         .follow_links(false)
         .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| map_walkdir_entry(dir, entry, cluster));
-
-    collect_cancellable(entries, cancel)
+        .enumerate()
+    {
+        if index % CANCEL_POLL_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
+            return Err(CoreError::Other("cancelled".to_string()));
+        }
+        let entry = entry.map_err(|error| {
+            CoreError::Other(format!("failed to enumerate {}: {error}", dir.display()))
+        })?;
+        if let Some(entry) = map_walkdir_entry(dir, entry, cluster)? {
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
 }
 
 /// Maps one `walkdir::DirEntry` into a `FileEntry` relative to `dir`,
-/// applying the same filtering `scan_dir` has always applied: only regular
-/// files are kept, and any entry whose relative path or metadata cannot be
-/// read is skipped rather than failing the whole scan.
-fn map_walkdir_entry(dir: &Path, entry: walkdir::DirEntry, cluster: u64) -> Option<FileEntry> {
+/// keeping only regular files while propagating path or metadata failures.
+fn map_walkdir_entry(
+    dir: &Path,
+    entry: walkdir::DirEntry,
+    cluster: u64,
+) -> Result<Option<FileEntry>> {
     if !entry.file_type().is_file() {
-        return None;
+        return Ok(None);
     }
 
     let rel_path = entry
         .path()
         .strip_prefix(dir)
-        .ok()?
+        .map_err(|error| {
+            CoreError::Other(format!(
+                "{} is not below scan root {}: {error}",
+                entry.path().display(),
+                dir.display()
+            ))
+        })?
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("\\");
 
-    let meta = entry.metadata().ok()?;
+    let meta = entry.metadata().map_err(|error| {
+        CoreError::Other(format!(
+            "failed to read metadata for {}: {error}",
+            entry.path().display()
+        ))
+    })?;
     let size = meta.len();
     let size_on_disk = crate::ondisk::on_disk_size(entry.path(), size, cluster);
     let mtime = meta
@@ -135,12 +154,12 @@ fn map_walkdir_entry(dir: &Path, entry: walkdir::DirEntry, cluster: u64) -> Opti
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
 
-    Some(FileEntry {
+    Ok(Some(FileEntry {
         rel_path,
         size,
         size_on_disk,
         mtime,
-    })
+    }))
 }
 
 /// Consumes `iter`, collecting every item into a `Vec`, polling `cancel`

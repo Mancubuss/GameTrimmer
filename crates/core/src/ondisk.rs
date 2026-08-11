@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(drive_root(Path::new("")), None);
     }
 
-    /// Real-filesystem check of the Windows on-disk path (GT-05a acceptance
+    /// Real-filesystem check of the Windows on-disk path (allocated-size accounting acceptance
     /// criterion: the figure must match Explorer's cluster-rounded "Size on
     /// disk"). A ~5 KiB file is comfortably non-resident, so on a cluster-sized
     /// volume its on-disk size must be a whole number of clusters and strictly

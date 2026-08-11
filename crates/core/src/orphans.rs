@@ -1,4 +1,4 @@
-//! Detection of orphaned launcher residue (GT-02): folders that sit inside a
+//! Detection of orphaned launcher residue (orphan-residue safety): folders that sit inside a
 //! launcher's managed install area but have no live game behind them, plus the
 //! launcher's fixed download/cache scratch folders.
 //!
@@ -17,7 +17,7 @@
 //! ([`find_orphans`]). Turning the returned [`OrphanCandidate`]s into findings
 //! rows, a separate UI tree branch, and an autoselect-off category is the next
 //! increment - deliberately kept out of here so the detection logic can be
-//! verified in isolation against the acceptance criteria of "GT-02 - orphaned
+//! verified in isolation against the acceptance criteria of "orphan-residue safety - orphaned
 //! installs and launcher residue" first. (That increment has since landed; the
 //! ticket lives on the Kanban board, not in a file in this repo.)
 //!
@@ -75,7 +75,7 @@ pub struct OrphanScanSpec {
     ///
     /// This is what lets a launcher whose install root can be a *shared*
     /// user-chosen folder (itch, whose location the user picks and may point at
-    /// a folder also holding Steam/manual games) still honor GT-02's invariant:
+    /// a folder also holding Steam/manual games) still honor orphan-residue safety's invariant:
     /// a foreign or manually-installed game in that same folder never carries
     /// this launcher's residue marker (e.g. itch's `.itch` receipt directory),
     /// so it is never flagged. Empty means the container is *structurally*
@@ -113,32 +113,31 @@ pub fn unmanaged_subdirs(
         .collect()
 }
 
-/// Lists the immediate subdirectories of `dir` (non-recursive), skipping files
-/// and anything that cannot be read. Returns an empty vector when `dir` does
-/// not exist or is not a directory - an absent container is simply "no orphans
-/// here", never an error that should fail a scan.
+/// Lists the immediate subdirectories of `dir` (non-recursive), skipping files.
+/// A missing container is an empty result; every other enumeration or metadata
+/// error is returned because an incomplete directory listing cannot prove that
+/// any child is unmanaged.
 ///
 /// Symlinks/junctions are intentionally *not* followed into: a junction inside
 /// `common` is reported as its own entry (a candidate for removal as the link),
 /// never traversed into whatever it targets - mirroring the deletion layer's
 /// `symlink_metadata` stance in `ops`.
-pub fn list_subdirs(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+pub fn list_subdirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
     };
-    entries
-        .flatten()
-        .filter(|entry| {
-            // `file_type()` here does not follow the link, so a junction is
-            // classified by what it *is* (a reparse point that is a directory),
-            // not by its target.
-            entry
-                .file_type()
-                .map(|file_type| file_type.is_dir())
-                .unwrap_or(false)
-        })
-        .map(|entry| entry.path())
-        .collect()
+    let mut subdirs = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        // `file_type()` here does not follow the link, so a junction is
+        // classified by what it is, not by whatever it targets.
+        if entry.file_type()?.is_dir() {
+            subdirs.push(entry.path());
+        }
+    }
+    Ok(subdirs)
 }
 
 /// True when `candidate` may be reported as an unmanaged-folder orphan under
@@ -147,11 +146,18 @@ pub fn list_subdirs(dir: &Path) -> Vec<PathBuf> {
 /// path, proving it is this launcher's residue. `symlink_metadata` (not
 /// `exists`) so a marker that is itself a dangling junction still counts as
 /// present - it is still proof the folder belonged to this launcher.
-fn has_ownership_marker(candidate: &Path, markers: &[PathBuf]) -> bool {
-    markers.is_empty()
-        || markers
-            .iter()
-            .any(|marker| std::fs::symlink_metadata(candidate.join(marker)).is_ok())
+fn has_ownership_marker(candidate: &Path, markers: &[PathBuf]) -> std::io::Result<bool> {
+    if markers.is_empty() {
+        return Ok(true);
+    }
+    for marker in markers {
+        match std::fs::symlink_metadata(candidate.join(marker)) {
+            Ok(_) => return Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(false)
 }
 
 /// Ties [`list_subdirs`] and [`unmanaged_subdirs`] together for one library:
@@ -171,11 +177,12 @@ fn has_ownership_marker(candidate: &Path, markers: &[PathBuf]) -> bool {
 pub fn find_orphans(
     spec: &OrphanScanSpec,
     managed_install_dirs: &HashSet<String>,
-) -> Vec<OrphanCandidate> {
+) -> std::io::Result<Vec<OrphanCandidate>> {
     let mut candidates = Vec::new();
 
-    for path in unmanaged_subdirs(&list_subdirs(&spec.container), managed_install_dirs) {
-        if !has_ownership_marker(&path, &spec.ownership_markers) {
+    let subdirs = list_subdirs(&spec.container)?;
+    for path in unmanaged_subdirs(&subdirs, managed_install_dirs) {
+        if !has_ownership_marker(&path, &spec.ownership_markers)? {
             continue;
         }
         candidates.push(OrphanCandidate {
@@ -188,15 +195,17 @@ pub fn find_orphans(
         // Only report a scratch folder that actually exists; `symlink_metadata`
         // (not `exists`) so a dangling junction still counts as present - it is
         // itself a removable entry.
-        if std::fs::symlink_metadata(service).is_ok() {
-            candidates.push(OrphanCandidate {
+        match std::fs::symlink_metadata(service) {
+            Ok(_) => candidates.push(OrphanCandidate {
                 path: service.clone(),
                 kind: OrphanKind::ServiceFolder,
-            });
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
     }
 
-    candidates
+    Ok(candidates)
 }
 
 /// Builds the case-insensitive lookup set [`find_orphans`] expects from an
@@ -218,7 +227,7 @@ where
 /// depot downloads): the single unambiguously-safe scratch location. Broader
 /// residue (`depotcache`, orphaned `workshop` content of uninstalled games)
 /// is deferred - those need per-item reasoning about what is still referenced,
-/// which is a later GT-02 increment, not a fixed-folder sweep.
+/// which requires service-specific authoritative evidence, not a fixed-folder sweep.
 pub fn steam_spec(library_root: &Path) -> OrphanScanSpec {
     let steamapps = library_root.join("steamapps");
     OrphanScanSpec {
@@ -356,7 +365,7 @@ mod tests {
         std::fs::create_dir(root.join("GameB")).expect("create GameB");
         std::fs::write(root.join("loose.txt"), b"x").expect("write loose file");
 
-        let mut subdirs = list_subdirs(root);
+        let mut subdirs = list_subdirs(root).unwrap();
         subdirs.sort();
 
         assert_eq!(subdirs, vec![root.join("GameA"), root.join("GameB")]);
@@ -366,10 +375,10 @@ mod tests {
     fn list_subdirs_on_missing_dir_is_empty_not_an_error() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let missing = dir.path().join("no-such-container");
-        assert!(list_subdirs(&missing).is_empty());
+        assert!(list_subdirs(&missing).unwrap().is_empty());
     }
 
-    /// The headline GT-02 acceptance case, end to end over a real (temp)
+    /// The primary orphan-residue acceptance case, end to end over a real (temp)
     /// filesystem: a known leftover folder is found, a game still installed
     /// via the launcher is NOT flagged, and an existing service folder is
     /// reported.
@@ -391,7 +400,7 @@ mod tests {
         let spec = steam_spec(root);
         let managed = managed_dir_set(std::iter::once(common.join("Portal 2").as_path()));
 
-        let orphans = find_orphans(&spec, &managed);
+        let orphans = find_orphans(&spec, &managed).unwrap();
 
         assert!(
             orphans.contains(&OrphanCandidate {
@@ -424,7 +433,7 @@ mod tests {
         // Note: no `steamapps/downloading` created.
 
         let spec = steam_spec(root);
-        let orphans = find_orphans(&spec, &HashSet::new());
+        let orphans = find_orphans(&spec, &HashSet::new()).unwrap();
 
         assert!(
             orphans
@@ -481,7 +490,7 @@ mod tests {
         let spec = xbox_spec(&root);
         let managed = managed_dir_set(std::iter::once(root.join("Starfield").as_path()));
 
-        let orphans = find_orphans(&spec, &managed);
+        let orphans = find_orphans(&spec, &managed).unwrap();
 
         assert!(orphans.contains(&OrphanCandidate {
             path: root.join("UninstalledTitle"),
@@ -518,7 +527,7 @@ mod tests {
         let spec = itch_spec(&location);
         let managed = managed_dir_set(std::iter::once(live.as_path()));
 
-        let orphans = find_orphans(&spec, &managed);
+        let orphans = find_orphans(&spec, &managed).unwrap();
 
         assert_eq!(
             orphans,
@@ -535,6 +544,6 @@ mod tests {
     fn has_ownership_marker_is_true_when_no_marker_required() {
         // Empty marker list = structurally exclusive container: every candidate
         // qualifies (the managed-set diff is the only gate).
-        assert!(has_ownership_marker(Path::new(r"F:\anything"), &[]));
+        assert!(has_ownership_marker(Path::new(r"F:\anything"), &[]).unwrap());
     }
 }

@@ -59,6 +59,7 @@ fn intern_key(key: &str) -> &'static str {
 // --- Serialized schema (l10n_rules.json) ---------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LangPackEntry {
     /// Canonical key, e.g. "fr", "pt-br".
     pub key: String,
@@ -74,6 +75,7 @@ pub struct LangPackEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MarkerTables {
     pub negative: Vec<String>,
     pub overridable_negative: Vec<String>,
@@ -103,6 +105,7 @@ pub struct MarkerTables {
 /// writes, so a user's starting point for edits is the exact built-in
 /// state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LangPack {
     pub version: u32,
     pub languages: Vec<LangPackEntry>,
@@ -123,6 +126,12 @@ impl LangPack {
     }
 
     pub fn from_json(json: &str) -> Result<Self> {
+        if json.len() > crate::rules::MAX_RULE_PACK_BYTES {
+            return Err(CoreError::Other(format!(
+                "l10n_rules.json exceeds the {} byte limit",
+                crate::rules::MAX_RULE_PACK_BYTES
+            )));
+        }
         let pack: LangPack = serde_json::from_str(json)?;
         if pack.version > LANG_PACK_VERSION {
             return Err(CoreError::Other(format!(
