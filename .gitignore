@@ -14,6 +14,17 @@ gametrimmer.db*
 /docs/archive.7z
 /docs/archive/
 
+# The same reasoning for the loose ones: a dated audit or redesign plan is a
+# snapshot of what was wrong on that day, and someone finding it in a release
+# would read a fixed problem as a current one. They stay next to the code and
+# out of the published tree.
+/docs/codebase-audit-*.md
+/docs/portability-audit.md
+/docs/ui-redesign-plan-*.md
+
+# Working notes about friction hit while building, not about the program.
+/.papercuts.jsonl
+
 # IDE
 .idea/
 .vscode/
