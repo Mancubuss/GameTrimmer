@@ -6,8 +6,46 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A launcher entry that cannot be read no longer lets a live, installed game
+  be mistaken for leftover residue. Provider discovery now states whether it
+  read a library's inventory in full, and a library whose evidence is
+  incomplete is excluded from leftover detection instead of being treated as
+  proof that a folder is unmanaged.
+- A library root that has become unreachable — an unplugged drive, a removed
+  drive letter, an unmounted volume — is no longer read as "these files were
+  already deleted". Deletion refuses the whole batch, and the findings stay.
+- Repeated scans no longer grow the database without bound: a scan generation
+  the results have moved past is now removed with the results it produced.
+
+### Added
+
+- Every deletion is now planned against filesystem evidence recorded at scan
+  time and re-proven immediately before the delete: the path is rebuilt from a
+  trusted root and a normalized relative path, every directory from that root
+  down to the target is opened and checked for reparse points, and the target's
+  volume, file identity and — for a directory — the fingerprint of its contents
+  must still match. Anything unproven blocks the deletion rather than
+  proceeding.
+- Deletions are journaled as a durable intent before the filesystem is touched,
+  so a crash mid-delete is reconciled at the next start instead of leaving the
+  database disagreeing with the disk. Reconciliation only classifies; it never
+  retries an operation.
+- Scans are staged and published atomically. Cancelling a scan, failing one, or
+  crashing during one leaves the previous complete results in place, and
+  findings reach the window only after their database transaction commits.
+- Imported rule packs are bounded and validated before use (pack size, rule
+  count, pattern length, nesting depth), carry their origin, and their findings
+  are never auto-selected by a selection profile.
+
 ### Changed
 
+- Scan-time diagnostics — an unreadable manifest, a launcher entry without an
+  install path — now go to the log and the diagnostic bundle in full detail
+  instead of onto the main window, where they crowded out everything else and
+  named nothing the user could act on. Failures of an action the user asked for
+  (adding a folder, removing a library, exporting) appear on the status line.
 - User preferences now live in a readable, atomically written
   `gametrimmer.ini` beside the executable. Existing database settings migrate
   once when the ini is absent; deleting the disposable scan database no longer
