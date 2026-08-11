@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
 
@@ -7,6 +8,19 @@ use crate::error::{CoreError, Result};
 
 /// SQL schema for the GameTrimmer database. Idempotent (`IF NOT EXISTS`).
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS scan_runs (
+    id               INTEGER PRIMARY KEY,
+    started_at       INTEGER NOT NULL,
+    completed_at     INTEGER,
+    state            TEXT NOT NULL,
+    discovery_status TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scan_state (
+    singleton      INTEGER PRIMARY KEY CHECK(singleton = 1),
+    active_scan_id INTEGER REFERENCES scan_runs(id)
+);
+
 CREATE TABLE IF NOT EXISTS game_libraries (
     id     INTEGER PRIMARY KEY,
     vendor TEXT NOT NULL,
@@ -15,6 +29,7 @@ CREATE TABLE IF NOT EXISTS game_libraries (
 
 CREATE TABLE IF NOT EXISTS games (
     id          INTEGER PRIMARY KEY,
+    scan_id     INTEGER NOT NULL DEFAULT 0,
     library_id  INTEGER NOT NULL REFERENCES game_libraries(id),
     name        TEXT NOT NULL,
     install_dir TEXT NOT NULL,
@@ -24,6 +39,7 @@ CREATE TABLE IF NOT EXISTS games (
 
 CREATE TABLE IF NOT EXISTS files (
     id           INTEGER PRIMARY KEY,
+    scan_id      INTEGER NOT NULL DEFAULT 0,
     game_id      INTEGER REFERENCES games(id),
     rel_path     TEXT NOT NULL,
     size         INTEGER NOT NULL,
@@ -37,7 +53,8 @@ CREATE TABLE IF NOT EXISTS findings (
     rule_id    TEXT,
     confidence INTEGER NOT NULL,
     lang_tag   TEXT,
-    group_dir  TEXT
+    group_dir  TEXT,
+    provenance TEXT NOT NULL DEFAULT 'builtin'
 );
 
 CREATE TABLE IF NOT EXISTS operations (
@@ -46,7 +63,15 @@ CREATE TABLE IF NOT EXISTS operations (
     action   TEXT NOT NULL,
     src_path TEXT NOT NULL,
     dst_path TEXT,
-    status   TEXT NOT NULL
+    status   TEXT NOT NULL,
+    scan_id  INTEGER,
+    file_id  INTEGER,
+    trusted_root TEXT,
+    rel_path TEXT,
+    expected_identity TEXT,
+    completed_at INTEGER,
+    outcome TEXT,
+    error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -54,14 +79,48 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS scan_library_evidence (
+    scan_id      INTEGER NOT NULL REFERENCES scan_runs(id),
+    library_path TEXT NOT NULL,
+    provider     TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    PRIMARY KEY(scan_id, library_path)
+);
+
+CREATE TABLE IF NOT EXISTS scan_diagnostics (
+    id       INTEGER PRIMARY KEY,
+    scan_id  INTEGER NOT NULL REFERENCES scan_runs(id),
+    provider TEXT NOT NULL,
+    stage    TEXT NOT NULL,
+    path     TEXT,
+    message  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS file_safety (
+    file_id          INTEGER PRIMARY KEY REFERENCES files(id),
+    scan_id          INTEGER NOT NULL REFERENCES scan_runs(id),
+    evidence_library_path TEXT,
+    trusted_root     TEXT NOT NULL,
+    rel_path         TEXT NOT NULL,
+    root_identity    TEXT,
+    target_identity  TEXT,
+    target_kind      TEXT,
+    tree_fingerprint TEXT,
+    block_reason     TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_files_game_id     ON files(game_id);
 CREATE INDEX IF NOT EXISTS idx_findings_file_id  ON findings(file_id);
+CREATE INDEX IF NOT EXISTS idx_diagnostics_scan   ON scan_diagnostics(scan_id);
 ";
+
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 /// Opens (or creates) the database at `path` and applies the schema.
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     configure(&conn)?;
+    ensure_supported_schema_version(&conn)?;
     apply_schema(&conn)?;
     migrate(&conn)?;
     Ok(conn)
@@ -71,6 +130,7 @@ pub fn open(path: &Path) -> Result<Connection> {
 pub fn open_in_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
     configure(&conn)?;
+    ensure_supported_schema_version(&conn)?;
     apply_schema(&conn)?;
     migrate(&conn)?;
     Ok(conn)
@@ -140,14 +200,45 @@ fn apply_schema(conn: &Connection) -> Result<()> {
 /// next scan repopulates real values, and load treats `NULL` as an
 /// ungrouped (orphan) finding in the meantime.
 fn migrate(conn: &Connection) -> Result<()> {
+    let mut version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    ensure_supported_schema_version(conn)?;
+    if version < 1 {
+        migrate_v1(conn)?;
+        conn.pragma_update(None, "user_version", 1)?;
+        version = 1;
+    }
+    if version < 2 {
+        migrate_v2(conn)?;
+        conn.pragma_update(None, "user_version", 2)?;
+    }
+    Ok(())
+}
+
+fn ensure_supported_schema_version(conn: &Connection) -> Result<()> {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version > CURRENT_SCHEMA_VERSION {
+        return Err(CoreError::Other(format!(
+            "database schema version {version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
+        )));
+    }
+    Ok(())
+}
+
+fn migrate_v1(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "findings", "group_dir", "TEXT")?;
-    // `files.size_on_disk` (GT-05a): the on-disk allocated size, added so
+    add_column_if_missing(
+        conn,
+        "findings",
+        "provenance",
+        "TEXT NOT NULL DEFAULT 'builtin'",
+    )?;
+    // `files.size_on_disk` (allocated-size accounting): the on-disk allocated size, added so
     // sizes shown and reported match Explorer's "Size on disk" instead of the
     // logical total. `NULL` for every file indexed by an earlier build; load
     // falls back to `size` (via COALESCE) for those until the next scan
     // repopulates the real on-disk figure.
     add_column_if_missing(conn, "files", "size_on_disk", "INTEGER")?;
-    // `games.build_id` (GT-09): the launcher's content build id recorded at
+    // `games.build_id` (game-state tracking): the launcher's content build id recorded at
     // scan time, so a later startup can tell whether a game was updated or
     // re-verified (and therefore may have its trimmed files back) without
     // rescanning. `NULL` for every game indexed by an earlier build - and
@@ -155,7 +246,314 @@ fn migrate(conn: &Connection) -> Result<()> {
     // `gamestate::changed_games`, so the first run after an upgrade does not
     // flag the whole library.
     add_column_if_missing(conn, "games", "build_id", "TEXT")?;
+    add_column_if_missing(conn, "games", "scan_id", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(conn, "files", "scan_id", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(conn, "operations", "scan_id", "INTEGER")?;
+    add_column_if_missing(conn, "operations", "file_id", "INTEGER")?;
+    add_column_if_missing(conn, "operations", "trusted_root", "TEXT")?;
+    add_column_if_missing(conn, "operations", "rel_path", "TEXT")?;
+    add_column_if_missing(conn, "operations", "expected_identity", "TEXT")?;
+    add_column_if_missing(conn, "operations", "completed_at", "INTEGER")?;
+    add_column_if_missing(conn, "operations", "outcome", "TEXT")?;
+    add_column_if_missing(conn, "operations", "error", "TEXT")?;
+    add_column_if_missing(conn, "file_safety", "block_reason", "TEXT")?;
+    if table_exists(conn, "games")? {
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_games_scan_id ON games(scan_id)",
+            [],
+        )?;
+    }
+    if table_exists(conn, "files")? {
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_scan_id ON files(scan_id)",
+            [],
+        )?;
+    }
+
+    // Generation 0 is the read-only compatibility snapshot for databases
+    // created before scan identity and delete-safety evidence existed.
+    if table_exists(conn, "scan_runs")? && table_exists(conn, "scan_state")? {
+        conn.execute(
+            "INSERT OR IGNORE INTO scan_runs
+             (id, started_at, completed_at, state, discovery_status)
+             VALUES (0, 0, 0, 'legacy', 'unknown')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO scan_state (singleton, active_scan_id)
+             VALUES (1, 0)",
+            [],
+        )?;
+    }
     Ok(())
+}
+
+fn migrate_v2(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "file_safety", "evidence_library_path", "TEXT")?;
+    Ok(())
+}
+
+fn unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Starts an isolated scan generation. The current active generation is not
+/// modified until [`activate_scan`] succeeds.
+pub fn begin_scan(conn: &Connection, discovery_status: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO scan_runs (started_at, state, discovery_status)
+         VALUES (?1, 'staging', ?2)",
+        params![unix_timestamp(), discovery_status],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn record_scan_library_evidence(
+    conn: &Connection,
+    scan_id: i64,
+    library_path: &Path,
+    provider: &str,
+    status: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO scan_library_evidence
+         (scan_id, library_path, provider, status) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(scan_id, library_path) DO UPDATE SET
+             provider = excluded.provider,
+             status = excluded.status",
+        params![scan_id, library_path.to_string_lossy(), provider, status],
+    )?;
+    Ok(())
+}
+
+pub fn record_scan_diagnostic(
+    conn: &Connection,
+    scan_id: i64,
+    provider: &str,
+    stage: &str,
+    path: Option<&Path>,
+    message: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO scan_diagnostics (scan_id, provider, stage, path, message)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            scan_id,
+            provider,
+            stage,
+            path.map(|value| value.to_string_lossy().into_owned()),
+            message
+        ],
+    )?;
+    Ok(())
+}
+
+/// Records a late completeness failure (for example orphan enumeration or
+/// measurement) before a staging generation is activated.
+pub fn mark_scan_degraded(conn: &Connection, scan_id: i64) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE scan_runs SET discovery_status = 'degraded'
+         WHERE id = ?1 AND state = 'staging'",
+        [scan_id],
+    )?;
+    if changed != 1 {
+        return Err(CoreError::Other(format!(
+            "cannot degrade non-staging scan generation {scan_id}"
+        )));
+    }
+    Ok(())
+}
+
+/// Atomically makes a fully persisted generation visible to readers.
+pub fn activate_scan(conn: &mut Connection, scan_id: i64) -> Result<()> {
+    validate_scan_generation(conn, scan_id)?;
+    let tx = conn.transaction()?;
+    let state: String = tx.query_row(
+        "SELECT state FROM scan_runs WHERE id = ?1",
+        [scan_id],
+        |row| row.get(0),
+    )?;
+    if state != "staging" {
+        return Err(CoreError::Other(format!(
+            "scan generation {scan_id} is {state}, not staging"
+        )));
+    }
+
+    let foreign_key_errors: i64 =
+        tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })?;
+    if foreign_key_errors != 0 {
+        return Err(CoreError::Other(format!(
+            "scan generation failed foreign-key validation ({foreign_key_errors} error(s))"
+        )));
+    }
+
+    if let Some(previous) = tx
+        .query_row(
+            "SELECT active_scan_id FROM scan_state WHERE singleton = 1",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .unwrap_or(None)
+    {
+        if previous != 0 && previous != scan_id {
+            tx.execute(
+                "UPDATE scan_runs SET state = 'superseded' WHERE id = ?1 AND state = 'active'",
+                [previous],
+            )?;
+        }
+    }
+
+    tx.execute(
+        "UPDATE scan_runs SET state = 'active', completed_at = ?1 WHERE id = ?2",
+        params![unix_timestamp(), scan_id],
+    )?;
+    tx.execute(
+        "INSERT INTO scan_state (singleton, active_scan_id) VALUES (1, ?1)
+         ON CONFLICT(singleton) DO UPDATE SET active_scan_id = excluded.active_scan_id",
+        [scan_id],
+    )?;
+    prune_superseded_generations(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Drops every generation the active pointer has moved past, in the same
+/// transaction that moved it.
+///
+/// Nothing reads a superseded generation - `load_findings` and
+/// `occupied_by_library` both filter on `scan_state.active_scan_id` - so
+/// keeping one only costs space. And it costs a *lot* of it: a generation is a
+/// full copy of `games`, `files`, `findings` and `file_safety`, which on a real
+/// library is millions of rows per scan. Left in place they accumulate
+/// invisibly, and the only symptom the user ever sees is a database that grows
+/// without bound and scans that get slower every run.
+///
+/// Only `superseded` rows are pruned. A `staging` generation may belong to a
+/// scan still in flight, and `abort_scan` owns that path.
+fn prune_superseded_generations(tx: &Connection) -> Result<()> {
+    // Ordered child-first so the foreign keys hold at every step. `operations`
+    // is deliberately untouched: it is the durable journal, its `scan_id` is
+    // unconstrained, and a pending intent must outlive the generation that
+    // produced it or crash recovery would lose its evidence.
+    let statements = [
+        "DELETE FROM findings WHERE file_id IN
+             (SELECT f.id FROM files f
+              JOIN scan_runs r ON r.id = f.scan_id
+              WHERE r.state = 'superseded')",
+        "DELETE FROM file_safety WHERE scan_id IN
+             (SELECT id FROM scan_runs WHERE state = 'superseded')",
+        "DELETE FROM files WHERE scan_id IN
+             (SELECT id FROM scan_runs WHERE state = 'superseded')",
+        "DELETE FROM games WHERE scan_id IN
+             (SELECT id FROM scan_runs WHERE state = 'superseded')",
+        "DELETE FROM scan_library_evidence WHERE scan_id IN
+             (SELECT id FROM scan_runs WHERE state = 'superseded')",
+        "DELETE FROM scan_diagnostics WHERE scan_id IN
+             (SELECT id FROM scan_runs WHERE state = 'superseded')",
+        "DELETE FROM scan_runs WHERE state = 'superseded'",
+    ];
+    for statement in statements {
+        tx.execute(statement, [])?;
+    }
+    Ok(())
+}
+
+/// Checks the cross-table generation contract before the active pointer can
+/// move. In particular, every finding must have a same-generation safety row.
+pub fn validate_scan_generation(conn: &Connection, scan_id: i64) -> Result<()> {
+    let mismatched_files: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM files f
+         LEFT JOIN games g ON g.id = f.game_id
+         WHERE f.scan_id = ?1 AND f.game_id IS NOT NULL
+           AND (g.id IS NULL OR g.scan_id <> ?1)",
+        [scan_id],
+        |row| row.get(0),
+    )?;
+    let missing_safety: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM findings fi
+         JOIN files f ON f.id = fi.file_id
+         LEFT JOIN file_safety fs ON fs.file_id = f.id AND fs.scan_id = f.scan_id
+         WHERE f.scan_id = ?1 AND fs.file_id IS NULL",
+        [scan_id],
+        |row| row.get(0),
+    )?;
+    if mismatched_files != 0 || missing_safety != 0 {
+        return Err(CoreError::Other(format!(
+            "scan generation {scan_id} failed consistency validation: \
+             {mismatched_files} file/game mismatch(es), {missing_safety} finding(s) without safety evidence"
+        )));
+    }
+    Ok(())
+}
+
+/// Marks an unfinished generation and removes only its scan-produced rows.
+pub fn abort_scan(conn: &mut Connection, scan_id: i64, state: &str) -> Result<()> {
+    if !matches!(state, "failed" | "cancelled") {
+        return Err(CoreError::Other(format!(
+            "invalid terminal scan state: {state}"
+        )));
+    }
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM file_safety WHERE scan_id = ?1", [scan_id])?;
+    tx.execute(
+        "DELETE FROM findings WHERE file_id IN
+         (SELECT id FROM files WHERE scan_id = ?1)",
+        [scan_id],
+    )?;
+    tx.execute("DELETE FROM files WHERE scan_id = ?1", [scan_id])?;
+    tx.execute("DELETE FROM games WHERE scan_id = ?1", [scan_id])?;
+    tx.execute(
+        "UPDATE scan_runs SET state = ?1, completed_at = ?2 WHERE id = ?3",
+        params![state, unix_timestamp(), scan_id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn active_scan_id(conn: &Connection) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT active_scan_id FROM scan_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(None))
+}
+
+/// Legacy generation 0 and any non-active generation are read-only.
+pub fn scan_allows_deletion(conn: &Connection, scan_id: i64) -> Result<bool> {
+    if scan_id == 0 || active_scan_id(conn)? != Some(scan_id) {
+        return Ok(false);
+    }
+    let state: Option<String> = conn
+        .query_row(
+            "SELECT state FROM scan_runs WHERE id = ?1",
+            [scan_id],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(state.as_deref() == Some("active"))
+}
+
+/// Startup recovery: discard data from interrupted staging generations while
+/// leaving the active snapshot untouched.
+pub fn cleanup_abandoned_scans(conn: &mut Connection) -> Result<usize> {
+    let ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM scan_runs WHERE state = 'staging'")?;
+        let rows = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        rows
+    };
+    for scan_id in &ids {
+        abort_scan(conn, *scan_id, "failed")?;
+    }
+    Ok(ids.len())
 }
 
 /// Adds `column` (`decl` is its SQL type) to `table` if the table exists and
@@ -349,10 +747,18 @@ pub fn compact_observed(
 pub fn clear_scan_data(conn: &Connection) -> Result<()> {
     with_foreign_keys_off(conn, |conn| {
         let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM file_safety", [])?;
         tx.execute("DELETE FROM findings", [])?;
         tx.execute("DELETE FROM files", [])?;
         tx.execute("DELETE FROM games", [])?;
         tx.execute("DELETE FROM operations", [])?;
+        tx.execute("DELETE FROM scan_library_evidence", [])?;
+        tx.execute("DELETE FROM scan_diagnostics", [])?;
+        tx.execute("DELETE FROM scan_runs WHERE id <> 0", [])?;
+        tx.execute(
+            "UPDATE scan_state SET active_scan_id = NULL WHERE singleton = 1",
+            [],
+        )?;
         tx.commit()?;
         Ok(())
     })
@@ -377,12 +783,13 @@ pub fn free_page_fraction(conn: &Connection) -> Result<f64> {
 /// Libraries with no files (or no games) are simply absent from the map;
 /// callers treat an absent library as 0 bytes.
 pub fn occupied_by_library(conn: &Connection) -> Result<HashMap<i64, u64>> {
-    // On-disk allocation (GT-05a), falling back to the logical size for rows
+    // On-disk allocation (allocated-size accounting), falling back to the logical size for rows
     // indexed before `size_on_disk` existed - so occupancy matches the honest
     // per-finding figures the tree sums, not the logical total.
     let mut stmt = conn.prepare(
         "SELECT g.library_id, SUM(COALESCE(f.size_on_disk, f.size)) FROM files f \
          JOIN games g ON g.id = f.game_id \
+         WHERE f.scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1) \
          GROUP BY g.library_id",
     )?;
     let mut by_library = HashMap::new();
@@ -464,12 +871,50 @@ pub fn rebuild_database(db_path: &Path) -> Result<Connection> {
     delete_if_exists(&sidecar_path(&tmp_path, "-wal"))?;
     delete_if_exists(&sidecar_path(&tmp_path, "-shm"))?;
 
-    // The replacement is ready: only now is it safe to drop the original and
-    // move the fresh file into its place.
-    delete_database_files(db_path)?;
-    std::fs::rename(&tmp_path, db_path)?;
+    validate_database_file(&tmp_path)?;
 
-    open(db_path)
+    let recovery = sidecar_path(db_path, ".recovery.bak");
+    let recovery_sidecars = ["-wal", "-shm", "-journal"];
+    for suffix in recovery_sidecars {
+        let source = sidecar_path(db_path, suffix);
+        let destination = sidecar_path(&recovery, suffix);
+        delete_if_exists(&destination)?;
+        if source.is_file() {
+            std::fs::copy(&source, &destination)?;
+        }
+    }
+
+    crate::atomic_file::replace_staged_with_backup(&tmp_path, db_path, &recovery, |path| {
+        validate_database_file(path).map_err(std::io::Error::other)
+    })?;
+    delete_if_exists(&sidecar_path(db_path, "-wal"))?;
+    delete_if_exists(&sidecar_path(db_path, "-shm"))?;
+    delete_if_exists(&sidecar_path(db_path, "-journal"))?;
+
+    let conn = open(db_path)?;
+    let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    if integrity != "ok" {
+        return Err(CoreError::Other(format!(
+            "rebuilt database failed integrity_check: {integrity}"
+        )));
+    }
+    delete_if_exists(&recovery)?;
+    for suffix in recovery_sidecars {
+        delete_if_exists(&sidecar_path(&recovery, suffix))?;
+    }
+    Ok(conn)
+}
+
+fn validate_database_file(path: &Path) -> Result<()> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    if integrity == "ok" {
+        Ok(())
+    } else {
+        Err(CoreError::Other(format!(
+            "database integrity_check failed: {integrity}"
+        )))
+    }
 }
 
 /// Deletes a SQLite database file together with every sidecar it may have
@@ -576,6 +1021,132 @@ mod tests {
                 "table `{expected}` is missing, got: {tables:?}"
             );
         }
+    }
+
+    /// Seeds one generation's worth of scan rows and returns its `scan_id`.
+    fn seed_generation(conn: &mut Connection, library_path: &str, game: &str) -> i64 {
+        let scan_id = begin_scan(conn, "complete").expect("begin scan");
+        conn.execute(
+            "INSERT OR IGNORE INTO game_libraries (vendor, path) VALUES ('test', ?1)",
+            [library_path],
+        )
+        .expect("library");
+        let library_id: i64 = conn
+            .query_row(
+                "SELECT id FROM game_libraries WHERE path = ?1",
+                [library_path],
+                |row| row.get(0),
+            )
+            .expect("library id");
+        conn.execute(
+            "INSERT INTO games (scan_id, library_id, name, install_dir)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![scan_id, library_id, game, library_path],
+        )
+        .expect("game");
+        let game_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO files (scan_id, game_id, rel_path, size) VALUES (?1, ?2, 'x.bin', 1)",
+            params![scan_id, game_id],
+        )
+        .expect("file");
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO findings (file_id, category, confidence) VALUES (?1, 'bonus', 90)",
+            [file_id],
+        )
+        .expect("finding");
+        conn.execute(
+            "INSERT INTO file_safety (file_id, scan_id, trusted_root, rel_path)
+             VALUES (?1, ?2, ?3, 'x.bin')",
+            params![file_id, scan_id, library_path],
+        )
+        .expect("safety");
+        conn.execute(
+            "INSERT INTO scan_diagnostics (scan_id, provider, stage, message)
+             VALUES (?1, 'test', 'probe', 'note')",
+            [scan_id],
+        )
+        .expect("diagnostic");
+        scan_id
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).expect("count")
+    }
+
+    /// A superseded generation is unreachable - every reader filters on
+    /// `scan_state.active_scan_id` - so leaving it behind would grow the
+    /// database by a full copy of the scan on every single run, invisibly.
+    #[test]
+    fn activating_a_generation_drops_the_one_it_supersedes() {
+        let mut conn = open_in_memory().expect("in-memory db");
+
+        let first = seed_generation(&mut conn, "D:/Library", "First");
+        activate_scan(&mut conn, first).expect("activate first");
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM files"), 1);
+
+        let second = seed_generation(&mut conn, "D:/Library", "Second");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM files"),
+            2,
+            "both generations coexist while the second is staging"
+        );
+        activate_scan(&mut conn, second).expect("activate second");
+
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM files"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM games"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM findings"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM file_safety"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM scan_diagnostics"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM scan_runs WHERE id = {first}")
+            ),
+            0,
+            "the superseded run row goes too"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM scan_runs WHERE state = 'legacy'"
+            ),
+            1,
+            "the legacy generation anchors pre-migration rows and must survive"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM files WHERE scan_id = {second}")
+            ),
+            1,
+            "the surviving rows belong to the newly active generation"
+        );
+
+        // The libraries table is generation-independent and must survive.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM game_libraries"), 1);
+    }
+
+    /// Pruning must not reach into a generation that is still being written.
+    #[test]
+    fn pruning_leaves_a_concurrently_staging_generation_alone() {
+        let mut conn = open_in_memory().expect("in-memory db");
+
+        let first = seed_generation(&mut conn, "D:/Library", "First");
+        activate_scan(&mut conn, first).expect("activate first");
+        let staging = seed_generation(&mut conn, "D:/Library", "Staging");
+        let second = seed_generation(&mut conn, "D:/Library", "Second");
+        activate_scan(&mut conn, second).expect("activate second");
+
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM files WHERE scan_id = {staging}")
+            ),
+            1,
+            "an in-flight staging generation must not be pruned"
+        );
     }
 
     #[test]
@@ -898,7 +1469,7 @@ mod tests {
         migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
     }
 
-    /// `migrate` must add `files.size_on_disk` (GT-05a) to a database created
+    /// `migrate` must add `files.size_on_disk` (allocated-size accounting) to a database created
     /// before that column existed, be idempotent, and leave pre-existing rows
     /// with a `NULL` in it (so load's `COALESCE(size_on_disk, size)` fallback
     /// keeps working until the next scan repopulates real values).
@@ -949,7 +1520,7 @@ mod tests {
         migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
     }
 
-    /// GT-09: `games.build_id` must be added to a database created before that
+    /// game-state tracking: `games.build_id` must be added to a database created before that
     /// column existed, be idempotent, and leave pre-existing games with `NULL`,
     /// which `gamestate::changed_games` reads as "unknown, claim nothing" - so
     /// the first startup after an upgrade never flags the whole library as
@@ -992,6 +1563,51 @@ mod tests {
         );
 
         migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
+    }
+
+    #[test]
+    fn schema_v1_migrates_to_v2_with_orphan_evidence_linkage() {
+        let conn = Connection::open_in_memory().expect("open bare in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE file_safety (
+                file_id          INTEGER PRIMARY KEY,
+                scan_id          INTEGER NOT NULL,
+                trusted_root     TEXT NOT NULL,
+                rel_path         TEXT NOT NULL,
+                root_identity    TEXT,
+                target_identity  TEXT,
+                target_kind      TEXT,
+                tree_fingerprint TEXT,
+                block_reason     TEXT
+            );
+            PRAGMA user_version = 1;",
+        )
+        .expect("create schema-v1 safety table");
+
+        migrate(&conn).expect("v1 to v2 migration");
+
+        assert!(
+            column_exists(&conn, "file_safety", "evidence_library_path").expect("probe v2 column")
+        );
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_newer_unknown_schema_version_is_rejected_without_downgrade() {
+        let conn = Connection::open_in_memory().expect("open bare in-memory db");
+        conn.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION + 1)
+            .expect("set future version");
+
+        let error = migrate(&conn).expect_err("future schema must not be opened");
+
+        assert!(error.to_string().contains("newer than supported"));
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read future version");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION + 1);
     }
 
     /// `clear_scan_data`'s fast path disables foreign-key enforcement only for
