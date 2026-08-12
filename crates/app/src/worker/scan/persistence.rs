@@ -207,7 +207,7 @@ pub(super) fn persist_libraries(
                 params![library_id, scan_id],
             )?;
 
-            let build_ids = build_ids_for(library)?;
+            let build_ids = build_ids_for(library);
 
             for game in &library.games {
                 // build-ID history: record now, show later. The build id costs nothing to
@@ -254,18 +254,33 @@ pub(super) fn persist_libraries(
 /// claim nothing" rather than "changed".
 ///
 /// Cheap by construction: this reads a few dozen small text files, never
-/// walking the games themselves. A library whose manifests are unreadable
-/// is a scan error: a snapshot whose provider evidence changed between
-/// discovery and persistence must not become active.
-fn build_ids_for(library: &DiscoveredLibrary) -> CoreResult<HashMap<String, String>> {
+/// walking the games themselves.
+///
+/// Unreadable manifests are not a scan failure. A build id is only ever used
+/// to report that a game changed since the last scan, and that report already
+/// refuses to claim a change it cannot evidence - so losing one costs a line
+/// in a summary, and nothing in the deletion path consults it. Failing the
+/// whole scan here would mean a Steam library that went offline mid-scan takes
+/// every other library's results down with it, which is the opposite of what
+/// per-library evidence is for.
+fn build_ids_for(library: &DiscoveredLibrary) -> HashMap<String, String> {
     if library.vendor != "steam" {
-        return Ok(HashMap::new());
+        return HashMap::new();
     }
 
-    Ok(providers::steam::manifest_states(&library.path)?
-        .into_iter()
-        .filter_map(|state| Some((state.app_id, state.build_id?)))
-        .collect())
+    match providers::steam::manifest_states(&library.path) {
+        Ok(states) => states
+            .into_iter()
+            .filter_map(|state| Some((state.app_id, state.build_id?)))
+            .collect(),
+        Err(err) => {
+            crate::logger::log(&format!(
+                "build ids unavailable for {}: {err}",
+                library.path.display()
+            ));
+            HashMap::new()
+        }
+    }
 }
 
 /// Persists one already-scanned-and-classified game: replaces its indexed

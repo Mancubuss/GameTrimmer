@@ -1957,11 +1957,16 @@ mod tests {
         let install_dir = tempfile::tempdir().expect("create temp install dir");
         write_file(&install_dir.path().join("readme.txt"), b"hi");
 
+        // A real directory, not a hardcoded one: a literal like "F:/SteamLibrary"
+        // happens to exist on some developer machines, so the test passed there
+        // and failed on CI for reasons that had nothing to do with vendors.
+        let library_root = tempfile::tempdir().expect("create temp library root");
+        let library_path = library_root.path().to_string_lossy().to_string();
+
         // The user adds the folder by hand, before any provider knows it.
-        manual::add_manual_library(&conn, Path::new("F:/SteamLibrary"))
-            .expect("manual add should succeed");
+        manual::add_manual_library(&conn, library_root.path()).expect("manual add should succeed");
         assert_eq!(
-            vendor_of(&conn, "F:/SteamLibrary"),
+            vendor_of(&conn, &library_path),
             manual::MANUAL_VENDOR,
             "precondition: a hand-added folder starts out as manual"
         );
@@ -1969,7 +1974,7 @@ mod tests {
         // A later scan: the Steam provider now discovers the same root.
         let discovered = DiscoveredLibrary {
             vendor: "steam",
-            path: PathBuf::from("F:/SteamLibrary"),
+            path: library_root.path().to_path_buf(),
             orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Portal 2".to_string(),
@@ -1981,7 +1986,7 @@ mod tests {
             .expect("scan cycle should succeed");
 
         assert_eq!(
-            vendor_of(&conn, "F:/SteamLibrary"),
+            vendor_of(&conn, &library_path),
             "steam",
             "a rescan must record the most precise vendor known, not keep manual"
         );
@@ -2008,9 +2013,11 @@ mod tests {
         let install_dir = tempfile::tempdir().expect("create temp install dir");
         write_file(&install_dir.path().join("readme.txt"), b"hi");
 
+        let library_root = tempfile::tempdir().expect("create temp library root");
+        let library_path = library_root.path().to_string_lossy().to_string();
         let as_steam = DiscoveredLibrary {
             vendor: "steam",
-            path: PathBuf::from("F:/SteamLibrary"),
+            path: library_root.path().to_path_buf(),
             orphan_evidence: OrphanEvidence::Authoritative,
             games: vec![GameInstall {
                 name: "Portal 2".to_string(),
@@ -2029,9 +2036,55 @@ mod tests {
             .expect("degraded scan should still succeed");
 
         assert_eq!(
-            vendor_of(&conn, "F:/SteamLibrary"),
+            vendor_of(&conn, &library_path),
             "steam",
             "a scan where the provider dropped out must not demote the library"
+        );
+    }
+
+    /// Build ids are a convenience: they let a later scan say "this game
+    /// changed since last time". A Steam library whose manifests cannot be
+    /// read loses that line and nothing else - the deletion path never
+    /// consults it, and `gamestate::changed_games` already refuses to claim a
+    /// change it cannot evidence. Propagating the read error instead took
+    /// every other library's results down with it, which is exactly what
+    /// per-library evidence exists to prevent.
+    #[test]
+    fn a_steam_library_with_unreadable_manifests_still_persists() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("readme.txt"), b"hi");
+
+        // No `steamapps` under it, so reading manifest states fails.
+        let library_root = tempfile::tempdir().expect("create temp library root");
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: library_root.path().to_path_buf(),
+            orphan_evidence: OrphanEvidence::Authoritative,
+            games: vec![GameInstall {
+                name: "Portal 2".to_string(),
+                install_dir: install_dir.path().to_path_buf(),
+                app_id: Some("620".to_string()),
+            }],
+        };
+
+        let games = run_one_cycle(&mut conn, &engine, &lang_detector, &library)
+            .expect("an unreadable manifest must not fail the scan");
+        assert_eq!(games.len(), 1, "the game is still recorded");
+
+        let build_id: Option<String> = conn
+            .query_row(
+                "SELECT build_id FROM games WHERE name = ?1",
+                ["Portal 2"],
+                |row| row.get(0),
+            )
+            .expect("read back the game");
+        assert!(
+            build_id.is_none(),
+            "an unavailable build id is stored as unknown, not guessed: {build_id:?}"
         );
     }
 
