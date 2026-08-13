@@ -88,6 +88,8 @@ pub(super) const STRINGS: Strings = Strings {
     group_axis_disk: "за диском",
     group_axis_launcher: "за лаунчером",
     group_axis_library: "за бібліотекою",
+    group_axis_category: "за категорією",
+    group_axis_flat: "без групування",
     group_unattributed: "Без прив'язки",
     btn_remove_category: "Прибрати всю категорію",
     search_hint: "Пошук за назвою\u{2026}",

@@ -164,6 +164,8 @@ pub struct Strings {
     pub group_axis_disk: &'static str,
     pub group_axis_launcher: &'static str,
     pub group_axis_library: &'static str,
+    pub group_axis_category: &'static str,
+    pub group_axis_flat: &'static str,
     /// Heading of the branch holding rows that carry no value on the active
     /// axis - residue whose library root no longer resolves, or rows from a
     /// database written before the attribution existed. Named rather than

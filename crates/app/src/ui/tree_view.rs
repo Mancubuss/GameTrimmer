@@ -64,8 +64,8 @@ use crate::app::GameTrimmerApp;
 use crate::i18n::{self, Lang};
 use crate::model::{
     self, category_display, category_ui_key, format_size, group_selection_state, is_orphan_branch,
-    set_group_selection, toggle_group, DisplayCategory, FindingItem, GameNode, SortColumn,
-    TopGroup, TopKey, TreeNode, TreeSort, AUTO_SELECT_CONFIDENCE_THRESHOLD,
+    set_group_selection, toggle_group, DisplayCategory, FindingItem, GameNode, GroupAxis,
+    SortColumn, TopGroup, TopKey, TreeNode, TreeSort, AUTO_SELECT_CONFIDENCE_THRESHOLD,
 };
 use crate::search::SearchIndex;
 use crate::ui::row_actions;
@@ -145,6 +145,89 @@ enum Row {
     },
 }
 
+/// A row plus how deep it is drawn.
+///
+/// The indent is carried rather than derived from the row's kind, because the
+/// active axis can fold whole levels away (see [`DrawnLevels`]) and a game row
+/// under the flat axis is not at the depth a game row is under the disk axis.
+/// Storing it also collapses two things that used to have to agree by hand:
+/// the indent the row is painted at, and the depth `<-` walks up through.
+#[derive(Debug, Clone, Copy)]
+struct VisibleRow {
+    row: Row,
+    indent: usize,
+}
+
+/// Which of the model's three header levels the active axis actually draws.
+///
+/// `model::build_tree` produces the same branch -> game -> category -> node
+/// shape whatever the axis; what changes is which of those headings still say
+/// something. Under [`GroupAxis::Category`] the per-game category row would
+/// only repeat the branch heading one indent in, and under
+/// [`GroupAxis::Flat`] every heading above the file is one the user asked to
+/// be rid of.
+///
+/// Folding at draw time rather than at build time is deliberate: the export,
+/// the totals and the sort all walk the tree, and none of them should have to
+/// know which headings the screen is currently showing.
+#[derive(Debug, Clone, Copy)]
+struct DrawnLevels {
+    top: bool,
+    game: bool,
+    category: bool,
+}
+
+impl DrawnLevels {
+    fn of(axis: GroupAxis) -> Self {
+        match axis {
+            GroupAxis::Disk | GroupAxis::Launcher | GroupAxis::Library => Self {
+                top: true,
+                game: true,
+                category: true,
+            },
+            GroupAxis::Category => Self {
+                top: true,
+                game: true,
+                category: false,
+            },
+            GroupAxis::Flat => Self {
+                top: false,
+                game: false,
+                category: false,
+            },
+        }
+    }
+
+    /// Whether this game row says anything its branch heading has not.
+    ///
+    /// The orphan pseudo-game (`model::ORPHAN_GAME_ID`) exists to give residue
+    /// a home under a level that otherwise means "game". Under the category
+    /// axis that residue's home is already the "Orphaned residue" branch, so
+    /// the row would repeat that heading verbatim one indent in - the same
+    /// redundancy that folds the category level away there.
+    fn draws_game(self, axis: GroupAxis, game_id: i64) -> bool {
+        self.game && !(axis == GroupAxis::Category && is_orphan_branch(game_id))
+    }
+
+    /// The indent a game row sits at: right under the branch heading when
+    /// there is one, at the margin when there is not.
+    fn game_indent(self) -> usize {
+        usize::from(self.top)
+    }
+
+    fn category_indent(self) -> usize {
+        self.game_indent() + usize::from(self.game)
+    }
+
+    /// Where folders and standalone files sit - under the category row if it
+    /// is drawn, otherwise under whatever the deepest drawn heading was.
+    fn node_indent(self, axis: GroupAxis, game_id: i64) -> usize {
+        self.game_indent()
+            + usize::from(self.draws_game(axis, game_id))
+            + usize::from(self.category)
+    }
+}
+
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
 
@@ -213,6 +296,8 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         if !app.any_modal_open() {
             let rows = build_visible_rows(
                 &app.tree,
+                &app.findings,
+                app.tree_axis,
                 &app.tree_toggles,
                 app.tree_category_filter,
                 &app.tree_search_index,
@@ -224,6 +309,8 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         // which rows are visible.
         let rows = build_visible_rows(
             &app.tree,
+            &app.findings,
+            app.tree_axis,
             &app.tree_toggles,
             app.tree_category_filter,
             &app.tree_search_index,
@@ -253,6 +340,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         let findings = &mut app.findings;
         let toggles = &mut app.tree_toggles;
         let cursor = &mut app.tree_cursor;
+        let axis = app.tree_axis;
 
         // Keep the scrollbar drawn even when the content happens to fit, so the
         // list's right edge (and the width available to file rows) stays fixed
@@ -272,6 +360,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                     cursor,
                     rows[row_index],
                     row_index,
+                    axis,
                     lang,
                 );
             }
@@ -488,7 +577,10 @@ fn show_review_mark(ui: &mut egui::Ui, needs_review: bool, hint: &str) {
 fn game_matches_filter(game: &crate::model::GameNode, filter: Option<DisplayCategory>) -> bool {
     match filter {
         None => true,
-        Some(category) => game.categories.iter().any(|node| node.category == category),
+        Some(category) => game
+            .categories
+            .iter()
+            .any(|node| node.category == Some(category)),
     }
 }
 
@@ -503,73 +595,105 @@ fn top_matches_filter(top_group: &TopGroup, filter: Option<DisplayCategory>) -> 
 
 /// Whether a game still has content under the active name search (name search).
 ///
-/// Real games answer this in O(1) from the pre-built id set. The orphan branch
+/// Real games answer this in O(1) from the pre-built id set. A synthetic node
 /// cannot: every top-level branch's orphan node shares the one
-/// [`is_orphan_branch`] sentinel id, so the id-keyed answer would light up all of
-/// them as soon as any one matched. Its findings are the launcher-residue leftovers - few
-/// enough to scan directly.
+/// [`is_orphan_branch`] sentinel id, so the id-keyed answer would light up all
+/// of them as soon as any one matched, and the flat axis's node
+/// (`model::FLAT_GAME_ID`) is not in the index at all, so it would answer "no"
+/// for every query. Both scan their own indices instead - which the flat axis
+/// never actually reaches, since its game level is not drawn and so is never
+/// tested.
 fn game_matches_search(game: &GameNode, search: &SearchIndex) -> bool {
     if !search.is_active() {
         return true;
     }
-    if is_orphan_branch(game.game_id) {
-        search.any_matches(&game.all_indices)
-    } else {
+    if model::is_real_game(game.game_id) {
         search.game_matches(game.game_id)
+    } else {
+        search.any_matches(&game.all_indices)
     }
 }
 
 fn build_visible_rows(
     tree: &[TopGroup],
+    findings: &[FindingItem],
+    axis: GroupAxis,
     toggles: &HashMap<String, bool>,
     filter: Option<DisplayCategory>,
     search: &SearchIndex,
-) -> Vec<Row> {
+) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
+    let levels = DrawnLevels::of(axis);
+    // With no category level and no category branch, nothing above a file can
+    // answer the plan-card filter, so each file answers for itself. That is
+    // only the flat axis: the category axis folds the category row away too,
+    // but there the *branch* is the category and the filter is settled one
+    // level higher than usual rather than one level lower.
+    let filter_per_file = axis == GroupAxis::Flat;
 
     for (d, top_group) in tree.iter().enumerate() {
         // Under a plan-card filter or a name search, a branch (and each game)
         // with nothing left to show is skipped entirely rather than shown as an
         // empty header, so the "View" action lands on exactly that category's
-        // findings and a search shows only branches that contain a hit.
-        if !top_matches_filter(top_group, filter) {
-            continue;
-        }
-        if !top_group
-            .games
-            .iter()
-            .any(|game| game_matches_search(game, search))
-        {
-            continue;
-        }
-        rows.push(Row::Top { d });
-        if !is_open(toggles, &top_key(&top_group.key), true) {
-            continue;
+        // findings and a search shows only branches that contain a hit. A level
+        // that is not drawn is not tested either - there is no header to
+        // suppress, and the rows below answer for themselves.
+        if levels.top {
+            if !top_matches_filter(top_group, filter) {
+                continue;
+            }
+            if !top_group
+                .games
+                .iter()
+                .any(|game| game_matches_search(game, search))
+            {
+                continue;
+            }
+            rows.push(VisibleRow {
+                row: Row::Top { d },
+                indent: 0,
+            });
+            if !is_open(toggles, &top_key(&top_group.key), true) {
+                continue;
+            }
         }
 
         for (g, game) in top_group.games.iter().enumerate() {
-            if !game_matches_filter(game, filter) || !game_matches_search(game, search) {
-                continue;
+            let draws_game = levels.draws_game(axis, game.game_id);
+            if draws_game {
+                if !game_matches_filter(game, filter) || !game_matches_search(game, search) {
+                    continue;
+                }
+                rows.push(VisibleRow {
+                    row: Row::Game { d, g },
+                    indent: levels.game_indent(),
+                });
+                if !is_open(toggles, &game_key(&top_group.key, game.game_id), false) {
+                    continue;
+                }
             }
-            rows.push(Row::Game { d, g });
-            if !is_open(toggles, &game_key(&top_group.key, game.game_id), false) {
-                continue;
-            }
+            let node_indent = levels.node_indent(axis, game.game_id);
 
             for (c, category_node) in game.categories.iter().enumerate() {
-                if filter.is_some_and(|category| category_node.category != category) {
-                    continue;
-                }
-                // Only reached for an expanded game, so the per-item scans from
-                // here down are bounded by what the user has opened - never by
-                // the size of the whole result set.
-                if search.is_active() && !search.any_matches(&category_node.all_indices) {
-                    continue;
-                }
-                rows.push(Row::Category { d, g, c });
-                let cat_key = category_key(&top_group.key, game.game_id, category_node.category);
-                if !is_open(toggles, &cat_key, true) {
-                    continue;
+                if levels.category {
+                    if filter.is_some_and(|category| category_node.category != Some(category)) {
+                        continue;
+                    }
+                    // Only reached for an expanded game, so the per-item scans
+                    // from here down are bounded by what the user has opened -
+                    // never by the size of the whole result set.
+                    if search.is_active() && !search.any_matches(&category_node.all_indices) {
+                        continue;
+                    }
+                    rows.push(VisibleRow {
+                        row: Row::Category { d, g, c },
+                        indent: levels.category_indent(),
+                    });
+                    let cat_key =
+                        category_key(&top_group.key, game.game_id, category_node.category);
+                    if !is_open(toggles, &cat_key, true) {
+                        continue;
+                    }
                 }
 
                 for (n, node) in category_node.nodes.iter().enumerate() {
@@ -582,7 +706,10 @@ fn build_visible_rows(
                             if search.is_active() && !search.any_matches(item_indices) {
                                 continue;
                             }
-                            rows.push(Row::Folder { d, g, c, n });
+                            rows.push(VisibleRow {
+                                row: Row::Folder { d, g, c, n },
+                                indent: node_indent,
+                            });
                             let folder_key = folder_key(
                                 &top_group.key,
                                 game.game_id,
@@ -600,12 +727,15 @@ fn build_visible_rows(
                                 if search.is_active() && !search.item_matches(index) {
                                     continue;
                                 }
-                                rows.push(Row::File {
-                                    d,
-                                    g,
-                                    c,
-                                    n,
-                                    member: Some(member),
+                                rows.push(VisibleRow {
+                                    row: Row::File {
+                                        d,
+                                        g,
+                                        c,
+                                        n,
+                                        member: Some(member),
+                                    },
+                                    indent: node_indent + 1,
                                 });
                             }
                         }
@@ -613,12 +743,22 @@ fn build_visible_rows(
                             if search.is_active() && !search.item_matches(*index) {
                                 continue;
                             }
-                            rows.push(Row::File {
-                                d,
-                                g,
-                                c,
-                                n,
-                                member: None,
+                            if filter_per_file
+                                && filter.is_some_and(|category| {
+                                    findings[*index].row.display_category() != category
+                                })
+                            {
+                                continue;
+                            }
+                            rows.push(VisibleRow {
+                                row: Row::File {
+                                    d,
+                                    g,
+                                    c,
+                                    n,
+                                    member: None,
+                                },
+                                indent: node_indent,
                             });
                         }
                     }
@@ -647,21 +787,36 @@ fn game_key(top: &TopKey, game_id: i64) -> String {
     format!("g|{}|{game_id}", top.collapse_key())
 }
 
+/// The short key naming a category node, including the flat axis's
+/// category-less one (`model::CategoryNode::category`). Only ever part of a
+/// collapse key, so it needs to be stable and distinct - not readable.
+fn category_node_key(category: Option<DisplayCategory>) -> &'static str {
+    match category {
+        Some(category) => category_ui_key(category),
+        None => "*",
+    }
+}
+
 /// Stable, collision-free key for a category row's expand/collapse state.
-fn category_key(top: &TopKey, game_id: i64, category: DisplayCategory) -> String {
+fn category_key(top: &TopKey, game_id: i64, category: Option<DisplayCategory>) -> String {
     format!(
         "c|{}|{game_id}|{}",
         top.collapse_key(),
-        category_ui_key(category)
+        category_node_key(category)
     )
 }
 
 /// Stable, collision-free key for a folder row's expand/collapse state.
-fn folder_key(top: &TopKey, game_id: i64, category: DisplayCategory, group_dir: &str) -> String {
+fn folder_key(
+    top: &TopKey,
+    game_id: i64,
+    category: Option<DisplayCategory>,
+    group_dir: &str,
+) -> String {
     format!(
         "f|{}|{game_id}|{}|{group_dir}",
         top.collapse_key(),
-        category_ui_key(category)
+        category_node_key(category)
     )
 }
 
@@ -671,26 +826,17 @@ fn is_open(toggles: &HashMap<String, bool>, key: &str, default_open: bool) -> bo
     toggles.get(key).copied().unwrap_or(default_open)
 }
 
-/// Nesting level of a row, mirroring the indent used when rendering it.
-/// Used by `←` to find a row's structural parent.
-fn row_level(row: Row) -> usize {
-    match row {
-        Row::Top { .. } => 0,
-        Row::Game { .. } => 1,
-        Row::Category { .. } => 2,
-        Row::Folder { .. } => 3,
-        Row::File { member: None, .. } => 3,
-        Row::File {
-            member: Some(_), ..
-        } => 4,
-    }
-}
-
-/// Index (into `rows`) of the closest preceding row with a lower nesting
-/// level - the cursor row's structural parent.
-fn parent_row_index(rows: &[Row], index: usize) -> Option<usize> {
-    let level = row_level(rows[index]);
-    (0..index).rev().find(|&i| row_level(rows[i]) < level)
+/// Index (into `rows`) of the closest preceding row drawn shallower than this
+/// one - the cursor row's structural parent.
+///
+/// Reads the indent the row is actually painted at rather than recomputing a
+/// depth from its kind, so `<-` can never walk to a different place than the
+/// screen shows. That matters once an axis folds levels away: under the
+/// category axis a folder row's parent is the game row two indents up on the
+/// disk axis and one indent up here.
+fn parent_row_index(rows: &[VisibleRow], index: usize) -> Option<usize> {
+    let indent = rows[index].indent;
+    (0..index).rev().find(|&i| rows[i].indent < indent)
 }
 
 /// The expand/collapse toggle key and default-open state of a row, if the
@@ -787,7 +933,7 @@ struct TreeKeys {
 fn handle_keyboard(
     app: &mut GameTrimmerApp,
     ui: &egui::Ui,
-    rows: &[Row],
+    rows: &[VisibleRow],
     row_stride: f32,
 ) -> Option<f32> {
     if rows.is_empty() {
@@ -863,7 +1009,7 @@ fn handle_keyboard(
     }
 
     if let Some(current) = cursor {
-        let row = rows[current.min(last)];
+        let row = rows[current.min(last)].row;
         if keys.toggle_select {
             toggle_row_selection(&app.tree, &mut app.findings, row);
         }
@@ -919,10 +1065,12 @@ fn show_row(
     findings: &mut [FindingItem],
     toggles: &mut HashMap<String, bool>,
     cursor: &mut Option<usize>,
-    row: Row,
+    visible: VisibleRow,
     row_index: usize,
+    axis: GroupAxis,
     lang: Lang,
 ) {
+    let VisibleRow { row, indent } = visible;
     let row_rect = egui::Rect::from_min_size(
         ui.cursor().min,
         egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
@@ -970,18 +1118,20 @@ fn show_row(
     }
 
     match row {
-        Row::Top { d } => show_top_row(ui, tree, findings, toggles, cursor, d, row_index, lang),
-        Row::Game { d, g } => {
-            show_game_row(ui, tree, findings, toggles, cursor, d, g, row_index, lang)
-        }
+        Row::Top { d } => show_top_row(
+            ui, tree, findings, toggles, cursor, d, row_index, indent, lang,
+        ),
+        Row::Game { d, g } => show_game_row(
+            ui, tree, findings, toggles, cursor, d, g, row_index, indent, axis, lang,
+        ),
         Row::Category { d, g, c } => show_category_row(
-            ui, tree, findings, toggles, cursor, d, g, c, row_index, lang,
+            ui, tree, findings, toggles, cursor, d, g, c, row_index, indent, lang,
         ),
         Row::Folder { d, g, c, n } => show_folder_row(
-            ui, tree, findings, toggles, cursor, d, g, c, n, row_index, lang,
+            ui, tree, findings, toggles, cursor, d, g, c, n, row_index, indent, lang,
         ),
         Row::File { d, g, c, n, member } => show_file_row(
-            ui, tree, findings, cursor, d, g, c, n, member, row_index, lang,
+            ui, tree, findings, cursor, d, g, c, n, member, row_index, indent, axis, lang,
         ),
     }
 }
@@ -989,15 +1139,15 @@ fn show_row(
 /// The folder a top-level branch stands for on disk, if it stands for one at
 /// all.
 ///
-/// A disk row means its root; a library row means the library root. A launcher
-/// row means neither - "Steam" is not a directory, and the same launcher's
-/// games can be spread across several - so it gets no shell actions rather
-/// than a made-up path.
+/// A disk row means its root; a library row means the library root. The rest
+/// mean no one folder - "Steam" is not a directory and the same launcher's
+/// games can be spread across several; a category spans every game there is -
+/// so they get no shell actions rather than a made-up path.
 fn top_shell_target(key: &TopKey) -> Option<ShellTarget> {
     match key {
         TopKey::Disk(disk) => Some(ShellTarget::Folder(disk_root_path(disk))),
         TopKey::Library(root) => Some(ShellTarget::Folder(row_actions::windows_path_string(root))),
-        TopKey::Launcher(_) | TopKey::Unattributed(_) => None,
+        TopKey::Launcher(_) | TopKey::Category(_) | TopKey::Flat | TopKey::Unattributed(_) => None,
     }
 }
 
@@ -1010,6 +1160,7 @@ fn show_top_row(
     cursor: &mut Option<usize>,
     d: usize,
     row_index: usize,
+    indent: usize,
     lang: Lang,
 ) {
     let top_group = &tree[d];
@@ -1023,7 +1174,7 @@ fn show_top_row(
         row_index,
         &key,
         true,
-        0,
+        indent,
         &top_group.all_indices,
         top_group.total_bytes,
         name,
@@ -1062,6 +1213,8 @@ fn show_game_row(
     d: usize,
     g: usize,
     row_index: usize,
+    indent: usize,
+    axis: GroupAxis,
     lang: Lang,
 ) {
     let top_group = &tree[d];
@@ -1085,7 +1238,7 @@ fn show_game_row(
         row_index,
         &key,
         false,
-        1,
+        indent,
         &game.all_indices,
         game.total_bytes,
         name,
@@ -1104,15 +1257,34 @@ fn show_game_row(
         None => response,
     };
 
+    // Under the category axis this row holds one category's worth of the game,
+    // not the game's whole contribution to the tree - so the plain "Select all
+    // in {game}" would claim more than the click does. `game.all_indices` is
+    // the same either way; only the sentence changes.
+    let scoped_category = match (axis, &top_group.key) {
+        (GroupAxis::Category, TopKey::Category(category)) => Some(*category),
+        _ => None,
+    };
+    let (select, deselect) = match scoped_category {
+        Some(category) => {
+            let name = category_display(lang, category);
+            (
+                i18n::select_category_in_game(lang, name, &label),
+                i18n::deselect_category_in_game(lang, name, &label),
+            )
+        }
+        None => (
+            i18n::select_all_in_game(lang, &label),
+            i18n::deselect_all_in_game(lang, &label),
+        ),
+    };
+
     row_context_menu(&response, lang, target, |ui| {
-        if ui.button(i18n::select_all_in_game(lang, &label)).clicked() {
+        if ui.button(select).clicked() {
             set_group_selection(findings, &game.all_indices, true);
             ui.close();
         }
-        if ui
-            .button(i18n::deselect_all_in_game(lang, &label))
-            .clicked()
-        {
+        if ui.button(deselect).clicked() {
             set_group_selection(findings, &game.all_indices, false);
             ui.close();
         }
@@ -1139,7 +1311,7 @@ fn category_indices_in_group(top_group: &TopGroup, category: DisplayCategory) ->
         .flat_map(|game| {
             game.categories
                 .iter()
-                .filter(|category_node| category_node.category == category)
+                .filter(|category_node| category_node.category == Some(category))
                 .flat_map(|category_node| category_node.all_indices.iter().copied())
         })
         .collect()
@@ -1156,13 +1328,21 @@ fn show_category_row(
     g: usize,
     c: usize,
     row_index: usize,
+    indent: usize,
     lang: Lang,
 ) {
     let top_group = &tree[d];
     let game = &top_group.games[g];
     let category_node = &game.categories[c];
+    // `build_visible_rows` only emits this row while the category level is
+    // drawn, and the one node that carries no category belongs to the axis
+    // that folds the level away - so there is nothing to draw here rather than
+    // a heading with no name.
+    let Some(category) = category_node.category else {
+        return;
+    };
     let key = category_key(&top_group.key, game.game_id, category_node.category);
-    let name = egui::RichText::new(category_display(lang, category_node.category));
+    let name = egui::RichText::new(category_display(lang, category));
     let response = show_header_row(
         ui,
         findings,
@@ -1171,7 +1351,7 @@ fn show_category_row(
         row_index,
         &key,
         true,
-        2,
+        indent,
         &category_node.all_indices,
         category_node.total_bytes,
         name,
@@ -1190,12 +1370,12 @@ fn show_category_row(
     };
 
     row_context_menu(&response, lang, target, |ui| {
-        let label = category_display(lang, category_node.category);
+        let label = category_display(lang, category);
         if ui
             .button(i18n::select_category_in_group(lang, label, &top_group.key))
             .clicked()
         {
-            let indices = category_indices_in_group(top_group, category_node.category);
+            let indices = category_indices_in_group(top_group, category);
             set_group_selection(findings, &indices, true);
             ui.close();
         }
@@ -1207,7 +1387,7 @@ fn show_category_row(
             ))
             .clicked()
         {
-            let indices = category_indices_in_group(top_group, category_node.category);
+            let indices = category_indices_in_group(top_group, category);
             set_group_selection(findings, &indices, false);
             ui.close();
         }
@@ -1226,6 +1406,7 @@ fn show_folder_row(
     c: usize,
     n: usize,
     row_index: usize,
+    indent: usize,
     lang: Lang,
 ) {
     let top_group = &tree[d];
@@ -1254,7 +1435,7 @@ fn show_folder_row(
         row_index,
         &key,
         false,
-        3,
+        indent,
         item_indices,
         *total_bytes,
         name,
@@ -1456,10 +1637,12 @@ fn show_file_row(
     n: usize,
     member: Option<usize>,
     row_index: usize,
+    indent: usize,
+    axis: GroupAxis,
     lang: Lang,
 ) {
     let node = &tree[d].games[g].categories[c].nodes[n];
-    let (index, level, display_name) = match (node, member) {
+    let (index, display_name) = match (node, member) {
         (
             TreeNode::Folder {
                 group_dir,
@@ -1476,11 +1659,30 @@ fn show_file_row(
                 .strip_prefix(&format!("{group_dir}\\"))
                 .unwrap_or(rel_path)
                 .to_string();
-            (index, 4, name)
+            (index, name)
         }
-        (TreeNode::File { index }, None) => (*index, 3, findings[*index].row.rel_path.clone()),
+        (TreeNode::File { index }, None) => {
+            let row = &findings[*index].row;
+            // Under every other axis a heading above this row already says
+            // which game the file belongs to. The flat axis has no headings at
+            // all, so a bare relative path would leave a list of "loc_0.pak"
+            // with nothing to tell one game's from another's - the row has to
+            // carry that itself.
+            let name = if axis == GroupAxis::Flat {
+                let game = if is_orphan_branch(row.game_id) {
+                    i18n::strings(lang).orphan_branch_label.to_string()
+                } else {
+                    row.game_name.clone()
+                };
+                i18n::flat_row_name(lang, &game, &row.rel_path)
+            } else {
+                row.rel_path.clone()
+            };
+            (*index, name)
+        }
         _ => unreachable!("Row::File member/node kind mismatch"),
     };
+    let level = indent;
 
     let item = &mut findings[index];
 
@@ -1578,6 +1780,19 @@ mod tests {
             item.row.confidence = confidence;
         }
 
+        open_every_branch(&mut test);
+        test.assert_label(SEEDED_FILE_NAME);
+        test
+    }
+
+    /// Marks every branch, game and category of the *current* tree open, then
+    /// settles.
+    ///
+    /// Keyed off the tree as it stands rather than off the disk axis, because
+    /// the collapse keys are namespaced per axis (`model::TopKey`): keys built
+    /// under one axis say nothing about another, so a test that switches axes
+    /// has to open the new tree rather than reuse the old one's keys.
+    fn open_every_branch(test: &mut UiTest) {
         let mut keys = Vec::new();
         for top_group in &test.app().tree {
             keys.push(top_key(&top_group.key));
@@ -1596,9 +1811,13 @@ mod tests {
             test.app_mut().tree_toggles.insert(key, true);
         }
         test.run();
+    }
 
-        test.assert_label(SEEDED_FILE_NAME);
-        test
+    /// Switches axis and opens whatever the new tree turned out to be.
+    fn regroup(test: &mut UiTest, axis: model::GroupAxis) {
+        test.app_mut().set_tree_axis(axis);
+        test.run();
+        open_every_branch(test);
     }
 
     /// The two seeded games, in the order `UiTest::seed_findings` creates
@@ -2297,5 +2516,156 @@ mod tests {
 
         let after: Vec<bool> = test.app().findings.iter().map(|f| f.selected).collect();
         assert_eq!(before, after);
+    }
+
+    /// The category axis heads the tree with the category and drops the
+    /// per-game category row. Both halves are asserted: the heading must be
+    /// there once, not twice, or the fold has bought nothing.
+    #[test]
+    fn the_category_axis_states_the_category_once() {
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+        let loc = category_display(lang, DisplayCategory::Loc);
+        assert_eq!(
+            test.count_labels(loc),
+            2,
+            "the disk axis draws the seeded games' category row once per game",
+        );
+
+        regroup(&mut test, model::GroupAxis::Category);
+
+        assert_eq!(
+            test.count_labels(loc),
+            1,
+            "the branch heading and a category row under each game say it twice",
+        );
+        test.assert_no_label(&i18n::disk_label(lang, "C:"));
+        // The games are still there - it is the redundant heading that went,
+        // not the level that says whose file this is.
+        for game in SEEDED_GAMES {
+            test.assert_label(&i18n::quoted(lang, game));
+        }
+    }
+
+    /// The orphan pseudo-game is the one game row that says nothing new under
+    /// the category axis: its branch heading is already "Orphaned". Two rows
+    /// running "Orphaned / Orphaned residue" is the redundancy that folds the
+    /// category level away in the first place.
+    #[test]
+    fn the_orphan_pseudo_game_folds_away_under_the_category_axis() {
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+        let branch_label = test.strings().orphan_branch_label;
+
+        let mut orphan = test.app().findings[0].clone();
+        orphan.row.file_id = 99;
+        orphan.row.game_id = model::ORPHAN_GAME_ID;
+        orphan.row.game_name = String::new();
+        orphan.row.install_dir = std::path::PathBuf::from("C:\\SteamLibrary\\steamapps");
+        orphan.row.rel_path = "downloading".to_string();
+        orphan.row.source =
+            model::FindingSource::Orphan(gametrimmer_core::orphans::OrphanKind::ServiceFolder);
+        orphan.row.lang_tag = None;
+        test.app_mut().findings.push(orphan);
+        test.app_mut().rebuild_tree();
+        test.app_mut().clear_search();
+        open_every_branch(&mut test);
+
+        // Under the disk axis the pseudo-game is the row that gives the
+        // residue a home, so it is drawn.
+        test.assert_label(branch_label);
+
+        regroup(&mut test, model::GroupAxis::Category);
+
+        test.assert_label(category_display(lang, DisplayCategory::Orphan));
+        test.assert_no_label(branch_label);
+        test.assert_label("downloading");
+    }
+
+    /// The flat axis draws no headings at all, and its file rows have to carry
+    /// the game themselves - a list of bare "loc_0.pak" would not say which
+    /// game each came from.
+    #[test]
+    fn the_flat_axis_draws_only_file_rows_that_name_their_game() {
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+
+        regroup(&mut test, model::GroupAxis::Flat);
+
+        test.assert_no_label(&i18n::disk_label(lang, "C:"));
+        for game in SEEDED_GAMES {
+            test.assert_no_label(&i18n::quoted(lang, game));
+        }
+        test.assert_no_label(category_display(lang, DisplayCategory::Loc));
+        test.assert_no_label(SEEDED_FILE_NAME);
+
+        for (i, game) in SEEDED_GAMES.iter().enumerate() {
+            test.assert_label(&i18n::flat_row_name(
+                lang,
+                game,
+                &format!("data/loc_{i}.pak"),
+            ));
+        }
+    }
+
+    /// Folding a level away has to move the rows under it, not just hide the
+    /// heading - an indent that stayed put would leave the tree claiming a
+    /// parent that is no longer on screen.
+    #[test]
+    fn folding_a_level_away_pulls_its_rows_back_one_indent() {
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+        let by_disk = test.rect_of(SEEDED_FILE_NAME).left();
+
+        regroup(&mut test, model::GroupAxis::Category);
+
+        let by_category = test.rect_of(SEEDED_FILE_NAME).left();
+        assert!(
+            (by_disk - by_category - INDENT_PX).abs() < 1.0,
+            "dropping the category row should pull the file one indent left: \
+             {by_disk} -> {by_category}, indent is {INDENT_PX}",
+        );
+
+        regroup(&mut test, model::GroupAxis::Flat);
+
+        let flat = test
+            .rect_of(&i18n::flat_row_name(
+                lang,
+                SEEDED_GAMES[0],
+                "data/loc_0.pak",
+            ))
+            .left();
+        assert!(
+            flat < by_category,
+            "the flat axis folds every heading away, so its rows sit at the margin: \
+             {flat} is not left of {by_category}",
+        );
+    }
+
+    /// Under the flat axis no heading is left to answer the category filter, so
+    /// each file answers for itself. Without that the filter would either hide
+    /// everything or hide nothing - and this is the axis where "show me only
+    /// the biggest localizations" is the obvious thing to ask.
+    #[test]
+    fn the_category_filter_still_works_under_the_flat_axis() {
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+        regroup(&mut test, model::GroupAxis::Flat);
+        let first = i18n::flat_row_name(lang, SEEDED_GAMES[0], "data/loc_0.pak");
+        test.assert_label(&first);
+
+        // The seeded findings are all localizations, so filtering to a
+        // category they are not empties the list, and filtering to their own
+        // leaves it whole.
+        test.app_mut()
+            .set_category_filter(Some(DisplayCategory::Redist));
+        test.run();
+        test.assert_no_label(&first);
+        test.assert_label(test.strings().search_no_matches);
+
+        test.app_mut()
+            .set_category_filter(Some(DisplayCategory::Loc));
+        test.run();
+        test.assert_label(&first);
     }
 }

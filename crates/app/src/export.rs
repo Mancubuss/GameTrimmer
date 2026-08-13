@@ -85,16 +85,22 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[TopGroup]) -> St
 /// passed in from the branch it is nested under: the disk is a property of the
 /// file, so changing how the tree is grouped must not change what the export
 /// says about it.
+///
+/// `category` is the tree node's, so a folder's members inherit the node's
+/// category and the CSV mirrors the on-screen grouping. `None` is the flat
+/// axis's category-less node (see `model::CategoryNode::category`), where
+/// there is no grouping to mirror and each finding answers for itself.
 fn push_row(
     lang: Lang,
     out: &mut String,
-    category: DisplayCategory,
+    category: Option<DisplayCategory>,
     game_name: &str,
     group_dir: Option<&str>,
     item: &FindingItem,
 ) {
     let row = &item.row;
     let s = i18n::strings(lang);
+    let category = category.unwrap_or_else(|| row.display_category());
     let fields = [
         disk_label(&row.install_dir),
         category_display(lang, category).to_string(),

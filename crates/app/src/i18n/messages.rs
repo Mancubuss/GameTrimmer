@@ -825,6 +825,11 @@ pub fn top_group_label(lang: Lang, key: &crate::model::TopKey) -> String {
         TopKey::Disk(disk) => disk_label(lang, disk),
         TopKey::Launcher(vendor) => launcher_label(lang, vendor),
         TopKey::Library(root) => root.to_string_lossy().into_owned(),
+        TopKey::Category(category) => crate::model::category_display(lang, *category).to_string(),
+        // Never drawn - the flat axis folds this level away - but named rather
+        // than left blank, so a stray render says what it is instead of
+        // nothing.
+        TopKey::Flat => strings(lang).group_axis_flat.to_string(),
         TopKey::Unattributed(_) => strings(lang).group_unattributed.to_string(),
     }
 }
@@ -860,6 +865,16 @@ pub fn select_all_in_group(lang: Lang, key: &crate::model::TopKey) -> String {
         (Lang::Uk, TopKey::Library(root)) => {
             format!("Вибрати все в бібліотеці {}", root.to_string_lossy())
         }
+        (Lang::En, TopKey::Category(category)) => format!(
+            "Select every {}",
+            quoted(lang, crate::model::category_display(lang, *category))
+        ),
+        (Lang::Uk, TopKey::Category(category)) => format!(
+            "Вибрати всі {}",
+            quoted(lang, crate::model::category_display(lang, *category))
+        ),
+        (Lang::En, TopKey::Flat) => "Select everything".to_string(),
+        (Lang::Uk, TopKey::Flat) => "Вибрати все".to_string(),
         (Lang::En, TopKey::Unattributed(_)) => "Select all unattributed".to_string(),
         (Lang::Uk, TopKey::Unattributed(_)) => "Вибрати все без прив'язки".to_string(),
     }
@@ -883,6 +898,16 @@ pub fn deselect_all_in_group(lang: Lang, key: &crate::model::TopKey) -> String {
         (Lang::Uk, TopKey::Library(root)) => {
             format!("Зняти вибір у бібліотеці {}", root.to_string_lossy())
         }
+        (Lang::En, TopKey::Category(category)) => format!(
+            "Deselect every {}",
+            quoted(lang, crate::model::category_display(lang, *category))
+        ),
+        (Lang::Uk, TopKey::Category(category)) => format!(
+            "Зняти вибір з усіх {}",
+            quoted(lang, crate::model::category_display(lang, *category))
+        ),
+        (Lang::En, TopKey::Flat) => "Deselect everything".to_string(),
+        (Lang::Uk, TopKey::Flat) => "Зняти вибір з усього".to_string(),
         (Lang::En, TopKey::Unattributed(_)) => "Deselect all unattributed".to_string(),
         (Lang::Uk, TopKey::Unattributed(_)) => "Зняти вибір без прив'язки".to_string(),
     }
@@ -911,6 +936,11 @@ fn whole_group_scope(lang: Lang, key: &crate::model::TopKey) -> String {
         (Lang::Uk, TopKey::Library(root)) => {
             format!("в усій бібліотеці {}", root.to_string_lossy())
         }
+        // The category and flat axes fold the category row away, so these two
+        // never reach a call site - answered anyway rather than left to a
+        // catch-all arm that a sixth axis could quietly fall into.
+        (Lang::En, TopKey::Category(_) | TopKey::Flat) => "everywhere".to_string(),
+        (Lang::Uk, TopKey::Category(_) | TopKey::Flat) => "усюди".to_string(),
         (Lang::En, TopKey::Unattributed(_)) => "across everything unattributed".to_string(),
         (Lang::Uk, TopKey::Unattributed(_)) => "серед усього без прив'язки".to_string(),
     }
@@ -957,7 +987,55 @@ pub fn group_axis_label(lang: Lang, axis: crate::model::GroupAxis) -> &'static s
         GroupAxis::Disk => s.group_axis_disk,
         GroupAxis::Launcher => s.group_axis_launcher,
         GroupAxis::Library => s.group_axis_library,
+        GroupAxis::Category => s.group_axis_category,
+        GroupAxis::Flat => s.group_axis_flat,
     }
+}
+
+/// A game row's bulk action under [`GroupAxis::Category`], where the branch is
+/// the category and the row therefore covers only that slice of the game.
+///
+/// The plain "Select all in {game}" would be a lie there: it reads as the
+/// game's whole contribution to the tree, and it is one category of it.
+pub fn select_category_in_game(lang: Lang, category: &str, game: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "Select {} in {}",
+            quoted(lang, category),
+            quoted(lang, game)
+        ),
+        Lang::Uk => format!(
+            "Вибрати {} у {}",
+            quoted(lang, category),
+            quoted(lang, game)
+        ),
+    }
+}
+
+/// The other half of [`select_category_in_game`].
+pub fn deselect_category_in_game(lang: Lang, category: &str, game: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "Deselect {} in {}",
+            quoted(lang, category),
+            quoted(lang, game)
+        ),
+        Lang::Uk => format!(
+            "Зняти вибір {} у {}",
+            quoted(lang, category),
+            quoted(lang, game)
+        ),
+    }
+}
+
+/// A file row's name under [`GroupAxis::Flat`], where there are no headings
+/// above it to say which game it came from.
+///
+/// Not the absolute path: the Name column truncates on the right, and an
+/// absolute path truncated on the right hides the filename - the one part of
+/// it the row exists to show.
+pub fn flat_row_name(lang: Lang, game: &str, rel_path: &str) -> String {
+    format!("{} \u{2014} {rel_path}", quoted(lang, game))
 }
 
 /// Tooltip for a file row: the full path on the first line (details on

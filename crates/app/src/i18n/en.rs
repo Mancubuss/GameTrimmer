@@ -89,6 +89,8 @@ pub(super) const STRINGS: Strings = Strings {
     group_axis_disk: "disk",
     group_axis_launcher: "launcher",
     group_axis_library: "library",
+    group_axis_category: "category",
+    group_axis_flat: "nothing",
     group_unattributed: "Unattributed",
     btn_remove_category: "Clean up whole category",
     search_hint: "Search by name\u{2026}",

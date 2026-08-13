@@ -163,11 +163,29 @@ pub const CATEGORY_ORDER: [DisplayCategory; 6] = [
 /// no game), and reconstructed with this sentinel at scan/load time.
 pub const ORPHAN_GAME_ID: i64 = i64::MIN;
 
+/// Synthetic `game_id` for the single node [`GroupAxis::Flat`] hangs every
+/// finding from. Reserved and negative for the same reason
+/// [`ORPHAN_GAME_ID`] is - no SQLite rowid can collide with it - and one apart
+/// from that sentinel so the two synthetic nodes are never mistaken for each
+/// other. Never drawn: the flat axis folds the game level away.
+pub const FLAT_GAME_ID: i64 = i64::MIN + 1;
+
 /// Whether `game_id` is the orphan-branch sentinel (see [`ORPHAN_GAME_ID`]) -
 /// the tree renders such a node with a localized branch label instead of a
 /// quoted game name.
 pub fn is_orphan_branch(game_id: i64) -> bool {
     game_id == ORPHAN_GAME_ID
+}
+
+/// Whether `game_id` stands for a real game rather than one of the two
+/// synthetic nodes ([`ORPHAN_GAME_ID`], [`FLAT_GAME_ID`]).
+///
+/// Real ids are SQLite rowids and therefore always `>= 1`, so this is one test
+/// rather than a list of sentinels that a third one could silently fall off.
+/// Used where a lookup is keyed by game id and would quietly answer "no" for a
+/// synthetic node - see `ui::tree_view::game_matches_search`.
+pub fn is_real_game(game_id: i64) -> bool {
+    game_id >= 1
 }
 
 /// Default confidence for an [`OrphanKind::UnmanagedFolder`] finding: a folder
@@ -522,7 +540,18 @@ pub enum TreeNode {
 /// One display category's nodes within a game, in display order.
 #[derive(Debug, Clone)]
 pub struct CategoryNode {
-    pub category: DisplayCategory,
+    /// The display category every row under this node belongs to, or `None`
+    /// when the level does not stand for a category at all.
+    ///
+    /// `None` is [`GroupAxis::Flat`], which puts every finding into one node
+    /// so that an explicit sort can order the whole result set - a node list
+    /// per category would sort each category separately, which is precisely
+    /// the burial the flat axis exists to undo. That one node spans every
+    /// category by construction, so there is no single value it could honestly
+    /// carry, and its readers are made to say what they mean instead: the CSV
+    /// export falls back to each finding's own category, and the row is never
+    /// drawn (see `ui::tree_view`).
+    pub category: Option<DisplayCategory>,
     pub nodes: Vec<TreeNode>,
     /// Concatenated `findings` indices of every node in `nodes` (a folder
     /// contributes its whole member list, a file its single index).
@@ -566,11 +595,32 @@ pub enum GroupAxis {
     /// One specific library root, so two Steam libraries on two disks are two
     /// separate branches.
     Library,
+    /// The display category, lifting every game's localizations (or bonus
+    /// material, or redistributables) into one branch. The per-game category
+    /// row folds away under this axis - it would only repeat the branch
+    /// heading one indent in.
+    Category,
+    /// No grouping at all: every finding as its own row.
+    ///
+    /// This is what makes ordering by size mean what it says. In a
+    /// branch -> game -> category -> folder hierarchy "the biggest files"
+    /// cannot be asked for, because a large file stays buried under whichever
+    /// folder node it belongs to and only its folder's total competes. The
+    /// flat axis is the one cut where every finding is a row the sort can
+    /// reach - so it also dissolves folders rather than merely hiding the
+    /// headings above them.
+    Flat,
 }
 
-/// Every axis, in the order the switcher offers them.
-pub const GROUP_AXIS_ORDER: [GroupAxis; 3] =
-    [GroupAxis::Disk, GroupAxis::Launcher, GroupAxis::Library];
+/// Every axis, in the order the switcher offers them - the three that keep the
+/// full hierarchy first, then the two that fold parts of it away.
+pub const GROUP_AXIS_ORDER: [GroupAxis; 5] = [
+    GroupAxis::Disk,
+    GroupAxis::Launcher,
+    GroupAxis::Library,
+    GroupAxis::Category,
+    GroupAxis::Flat,
+];
 
 /// Stable short key for an axis, used to namespace the tree's expand/collapse
 /// state (see `ui::tree_view`) so the open/closed rows of one axis are not read
@@ -580,6 +630,8 @@ pub fn group_axis_key(axis: GroupAxis) -> &'static str {
         GroupAxis::Disk => "disk",
         GroupAxis::Launcher => "launcher",
         GroupAxis::Library => "library",
+        GroupAxis::Category => "category",
+        GroupAxis::Flat => "flat",
     }
 }
 
@@ -598,6 +650,14 @@ pub enum TopKey {
     Launcher(String),
     /// [`GroupAxis::Library`]: the library root directory.
     Library(PathBuf),
+    /// [`GroupAxis::Category`]: the row's own display category.
+    Category(DisplayCategory),
+    /// [`GroupAxis::Flat`]: the single branch every finding hangs from.
+    ///
+    /// Never drawn, since the whole point of the axis is that the headings are
+    /// gone. It exists so the tree has one shape under every axis and the
+    /// export, the totals and the sort all keep working unchanged.
+    Flat,
     /// The row carries nothing to group on under this axis - residue whose
     /// library root no longer resolves, or rows read back from a database
     /// written before the attribution existed (see [`FindingRow::library`]).
@@ -615,19 +675,27 @@ impl TopKey {
             TopKey::Disk(_) => GroupAxis::Disk,
             TopKey::Launcher(_) => GroupAxis::Launcher,
             TopKey::Library(_) => GroupAxis::Library,
+            TopKey::Category(_) => GroupAxis::Category,
+            TopKey::Flat => GroupAxis::Flat,
             TopKey::Unattributed(axis) => *axis,
         }
     }
 
     /// The raw grouping value as text - what the branches are ordered by, and
-    /// what the collapse key is built from. Empty for
-    /// [`TopKey::Unattributed`], which is ordered by [`Self::rank`] anyway.
+    /// what the collapse key is built from.
+    ///
+    /// A category contributes its stable short key rather than its localized
+    /// heading: the collapse state must not be reset by switching interface
+    /// language. Empty for [`TopKey::Flat`] and [`TopKey::Unattributed`],
+    /// which are one branch and a ranked-last branch respectively, so neither
+    /// needs a name to be ordered by.
     pub fn value(&self) -> Cow<'_, str> {
         match self {
             TopKey::Disk(disk) => Cow::Borrowed(disk.as_str()),
             TopKey::Launcher(vendor) => Cow::Borrowed(vendor.as_str()),
             TopKey::Library(root) => root.to_string_lossy(),
-            TopKey::Unattributed(_) => Cow::Borrowed(""),
+            TopKey::Category(category) => Cow::Borrowed(category_ui_key(*category)),
+            TopKey::Flat | TopKey::Unattributed(_) => Cow::Borrowed(""),
         }
     }
 
@@ -646,13 +714,21 @@ impl TopKey {
 }
 
 /// Orders two top-level branches by their own identity: unattributed last,
-/// then by the raw grouping value. The default tree order and the "Name"
+/// then by the branch's own name. The default tree order and the "Name"
 /// column's order share this so a sort by name lands where the tree already
 /// was rather than shuffling for a reason nothing on screen states.
+///
+/// Category branches order by [`CATEGORY_ORDER`] rather than by that name, for
+/// the reason [`cmp_categories`] gives about the nested level: the taxonomy is
+/// fixed and six entries long, and its order is the cleanup priority the
+/// screen is built to communicate.
 fn cmp_top_keys(a: &TopKey, b: &TopKey) -> std::cmp::Ordering {
-    a.rank()
-        .cmp(&b.rank())
-        .then_with(|| path_cmp(&a.value(), &b.value()))
+    a.rank().cmp(&b.rank()).then_with(|| match (a, b) {
+        (TopKey::Category(left), TopKey::Category(right)) => {
+            category_rank(*left).cmp(&category_rank(*right))
+        }
+        _ => path_cmp(&a.value(), &b.value()),
+    })
 }
 
 /// One top-level branch of the tree and its games, largest first. What the
@@ -768,10 +844,30 @@ struct GameBucket {
     orphans: Vec<usize>,
 }
 
+/// How a game's findings are split into [`CategoryNode`]s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CategorySplit {
+    /// One node per display category, in [`CATEGORY_ORDER`] - the tree's usual
+    /// shape, where the category is a level of its own under each game.
+    PerCategory,
+    /// A single node holding everything, carrying the given category.
+    ///
+    /// [`GroupAxis::Category`] passes its branch's category: every row in the
+    /// bucket already has it, so splitting again would only produce the one
+    /// node the long way round. [`GroupAxis::Flat`] passes `None`, because its
+    /// single node genuinely spans every category - see
+    /// [`CategoryNode::category`].
+    Whole(Option<DisplayCategory>),
+}
+
 /// Builds one game's category list (display order; within each category,
 /// folders first - largest total first - then individual files by path).
-fn build_game_categories(items: &[FindingItem], bucket: GameBucket) -> Vec<CategoryNode> {
-    let mut nodes_by_category: HashMap<DisplayCategory, Vec<TreeNode>> = HashMap::new();
+fn build_game_categories(
+    items: &[FindingItem],
+    bucket: GameBucket,
+    split: CategorySplit,
+) -> Vec<CategoryNode> {
+    let mut nodes_by_category: HashMap<Option<DisplayCategory>, Vec<TreeNode>> = HashMap::new();
 
     for (group_dir, mut indices) in bucket.folders {
         // Member files are collected in scan order (insertion order into the
@@ -780,7 +876,10 @@ fn build_game_categories(items: &[FindingItem], bucket: GameBucket) -> Vec<Categ
         // by path regardless of how the scan visited them.
         indices.sort_by(|&a, &b| path_cmp(&items[a].row.rel_path, &items[b].row.rel_path));
         let total_bytes = group_size_bytes(items, &indices);
-        let category = majority_category(items, &indices);
+        let category = match split {
+            CategorySplit::PerCategory => Some(majority_category(items, &indices)),
+            CategorySplit::Whole(category) => category,
+        };
         nodes_by_category
             .entry(category)
             .or_default()
@@ -791,15 +890,24 @@ fn build_game_categories(items: &[FindingItem], bucket: GameBucket) -> Vec<Categ
             });
     }
     for index in bucket.orphans {
+        let category = match split {
+            CategorySplit::PerCategory => Some(items[index].row.display_category()),
+            CategorySplit::Whole(category) => category,
+        };
         nodes_by_category
-            .entry(items[index].row.display_category())
+            .entry(category)
             .or_default()
             .push(TreeNode::File { index });
     }
 
-    CATEGORY_ORDER
-        .iter()
-        .filter_map(|&category| {
+    let order: Vec<Option<DisplayCategory>> = match split {
+        CategorySplit::PerCategory => CATEGORY_ORDER.iter().copied().map(Some).collect(),
+        CategorySplit::Whole(category) => vec![category],
+    };
+
+    order
+        .into_iter()
+        .filter_map(|category| {
             let nodes = nodes_by_category.remove(&category)?;
             // Folders first (largest total_bytes first, so the biggest
             // clean-up opportunities lead), then individual files by path -
@@ -829,21 +937,32 @@ fn build_game_categories(items: &[FindingItem], bucket: GameBucket) -> Vec<Categ
         .collect()
 }
 
-/// Rebuilds the disk -> game -> category -> folder/file tree from scratch,
+/// Rebuilds the branch -> game -> category -> folder/file tree from scratch,
 /// skipping removed items. Cheap enough to call after every scan/delete
-/// completion.
+/// completion, and after every change of grouping axis.
 ///
-/// Every game appears exactly once under its disk, holding all of its
-/// findings - the tree never scatters one game's rows across the disk.
-/// Within a game, every flagged file with a `group_dir` (see
-/// `worker::scan::assign_group_dirs`) is merged into one `TreeNode::Folder`
-/// per `group_dir`, placed under the single display category holding the
-/// majority of that folder's bytes (`majority_category`) - this is what
-/// keeps a shared folder from appearing in more than one category. Findings
-/// without a `group_dir` become standalone `TreeNode::File` nodes in their
-/// own display category. Within a category, folders precede individual
-/// files (see `build_game_categories`); within a folder, member files are
-/// ordered by path (see `path_cmp`).
+/// The shape is the same whatever the axis; only what the top level stands for
+/// changes (see [`TopKey`]). Every game appears exactly once under its branch,
+/// holding all of that branch's findings for it - the tree never scatters one
+/// game's rows across a branch. Within a game, every flagged file with a
+/// `group_dir` (see `worker::scan::assign_group_dirs`) is merged into one
+/// `TreeNode::Folder` per `group_dir`, placed under the single display
+/// category holding the majority of that folder's bytes
+/// (`majority_category`) - this is what keeps a shared folder from appearing
+/// in more than one category. Findings without a `group_dir` become standalone
+/// `TreeNode::File` nodes in their own display category. Within a category,
+/// folders precede individual files (see `build_game_categories`); within a
+/// folder, member files are ordered by path (see `path_cmp`).
+///
+/// Two axes bend that shape rather than the levels above it:
+/// [`GroupAxis::Category`] gives each branch one category node, because every
+/// row in the branch already shares its category; [`GroupAxis::Flat`] gives the
+/// whole tree one branch, one synthetic game ([`FLAT_GAME_ID`]) and one
+/// category node of loose files, with folders dissolved. Both are still the
+/// same four levels - the levels the axis has made redundant are folded away
+/// when the tree is drawn, not when it is built, so the export, the totals and
+/// the sort keep working unchanged.
+///
 /// Order-sensitive fingerprint of which findings are currently checked.
 ///
 /// Used to notice that the user edited the selection without having to hook
@@ -889,34 +1008,63 @@ fn top_key_of(row: &FindingRow, axis: GroupAxis) -> TopKey {
             Some(lib) => TopKey::Library(lib.root.clone()),
             None => TopKey::Unattributed(axis),
         },
+        GroupAxis::Category => TopKey::Category(row.display_category()),
+        GroupAxis::Flat => TopKey::Flat,
+    }
+}
+
+/// How one branch splits its games into [`CategoryNode`]s. See
+/// [`CategorySplit`] for why two of the axes want a single node.
+fn category_split_for(top: &TopKey) -> CategorySplit {
+    match top {
+        TopKey::Category(category) => CategorySplit::Whole(Some(*category)),
+        TopKey::Flat => CategorySplit::Whole(None),
+        _ => CategorySplit::PerCategory,
     }
 }
 
 pub fn build_tree(items: &[FindingItem], axis: GroupAxis) -> Vec<TopGroup> {
     let mut game_buckets: HashMap<(TopKey, i64), GameBucket> = HashMap::new();
+    let flat = axis == GroupAxis::Flat;
 
     for (index, item) in items.iter().enumerate() {
         if item.removed {
             continue;
         }
         let top = top_key_of(&item.row, axis);
+        // The flat axis puts every finding under one synthetic game. Keeping
+        // the real ids here would leave one node list per game, and an
+        // explicit sort orders within a node list - so "by size" would rank
+        // each game's files separately and then rank the games, which is the
+        // burial this axis exists to undo.
+        let game_id = if flat { FLAT_GAME_ID } else { item.row.game_id };
         let bucket = game_buckets
-            .entry((top, item.row.game_id))
+            .entry((top, game_id))
             .or_insert_with(|| GameBucket {
-                game_name: item.row.game_name.clone(),
+                // The synthetic game is never drawn, so it is given no name
+                // rather than the name of whichever finding happened to create
+                // its bucket.
+                game_name: if flat {
+                    String::new()
+                } else {
+                    item.row.game_name.clone()
+                },
                 folders: HashMap::new(),
                 orphans: Vec::new(),
             });
         match &item.row.group_dir {
-            Some(dir) => bucket.folders.entry(dir.clone()).or_default().push(index),
-            None => bucket.orphans.push(index),
+            // Folders are dissolved under the flat axis, not merely
+            // un-headed: a file collapsed into a folder node is not a row a
+            // size sort can reach, and reaching them is the whole point.
+            Some(dir) if !flat => bucket.folders.entry(dir.clone()).or_default().push(index),
+            _ => bucket.orphans.push(index),
         }
     }
 
     let mut games_by_top: HashMap<TopKey, Vec<GameNode>> = HashMap::new();
     for ((top, game_id), bucket) in game_buckets {
         let game_name = bucket.game_name.clone();
-        let categories = build_game_categories(items, bucket);
+        let categories = build_game_categories(items, bucket, category_split_for(&top));
         let all_indices: Vec<usize> = categories
             .iter()
             .flat_map(|category_node| category_node.all_indices.iter().copied())
@@ -1083,6 +1231,14 @@ fn category_rank(category: DisplayCategory) -> usize {
         .unwrap_or(CATEGORY_ORDER.len())
 }
 
+/// [`category_rank`] for a node's category, ranking the flat axis's
+/// category-less node ([`CategoryNode::category`]) last. There is only ever one
+/// of those in a tree, so where it ranks is a formality - but it has to be a
+/// defined one, or the sort would depend on hash-map iteration order.
+fn category_node_rank(category: Option<DisplayCategory>) -> usize {
+    category.map_or(CATEGORY_ORDER.len(), category_rank)
+}
+
 /// Orders two top-level branch rows.
 ///
 /// The unattributed branch is *not* pinned last here, unlike in the default
@@ -1116,13 +1272,13 @@ fn cmp_games(sort: TreeSort, a: &GameNode, b: &GameNode) -> std::cmp::Ordering {
 /// taxonomy is fixed and six entries long, and keying it to the display string
 /// would rearrange the tree whenever the interface language changes.
 fn cmp_categories(sort: TreeSort, a: &CategoryNode, b: &CategoryNode) -> std::cmp::Ordering {
+    let by_rank = category_node_rank(a.category).cmp(&category_node_rank(b.category));
     let primary = match sort.column {
-        SortColumn::Name => category_rank(a.category).cmp(&category_rank(b.category)),
+        SortColumn::Name => by_rank,
         SortColumn::Files => a.all_indices.len().cmp(&b.all_indices.len()),
         SortColumn::Size => a.total_bytes.cmp(&b.total_bytes),
     };
-    sort.directed(primary)
-        .then_with(|| category_rank(a.category).cmp(&category_rank(b.category)))
+    sort.directed(primary).then(by_rank)
 }
 
 /// The figure a node's row carries in the "Files" column: a folder's member
@@ -1846,7 +2002,7 @@ mod tests {
             1,
             "both redist_folder and redist_file collapse into the single Redist category"
         );
-        assert_eq!(game_a.categories[0].category, DisplayCategory::Redist);
+        assert_eq!(game_a.categories[0].category, Some(DisplayCategory::Redist));
         assert_eq!(
             game_a.categories[0].nodes.len(),
             2,
@@ -1945,7 +2101,7 @@ mod tests {
                 1,
                 "audio and text localization findings collapse into one Loc category"
             );
-            assert_eq!(game.categories[0].category, DisplayCategory::Loc);
+            assert_eq!(game.categories[0].category, Some(DisplayCategory::Loc));
         }
     }
 
@@ -2058,7 +2214,7 @@ mod tests {
             1,
             "the shared folder appears in exactly one category"
         );
-        assert_eq!(game.categories[0].category, DisplayCategory::Docs);
+        assert_eq!(game.categories[0].category, Some(DisplayCategory::Docs));
         let TreeNode::Folder { item_indices, .. } = &game.categories[0].nodes[0] else {
             panic!("expected a folder node");
         };
@@ -2100,7 +2256,7 @@ mod tests {
 
         assert_eq!(
             tree[0].games[0].categories[0].category,
-            DisplayCategory::Redist
+            Some(DisplayCategory::Redist)
         );
     }
 
@@ -2119,7 +2275,7 @@ mod tests {
         let tree = build_tree(&items, GroupAxis::Disk);
 
         let game = &tree[0].games[0];
-        assert_eq!(game.categories[0].category, DisplayCategory::Other);
+        assert_eq!(game.categories[0].category, Some(DisplayCategory::Other));
         match &game.categories[0].nodes[0] {
             TreeNode::File { index } => assert_eq!(*index, 0),
             TreeNode::Folder { .. } => panic!("expected an orphan file node"),
@@ -2320,7 +2476,7 @@ mod tests {
         let bonus = game
             .categories
             .iter()
-            .find(|c| c.category == DisplayCategory::Bonus)
+            .find(|c| c.category == Some(DisplayCategory::Bonus))
             .expect("bonus category present");
         assert_eq!(
             bonus.all_indices.len(),
@@ -2343,7 +2499,7 @@ mod tests {
         let docs = game
             .categories
             .iter()
-            .find(|c| c.category == DisplayCategory::Docs)
+            .find(|c| c.category == Some(DisplayCategory::Docs))
             .expect("docs category present");
         assert_eq!(docs.all_indices.len(), 1);
         assert_eq!(docs.total_bytes, 5);
@@ -2447,7 +2603,7 @@ mod tests {
         assert_eq!(orphan_branch.categories.len(), 1);
         assert_eq!(
             orphan_branch.categories[0].category,
-            DisplayCategory::Orphan
+            Some(DisplayCategory::Orphan)
         );
         assert_eq!(
             orphan_branch.categories[0].all_indices.len(),
@@ -3337,6 +3493,149 @@ mod tests {
             assert_eq!(group.games.len(), 1);
             assert!(is_orphan_branch(group.games[0].game_id));
         }
+    }
+
+    /// The category axis lifts one category out of every game into one branch -
+    /// which is the cut the disk axis cannot express, since a game's
+    /// localizations are scattered one game at a time under it.
+    #[test]
+    fn the_category_axis_gathers_one_category_across_every_game() {
+        let items = vec![
+            item(1, "Alpha", FindingSource::Rule(Category::Bonus), 90, 100),
+            item(2, "Beta", FindingSource::Rule(Category::Bonus), 90, 200),
+            item(3, "Gamma", FindingSource::Loc(LangKind::Text), 90, 300),
+        ];
+
+        let tree = build_tree(&items, GroupAxis::Category);
+
+        assert_eq!(branch_values(&tree), vec!["bonus", "loc"]);
+        let bonus = &tree[0];
+        assert_eq!(bonus.key, TopKey::Category(DisplayCategory::Bonus));
+        assert_eq!(bonus.games.len(), 2, "both games' bonus material, together");
+        // Each branch keeps exactly one category node, and it carries the
+        // branch's own category - the per-game category row folds away when
+        // drawn precisely because it would say this twice.
+        for group in &tree {
+            for game in &group.games {
+                assert_eq!(game.categories.len(), 1);
+                assert_eq!(
+                    game.categories[0].category,
+                    Some(match &group.key {
+                        TopKey::Category(category) => *category,
+                        other => panic!("expected a category branch, got {other:?}"),
+                    })
+                );
+            }
+        }
+    }
+
+    /// Branches follow [`CATEGORY_ORDER`] - the cleanup priority the tree is
+    /// built to communicate - not the alphabetical order of their keys, which
+    /// would put "bonus" ahead of "redist".
+    #[test]
+    fn category_branches_follow_the_taxonomy_order_not_their_keys() {
+        let items = vec![
+            item(1, "Alpha", FindingSource::Loc(LangKind::Text), 90, 100),
+            item(
+                2,
+                "Beta",
+                FindingSource::Rule(Category::RedistFolder),
+                90,
+                200,
+            ),
+            item(3, "Gamma", FindingSource::Rule(Category::Bonus), 90, 300),
+        ];
+
+        let tree = build_tree(&items, GroupAxis::Category);
+
+        assert_eq!(
+            branch_values(&tree),
+            vec!["redist", "bonus", "loc"],
+            "CATEGORY_ORDER is redist, docs, bonus, loc, other, orphan",
+        );
+    }
+
+    /// The flat axis is one branch, one synthetic game and one node list. All
+    /// three are what let an explicit sort order the whole result set instead
+    /// of ordering inside each game or each category.
+    #[test]
+    fn the_flat_axis_collapses_the_whole_tree_into_one_node_list() {
+        let items = cross_axis_items();
+
+        let tree = build_tree(&items, GroupAxis::Flat);
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].key, TopKey::Flat);
+        assert_eq!(tree[0].games.len(), 1);
+        assert_eq!(tree[0].games[0].game_id, FLAT_GAME_ID);
+        assert!(
+            tree[0].games[0].game_name.is_empty(),
+            "the synthetic game borrows no real game's name",
+        );
+        assert_eq!(tree[0].games[0].categories.len(), 1);
+        assert_eq!(tree[0].games[0].categories[0].category, None);
+        assert_eq!(tree[0].games[0].categories[0].nodes.len(), items.len());
+    }
+
+    /// The card's own reason for the axis: in a hierarchy a large file stays
+    /// buried under its folder node and only the folder's total competes, so
+    /// "biggest first" cannot reach it. Every finding here shares one folder,
+    /// which under any other axis is a single row.
+    #[test]
+    fn the_flat_axis_dissolves_folders_so_a_size_sort_reaches_every_file() {
+        let items = vec![
+            with_group_dir(
+                item_at(
+                    1,
+                    "Alpha",
+                    "C:\\Games\\Alpha",
+                    "data\\small.bin",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    10,
+                ),
+                "data",
+            ),
+            with_group_dir(
+                item_at(
+                    1,
+                    "Alpha",
+                    "C:\\Games\\Alpha",
+                    "data\\huge.bin",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    9_000,
+                ),
+                "data",
+            ),
+        ];
+
+        // One folder node under the disk axis - the files are not rows there.
+        let by_disk = build_tree(&items, GroupAxis::Disk);
+        assert_eq!(by_disk[0].games[0].categories[0].nodes.len(), 1);
+
+        let mut flat = build_tree(&items, GroupAxis::Flat);
+        let nodes = &flat[0].games[0].categories[0].nodes;
+        assert_eq!(nodes.len(), 2);
+        assert!(
+            nodes
+                .iter()
+                .all(|node| matches!(node, TreeNode::File { .. })),
+            "the flat axis must leave no folder node for a file to hide in",
+        );
+
+        sort_tree(
+            &mut flat,
+            &items,
+            Some(TreeSort {
+                column: SortColumn::Size,
+                descending: true,
+            }),
+        );
+        let TreeNode::File { index } = flat[0].games[0].categories[0].nodes[0] else {
+            panic!("the flat axis produces only file nodes");
+        };
+        assert_eq!(items[index].row.rel_path, "data\\huge.bin");
     }
 
     /// An explicit sort applies to every row, the unattributed branch
