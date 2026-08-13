@@ -114,6 +114,31 @@ fn lock_state() -> std::sync::MutexGuard<'static, Option<File>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Serializes every test in the crate that enables the process-global
+/// [`STATE`], not only the ones in this module: `app`'s tests assert that a
+/// fatal message reaches a real log file, which means enabling logging for
+/// the duration. Running that concurrently with a `logger` test would have
+/// one replace the other's open file handle mid-assertion.
+///
+/// Lives beside `STATE` rather than in the test module below because the
+/// thing it protects lives here - a second lock elsewhere would guard
+/// nothing.
+#[cfg(test)]
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Takes the crate-wide logging test lock, recovering from poisoning for the
+/// same reason [`lock_state`] does: one failed assertion must not turn every
+/// later logging test into a panic about the lock rather than about the code.
+///
+/// A test that takes this lock is responsible for calling
+/// `set_enabled(false, ..)` before it returns, so it does not leak enabled
+/// state to whichever test runs next.
+#[cfg(test)]
+pub(crate) fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 /// Formats a `SYSTEMTIME` (local wall-clock time, from `GetLocalTime`) as
 /// `YYYY-MM-DD HH:MM:SS`. A pure, unit-testable wrapper around the otherwise
 /// untestable Win32 call in [`log`].
@@ -128,20 +153,12 @@ fn format_timestamp(st: &windows::Win32::Foundation::SYSTEMTIME) -> String {
 mod tests {
     use super::*;
 
-    /// Serializes every test in this module: they all share the same global
-    /// `STATE`, so running them concurrently (the default with `cargo test`)
-    /// would have one test's `set_enabled` clobber another's in-flight
-    /// assertions. Each test also unconditionally disables logging again
-    /// before returning (even on assertion failure, via a guard-less direct
-    /// call at the end), so no test leaks enabled state to whichever test
-    /// happens to run next.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
+    /// Serializes every test that shares the global `STATE` - see
+    /// [`lock_for_test`], which is where the lock itself lives now that
+    /// `app`'s tests need it too. Each test here also unconditionally
+    /// disables logging again before returning, so no test leaks enabled
+    /// state to whichever test happens to run next.
+    use super::lock_for_test as lock_tests;
 
     #[test]
     fn disabled_logging_writes_nothing() {

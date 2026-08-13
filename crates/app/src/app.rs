@@ -363,13 +363,23 @@ impl GameTrimmerApp {
         // read. Startup errors before that point use the default preference's
         // text, same as any other place with no settings yet.
         let startup_lang = Settings::default().app_language.resolve(system_lang);
-        let (db_error, legacy_conn) = match &db_path {
+        // Two renderings of the same failure, on purpose: one for the window
+        // in the user's language, one for the log in English. The log is read
+        // by whoever receives a bug report, and a Ukrainian error line in a
+        // report from a Ukrainian desktop is the same problem the forced
+        // `Lang::En` at the scan worker's logging sites already solves.
+        let (db_error, db_error_for_log, legacy_conn) = match &db_path {
             Some(path) => match gametrimmer_core::db::open(path) {
-                Ok(conn) => (None, Some(conn)),
-                Err(err) => (Some(i18n::db_open_error_long(startup_lang, err)), None),
+                Ok(conn) => (None, None, Some(conn)),
+                Err(err) => (
+                    Some(i18n::db_open_error_long(startup_lang, &err)),
+                    Some(i18n::db_open_error_long(Lang::En, &err)),
+                    None,
+                ),
             },
             None => (
                 Some(i18n::strings(startup_lang).db_path_error.to_string()),
+                Some(i18n::strings(Lang::En).db_path_error.to_string()),
                 None,
             ),
         };
@@ -404,6 +414,17 @@ impl GameTrimmerApp {
             if let Some(path) = log_path.as_deref() {
                 logger::set_enabled(true, elevated, path);
             }
+        }
+
+        // Deliberately *after* `set_enabled`: the database is opened before
+        // the ini is read (the ini is the only place the logging preference
+        // lives), so logging the failure at the point it happens would write
+        // it to a file that is not open yet. Without this, a user whose
+        // database never opened hands over a log containing nothing but the
+        // session header - the one failure where the log is the only artifact
+        // they have, since there is no scan to leave a trail either.
+        if let Some(message) = &db_error_for_log {
+            logger::log(message);
         }
 
         let (tx, rx) = mpsc::channel();
@@ -1709,6 +1730,13 @@ impl GameTrimmerApp {
                 self.status_message = i18n::strings(lang).scan_cancelled.to_string();
             }
             WorkerMsg::Error { msg } => {
+                // The fatal counterpart of the `Warning` arm below, and it
+                // reaches the log for the same reason: this is the message
+                // the user quotes in a bug report, and until it was written
+                // here their log ended at "Scan started". Logged in English
+                // while the window keeps the user's language - see the
+                // startup `db_error` in `new_with` for why the two differ.
+                crate::logger::log(&i18n::error_prefixed(Lang::En, &msg));
                 self.end_job();
                 self.progress = None;
                 self._worker = None;
@@ -2045,6 +2073,91 @@ mod tests {
         assert_eq!(reopened.settings.theme, Theme::Dark);
         assert_eq!(reopened.settings.delete_method, DeleteMethod::RecycleBin);
         assert!(!reopened.settings.logging_enabled);
+    }
+
+    /// Runs `body` with the process-global logger pointed at a throwaway file
+    /// and hands back what was written, then unconditionally disables logging
+    /// again - including when `body` panics, since the guard drops either way
+    /// and a leaked open handle would follow the next test into a temp dir
+    /// that no longer exists.
+    ///
+    /// Takes [`logger::lock_for_test`] because `STATE` is one global: without
+    /// it, a `logger` unit test running in parallel would swap the file out
+    /// from under these assertions.
+    fn captured_log(body: impl FnOnce(&std::path::Path)) -> String {
+        struct DisableOnDrop<'a>(&'a std::path::Path);
+        impl Drop for DisableOnDrop<'_> {
+            fn drop(&mut self) {
+                logger::set_enabled(false, false, self.0);
+            }
+        }
+
+        let _lock = logger::lock_for_test();
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let log_path = dir.path().join("gametrimmer.log");
+
+        let contents = {
+            let _disable = DisableOnDrop(&log_path);
+            logger::set_enabled(true, false, &log_path);
+            body(dir.path());
+            // Read before the guard disables logging: dropping the handle is
+            // what flushes nothing here (writes are unbuffered), but reading
+            // inside keeps the order obvious.
+            std::fs::read_to_string(&log_path).expect("read the captured log")
+        };
+        contents
+    }
+
+    /// GT-115. The fatal message is the one the user quotes in a bug report,
+    /// and the log used to end at "Scan started" instead of naming it - while
+    /// `WorkerMsg::Warning`, one arm below, was logged all along.
+    #[test]
+    fn a_fatal_worker_error_reaches_the_log() {
+        let contents = captured_log(|dir| {
+            let mut app = GameTrimmerApp::new_for_test(dir);
+            app.apply_message(WorkerMsg::Error {
+                msg: "gt_probe_scan_blew_up".to_string(),
+            });
+            assert!(
+                app.status_message.contains("gt_probe_scan_blew_up"),
+                "the window must still report it too: {}",
+                app.status_message,
+            );
+        });
+
+        assert!(
+            contents.contains("gt_probe_scan_blew_up"),
+            "the fatal error should be in the log: {contents}",
+        );
+    }
+
+    /// GT-115, the other half. A database that never opened leaves no scan
+    /// trail either, so the log is the only artifact that user has - and it
+    /// used to hold nothing but the session header.
+    #[test]
+    fn a_failed_database_open_reaches_the_log() {
+        let contents = captured_log(|dir| {
+            // A database inside a directory that does not exist: SQLite
+            // cannot create the file, which is a plain `CANTOPEN` rather
+            // than anything platform-specific.
+            let db_path = dir.join("no_such_directory").join("gametrimmer.db");
+            let app = GameTrimmerApp::new_with(
+                egui::Context::default(),
+                Some(db_path),
+                Some(dir.join("gametrimmer.ini")),
+                Some(dir.join("gametrimmer.log")),
+                false,
+            );
+            assert!(
+                app.db_error.is_some(),
+                "the window must still report it too",
+            );
+        });
+
+        assert!(
+            contents.contains("Failed to open the database"),
+            "the startup database error should be in the log: {contents}",
+        );
     }
 
     /// `autoload = false` is what keeps the widget tree deterministic: with
