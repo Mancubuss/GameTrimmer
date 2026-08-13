@@ -9,8 +9,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, GameInstall,
+    LibraryProvider, OrphanEvidence,
 };
 
 pub struct SteamProvider;
@@ -64,14 +64,46 @@ fn discover_steam() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         }
     }
 
-    if diagnostics.is_empty() {
-        DiscoveryReport::complete(libraries)
-    } else {
+    if degrades_evidence(&diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
         DiscoveryReport::degraded(libraries, diagnostics)
+    } else {
+        // Complete, but not necessarily silent: a `GAME_ABSENT` note still
+        // travels so it reaches the log and `scan_diagnostics`.
+        // `DiscoveryReport::complete` would drop it, which is the whole
+        // behaviour this card exists to change.
+        DiscoveryReport {
+            data: libraries,
+            status: DiscoveryStatus::Complete,
+            diagnostics,
+        }
     }
+}
+
+/// The one stage that records something without claiming the library's
+/// inventory is unreliable.
+///
+/// A manifest whose install directory is missing is normal - a queued or
+/// paused download - and the folder cannot be mistaken for orphan residue
+/// because it is not there. But it is also the exact path the complaint "my
+/// game isn't in the list" arrives on, so silence is the wrong answer too.
+///
+/// The distinction has to be explicit because everything else here treats
+/// "any diagnostic at all" as "the inventory is no longer authoritative",
+/// which is what lets orphan detection trust it. Recording this one the
+/// ordinary way would strip a whole library's orphan-deletion authority
+/// over a single paused download.
+///
+/// ponytail: matched by stage name; if a second non-degrading stage ever
+/// appears, promote this to a field on `DiscoveryDiagnostic`.
+const GAME_ABSENT: &str = "game-absent";
+
+fn degrades_evidence(diagnostics: &[DiscoveryDiagnostic]) -> bool {
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.stage != GAME_ABSENT)
 }
 
 fn diagnostic(
@@ -151,15 +183,20 @@ fn discover_library(library_root: &Path) -> (Option<DiscoveredLibrary>, Vec<Disc
         // `unmanaged_subdirs` would then call it residue. Diagnose it.
         match super::try_is_dir(&game.install_dir) {
             Ok(true) => games.push(game),
-            Ok(false) => {}
+            // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
+            Ok(false) => diagnostics.push(diagnostic(
+                GAME_ABSENT,
+                &game.install_dir,
+                "manifest present, install directory absent (queued or paused download)",
+            )),
             Err(err) => diagnostics.push(diagnostic("game-path", &game.install_dir, err)),
         }
     }
 
-    let evidence = if diagnostics.is_empty() {
-        OrphanEvidence::Authoritative
-    } else {
+    let evidence = if degrades_evidence(&diagnostics) {
         OrphanEvidence::Degraded
+    } else {
+        OrphanEvidence::Authoritative
     };
     (
         Some(DiscoveredLibrary {
@@ -621,9 +658,44 @@ mod tests {
 
         let (library, diagnostics) = discover_library(root.path());
         let library = library.expect("the declared library is still reported");
-        assert_eq!(library.orphan_evidence, OrphanEvidence::Authoritative);
         assert!(library.games.is_empty());
-        assert!(diagnostics.is_empty(), "unexpected: {diagnostics:?}");
+        // The two halves of the rule, and they have to hold together: the
+        // skipped manifest is named, and naming it costs the library
+        // nothing. One paused download must not strip a whole library's
+        // orphan-deletion authority.
+        assert_eq!(library.orphan_evidence, OrphanEvidence::Authoritative);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.stage)
+                .collect::<Vec<_>>(),
+            vec![GAME_ABSENT],
+            "the skipped manifest has to leave a trace: {diagnostics:?}",
+        );
+    }
+
+    /// The severity distinction, stated on its own: a genuinely degrading
+    /// diagnostic alongside a `GAME_ABSENT` one still degrades. Without
+    /// this, "ignore game-absent" could silently grow into "ignore
+    /// everything once a download is paused".
+    #[test]
+    fn an_absent_game_does_not_mask_a_real_diagnostic() {
+        let absent = DiscoveryDiagnostic {
+            provider: "steam",
+            stage: GAME_ABSENT,
+            path: None,
+            message: String::new(),
+        };
+        let real = DiscoveryDiagnostic {
+            provider: "steam",
+            stage: "game-path",
+            path: None,
+            message: String::new(),
+        };
+
+        assert!(!degrades_evidence(&[]));
+        assert!(!degrades_evidence(std::slice::from_ref(&absent)));
+        assert!(degrades_evidence(&[absent, real]));
     }
 
     #[test]

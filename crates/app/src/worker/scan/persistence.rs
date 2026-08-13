@@ -377,8 +377,15 @@ pub(super) fn persist_prepared_game(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
 
+    // Counted rather than logged per finding: one game can drop thousands
+    // at once, and "12 404 findings had no file row" is the same
+    // information as twelve thousand identical lines. One diagnostic row
+    // per game follows the loop.
+    let mut findings_without_file = 0usize;
+
     for finding in &prepared.findings {
         let Some(&file_id) = file_ids.get(&finding.rel_path) else {
+            findings_without_file += 1;
             continue;
         };
 
@@ -448,6 +455,31 @@ pub(super) fn persist_prepared_game(
             imported_untrusted: finding.provenance == RuleProvenance::ImportedUntrusted,
             library: Some(library.clone()),
         });
+    }
+
+    // The drop above is the exact shape of "findings vanish between runs",
+    // and it used to leave nothing at all - no log line, no counter, no
+    // row. Recorded, not propagated: a finding whose file row is missing is
+    // a reason to explain the gap later, never a reason to fail the scan
+    // that produced the rest of them.
+    if findings_without_file > 0 {
+        let message = format!(
+            "{findings_without_file} of {} findings had no matching files row and were dropped",
+            prepared.findings.len()
+        );
+        if let Err(err) = db::record_scan_diagnostic(
+            conn,
+            scan_id,
+            "scan",
+            "finding-without-file",
+            Some(&prepared.install_dir),
+            &message,
+        ) {
+            crate::logger::log(&format!(
+                "Failed to record dropped findings for \"{}\": {err}",
+                prepared.name
+            ));
+        }
     }
 
     Ok(rows)
