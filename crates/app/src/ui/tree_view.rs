@@ -1,4 +1,4 @@
-//! Central panel: the disk -> game -> category -> folder/file findings tree
+//! Central panel: the branch -> game -> category -> folder/file findings tree
 //! with per-file checkboxes, aligned columns, and keyboard navigation.
 //!
 //! # Why virtualized rendering
@@ -12,7 +12,7 @@
 //!
 //! Instead, the whole tree is flattened each frame into a list of only the
 //! rows that are *structurally* visible (i.e. not hidden inside a collapsed
-//! disk/game/category/folder), and handed to
+//! branch/game/category/folder), and handed to
 //! `egui::ScrollArea::show_rows`, which only asks us to actually lay out
 //! the handful of rows currently scrolled into view. The flattening walk
 //! itself is cheap: it produces a `Vec` of small `Copy` enum values (a few
@@ -20,9 +20,9 @@
 //! it's a fast, allocation-light pass - the expensive part (widget layout,
 //! text shaping, formatting) only ever runs for the visible range.
 //!
-//! Disks and categories default to open; game and folder nodes default to
-//! closed, so a fresh scan shows a compact per-game summary instead of a
-//! wall of files - details stay one click (or `→`) away. The open/closed
+//! Top-level branches and categories default to open; game and folder nodes
+//! default to closed, so a fresh scan shows a compact per-game summary
+//! instead of a wall of files - details stay one click (or `→`) away. The open/closed
 //! state is tracked explicitly in `GameTrimmerApp::tree_toggles`, since the
 //! id path a node would get under `show_rows` isn't stable in the way
 //! egui's own `CollapsingState` memory needs.
@@ -64,14 +64,14 @@ use crate::app::GameTrimmerApp;
 use crate::i18n::{self, Lang};
 use crate::model::{
     self, category_display, category_ui_key, format_size, group_selection_state, is_orphan_branch,
-    set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem, GameNode,
-    SortColumn, TreeNode, TreeSort, AUTO_SELECT_CONFIDENCE_THRESHOLD,
+    set_group_selection, toggle_group, DisplayCategory, FindingItem, GameNode, SortColumn,
+    TopGroup, TopKey, TreeNode, TreeSort, AUTO_SELECT_CONFIDENCE_THRESHOLD,
 };
 use crate::search::SearchIndex;
 use crate::ui::row_actions;
 
-/// Horizontal indent per nesting level (disk = 0, game = 1, category = 2,
-/// folder = 3, orphan file = 3, folder member = 4).
+/// Horizontal indent per nesting level (top-level branch = 0, game = 1,
+/// category = 2, folder = 3, orphan file = 3, folder member = 4).
 const INDENT_PX: f32 = 18.0;
 /// Fixed column widths (right-aligned block), so every row lines up into
 /// the same columns as the header row above the list.
@@ -113,7 +113,10 @@ const SORT_AVAILABLE_GLYPH: &str = "\u{2195}";
 /// rows.
 #[derive(Debug, Clone, Copy)]
 enum Row {
-    Disk {
+    /// A top-level branch: what it stands for depends on the active grouping
+    /// axis (see `model::TopKey`), which is why the field is `d` rather than
+    /// anything disk-shaped.
+    Top {
         d: usize,
     },
     Game {
@@ -477,7 +480,7 @@ fn show_review_mark(ui: &mut egui::Ui, needs_review: bool, hint: &str) {
 }
 
 /// Walks the tree once, skipping the children of any closed
-/// disk/game/category/folder, and collects every structurally-visible row.
+/// branch/game/category/folder, and collects every structurally-visible row.
 /// O(number of rows produced): closed subtrees are never descended into, so
 /// this stays cheap even when the tree holds tens of thousands of findings.
 /// Whether a game has any node under the active plan-card filter (plan-action filtering).
@@ -489,9 +492,10 @@ fn game_matches_filter(game: &crate::model::GameNode, filter: Option<DisplayCate
     }
 }
 
-/// Whether a disk has any game with a node under the active filter (plan-action filtering).
-fn disk_matches_filter(disk_group: &DiskGroup, filter: Option<DisplayCategory>) -> bool {
-    disk_group
+/// Whether a top-level branch has any game with a node under the active filter
+/// (plan-action filtering).
+fn top_matches_filter(top_group: &TopGroup, filter: Option<DisplayCategory>) -> bool {
+    top_group
         .games
         .iter()
         .any(|game| game_matches_filter(game, filter))
@@ -500,9 +504,9 @@ fn disk_matches_filter(disk_group: &DiskGroup, filter: Option<DisplayCategory>) 
 /// Whether a game still has content under the active name search (name search).
 ///
 /// Real games answer this in O(1) from the pre-built id set. The orphan branch
-/// cannot: every disk's branch shares the one [`is_orphan_branch`] sentinel id,
-/// so the id-keyed answer would light up every disk's branch as soon as any one
-/// of them matched. Its findings are the launcher-residue leftovers - few
+/// cannot: every top-level branch's orphan node shares the one
+/// [`is_orphan_branch`] sentinel id, so the id-keyed answer would light up all of
+/// them as soon as any one matched. Its findings are the launcher-residue leftovers - few
 /// enough to scan directly.
 fn game_matches_search(game: &GameNode, search: &SearchIndex) -> bool {
     if !search.is_active() {
@@ -516,39 +520,39 @@ fn game_matches_search(game: &GameNode, search: &SearchIndex) -> bool {
 }
 
 fn build_visible_rows(
-    tree: &[DiskGroup],
+    tree: &[TopGroup],
     toggles: &HashMap<String, bool>,
     filter: Option<DisplayCategory>,
     search: &SearchIndex,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
 
-    for (d, disk_group) in tree.iter().enumerate() {
-        // Under a plan-card filter or a name search, a disk (and each game)
+    for (d, top_group) in tree.iter().enumerate() {
+        // Under a plan-card filter or a name search, a branch (and each game)
         // with nothing left to show is skipped entirely rather than shown as an
         // empty header, so the "View" action lands on exactly that category's
         // findings and a search shows only branches that contain a hit.
-        if !disk_matches_filter(disk_group, filter) {
+        if !top_matches_filter(top_group, filter) {
             continue;
         }
-        if !disk_group
+        if !top_group
             .games
             .iter()
             .any(|game| game_matches_search(game, search))
         {
             continue;
         }
-        rows.push(Row::Disk { d });
-        if !is_open(toggles, &disk_key(&disk_group.disk), true) {
+        rows.push(Row::Top { d });
+        if !is_open(toggles, &top_key(&top_group.key), true) {
             continue;
         }
 
-        for (g, game) in disk_group.games.iter().enumerate() {
+        for (g, game) in top_group.games.iter().enumerate() {
             if !game_matches_filter(game, filter) || !game_matches_search(game, search) {
                 continue;
             }
             rows.push(Row::Game { d, g });
-            if !is_open(toggles, &game_key(&disk_group.disk, game.game_id), false) {
+            if !is_open(toggles, &game_key(&top_group.key, game.game_id), false) {
                 continue;
             }
 
@@ -563,7 +567,7 @@ fn build_visible_rows(
                     continue;
                 }
                 rows.push(Row::Category { d, g, c });
-                let cat_key = category_key(&disk_group.disk, game.game_id, category_node.category);
+                let cat_key = category_key(&top_group.key, game.game_id, category_node.category);
                 if !is_open(toggles, &cat_key, true) {
                     continue;
                 }
@@ -580,7 +584,7 @@ fn build_visible_rows(
                             }
                             rows.push(Row::Folder { d, g, c, n });
                             let folder_key = folder_key(
-                                &disk_group.disk,
+                                &top_group.key,
                                 game.game_id,
                                 category_node.category,
                                 group_dir,
@@ -626,25 +630,37 @@ fn build_visible_rows(
     rows
 }
 
-/// Stable, collision-free key for a disk row's expand/collapse state.
-fn disk_key(disk: &str) -> String {
-    format!("d|{disk}")
+/// Stable, collision-free key for a top-level branch row's expand/collapse
+/// state.
+///
+/// Every key below is built on top of this one, and `TopKey::collapse_key`
+/// carries the grouping axis - so the whole keyspace is namespaced per axis.
+/// Without that, "disk E: is open" and "library E:\Games is open" would be the
+/// same key, and the expand state of one axis would leak into the next
+/// (GT-35's second pitfall).
+fn top_key(key: &TopKey) -> String {
+    format!("d|{}", key.collapse_key())
 }
 
 /// Stable, collision-free key for a game row's expand/collapse state.
-fn game_key(disk: &str, game_id: i64) -> String {
-    format!("g|{disk}|{game_id}")
+fn game_key(top: &TopKey, game_id: i64) -> String {
+    format!("g|{}|{game_id}", top.collapse_key())
 }
 
 /// Stable, collision-free key for a category row's expand/collapse state.
-fn category_key(disk: &str, game_id: i64, category: DisplayCategory) -> String {
-    format!("c|{disk}|{game_id}|{}", category_ui_key(category))
+fn category_key(top: &TopKey, game_id: i64, category: DisplayCategory) -> String {
+    format!(
+        "c|{}|{game_id}|{}",
+        top.collapse_key(),
+        category_ui_key(category)
+    )
 }
 
 /// Stable, collision-free key for a folder row's expand/collapse state.
-fn folder_key(disk: &str, game_id: i64, category: DisplayCategory, group_dir: &str) -> String {
+fn folder_key(top: &TopKey, game_id: i64, category: DisplayCategory, group_dir: &str) -> String {
     format!(
-        "f|{disk}|{game_id}|{}|{group_dir}",
+        "f|{}|{game_id}|{}|{group_dir}",
+        top.collapse_key(),
         category_ui_key(category)
     )
 }
@@ -659,7 +675,7 @@ fn is_open(toggles: &HashMap<String, bool>, key: &str, default_open: bool) -> bo
 /// Used by `←` to find a row's structural parent.
 fn row_level(row: Row) -> usize {
     match row {
-        Row::Disk { .. } => 0,
+        Row::Top { .. } => 0,
         Row::Game { .. } => 1,
         Row::Category { .. } => 2,
         Row::Folder { .. } => 3,
@@ -679,28 +695,28 @@ fn parent_row_index(rows: &[Row], index: usize) -> Option<usize> {
 
 /// The expand/collapse toggle key and default-open state of a row, if the
 /// row is expandable at all (file rows are not).
-fn row_toggle_key(tree: &[DiskGroup], row: Row) -> Option<(String, bool)> {
+fn row_toggle_key(tree: &[TopGroup], row: Row) -> Option<(String, bool)> {
     match row {
-        Row::Disk { d } => Some((disk_key(&tree[d].disk), true)),
-        Row::Game { d, g } => Some((game_key(&tree[d].disk, tree[d].games[g].game_id), false)),
+        Row::Top { d } => Some((top_key(&tree[d].key), true)),
+        Row::Game { d, g } => Some((game_key(&tree[d].key, tree[d].games[g].game_id), false)),
         Row::Category { d, g, c } => {
-            let disk_group = &tree[d];
-            let game = &disk_group.games[g];
+            let top_group = &tree[d];
+            let game = &top_group.games[g];
             Some((
-                category_key(&disk_group.disk, game.game_id, game.categories[c].category),
+                category_key(&top_group.key, game.game_id, game.categories[c].category),
                 true,
             ))
         }
         Row::Folder { d, g, c, n } => {
-            let disk_group = &tree[d];
-            let game = &disk_group.games[g];
+            let top_group = &tree[d];
+            let game = &top_group.games[g];
             let category_node = &game.categories[c];
             let TreeNode::Folder { group_dir, .. } = &category_node.nodes[n] else {
                 return None;
             };
             Some((
                 folder_key(
-                    &disk_group.disk,
+                    &top_group.key,
                     game.game_id,
                     category_node.category,
                     group_dir,
@@ -714,7 +730,7 @@ fn row_toggle_key(tree: &[DiskGroup], row: Row) -> Option<(String, bool)> {
 
 /// Flat `findings` index of a file row.
 fn file_row_index(
-    tree: &[DiskGroup],
+    tree: &[TopGroup],
     d: usize,
     g: usize,
     c: usize,
@@ -730,9 +746,9 @@ fn file_row_index(
 
 /// Toggles the selection of whatever the row represents: the whole group
 /// for header rows, the single file for file rows.
-fn toggle_row_selection(tree: &[DiskGroup], findings: &mut [FindingItem], row: Row) {
+fn toggle_row_selection(tree: &[TopGroup], findings: &mut [FindingItem], row: Row) {
     match row {
-        Row::Disk { d } => toggle_group(findings, &tree[d].all_indices),
+        Row::Top { d } => toggle_group(findings, &tree[d].all_indices),
         Row::Game { d, g } => toggle_group(findings, &tree[d].games[g].all_indices),
         Row::Category { d, g, c } => {
             toggle_group(findings, &tree[d].games[g].categories[c].all_indices)
@@ -899,7 +915,7 @@ fn handle_keyboard(
 #[allow(clippy::too_many_arguments)]
 fn show_row(
     ui: &mut egui::Ui,
-    tree: &[DiskGroup],
+    tree: &[TopGroup],
     findings: &mut [FindingItem],
     toggles: &mut HashMap<String, bool>,
     cursor: &mut Option<usize>,
@@ -954,7 +970,7 @@ fn show_row(
     }
 
     match row {
-        Row::Disk { d } => show_disk_row(ui, tree, findings, toggles, cursor, d, row_index, lang),
+        Row::Top { d } => show_top_row(ui, tree, findings, toggles, cursor, d, row_index, lang),
         Row::Game { d, g } => {
             show_game_row(ui, tree, findings, toggles, cursor, d, g, row_index, lang)
         }
@@ -970,10 +986,25 @@ fn show_row(
     }
 }
 
+/// The folder a top-level branch stands for on disk, if it stands for one at
+/// all.
+///
+/// A disk row means its root; a library row means the library root. A launcher
+/// row means neither - "Steam" is not a directory, and the same launcher's
+/// games can be spread across several - so it gets no shell actions rather
+/// than a made-up path.
+fn top_shell_target(key: &TopKey) -> Option<ShellTarget> {
+    match key {
+        TopKey::Disk(disk) => Some(ShellTarget::Folder(disk_root_path(disk))),
+        TopKey::Library(root) => Some(ShellTarget::Folder(row_actions::windows_path_string(root))),
+        TopKey::Launcher(_) | TopKey::Unattributed(_) => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn show_disk_row(
+fn show_top_row(
     ui: &mut egui::Ui,
-    tree: &[DiskGroup],
+    tree: &[TopGroup],
     findings: &mut [FindingItem],
     toggles: &mut HashMap<String, bool>,
     cursor: &mut Option<usize>,
@@ -981,9 +1012,9 @@ fn show_disk_row(
     row_index: usize,
     lang: Lang,
 ) {
-    let disk_group = &tree[d];
-    let key = disk_key(&disk_group.disk);
-    let name = egui::RichText::new(i18n::disk_label(lang, &disk_group.disk)).strong();
+    let top_group = &tree[d];
+    let key = top_key(&top_group.key);
+    let name = egui::RichText::new(i18n::top_group_label(lang, &top_group.key)).strong();
     let response = show_header_row(
         ui,
         findings,
@@ -993,26 +1024,29 @@ fn show_disk_row(
         &key,
         true,
         0,
-        &disk_group.all_indices,
-        disk_group.total_bytes,
+        &top_group.all_indices,
+        top_group.total_bytes,
         name,
         lang,
     );
-    let target = ShellTarget::Folder(disk_root_path(&disk_group.disk));
-    let response = response.on_hover_text(target.path().to_string());
-    row_context_menu(&response, lang, Some(target), |ui| {
+    let target = top_shell_target(&top_group.key);
+    let response = match &target {
+        Some(target) => response.on_hover_text(target.path().to_string()),
+        None => response,
+    };
+    row_context_menu(&response, lang, target, |ui| {
         if ui
-            .button(i18n::select_all_on_disk(lang, &disk_group.disk))
+            .button(i18n::select_all_in_group(lang, &top_group.key))
             .clicked()
         {
-            set_group_selection(findings, &disk_group.all_indices, true);
+            set_group_selection(findings, &top_group.all_indices, true);
             ui.close();
         }
         if ui
-            .button(i18n::deselect_all_on_disk(lang, &disk_group.disk))
+            .button(i18n::deselect_all_in_group(lang, &top_group.key))
             .clicked()
         {
-            set_group_selection(findings, &disk_group.all_indices, false);
+            set_group_selection(findings, &top_group.all_indices, false);
             ui.close();
         }
     });
@@ -1021,7 +1055,7 @@ fn show_disk_row(
 #[allow(clippy::too_many_arguments)]
 fn show_game_row(
     ui: &mut egui::Ui,
-    tree: &[DiskGroup],
+    tree: &[TopGroup],
     findings: &mut [FindingItem],
     toggles: &mut HashMap<String, bool>,
     cursor: &mut Option<usize>,
@@ -1030,9 +1064,9 @@ fn show_game_row(
     row_index: usize,
     lang: Lang,
 ) {
-    let disk_group = &tree[d];
-    let game = &disk_group.games[g];
-    let key = game_key(&disk_group.disk, game.game_id);
+    let top_group = &tree[d];
+    let game = &top_group.games[g];
+    let key = game_key(&top_group.key, game.game_id);
     // The orphan branch (orphan-residue safety) has no real game name - render a localized
     // "orphaned residue" label instead of a quoted game title. Computed live
     // off the sentinel id, so it follows the current UI language even though
@@ -1096,10 +1130,10 @@ fn game_branch_label(lang: Lang, game: &GameNode) -> String {
     }
 }
 
-/// Every finding of `category` across all games of one disk - the target of
-/// the "select category across the whole disk" bulk action.
-fn category_indices_on_disk(disk_group: &DiskGroup, category: DisplayCategory) -> Vec<usize> {
-    disk_group
+/// Every finding of `category` across all games of one top-level branch - the
+/// target of the "select this category across the whole branch" bulk action.
+fn category_indices_in_group(top_group: &TopGroup, category: DisplayCategory) -> Vec<usize> {
+    top_group
         .games
         .iter()
         .flat_map(|game| {
@@ -1114,7 +1148,7 @@ fn category_indices_on_disk(disk_group: &DiskGroup, category: DisplayCategory) -
 #[allow(clippy::too_many_arguments)]
 fn show_category_row(
     ui: &mut egui::Ui,
-    tree: &[DiskGroup],
+    tree: &[TopGroup],
     findings: &mut [FindingItem],
     toggles: &mut HashMap<String, bool>,
     cursor: &mut Option<usize>,
@@ -1124,10 +1158,10 @@ fn show_category_row(
     row_index: usize,
     lang: Lang,
 ) {
-    let disk_group = &tree[d];
-    let game = &disk_group.games[g];
+    let top_group = &tree[d];
+    let game = &top_group.games[g];
     let category_node = &game.categories[c];
-    let key = category_key(&disk_group.disk, game.game_id, category_node.category);
+    let key = category_key(&top_group.key, game.game_id, category_node.category);
     let name = egui::RichText::new(category_display(lang, category_node.category));
     let response = show_header_row(
         ui,
@@ -1158,22 +1192,22 @@ fn show_category_row(
     row_context_menu(&response, lang, target, |ui| {
         let label = category_display(lang, category_node.category);
         if ui
-            .button(i18n::select_category_on_disk(lang, label, &disk_group.disk))
+            .button(i18n::select_category_in_group(lang, label, &top_group.key))
             .clicked()
         {
-            let indices = category_indices_on_disk(disk_group, category_node.category);
+            let indices = category_indices_in_group(top_group, category_node.category);
             set_group_selection(findings, &indices, true);
             ui.close();
         }
         if ui
-            .button(i18n::deselect_category_on_disk(
+            .button(i18n::deselect_category_in_group(
                 lang,
                 label,
-                &disk_group.disk,
+                &top_group.key,
             ))
             .clicked()
         {
-            let indices = category_indices_on_disk(disk_group, category_node.category);
+            let indices = category_indices_in_group(top_group, category_node.category);
             set_group_selection(findings, &indices, false);
             ui.close();
         }
@@ -1183,7 +1217,7 @@ fn show_category_row(
 #[allow(clippy::too_many_arguments)]
 fn show_folder_row(
     ui: &mut egui::Ui,
-    tree: &[DiskGroup],
+    tree: &[TopGroup],
     findings: &mut [FindingItem],
     toggles: &mut HashMap<String, bool>,
     cursor: &mut Option<usize>,
@@ -1194,8 +1228,8 @@ fn show_folder_row(
     row_index: usize,
     lang: Lang,
 ) {
-    let disk_group = &tree[d];
-    let game = &disk_group.games[g];
+    let top_group = &tree[d];
+    let game = &top_group.games[g];
     let category_node = &game.categories[c];
     let TreeNode::Folder {
         group_dir,
@@ -1206,7 +1240,7 @@ fn show_folder_row(
         unreachable!("Row::Folder always points at a TreeNode::Folder");
     };
     let key = folder_key(
-        &disk_group.disk,
+        &top_group.key,
         game.game_id,
         category_node.category,
         group_dir,
@@ -1243,7 +1277,7 @@ fn show_folder_row(
     }
 }
 
-/// Renders one expandable header row shared by disk/game/category/folder
+/// Renders one expandable header row shared by branch/game/category/folder
 /// rows: an expand/collapse arrow button, a tri-state checkbox over
 /// `indices`, the name, and the fixed columns (count and size).
 /// Returns the name label's response so callers can attach a context menu.
@@ -1386,7 +1420,7 @@ fn row_context_menu(
     });
 }
 
-/// The filesystem root a disk group stands for: a drive letter row (`F:`)
+/// The filesystem root a disk branch stands for: a drive letter row (`F:`)
 /// means `F:\`, while a UNC group (`\\server\share`) already is a path.
 fn disk_root_path(disk: &str) -> String {
     if disk.ends_with(':') {
@@ -1413,7 +1447,7 @@ fn install_dir_of(findings: &[FindingItem], indices: &[usize]) -> Option<String>
 #[allow(clippy::too_many_arguments)]
 fn show_file_row(
     ui: &mut egui::Ui,
-    tree: &[DiskGroup],
+    tree: &[TopGroup],
     findings: &mut [FindingItem],
     cursor: &mut Option<usize>,
     d: usize,
@@ -1545,13 +1579,13 @@ mod tests {
         }
 
         let mut keys = Vec::new();
-        for disk_group in &test.app().tree {
-            keys.push(disk_key(&disk_group.disk));
-            for game in &disk_group.games {
-                keys.push(game_key(&disk_group.disk, game.game_id));
+        for top_group in &test.app().tree {
+            keys.push(top_key(&top_group.key));
+            for game in &top_group.games {
+                keys.push(game_key(&top_group.key, game.game_id));
                 for category_node in &game.categories {
                     keys.push(category_key(
-                        &disk_group.disk,
+                        &top_group.key,
                         game.game_id,
                         category_node.category,
                     ));
@@ -2181,5 +2215,87 @@ mod tests {
             before, after,
             "Space changed the selection while the settings dialog was open",
         );
+    }
+
+    // -- grouping axes (GT-35) --
+
+    /// The seeded games' launchers, as their branch headings read on screen.
+    fn seeded_launcher_labels(test: &UiTest) -> Vec<String> {
+        let lang = test.app().lang();
+        crate::ui::harness::SEEDED_LIBRARIES
+            .iter()
+            .map(|(vendor, _)| i18n::launcher_label(lang, vendor))
+            .collect()
+    }
+
+    /// The whole point of the axis: the same findings, cut a different way,
+    /// with no rescan. Both seeded games share disk C: and come from different
+    /// launchers, so the headings change and the file rows do not.
+    #[test]
+    fn switching_to_the_launcher_axis_replaces_the_disk_heading() {
+        let mut test = tree_of_files([90; 2]);
+        let disk = i18n::disk_label(test.app().lang(), "C:");
+        test.assert_label(&disk);
+
+        test.app_mut().set_tree_axis(model::GroupAxis::Launcher);
+        test.run();
+
+        test.assert_no_label(&disk);
+        for launcher in seeded_launcher_labels(&test) {
+            test.assert_label(&launcher);
+        }
+    }
+
+    /// A switch must never be able to lose a finding - that is what would make
+    /// the control dangerous rather than merely useless. Asserted on the model
+    /// the tree is built from, across every axis, because a row hidden inside
+    /// a collapsed branch is legitimately off screen while still present.
+    #[test]
+    fn every_axis_still_holds_every_finding() {
+        let mut test = tree_of_files([90; 2]);
+        let expected = test.app().findings.len();
+
+        for axis in model::GROUP_AXIS_ORDER {
+            test.app_mut().set_tree_axis(axis);
+            test.run();
+            let reachable: usize = test
+                .app()
+                .tree
+                .iter()
+                .map(|group| group.all_indices.len())
+                .sum();
+            assert_eq!(reachable, expected, "grouping by {axis:?} lost a finding");
+        }
+    }
+
+    /// GT-35's second pitfall, from the user's side: the collapse keys are
+    /// namespaced per axis, so a branch opened under one axis is still open
+    /// after a round trip through another - rather than the tree folding shut
+    /// because a key from the other axis answered for it.
+    #[test]
+    fn expanding_a_branch_survives_a_round_trip_through_another_axis() {
+        let mut test = tree_of_files([90; 2]);
+        test.assert_label(SEEDED_FILE_NAME);
+
+        test.app_mut().set_tree_axis(model::GroupAxis::Launcher);
+        test.run();
+        test.app_mut().set_tree_axis(model::GroupAxis::Disk);
+        test.run();
+
+        test.assert_label(SEEDED_FILE_NAME);
+    }
+
+    /// Switching axes is a view change, not an edit. If it could touch the
+    /// checkboxes it would change what a pending delete is about to remove.
+    #[test]
+    fn switching_axes_leaves_the_selection_alone() {
+        let mut test = tree_of_files([90; 2]);
+        let before: Vec<bool> = test.app().findings.iter().map(|f| f.selected).collect();
+
+        test.app_mut().set_tree_axis(model::GroupAxis::Library);
+        test.run();
+
+        let after: Vec<bool> = test.app().findings.iter().map(|f| f.selected).collect();
+        assert_eq!(before, after);
     }
 }

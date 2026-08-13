@@ -84,6 +84,11 @@ pub(super) const STRINGS: Strings = Strings {
 
     plan_filter_label: "Показувати:",
     plan_filter_all: "усі категорії",
+    plan_group_label: "Групувати:",
+    group_axis_disk: "за диском",
+    group_axis_launcher: "за лаунчером",
+    group_axis_library: "за бібліотекою",
+    group_unattributed: "Без прив'язки",
     btn_remove_category: "Прибрати всю категорію",
     search_hint: "Пошук за назвою\u{2026}",
     btn_clear_search: "Очистити пошук",

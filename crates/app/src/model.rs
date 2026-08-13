@@ -1,6 +1,7 @@
 //! UI-side data model: findings grouped for the tree view, plus selection
 //! and formatting helpers. Nothing here touches the database directly.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf, Prefix};
 
@@ -112,13 +113,10 @@ pub struct FindingRow {
     /// no longer resolves. Both the fresh-scan path and the load path fill it
     /// from the same evidence, so the two must never disagree for the same
     /// data.
-    //
-    // Written on every row-building path and asserted on by tests, but not yet
-    // read by the UI: the consumer is the launcher/library grouping in the tree
-    // ("GT-35 - grouping the view by a chosen axis"), which is gated behind the
-    // main-window redesign. The plumbing lands first deliberately - it is pure
-    // data flow and does not touch the panel being rebuilt.
-    #[allow(dead_code)]
+    ///
+    /// Read by the tree's launcher and library grouping axes (see
+    /// [`GroupAxis`]) and by nothing else - in particular by nothing on the
+    /// deletion path, per [`LibraryOrigin`]'s own boundary.
     pub library: Option<LibraryOrigin>,
 }
 
@@ -551,10 +549,118 @@ pub struct GameNode {
     pub total_bytes: u64,
 }
 
-/// One physical disk's games, largest first.
+/// What the tree's top level groups findings by.
+///
+/// The same findings, cut a different way - never a different set of findings.
+/// Switching axes rebuilds the tree from the rows already in memory, so it
+/// costs no rescan and can never surface or hide a finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum GroupAxis {
+    /// The physical disk the files sit on (the tree's original and default
+    /// shape). Every row has one, so this axis never leaves anything
+    /// unattributed.
+    #[default]
+    Disk,
+    /// The launcher that owns the library the game came from (Steam, GOG, ...).
+    Launcher,
+    /// One specific library root, so two Steam libraries on two disks are two
+    /// separate branches.
+    Library,
+}
+
+/// Every axis, in the order the switcher offers them.
+pub const GROUP_AXIS_ORDER: [GroupAxis; 3] =
+    [GroupAxis::Disk, GroupAxis::Launcher, GroupAxis::Library];
+
+/// Stable short key for an axis, used to namespace the tree's expand/collapse
+/// state (see `ui::tree_view`) so the open/closed rows of one axis are not read
+/// back as another's.
+pub fn group_axis_key(axis: GroupAxis) -> &'static str {
+    match axis {
+        GroupAxis::Disk => "disk",
+        GroupAxis::Launcher => "launcher",
+        GroupAxis::Library => "library",
+    }
+}
+
+/// Which top-level branch a finding belongs to under the active [`GroupAxis`].
+///
+/// Carries the axis inside every variant rather than beside the tree, so a key
+/// built under one axis can never be compared against, or collapse-keyed as,
+/// one built under another.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TopKey {
+    /// [`GroupAxis::Disk`]: an uppercase drive label (`"E:"`) or a UNC root.
+    Disk(String),
+    /// [`GroupAxis::Launcher`]: the raw `game_libraries.vendor` tag
+    /// (`"steam"`, `"manual"`, ...), rendered for display by
+    /// `i18n::launcher_label`.
+    Launcher(String),
+    /// [`GroupAxis::Library`]: the library root directory.
+    Library(PathBuf),
+    /// The row carries nothing to group on under this axis - residue whose
+    /// library root no longer resolves, or rows read back from a database
+    /// written before the attribution existed (see [`FindingRow::library`]).
+    ///
+    /// A branch of its own rather than a silent omission: a tree that quietly
+    /// dropped these would show fewer findings after a switch than before it,
+    /// which reads as broken detection rather than as missing metadata.
+    Unattributed(GroupAxis),
+}
+
+impl TopKey {
+    /// The axis this key was built under.
+    pub fn axis(&self) -> GroupAxis {
+        match self {
+            TopKey::Disk(_) => GroupAxis::Disk,
+            TopKey::Launcher(_) => GroupAxis::Launcher,
+            TopKey::Library(_) => GroupAxis::Library,
+            TopKey::Unattributed(axis) => *axis,
+        }
+    }
+
+    /// The raw grouping value as text - what the branches are ordered by, and
+    /// what the collapse key is built from. Empty for
+    /// [`TopKey::Unattributed`], which is ordered by [`Self::rank`] anyway.
+    pub fn value(&self) -> Cow<'_, str> {
+        match self {
+            TopKey::Disk(disk) => Cow::Borrowed(disk.as_str()),
+            TopKey::Launcher(vendor) => Cow::Borrowed(vendor.as_str()),
+            TopKey::Library(root) => root.to_string_lossy(),
+            TopKey::Unattributed(_) => Cow::Borrowed(""),
+        }
+    }
+
+    /// Ordering band: attributed branches first, the unattributed one last.
+    /// The leftovers belong at the bottom of the tree, not sorted into the
+    /// middle of it by an empty name.
+    fn rank(&self) -> u8 {
+        u8::from(matches!(self, TopKey::Unattributed(_)))
+    }
+
+    /// Stable, axis-namespaced string identifying this branch - the base of
+    /// every expand/collapse key beneath it (see `ui::tree_view`).
+    pub fn collapse_key(&self) -> String {
+        format!("{}:{}", group_axis_key(self.axis()), self.value())
+    }
+}
+
+/// Orders two top-level branches by their own identity: unattributed last,
+/// then by the raw grouping value. The default tree order and the "Name"
+/// column's order share this so a sort by name lands where the tree already
+/// was rather than shuffling for a reason nothing on screen states.
+fn cmp_top_keys(a: &TopKey, b: &TopKey) -> std::cmp::Ordering {
+    a.rank()
+        .cmp(&b.rank())
+        .then_with(|| path_cmp(&a.value(), &b.value()))
+}
+
+/// One top-level branch of the tree and its games, largest first. What the
+/// branch stands for depends on the [`GroupAxis`] it was built under - see
+/// [`TopKey`].
 #[derive(Debug, Clone)]
-pub struct DiskGroup {
-    pub disk: String,
+pub struct TopGroup {
+    pub key: TopKey,
     pub games: Vec<GameNode>,
     /// Concatenated `findings` indices across every game. See
     /// `CategoryNode::all_indices` for why this is precomputed.
@@ -567,7 +673,7 @@ pub struct DiskGroup {
 /// used to group games by physical disk in the tree. Non-drive roots (UNC
 /// shares, verbatim device paths, ...) fall back to a label built from the
 /// path's first component instead.
-fn disk_label(install_dir: &Path) -> String {
+pub fn disk_label(install_dir: &Path) -> String {
     match install_dir.components().next() {
         Some(Component::Prefix(prefix)) => match prefix.kind() {
             Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
@@ -623,7 +729,7 @@ fn node_bytes(items: &[FindingItem], node: &TreeNode) -> u64 {
 
 /// All flat `findings` indices held under one node - a folder's whole
 /// member list, or a single orphan file's index. Used to build
-/// `CategoryNode::all_indices`/`DiskGroup::all_indices` once in
+/// `CategoryNode::all_indices`/`TopGroup::all_indices` once in
 /// `build_tree`.
 fn node_all_indices(node: &TreeNode) -> Vec<usize> {
     match node {
@@ -765,16 +871,37 @@ pub fn selection_fingerprint(items: &[FindingItem]) -> u64 {
     })
 }
 
-pub fn build_tree(items: &[FindingItem]) -> Vec<DiskGroup> {
-    let mut game_buckets: HashMap<(String, i64), GameBucket> = HashMap::new();
+/// Which top-level branch one row belongs to under `axis`.
+///
+/// Only the disk is derived from the file's own path; the launcher and the
+/// library both read [`FindingRow::library`], which the scan and load paths
+/// fill from the same `game_libraries` evidence. A row that carries no
+/// attribution - or a root with no vendor behind it - lands in
+/// [`TopKey::Unattributed`] rather than being dropped.
+fn top_key_of(row: &FindingRow, axis: GroupAxis) -> TopKey {
+    match axis {
+        GroupAxis::Disk => TopKey::Disk(disk_label(&row.install_dir)),
+        GroupAxis::Launcher => match row.library.as_ref().and_then(|lib| lib.vendor.as_ref()) {
+            Some(vendor) => TopKey::Launcher(vendor.clone()),
+            None => TopKey::Unattributed(axis),
+        },
+        GroupAxis::Library => match row.library.as_ref() {
+            Some(lib) => TopKey::Library(lib.root.clone()),
+            None => TopKey::Unattributed(axis),
+        },
+    }
+}
+
+pub fn build_tree(items: &[FindingItem], axis: GroupAxis) -> Vec<TopGroup> {
+    let mut game_buckets: HashMap<(TopKey, i64), GameBucket> = HashMap::new();
 
     for (index, item) in items.iter().enumerate() {
         if item.removed {
             continue;
         }
-        let disk = disk_label(&item.row.install_dir);
+        let top = top_key_of(&item.row, axis);
         let bucket = game_buckets
-            .entry((disk, item.row.game_id))
+            .entry((top, item.row.game_id))
             .or_insert_with(|| GameBucket {
                 game_name: item.row.game_name.clone(),
                 folders: HashMap::new(),
@@ -786,8 +913,8 @@ pub fn build_tree(items: &[FindingItem]) -> Vec<DiskGroup> {
         }
     }
 
-    let mut games_by_disk: HashMap<String, Vec<GameNode>> = HashMap::new();
-    for ((disk, game_id), bucket) in game_buckets {
+    let mut games_by_top: HashMap<TopKey, Vec<GameNode>> = HashMap::new();
+    for ((top, game_id), bucket) in game_buckets {
         let game_name = bucket.game_name.clone();
         let categories = build_game_categories(items, bucket);
         let all_indices: Vec<usize> = categories
@@ -795,7 +922,7 @@ pub fn build_tree(items: &[FindingItem]) -> Vec<DiskGroup> {
             .flat_map(|category_node| category_node.all_indices.iter().copied())
             .collect();
         let total_bytes = group_size_bytes(items, &all_indices);
-        games_by_disk.entry(disk).or_default().push(GameNode {
+        games_by_top.entry(top).or_default().push(GameNode {
             game_id,
             game_name,
             categories,
@@ -804,9 +931,9 @@ pub fn build_tree(items: &[FindingItem]) -> Vec<DiskGroup> {
         });
     }
 
-    let mut disks: Vec<DiskGroup> = games_by_disk
+    let mut groups: Vec<TopGroup> = games_by_top
         .into_iter()
-        .map(|(disk, mut games)| {
+        .map(|(key, mut games)| {
             games.sort_by(|a, b| {
                 b.total_bytes
                     .cmp(&a.total_bytes)
@@ -817,8 +944,8 @@ pub fn build_tree(items: &[FindingItem]) -> Vec<DiskGroup> {
                 .flat_map(|game| game.all_indices.iter().copied())
                 .collect();
             let total_bytes = group_size_bytes(items, &all_indices);
-            DiskGroup {
-                disk,
+            TopGroup {
+                key,
                 games,
                 all_indices,
                 total_bytes,
@@ -826,8 +953,8 @@ pub fn build_tree(items: &[FindingItem]) -> Vec<DiskGroup> {
         })
         .collect();
 
-    disks.sort_by(|a, b| a.disk.cmp(&b.disk));
-    disks
+    groups.sort_by(|a, b| cmp_top_keys(&a.key, &b.key));
+    groups
 }
 
 /// Which column the findings tree is ordered by once the user has picked an
@@ -902,13 +1029,13 @@ impl TreeSort {
 /// things are"); keeping it under an explicit sort would make "by size" a lie
 /// for precisely the case the sort exists to answer - a large loose file that
 /// should outrank a small folder.
-pub fn sort_tree(tree: &mut [DiskGroup], items: &[FindingItem], sort: Option<TreeSort>) {
+pub fn sort_tree(tree: &mut [TopGroup], items: &[FindingItem], sort: Option<TreeSort>) {
     let Some(sort) = sort else {
         return;
     };
 
-    for disk_group in tree.iter_mut() {
-        for game in disk_group.games.iter_mut() {
+    for top_group in tree.iter_mut() {
+        for game in top_group.games.iter_mut() {
             for category_node in game.categories.iter_mut() {
                 for node in category_node.nodes.iter_mut() {
                     if let TreeNode::Folder { item_indices, .. } = node {
@@ -935,15 +1062,15 @@ pub fn sort_tree(tree: &mut [DiskGroup], items: &[FindingItem], sort: Option<Tre
                 .flat_map(|category_node| category_node.all_indices.iter().copied())
                 .collect();
         }
-        disk_group.games.sort_by(|a, b| cmp_games(sort, a, b));
-        disk_group.all_indices = disk_group
+        top_group.games.sort_by(|a, b| cmp_games(sort, a, b));
+        top_group.all_indices = top_group
             .games
             .iter()
             .flat_map(|game| game.all_indices.iter().copied())
             .collect();
     }
 
-    tree.sort_by(|a, b| cmp_disks(sort, a, b));
+    tree.sort_by(|a, b| cmp_top_groups(sort, a, b));
 }
 
 /// A category's position in [`CATEGORY_ORDER`] - its place in the default
@@ -956,15 +1083,20 @@ fn category_rank(category: DisplayCategory) -> usize {
         .unwrap_or(CATEGORY_ORDER.len())
 }
 
-/// Orders two disk rows.
-fn cmp_disks(sort: TreeSort, a: &DiskGroup, b: &DiskGroup) -> std::cmp::Ordering {
+/// Orders two top-level branch rows.
+///
+/// The unattributed branch is *not* pinned last here, unlike in the default
+/// order: under an explicit sort the user asked for one rule over every row,
+/// and a branch that ignored it would be a heading the screen cannot account
+/// for. It still sorts last among equals, since its name is empty.
+fn cmp_top_groups(sort: TreeSort, a: &TopGroup, b: &TopGroup) -> std::cmp::Ordering {
     let primary = match sort.column {
-        SortColumn::Name => path_cmp(&a.disk, &b.disk),
+        SortColumn::Name => path_cmp(&a.key.value(), &b.key.value()),
         SortColumn::Files => a.all_indices.len().cmp(&b.all_indices.len()),
         SortColumn::Size => a.total_bytes.cmp(&b.total_bytes),
     };
     sort.directed(primary)
-        .then_with(|| path_cmp(&a.disk, &b.disk))
+        .then_with(|| path_cmp(&a.key.value(), &b.key.value()))
 }
 
 /// Orders two game rows within one disk.
@@ -1253,6 +1385,17 @@ mod tests {
         found
     }
 
+    /// Attributes a finding to a library, the way `worker::load` and
+    /// `worker::scan::persistence` both do. `vendor` is `None` for a root that
+    /// resolved but has no `game_libraries` row behind it.
+    fn with_library(mut found: FindingItem, vendor: Option<&str>, root: &str) -> FindingItem {
+        found.row.library = Some(LibraryOrigin {
+            vendor: vendor.map(str::to_string),
+            root: PathBuf::from(root),
+        });
+        found
+    }
+
     /// An orphaned-residue finding as the scan/load path produces it: the
     /// synthetic [`ORPHAN_GAME_ID`], an empty game name, and the orphan
     /// folder's container as `install_dir` with the folder name as `rel_path`.
@@ -1421,7 +1564,7 @@ mod tests {
         ]
     }
 
-    fn game_names(tree: &[DiskGroup]) -> Vec<String> {
+    fn game_names(tree: &[TopGroup]) -> Vec<String> {
         tree[0]
             .games
             .iter()
@@ -1429,8 +1572,8 @@ mod tests {
             .collect()
     }
 
-    fn sorted(items: &[FindingItem], column: SortColumn, descending: bool) -> Vec<DiskGroup> {
-        let mut tree = build_tree(items);
+    fn sorted(items: &[FindingItem], column: SortColumn, descending: bool) -> Vec<TopGroup> {
+        let mut tree = build_tree(items, GroupAxis::Disk);
         sort_tree(&mut tree, items, Some(TreeSort { column, descending }));
         tree
     }
@@ -1441,7 +1584,7 @@ mod tests {
     #[test]
     fn sort_tree_leaves_the_default_order_alone() {
         let items = two_games();
-        let mut tree = build_tree(&items);
+        let mut tree = build_tree(&items, GroupAxis::Disk);
         let before = game_names(&tree);
 
         sort_tree(&mut tree, &items, None);
@@ -1562,7 +1705,7 @@ mod tests {
             ),
         ];
 
-        let default_first = &build_tree(&items)[0].games[0].categories[0].nodes[0];
+        let default_first = &build_tree(&items, GroupAxis::Disk)[0].games[0].categories[0].nodes[0];
         assert!(
             matches!(default_first, TreeNode::Folder { .. }),
             "the default order is meant to lead with folders - this test has nothing to prove otherwise",
@@ -1683,10 +1826,10 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         assert_eq!(tree.len(), 1, "all games share the same disk (C:)");
-        assert_eq!(tree[0].disk, "C:");
+        assert_eq!(tree[0].key.value(), "C:");
         assert_eq!(
             tree[0].games.len(),
             2,
@@ -1730,7 +1873,7 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         assert_eq!(tree[0].games[0].game_name, "Big Game");
         assert_eq!(tree[0].games[1].game_name, "Small Game");
@@ -1759,11 +1902,11 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         assert_eq!(tree.len(), 2);
-        assert_eq!(tree[0].disk, "D:", "disks are sorted alphabetically");
-        assert_eq!(tree[1].disk, "E:");
+        assert_eq!(tree[0].key.value(), "D:", "disks are sorted alphabetically");
+        assert_eq!(tree[1].key.value(), "E:");
     }
 
     #[test]
@@ -1778,10 +1921,10 @@ mod tests {
             10,
         )];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         assert_eq!(tree.len(), 1);
-        assert_eq!(tree[0].disk, "\\\\server\\share");
+        assert_eq!(tree[0].key.value(), "\\\\server\\share");
     }
 
     #[test]
@@ -1792,7 +1935,7 @@ mod tests {
             loc_item(2, "Game B", LangKind::Audio, "de", 95, 300),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].games.len(), 2);
@@ -1817,7 +1960,7 @@ mod tests {
         )];
         items[0].removed = true;
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         assert!(tree.is_empty(), "removed items must not appear in the tree");
     }
@@ -1851,7 +1994,7 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].games.len(), 1);
@@ -1907,7 +2050,7 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let game = &tree[0].games[0];
         assert_eq!(
@@ -1953,7 +2096,7 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         assert_eq!(
             tree[0].games[0].categories[0].category,
@@ -1973,7 +2116,7 @@ mod tests {
             10,
         )];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let game = &tree[0].games[0];
         assert_eq!(game.categories[0].category, DisplayCategory::Other);
@@ -2009,7 +2152,7 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let TreeNode::File { index: first } = tree[0].games[0].categories[0].nodes[0] else {
             panic!("expected file nodes");
@@ -2061,7 +2204,7 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let nodes = &tree[0].games[0].categories[0].nodes;
         assert_eq!(nodes.len(), 2, "one folder node + one file node");
@@ -2105,7 +2248,7 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let TreeNode::Folder { item_indices, .. } = &tree[0].games[0].categories[0].nodes[0] else {
             panic!("expected a folder node");
@@ -2168,7 +2311,7 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
         assert_eq!(tree.len(), 1);
         let disk = &tree[0];
         assert_eq!(disk.games.len(), 1);
@@ -2284,11 +2427,11 @@ mod tests {
             ),
         ];
 
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let disk_f = tree
             .iter()
-            .find(|disk| disk.disk == "F:")
+            .find(|group| group.key.value() == "F:")
             .expect("disk F present");
         let orphan_games: Vec<&GameNode> = disk_f
             .games
@@ -2322,7 +2465,7 @@ mod tests {
 
         let disk_d = tree
             .iter()
-            .find(|disk| disk.disk == "D:")
+            .find(|group| group.key.value() == "D:")
             .expect("disk D present");
         assert!(
             disk_d
@@ -2905,6 +3048,334 @@ mod tests {
             selection_fingerprint(&removed),
             selection_fingerprint(&deselected),
             "a removed-but-checked finding is not the same as an unchecked one",
+        );
+    }
+
+    // -- grouping axes (GT-35) --
+
+    /// Four findings across two launchers, two libraries and two disks, so no
+    /// two axes can accidentally agree on the same shape:
+    ///
+    /// - Steam, `C:\SteamLibrary`, disk `C:` - two games
+    /// - Steam, `D:\SteamLibrary`, disk `D:` - one game (same launcher, other
+    ///   library and other disk)
+    /// - GOG, `C:\GOG`, disk `C:` - one game (same disk as the first two)
+    fn cross_axis_items() -> Vec<FindingItem> {
+        vec![
+            with_library(
+                item_at(
+                    1,
+                    "Alpha",
+                    "C:\\SteamLibrary\\Alpha",
+                    "a.pak",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    100,
+                ),
+                Some("steam"),
+                "C:\\SteamLibrary",
+            ),
+            with_library(
+                item_at(
+                    2,
+                    "Beta",
+                    "C:\\SteamLibrary\\Beta",
+                    "b.pak",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    200,
+                ),
+                Some("steam"),
+                "C:\\SteamLibrary",
+            ),
+            with_library(
+                item_at(
+                    3,
+                    "Gamma",
+                    "D:\\SteamLibrary\\Gamma",
+                    "c.pak",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    300,
+                ),
+                Some("steam"),
+                "D:\\SteamLibrary",
+            ),
+            with_library(
+                item_at(
+                    4,
+                    "Delta",
+                    "C:\\GOG\\Delta",
+                    "d.pak",
+                    FindingSource::Rule(Category::Bonus),
+                    90,
+                    400,
+                ),
+                Some("gog"),
+                "C:\\GOG",
+            ),
+        ]
+    }
+
+    /// The branch headings a tree produces, in tree order.
+    fn branch_values(tree: &[TopGroup]) -> Vec<String> {
+        tree.iter()
+            .map(|group| group.key.value().into_owned())
+            .collect()
+    }
+
+    /// Every `findings` index the whole tree reaches, sorted - what the screen
+    /// can actually show.
+    fn reachable_indices(tree: &[TopGroup]) -> Vec<usize> {
+        let mut indices: Vec<usize> = tree
+            .iter()
+            .flat_map(|group| group.all_indices.iter().copied())
+            .collect();
+        indices.sort_unstable();
+        indices
+    }
+
+    #[test]
+    fn the_launcher_axis_merges_one_launchers_libraries_into_one_branch() {
+        let items = cross_axis_items();
+
+        let tree = build_tree(&items, GroupAxis::Launcher);
+
+        assert_eq!(
+            branch_values(&tree),
+            vec!["gog", "steam"],
+            "two Steam libraries on two disks are still one launcher",
+        );
+        let steam = tree.iter().find(|g| g.key.value() == "steam").unwrap();
+        assert_eq!(steam.games.len(), 3);
+    }
+
+    /// The half the launcher axis cannot answer: which of a launcher's roots a
+    /// game is actually in. Asserted against the same fixture, so a
+    /// `build_tree` that ignored the axis and grouped by vendor either way
+    /// would fail here.
+    #[test]
+    fn the_library_axis_splits_one_launchers_roots_into_separate_branches() {
+        let items = cross_axis_items();
+
+        let tree = build_tree(&items, GroupAxis::Library);
+
+        assert_eq!(
+            branch_values(&tree),
+            vec!["C:\\GOG", "C:\\SteamLibrary", "D:\\SteamLibrary"],
+        );
+    }
+
+    /// The disk axis reads the file's own path, not the library root - which
+    /// is why a library root and its games' disk can disagree without either
+    /// being wrong.
+    #[test]
+    fn the_disk_axis_still_groups_by_the_files_own_volume() {
+        let items = cross_axis_items();
+
+        let tree = build_tree(&items, GroupAxis::Disk);
+
+        assert_eq!(branch_values(&tree), vec!["C:", "D:"]);
+    }
+
+    /// The invariant the switcher rests on: a different cut of the same
+    /// findings is *the same findings*. If any axis could drop a row, the tree
+    /// would quietly shrink on a switch and read as broken detection.
+    #[test]
+    fn no_axis_loses_a_finding_even_when_it_cannot_attribute_it() {
+        let mut items = cross_axis_items();
+        // A row from a database written before the attribution existed, and a
+        // root that resolved with no `game_libraries` row behind it - the two
+        // shapes `FindingRow::library` documents as possible.
+        items.push(item_at(
+            5,
+            "Epsilon",
+            "E:\\Games\\Epsilon",
+            "e.pak",
+            FindingSource::Rule(Category::Bonus),
+            90,
+            500,
+        ));
+        items.push(with_library(
+            item_at(
+                6,
+                "Zeta",
+                "E:\\Games\\Zeta",
+                "f.pak",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                600,
+            ),
+            None,
+            "E:\\Games",
+        ));
+        let all: Vec<usize> = (0..items.len()).collect();
+
+        for axis in GROUP_AXIS_ORDER {
+            assert_eq!(
+                reachable_indices(&build_tree(&items, axis)),
+                all,
+                "grouping by {axis:?} must reach every finding",
+            );
+        }
+    }
+
+    /// Unattributed rows get a branch of their own, and it is the last one -
+    /// leftovers belong at the bottom of the tree, not sorted into the middle
+    /// of it by an empty name.
+    #[test]
+    fn unattributed_rows_form_the_last_branch_rather_than_vanishing() {
+        let mut items = cross_axis_items();
+        items.push(item_at(
+            5,
+            "Epsilon",
+            "E:\\Games\\Epsilon",
+            "e.pak",
+            FindingSource::Rule(Category::Bonus),
+            90,
+            500,
+        ));
+
+        let tree = build_tree(&items, GroupAxis::Launcher);
+
+        assert_eq!(
+            tree.last().map(|group| group.key.clone()),
+            Some(TopKey::Unattributed(GroupAxis::Launcher)),
+        );
+        assert_eq!(tree.last().unwrap().games.len(), 1);
+    }
+
+    /// A root with no vendor behind it is unattributed on the launcher axis
+    /// and perfectly placed on the library axis - the two halves of
+    /// `LibraryOrigin` are independent, and one being absent must not cost the
+    /// other.
+    #[test]
+    fn a_root_without_a_vendor_still_groups_by_library() {
+        let items = vec![with_library(
+            item_at(
+                1,
+                "Alpha",
+                "E:\\Games\\Alpha",
+                "a.pak",
+                FindingSource::Rule(Category::Bonus),
+                90,
+                100,
+            ),
+            None,
+            "E:\\Games",
+        )];
+
+        assert_eq!(
+            build_tree(&items, GroupAxis::Launcher)[0].key,
+            TopKey::Unattributed(GroupAxis::Launcher),
+        );
+        assert_eq!(
+            build_tree(&items, GroupAxis::Library)[0].key,
+            TopKey::Library(PathBuf::from("E:\\Games")),
+        );
+    }
+
+    /// GT-35's second pitfall: the collapse keys encode the branch's value, so
+    /// without the axis in them "disk E:" and "library E:" would be one key and
+    /// the expand state of one axis would leak into the next.
+    #[test]
+    fn collapse_keys_of_two_axes_never_collide_on_the_same_value() {
+        let disk = TopKey::Disk("E:".to_string());
+        let library = TopKey::Library(PathBuf::from("E:"));
+        let launcher = TopKey::Launcher("E:".to_string());
+
+        let keys = [
+            disk.collapse_key(),
+            library.collapse_key(),
+            launcher.collapse_key(),
+            TopKey::Unattributed(GroupAxis::Launcher).collapse_key(),
+            TopKey::Unattributed(GroupAxis::Library).collapse_key(),
+        ];
+
+        let distinct: std::collections::HashSet<&String> = keys.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            keys.len(),
+            "collapse keys collide: {keys:?}"
+        );
+    }
+
+    /// The orphan branch is one pseudo-game per *branch*, not per disk (see
+    /// [`ORPHAN_GAME_ID`]) - so switching axes moves it with the rest of the
+    /// tree instead of stranding it under a heading it no longer belongs to.
+    #[test]
+    fn the_orphan_branch_follows_the_active_axis() {
+        let items = vec![
+            with_library(
+                orphan_item(
+                    "C:\\SteamLibrary\\steamapps",
+                    "downloading",
+                    OrphanKind::ServiceFolder,
+                    100,
+                ),
+                Some("steam"),
+                "C:\\SteamLibrary",
+            ),
+            with_library(
+                orphan_item("C:\\GOG", "Leftover", OrphanKind::UnmanagedFolder, 200),
+                Some("gog"),
+                "C:\\GOG",
+            ),
+        ];
+
+        // Both orphans sit on C:, so the disk axis merges them into one
+        // pseudo-game...
+        let by_disk = build_tree(&items, GroupAxis::Disk);
+        assert_eq!(by_disk.len(), 1);
+        assert_eq!(by_disk[0].games.len(), 1);
+        assert!(is_orphan_branch(by_disk[0].games[0].game_id));
+
+        // ...while the launcher axis puts one under each launcher.
+        let by_launcher = build_tree(&items, GroupAxis::Launcher);
+        assert_eq!(branch_values(&by_launcher), vec!["gog", "steam"]);
+        for group in &by_launcher {
+            assert_eq!(group.games.len(), 1);
+            assert!(is_orphan_branch(group.games[0].game_id));
+        }
+    }
+
+    /// An explicit sort applies to every row, the unattributed branch
+    /// included: under "by size" a heading that ignored the column would be one
+    /// the screen cannot account for.
+    #[test]
+    fn an_explicit_sort_orders_the_unattributed_branch_with_the_rest() {
+        let mut items = cross_axis_items();
+        // Bigger than any attributed branch, so "largest first" has to put it
+        // at the top - which the default order never would.
+        items.push(item_at(
+            5,
+            "Epsilon",
+            "E:\\Games\\Epsilon",
+            "e.pak",
+            FindingSource::Rule(Category::Bonus),
+            90,
+            9_000,
+        ));
+
+        let mut tree = build_tree(&items, GroupAxis::Launcher);
+        assert_eq!(
+            tree.last().map(|group| group.key.clone()),
+            Some(TopKey::Unattributed(GroupAxis::Launcher)),
+            "the default order pins it last",
+        );
+
+        sort_tree(
+            &mut tree,
+            &items,
+            Some(TreeSort {
+                column: SortColumn::Size,
+                descending: true,
+            }),
+        );
+
+        assert_eq!(
+            tree.first().map(|group| group.key.clone()),
+            Some(TopKey::Unattributed(GroupAxis::Launcher)),
         );
     }
 }

@@ -18,7 +18,7 @@ use eframe::egui;
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
-use crate::model::{self, format_size, DisplayCategory};
+use crate::model::{self, format_size, DisplayCategory, GroupAxis, GROUP_AXIS_ORDER};
 
 /// Share of the row's width the summary text may claim before it starts
 /// truncating. The point is that the selector can never be squeezed off the
@@ -53,8 +53,10 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     // Deferred actions: collected while `app` is borrowed read-only for
     // rendering, applied only after the widgets are laid out.
     let mut new_filter: Option<Option<DisplayCategory>> = None;
+    let mut new_axis: Option<GroupAxis> = None;
     let mut remove_category: Option<DisplayCategory> = None;
     let mut new_search: Option<String> = None;
+    let active_axis = app.tree_axis;
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -96,6 +98,30 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             });
         if picked != active_filter {
             new_filter = Some(picked);
+        }
+
+        // The grouping axis (GT-35) sits beside the category filter rather
+        // than in a panel of its own: both answer "which slice of the same
+        // findings am I looking at", and the tree has no height to spare.
+        // Neither rescans - switching either one re-cuts rows already in
+        // memory.
+        ui.add_space(8.0);
+        ui.label(s.plan_group_label);
+
+        let mut axis = active_axis;
+        egui::ComboBox::from_id_salt("plan_group_axis")
+            .selected_text(i18n::group_axis_label(lang, active_axis))
+            .show_ui(ui, |ui| {
+                for candidate in GROUP_AXIS_ORDER {
+                    ui.selectable_value(
+                        &mut axis,
+                        candidate,
+                        i18n::group_axis_label(lang, candidate),
+                    );
+                }
+            });
+        if axis != active_axis {
+            new_axis = Some(axis);
         }
 
         // Whole-category removal stays one click away, but only while a
@@ -157,10 +183,96 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     if let Some(filter) = new_filter {
         app.set_category_filter(filter);
     }
+    if let Some(axis) = new_axis {
+        app.set_tree_axis(axis);
+    }
     if let Some(category) = remove_category {
         app.request_delete_for_category(category);
     }
     if let Some(query) = new_search {
         app.set_search_query(query);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::show;
+
+    use gametrimmer_core::settings::LanguagePreference;
+
+    use crate::i18n::{self, Lang};
+    use crate::model::{GroupAxis, GROUP_AXIS_ORDER};
+    use crate::ui::harness::{UiTest, NARROW_VIEWPORT, STANDARD_VIEWPORT};
+
+    fn seeded() -> UiTest {
+        let mut test = UiTest::new(show);
+        test.seed_findings();
+        test
+    }
+
+    /// The switcher has to say which cut is active before it is touched -
+    /// otherwise the tree's headings are the only clue, and "Disk C:" looks
+    /// much the same whichever axis produced it.
+    #[test]
+    fn the_switcher_names_the_active_axis() {
+        let mut test = seeded();
+        let lang = test.app().lang();
+
+        test.assert_label(test.strings().plan_group_label);
+        test.assert_combo_value(i18n::group_axis_label(lang, GroupAxis::Disk));
+
+        test.app_mut().set_tree_axis(GroupAxis::Library);
+        test.run();
+
+        test.assert_no_combo_value(i18n::group_axis_label(lang, GroupAxis::Disk));
+        test.assert_combo_value(i18n::group_axis_label(lang, GroupAxis::Library));
+    }
+
+    /// The control is wired to the app, not just drawn: picking an entry has to
+    /// reach `set_tree_axis`. Without this the panel could render a switcher
+    /// that looks right and regroups nothing.
+    #[test]
+    fn picking_an_entry_regroups_the_tree() {
+        let mut test = seeded();
+        let lang = test.app().lang();
+        assert_eq!(test.app().tree_axis, GroupAxis::Disk);
+
+        // Open the combo, then choose the launcher entry from the popup.
+        test.open_combo(i18n::group_axis_label(lang, GroupAxis::Disk));
+        test.click(i18n::group_axis_label(lang, GroupAxis::Launcher));
+
+        assert_eq!(test.app().tree_axis, GroupAxis::Launcher);
+    }
+
+    /// This row already carries a summary, a category filter and a search
+    /// field, and GT-35 adds a fourth control to it. Both window widths and
+    /// both languages, for the reason the bottom bar is measured the same way:
+    /// the Ukrainian strings are the longer set, and a control pushed past the
+    /// right edge is exactly the bug the six-card strip was rebuilt to avoid.
+    #[test]
+    fn the_summary_row_holds_every_control_at_both_widths() {
+        for (name, size) in [("standard", STANDARD_VIEWPORT), ("narrow", NARROW_VIEWPORT)] {
+            for language in [Lang::En, Lang::Uk] {
+                for axis in GROUP_AXIS_ORDER {
+                    let mut test = UiTest::with_size(show, size);
+                    test.app_mut()
+                        .set_language(LanguagePreference::Fixed(language));
+                    test.seed_findings();
+                    test.app_mut().set_tree_axis(axis);
+                    test.run();
+
+                    let s = i18n::strings(language);
+                    for label in [s.plan_filter_label, s.plan_group_label] {
+                        let rect = test.rect_of(label);
+                        assert!(
+                            rect.min.x >= 0.0 && rect.max.x <= size.x,
+                            "{name} window, {language:?}, {axis:?}: {label:?} sits at \
+                             {rect:?} and is clipped by the {}pt viewport",
+                            size.x,
+                        );
+                    }
+                }
+            }
+        }
     }
 }

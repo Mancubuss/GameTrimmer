@@ -157,6 +157,19 @@ pub struct Strings {
     pub plan_filter_label: &'static str,
     /// The selector's "no filter" entry - the tree shows every category.
     pub plan_filter_all: &'static str,
+    /// Label in front of the grouping-axis selector on the same row - what the
+    /// tree's top level is cut by (see `model::GroupAxis`).
+    pub plan_group_label: &'static str,
+    /// The axis entries, in `model::GROUP_AXIS_ORDER`.
+    pub group_axis_disk: &'static str,
+    pub group_axis_launcher: &'static str,
+    pub group_axis_library: &'static str,
+    /// Heading of the branch holding rows that carry no value on the active
+    /// axis - residue whose library root no longer resolves, or rows from a
+    /// database written before the attribution existed. Named rather than
+    /// hidden: a tree that dropped them would show fewer findings after a
+    /// switch than before it.
+    pub group_unattributed: &'static str,
     /// Deletes every finding of the currently selected category. Only offered
     /// while a category is selected, so it can never mean "delete everything".
     pub btn_remove_category: &'static str,

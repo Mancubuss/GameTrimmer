@@ -20,7 +20,7 @@ use crate::elevation;
 use crate::export;
 use crate::i18n;
 use crate::logger;
-use crate::model::{self, DiskGroup, DisplayCategory, FindingItem};
+use crate::model::{self, DisplayCategory, FindingItem, TopGroup};
 use crate::search;
 use crate::ui;
 use crate::worker::delete::DeleteItem;
@@ -186,7 +186,7 @@ pub struct GameTrimmerApp {
     /// `WorkerMsg::Done` (scan or load) - see
     /// `gametrimmer_core::db::occupied_by_library`. Never persisted.
     pub occupancy: model::Occupancy,
-    pub tree: Vec<DiskGroup>,
+    pub tree: Vec<TopGroup>,
     /// Set by mid-batch `FileRemoved` messages during a delete. The tree is
     /// rebuilt at most once per frame in `drain_messages`, not once per
     /// message - running `build_tree` over thousands of findings for every
@@ -194,7 +194,9 @@ pub struct GameTrimmerApp {
     tree_dirty: bool,
     /// Explicit user expand/collapse choices for the virtualized tree view,
     /// keyed by a stable node key (see `ui::tree_view`). Absent key = the
-    /// node's default (disks open, games/folders closed, categories open).
+    /// node's default (top-level branches open, games/folders closed,
+    /// categories open). Keyed per grouping axis (see `model::TopKey`), so one
+    /// map holds every axis's state without them reading each other's.
     /// Cleared whenever a fresh tree is built (`WorkerMsg::Done`) but kept
     /// across `WorkerMsg::RemoveDone` so the user's expanded state survives
     /// deletions.
@@ -223,6 +225,11 @@ pub struct GameTrimmerApp {
     /// read a tree, not a selection keyed to the result set that is being
     /// replaced.
     pub tree_sort: Option<model::TreeSort>,
+    /// What the tree's top level is grouped by (see `model::GroupAxis`).
+    /// UI-only and never persisted, and kept across a fresh scan for the same
+    /// reason `tree_sort` is: it says how the user wants to read a tree, not
+    /// which rows of one particular result set they picked.
+    pub tree_axis: model::GroupAxis,
     /// Name search text (name search), as typed. UI-only, never persisted, and
     /// cleared whenever a fresh tree is built - a query from the previous
     /// result set would silently hide most of the new one.
@@ -436,6 +443,7 @@ impl GameTrimmerApp {
             tree_viewport_height: 0.0,
             tree_category_filter: None,
             tree_sort: None,
+            tree_axis: model::GroupAxis::default(),
             tree_search: String::new(),
             tree_search_index: search::SearchIndex::default(),
             tree_search_corpus: search::Corpus::default(),
@@ -1030,8 +1038,27 @@ impl GameTrimmerApp {
     /// silently throw away an active sort. `pub(crate)` so the test harness can
     /// seed findings through the same path.
     pub(crate) fn rebuild_tree(&mut self) {
-        self.tree = model::build_tree(&self.findings);
+        self.tree = model::build_tree(&self.findings, self.tree_axis);
         model::sort_tree(&mut self.tree, &self.findings, self.tree_sort);
+    }
+
+    /// Regroups the findings tree along a different axis (see
+    /// `model::GroupAxis`).
+    ///
+    /// A pure re-cut of the findings already in memory: no rescan, and no row
+    /// is added or dropped. The expand/collapse state is deliberately *not*
+    /// cleared - the keys are namespaced per axis (see `model::TopKey`), so
+    /// switching away and back returns the branches the user had opened
+    /// instead of a tree folded shut again.
+    pub fn set_tree_axis(&mut self, axis: model::GroupAxis) {
+        if axis == self.tree_axis {
+            return;
+        }
+        self.tree_axis = axis;
+        self.rebuild_tree();
+        // Every row index the cursor could be holding now names a different
+        // row - the same reason [`Self::set_tree_sort`] resets it.
+        self.tree_cursor = None;
     }
 
     /// Orders the findings tree by a column of the user's choosing, or restores

@@ -8,25 +8,31 @@ use std::path::Path;
 
 use crate::i18n::{self, Lang};
 use crate::model::{
-    category_display, format_size, is_orphan_branch, source_key, DiskGroup, DisplayCategory,
-    FindingItem, TreeNode,
+    category_display, disk_label, format_size, is_orphan_branch, source_key, DisplayCategory,
+    FindingItem, TopGroup, TreeNode,
 };
 
 /// Builds the full CSV text (UTF-8 with a leading BOM, `;`-separated, CRLF
 /// line endings) for the current findings tree. One row per non-removed
 /// finding (already guaranteed by `tree`, which `model::build_tree` builds
-/// only from non-removed items), emitted in tree order: for each disk, game
-/// and category, folder nodes' member findings first (inheriting the
-/// *node's* category, so the export mirrors the on-screen grouping even
+/// only from non-removed items), emitted in tree order: for each top-level
+/// branch, game and category, folder nodes' member findings first (inheriting
+/// the *node's* category, so the export mirrors the on-screen grouping even
 /// when a finding's own granular source maps to a different display
 /// category), then orphan file nodes.
-pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[DiskGroup]) -> String {
+///
+/// The row *order* follows the tree, so it follows the active grouping axis
+/// (`model::GroupAxis`) - the export is a snapshot of what is on screen. The
+/// row *content* does not: the Disk column is read from each finding's own
+/// install directory rather than from the branch it happens to sit under, so
+/// grouping by launcher cannot make the column report "steam" as a disk.
+pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[TopGroup]) -> String {
     let mut out = String::from('\u{FEFF}');
     out.push_str(i18n::csv_header(lang));
     out.push_str("\r\n");
 
-    for disk_group in tree {
-        for game in &disk_group.games {
+    for top_group in tree {
+        for game in &top_group.games {
             // Orphan-branch findings have no real game name (see
             // `ORPHAN_GAME_ID`); label the CSV's Game column with the localized
             // branch heading so an exported orphan row isn't left blank there.
@@ -47,7 +53,6 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[DiskGroup]) -> S
                                 push_row(
                                     lang,
                                     &mut out,
-                                    &disk_group.disk,
                                     category_node.category,
                                     game_name,
                                     Some(group_dir.as_str()),
@@ -59,7 +64,6 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[DiskGroup]) -> S
                             push_row(
                                 lang,
                                 &mut out,
-                                &disk_group.disk,
                                 category_node.category,
                                 game_name,
                                 None,
@@ -76,11 +80,14 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[DiskGroup]) -> S
 }
 
 /// Appends one CSV row (including its trailing CRLF) for a single finding.
-#[allow(clippy::too_many_arguments)]
+///
+/// The Disk column is derived from the finding's own install directory, not
+/// passed in from the branch it is nested under: the disk is a property of the
+/// file, so changing how the tree is grouped must not change what the export
+/// says about it.
 fn push_row(
     lang: Lang,
     out: &mut String,
-    disk: &str,
     category: DisplayCategory,
     game_name: &str,
     group_dir: Option<&str>,
@@ -89,7 +96,7 @@ fn push_row(
     let row = &item.row;
     let s = i18n::strings(lang);
     let fields = [
-        disk.to_string(),
+        disk_label(&row.install_dir),
         category_display(lang, category).to_string(),
         game_name.to_string(),
         group_dir.unwrap_or("").to_string(),
@@ -132,7 +139,7 @@ pub fn write_export(path: &Path, csv: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{build_tree, FindingRow, FindingSource};
+    use crate::model::{build_tree, FindingRow, FindingSource, GroupAxis};
     use gametrimmer_core::rules::Category;
     use std::path::PathBuf;
 
@@ -169,7 +176,7 @@ mod tests {
     #[test]
     fn export_csv_starts_with_a_bom() {
         let items = vec![finding("Game A", "file.txt", None, 10, true)];
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let csv = export_csv(Lang::Uk, &items, &tree);
 
@@ -179,7 +186,7 @@ mod tests {
     #[test]
     fn export_csv_header_is_exact() {
         let items: Vec<FindingItem> = Vec::new();
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let csv = export_csv(Lang::Uk, &items, &tree);
         let header_line = csv.trim_start_matches('\u{FEFF}').lines().next().unwrap();
@@ -191,7 +198,7 @@ mod tests {
     fn export_csv_quotes_a_field_containing_the_separator() {
         // `rule_desc` is "test; rule" in the fixture, which contains `;`.
         let items = vec![finding("Game A", "file.txt", None, 10, true)];
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let csv = export_csv(Lang::Uk, &items, &tree);
 
@@ -208,7 +215,7 @@ mod tests {
             finding("Game A", "b.txt", None, 20, false),
         ];
         items[1].removed = true;
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let csv = export_csv(Lang::Uk, &items, &tree);
         let data_row_count = csv.lines().count() - 1; // minus the header
@@ -229,7 +236,7 @@ mod tests {
         let mut bonus_finding = finding("Game A", "extras\\poster.jpg", Some("extras"), 10, true);
         bonus_finding.row.source = FindingSource::Rule(Category::Bonus);
         let items = vec![docs_finding, bonus_finding];
-        let tree = build_tree(&items);
+        let tree = build_tree(&items, GroupAxis::Disk);
 
         let csv = export_csv(Lang::Uk, &items, &tree);
 

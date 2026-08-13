@@ -85,6 +85,11 @@ pub(super) const STRINGS: Strings = Strings {
 
     plan_filter_label: "Show:",
     plan_filter_all: "all categories",
+    plan_group_label: "Group by:",
+    group_axis_disk: "disk",
+    group_axis_launcher: "launcher",
+    group_axis_library: "library",
+    group_unattributed: "Unattributed",
     btn_remove_category: "Clean up whole category",
     search_hint: "Search by name\u{2026}",
     btn_clear_search: "Clear the search",

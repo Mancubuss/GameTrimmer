@@ -6,7 +6,7 @@
 
 use gametrimmer_core::langdetect::{LangEvidence, LangReason};
 
-use super::Lang;
+use super::{strings, Lang};
 use crate::model::RiskLevel;
 
 /// Why one root was walked instead of read from the MFT index, in the
@@ -783,6 +783,52 @@ pub fn disk_label(lang: Lang, disk: &str) -> String {
     }
 }
 
+/// Display name for a `game_libraries.vendor` tag.
+///
+/// Unknown tags pass through verbatim rather than being prettified or replaced
+/// with a placeholder: a vendor this table has not heard of is still a real
+/// launcher whose games are on screen, and its raw tag is the only true thing
+/// there is to say about it.
+pub fn launcher_label(lang: Lang, vendor: &str) -> String {
+    let known = match vendor {
+        "steam" => "Steam",
+        "epic" => "Epic Games",
+        "gog" => "GOG",
+        "ea" => "EA",
+        "ubisoft" => "Ubisoft",
+        "battlenet" => "Battle.net",
+        "rockstar" => "Rockstar Games",
+        "riot" => "Riot Games",
+        "amazon" => "Amazon Games",
+        "humble" => "Humble",
+        "itch" => "itch.io",
+        "xbox" => "Xbox",
+        // The one vendor with no launcher behind it: a folder the user pointed
+        // the scanner at by hand (`worker::manual::MANUAL_VENDOR`), so it is
+        // the only tag that needs translating rather than branding.
+        "manual" => {
+            return match lang {
+                Lang::En => "Added by hand".to_string(),
+                Lang::Uk => "Додані вручну".to_string(),
+            }
+        }
+        other => return other.to_string(),
+    };
+    known.to_string()
+}
+
+/// Heading of one top-level branch of the tree, in the terms of the axis it
+/// was cut along (see `model::TopKey`).
+pub fn top_group_label(lang: Lang, key: &crate::model::TopKey) -> String {
+    use crate::model::TopKey;
+    match key {
+        TopKey::Disk(disk) => disk_label(lang, disk),
+        TopKey::Launcher(vendor) => launcher_label(lang, vendor),
+        TopKey::Library(root) => root.to_string_lossy().into_owned(),
+        TopKey::Unattributed(_) => strings(lang).group_unattributed.to_string(),
+    }
+}
+
 pub fn quoted(lang: Lang, name: &str) -> String {
     match lang {
         Lang::En => format!("\u{201c}{name}\u{201d}"),
@@ -790,17 +836,83 @@ pub fn quoted(lang: Lang, name: &str) -> String {
     }
 }
 
-pub fn select_all_on_disk(lang: Lang, disk: &str) -> String {
-    match lang {
-        Lang::En => format!("Select all on disk {disk}"),
-        Lang::Uk => format!("Вибрати все на диску {disk}"),
+/// "Select everything in this whole top-level branch", phrased for the axis
+/// the branch was cut along.
+///
+/// One sentence per axis rather than one generic sentence with the heading
+/// pasted in: "on disk E:", "in Steam" and "in library E:\SteamLibrary" each
+/// need their own preposition and case, and Ukrainian will not survive a
+/// template that ignores that.
+pub fn select_all_in_group(lang: Lang, key: &crate::model::TopKey) -> String {
+    use crate::model::TopKey;
+    match (lang, key) {
+        (Lang::En, TopKey::Disk(disk)) => format!("Select all on disk {disk}"),
+        (Lang::Uk, TopKey::Disk(disk)) => format!("Вибрати все на диску {disk}"),
+        (Lang::En, TopKey::Launcher(vendor)) => {
+            format!("Select all in {}", launcher_label(lang, vendor))
+        }
+        (Lang::Uk, TopKey::Launcher(vendor)) => {
+            format!("Вибрати все в {}", launcher_label(lang, vendor))
+        }
+        (Lang::En, TopKey::Library(root)) => {
+            format!("Select all in library {}", root.to_string_lossy())
+        }
+        (Lang::Uk, TopKey::Library(root)) => {
+            format!("Вибрати все в бібліотеці {}", root.to_string_lossy())
+        }
+        (Lang::En, TopKey::Unattributed(_)) => "Select all unattributed".to_string(),
+        (Lang::Uk, TopKey::Unattributed(_)) => "Вибрати все без прив'язки".to_string(),
     }
 }
 
-pub fn deselect_all_on_disk(lang: Lang, disk: &str) -> String {
-    match lang {
-        Lang::En => format!("Deselect all on disk {disk}"),
-        Lang::Uk => format!("Зняти вибір на диску {disk}"),
+/// The other half of [`select_all_in_group`].
+pub fn deselect_all_in_group(lang: Lang, key: &crate::model::TopKey) -> String {
+    use crate::model::TopKey;
+    match (lang, key) {
+        (Lang::En, TopKey::Disk(disk)) => format!("Deselect all on disk {disk}"),
+        (Lang::Uk, TopKey::Disk(disk)) => format!("Зняти вибір на диску {disk}"),
+        (Lang::En, TopKey::Launcher(vendor)) => {
+            format!("Deselect all in {}", launcher_label(lang, vendor))
+        }
+        (Lang::Uk, TopKey::Launcher(vendor)) => {
+            format!("Зняти вибір у {}", launcher_label(lang, vendor))
+        }
+        (Lang::En, TopKey::Library(root)) => {
+            format!("Deselect all in library {}", root.to_string_lossy())
+        }
+        (Lang::Uk, TopKey::Library(root)) => {
+            format!("Зняти вибір у бібліотеці {}", root.to_string_lossy())
+        }
+        (Lang::En, TopKey::Unattributed(_)) => "Deselect all unattributed".to_string(),
+        (Lang::Uk, TopKey::Unattributed(_)) => "Зняти вибір без прив'язки".to_string(),
+    }
+}
+
+/// "the whole branch", as the phrase a category-wide bulk action ends with.
+///
+/// Each axis gets its own preposition and case rather than one template with
+/// the heading dropped in: "on the whole disk E:", "across all of Steam" and
+/// "in the whole library E:\SteamLibrary" are three different sentences in
+/// English and three different ones again in Ukrainian.
+fn whole_group_scope(lang: Lang, key: &crate::model::TopKey) -> String {
+    use crate::model::TopKey;
+    match (lang, key) {
+        (Lang::En, TopKey::Disk(disk)) => format!("on the whole disk {disk}"),
+        (Lang::Uk, TopKey::Disk(disk)) => format!("на всьому диску {disk}"),
+        (Lang::En, TopKey::Launcher(vendor)) => {
+            format!("across all of {}", launcher_label(lang, vendor))
+        }
+        (Lang::Uk, TopKey::Launcher(vendor)) => {
+            format!("в усьому {}", launcher_label(lang, vendor))
+        }
+        (Lang::En, TopKey::Library(root)) => {
+            format!("in the whole library {}", root.to_string_lossy())
+        }
+        (Lang::Uk, TopKey::Library(root)) => {
+            format!("в усій бібліотеці {}", root.to_string_lossy())
+        }
+        (Lang::En, TopKey::Unattributed(_)) => "across everything unattributed".to_string(),
+        (Lang::Uk, TopKey::Unattributed(_)) => "серед усього без прив'язки".to_string(),
     }
 }
 
@@ -818,17 +930,33 @@ pub fn deselect_all_in_game(lang: Lang, name: &str) -> String {
     }
 }
 
-pub fn select_category_on_disk(lang: Lang, label: &str, disk: &str) -> String {
+/// "Select this category across the whole branch", for whatever the branch is
+/// under the active axis.
+pub fn select_category_in_group(lang: Lang, label: &str, key: &crate::model::TopKey) -> String {
+    let scope = whole_group_scope(lang, key);
     match lang {
-        Lang::En => format!("Select {} on disk {disk}", quoted(lang, label)),
-        Lang::Uk => format!("Вибрати {} на всьому диску {disk}", quoted(lang, label)),
+        Lang::En => format!("Select {} {scope}", quoted(lang, label)),
+        Lang::Uk => format!("Вибрати {} {scope}", quoted(lang, label)),
     }
 }
 
-pub fn deselect_category_on_disk(lang: Lang, label: &str, disk: &str) -> String {
+/// The other half of [`select_category_in_group`].
+pub fn deselect_category_in_group(lang: Lang, label: &str, key: &crate::model::TopKey) -> String {
+    let scope = whole_group_scope(lang, key);
     match lang {
-        Lang::En => format!("Deselect {} on disk {disk}", quoted(lang, label)),
-        Lang::Uk => format!("Зняти вибір {} на всьому диску {disk}", quoted(lang, label)),
+        Lang::En => format!("Deselect {} {scope}", quoted(lang, label)),
+        Lang::Uk => format!("Зняти вибір {} {scope}", quoted(lang, label)),
+    }
+}
+
+/// The switcher entry, and the tooltip text, for one grouping axis.
+pub fn group_axis_label(lang: Lang, axis: crate::model::GroupAxis) -> &'static str {
+    use crate::model::GroupAxis;
+    let s = strings(lang);
+    match axis {
+        GroupAxis::Disk => s.group_axis_disk,
+        GroupAxis::Launcher => s.group_axis_launcher,
+        GroupAxis::Library => s.group_axis_library,
     }
 }
 

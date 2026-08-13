@@ -45,6 +45,11 @@ const MAX_STEPS: u64 = 16;
 /// under assertion.
 const ANIMATED_STEPS: usize = 4;
 
+/// The `(vendor, library root)` pair each seeded game is attributed to, by
+/// game index - two launchers and two library roots sharing one disk, so the
+/// three grouping axes produce three different trees over the same findings.
+pub const SEEDED_LIBRARIES: [(&str, &str); 2] = [("steam", "C:\\SteamLibrary"), ("gog", "C:\\GOG")];
+
 /// One `ui::*::show` entry point. A plain `fn` pointer rather than a closure
 /// so the harness stays `'static` and the app is reachable through
 /// [`UiTest::app`] while the harness is alive.
@@ -191,6 +196,12 @@ impl UiTest {
     /// Two games on one disk so the tree has more than one row to move a
     /// keyboard cursor between, and everything pre-selected so the actions
     /// gated on a non-empty selection are enabled.
+    ///
+    /// The two games come from *different* launchers and libraries on that one
+    /// shared disk (see [`SEEDED_LIBRARIES`]). That is what makes the grouping
+    /// axes tell each other apart here: grouping by disk yields one branch and
+    /// grouping by launcher or library yields two, so a switcher that silently
+    /// did nothing cannot pass.
     pub fn seed_findings(&mut self) {
         let app = self.app_mut();
         // Findings on screen mean a user who is past the first-run screen:
@@ -206,6 +217,10 @@ impl UiTest {
                     game_id: i,
                     game_name: format!("Test Game {i}"),
                     install_dir: std::path::PathBuf::from("C:\\Games\\Test"),
+                    library: Some(crate::model::LibraryOrigin {
+                        vendor: Some(SEEDED_LIBRARIES[i as usize].0.to_string()),
+                        root: std::path::PathBuf::from(SEEDED_LIBRARIES[i as usize].1),
+                    }),
                     rel_path: format!("data/loc_{i}.pak"),
                     size: 1024 * 1024,
                     size_on_disk: 1024 * 1024,
@@ -218,7 +233,6 @@ impl UiTest {
                     group_dir: None,
                     deletion_block_reason: None,
                     imported_untrusted: false,
-                    library: None,
                 },
                 selected: true,
                 removed: false,
@@ -339,6 +353,59 @@ impl UiTest {
             .nth(n)
             .unwrap_or_else(|| panic!("fewer than {} checkboxes on screen", n + 1))
             .rect()
+    }
+
+    /// How many combo boxes currently display exactly this selection.
+    ///
+    /// A combo box carries its selected text as an accessibility *value*, not
+    /// as a label, so [`Self::has_label`] never finds it - which is why the
+    /// category filter on the summary row went untested until the grouping
+    /// switcher landed beside it.
+    pub fn count_combo_values(&self, value: &str) -> usize {
+        self.combo_nodes(value).count()
+    }
+
+    /// Asserts some combo box is showing this selection.
+    #[track_caller]
+    pub fn assert_combo_value(&self, value: &str) {
+        assert!(
+            self.count_combo_values(value) > 0,
+            "expected a combo box showing {value:?} to be on screen",
+        );
+    }
+
+    /// The other half: no combo box is showing this selection.
+    #[track_caller]
+    pub fn assert_no_combo_value(&self, value: &str) {
+        assert_eq!(
+            self.count_combo_values(value),
+            0,
+            "did not expect a combo box showing {value:?}",
+        );
+    }
+
+    /// Opens the combo box currently showing `value`, so its entries can be
+    /// clicked by label the way a user picks one.
+    #[track_caller]
+    pub fn open_combo(&mut self, value: &str) {
+        {
+            let mut nodes = self.combo_nodes(value);
+            let node = nodes
+                .next()
+                .unwrap_or_else(|| panic!("no combo box showing {value:?} on screen"));
+            assert!(
+                nodes.next().is_none(),
+                "more than one combo box is showing {value:?}",
+            );
+            node.click();
+        }
+        self.run();
+    }
+
+    fn combo_nodes<'s>(&'s self, value: &'s str) -> impl Iterator<Item = egui_kittest::Node<'s>> {
+        self.harness
+            .query_all_by_role(egui::accesskit::Role::ComboBox)
+            .filter(move |node| node.value().as_deref() == Some(value))
     }
 
     #[track_caller]
