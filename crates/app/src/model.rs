@@ -43,6 +43,24 @@ pub enum DisplayCategory {
     Orphan,
 }
 
+/// Which game library a finding came from: the launcher that owns the library
+/// and the library's root directory.
+///
+/// Presentation metadata only - it exists so the tree can be grouped by
+/// launcher or by library instead of only by disk. Nothing in the deletion
+/// path may consult it: there `file_safety` stays the single source of truth
+/// for what a row is allowed to touch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryOrigin {
+    /// The launcher key as stored in `game_libraries.vendor` ("steam",
+    /// "epic", "manual", ...). `None` when the root is known but no
+    /// `game_libraries` row backs it - possible for orphaned residue, which is
+    /// attributed by path rather than through a game.
+    pub vendor: Option<String>,
+    /// The library root directory (`game_libraries.path`).
+    pub root: PathBuf,
+}
+
 /// One classified file, as produced by the scan worker.
 #[derive(Debug, Clone)]
 pub struct FindingRow {
@@ -88,6 +106,20 @@ pub struct FindingRow {
     /// Imported community rules are visible and manually selectable, but no
     /// profile may preselect them until the user has reviewed the finding.
     pub imported_untrusted: bool,
+    /// The library this row came from (see [`LibraryOrigin`]). `None` when the
+    /// row cannot be attributed to one - a row from a database written before
+    /// the attribution existed, or orphaned residue whose recorded library root
+    /// no longer resolves. Both the fresh-scan path and the load path fill it
+    /// from the same evidence, so the two must never disagree for the same
+    /// data.
+    //
+    // Written on every row-building path and asserted on by tests, but not yet
+    // read by the UI: the consumer is the launcher/library grouping in the tree
+    // ("GT-35 - grouping the view by a chosen axis"), which is gated behind the
+    // main-window redesign. The plumbing lands first deliberately - it is pure
+    // data flow and does not touch the panel being rebuilt.
+    #[allow(dead_code)]
+    pub library: Option<LibraryOrigin>,
 }
 
 impl FindingRow {
@@ -979,6 +1011,7 @@ mod tests {
                 group_dir: None,
                 deletion_block_reason: None,
                 imported_untrusted: false,
+                library: None,
             },
             selected: default_selected(confidence),
             removed: false,

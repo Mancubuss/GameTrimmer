@@ -236,6 +236,7 @@ mod tests {
                 group_dir: None,
                 deletion_block_reason: None,
                 imported_untrusted: false,
+                library: None,
             },
             selected: false,
             removed: false,

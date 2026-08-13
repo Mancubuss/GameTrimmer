@@ -118,6 +118,7 @@ mod tests {
                 group_dir: None,
                 deletion_block_reason: blocked.map(str::to_string),
                 imported_untrusted: false,
+                library: None,
             },
             selected,
             removed,

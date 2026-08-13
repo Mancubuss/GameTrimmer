@@ -1,5 +1,7 @@
 //! Authoritative orphan analysis and persistence.
 
+use rusqlite::OptionalExtension;
+
 use super::*;
 
 /// One orphaned-residue folder (orphan-residue safety) ready to persist: its absolute path,
@@ -203,6 +205,12 @@ pub(super) fn persist_orphans(
         // Orphans in the same library share their parent directories, so the
         // chain above each one is worth proving once rather than per orphan.
         let mut capture = gametrimmer_core::safety::SnapshotCapture::new();
+        // Library attribution, resolved the way `worker::load` resolves it for
+        // an orphan row: by the recorded library root, not by the in-memory
+        // `DiscoveredLibrary` the scan happened to hold. Taking the same route
+        // is what keeps a fresh scan and a later load from disagreeing. Cached
+        // per root, since every orphan of one library shares it.
+        let mut vendor_by_root: HashMap<PathBuf, Option<String>> = HashMap::new();
 
         for orphan in orphans {
             let source = FindingSource::Orphan(orphan.kind);
@@ -221,6 +229,21 @@ pub(super) fn persist_orphans(
             ])?;
             let file_id = tx.last_insert_rowid();
             insert_finding.execute(params![file_id, source_key(source), &reason, confidence])?;
+
+            let vendor = match vendor_by_root.get(&orphan.evidence_library_path) {
+                Some(vendor) => vendor.clone(),
+                None => {
+                    let vendor = tx
+                        .query_row(
+                            "SELECT vendor FROM game_libraries WHERE path = ?1",
+                            params![orphan.evidence_library_path.to_string_lossy()],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?;
+                    vendor_by_root.insert(orphan.evidence_library_path.clone(), vendor.clone());
+                    vendor
+                }
+            };
 
             let (install_dir, rel_path) = orphan_install_dir_and_name(&orphan.full_path);
             let deletion_block_reason = match capture.capture(&install_dir, &rel_path) {
@@ -271,6 +294,10 @@ pub(super) fn persist_orphans(
                 group_dir: None,
                 deletion_block_reason,
                 imported_untrusted: false,
+                library: Some(LibraryOrigin {
+                    vendor,
+                    root: orphan.evidence_library_path.clone(),
+                }),
             });
         }
     }

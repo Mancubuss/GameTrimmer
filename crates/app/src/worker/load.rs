@@ -16,7 +16,8 @@ use rusqlite::Connection;
 
 use crate::i18n::{self, Lang};
 use crate::model::{
-    orphan_install_dir_and_name, parse_source_key, FindingRow, FindingSource, ORPHAN_GAME_ID,
+    orphan_install_dir_and_name, parse_source_key, FindingRow, FindingSource, LibraryOrigin,
+    ORPHAN_GAME_ID,
 };
 
 use super::{Notifier, WorkerMsg};
@@ -174,12 +175,15 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                   WHEN f.game_id IS NULL AND sle.status <> 'complete' \
                     THEN 'orphan inventory is not authoritative' \
                   ELSE NULL \
-                END, COALESCE(fi.provenance, 'builtin') \
+                END, COALESCE(fi.provenance, 'builtin'), \
+                COALESCE(gl.vendor, glo.vendor), \
+                COALESCE(gl.path, fs.evidence_library_path) \
          FROM findings fi \
          JOIN files f ON f.id = fi.file_id \
          LEFT JOIN games g ON g.id = f.game_id \
          LEFT JOIN game_libraries gl ON gl.id = g.library_id \
          LEFT JOIN file_safety fs ON fs.file_id = f.id \
+         LEFT JOIN game_libraries glo ON glo.path = fs.evidence_library_path \
          LEFT JOIN scan_library_evidence sle \
            ON sle.scan_id = f.scan_id \
           AND sle.library_path = COALESCE(gl.path, fs.evidence_library_path) \
@@ -206,6 +210,18 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         let size_on_disk = row.get::<_, i64>(11)? as u64;
         let deletion_block_reason: Option<String> = row.get(12)?;
         let imported_untrusted = row.get::<_, String>(13)? == "imported_untrusted";
+        // A game row is attributed through its `games.library_id`; an orphan
+        // row has no game, so its root comes from the library path the scan
+        // recorded as its safety evidence, resolved back to the same
+        // `game_libraries` row. Either way the vendor and the root come from
+        // the row the launcher actually wrote, which is what lets the fresh
+        // scan agree with this load.
+        let library_vendor: Option<String> = row.get(14)?;
+        let library_root: Option<String> = row.get(15)?;
+        let library = library_root.map(|root| LibraryOrigin {
+            vendor: library_vendor,
+            root: PathBuf::from(root),
+        });
 
         if matches!(source, FindingSource::Orphan(_)) {
             // The orphan's full path lives in `rel_path`; split it back into the
@@ -227,6 +243,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                 group_dir: None,
                 deletion_block_reason,
                 imported_untrusted,
+                library,
             });
             continue;
         }
@@ -255,6 +272,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
             group_dir: row.get(10)?,
             deletion_block_reason,
             imported_untrusted,
+            library,
         });
     }
 
@@ -347,6 +365,100 @@ mod tests {
         assert_eq!(row.lang_tag, None);
         assert_eq!(row.rule_desc, "installer pattern");
         assert_eq!(row.source, FindingSource::Rule(Category::RedistFile));
+        assert_eq!(
+            row.library,
+            Some(LibraryOrigin {
+                vendor: Some("steam".to_string()),
+                root: PathBuf::from("C:/Games"),
+            }),
+            "a game row is attributed through its games.library_id"
+        );
+    }
+
+    /// An orphan row has no game to be attributed through, so its library
+    /// comes from the root the scan recorded as its safety evidence, resolved
+    /// back to the `game_libraries` row that owns that path. Leaving it blank
+    /// would put every leftover outside any launcher grouping.
+    #[test]
+    fn load_findings_attributes_an_orphan_row_through_its_safety_evidence() {
+        let conn = db::open_in_memory().expect("open in-memory db");
+        insert_library(&conn, r"F:\SteamLibrary");
+
+        let orphan_full = r"F:\SteamLibrary\steamapps\common\Leftover";
+        conn.execute(
+            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (NULL, ?1, ?2, NULL)",
+            params![orphan_full, 4096i64],
+        )
+        .expect("insert orphan file");
+        let orphan_file = conn.last_insert_rowid();
+        insert_finding(
+            &conn,
+            orphan_file,
+            "orphan_folder",
+            "residue",
+            60,
+            None,
+            None,
+        );
+        conn.execute(
+            "INSERT INTO file_safety \
+             (file_id, scan_id, evidence_library_path, trusted_root, rel_path) \
+             VALUES (?1, 0, ?2, ?3, 'Leftover')",
+            params![
+                orphan_file,
+                r"F:\SteamLibrary",
+                r"F:\SteamLibrary\steamapps\common"
+            ],
+        )
+        .expect("insert orphan safety evidence");
+
+        let rows = load_findings(&conn).expect("load should succeed");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].game_id, ORPHAN_GAME_ID);
+        assert_eq!(
+            rows[0].library,
+            Some(LibraryOrigin {
+                vendor: Some("steam".to_string()),
+                root: PathBuf::from(r"F:\SteamLibrary"),
+            }),
+            "the orphan must name the library its evidence points at"
+        );
+    }
+
+    /// Nothing may be fabricated when the attribution genuinely isn't there:
+    /// an orphan finding with no safety evidence (a row from a database
+    /// written before the evidence existed) has no library root to resolve, so
+    /// it loads unattributed rather than borrowing some other library's.
+    #[test]
+    fn load_findings_leaves_library_unattributed_when_nothing_backs_it() {
+        let conn = db::open_in_memory().expect("open in-memory db");
+        insert_library(&conn, r"F:\SteamLibrary");
+
+        conn.execute(
+            "INSERT INTO files (game_id, rel_path, size, mtime) \
+             VALUES (NULL, 'F:\\Elsewhere\\Leftover', 10, NULL)",
+            [],
+        )
+        .expect("insert orphan file");
+        let orphan_file = conn.last_insert_rowid();
+        insert_finding(
+            &conn,
+            orphan_file,
+            "orphan_folder",
+            "residue",
+            60,
+            None,
+            None,
+        );
+
+        let rows = load_findings(&conn).expect("load should succeed");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].library, None,
+            "with no evidence path there is no library to name"
+        );
     }
 
     /// A localization finding's `category`/`lang_tag` round-trip through

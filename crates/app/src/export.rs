@@ -159,6 +159,7 @@ mod tests {
                 group_dir: group_dir.map(|s| s.to_string()),
                 deletion_block_reason: None,
                 imported_untrusted: false,
+                library: None,
             },
             selected,
             removed: false,

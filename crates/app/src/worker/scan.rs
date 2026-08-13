@@ -34,7 +34,7 @@ use rusqlite::{params, Connection};
 use crate::i18n::{self, Lang, Verb};
 use crate::model::{
     category_enabled, display_category, orphan_confidence, orphan_install_dir_and_name, source_key,
-    DisplayCategory, FindingRow, FindingSource, ORPHAN_GAME_ID,
+    DisplayCategory, FindingRow, FindingSource, LibraryOrigin, ORPHAN_GAME_ID,
 };
 
 use super::scan_route::{self, ScanRoute};
@@ -1493,6 +1493,111 @@ mod tests {
         assert!(
             group_dirs.iter().all(|dir| dir.as_deref() == Some("junk")),
             "every finding must persist group_dir = junk, got {group_dirs:?}"
+        );
+    }
+
+    /// Library attribution has two producers - the fresh scan builds rows in
+    /// memory, and `worker::load` rebuilds them from the database - and after
+    /// a scan the load path is never called, so a green test on either one
+    /// alone proves nothing about the other. This runs both over the same
+    /// database and compares row by row: the two must name the same launcher
+    /// and the same root, or grouping the tree by library shows one thing
+    /// after a scan and another after a restart.
+    #[test]
+    fn scan_and_load_agree_on_a_game_row_library() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("readme.txt"), b"a");
+        write_file(&install_dir.path().join("manual.pdf"), b"b");
+
+        let library_root = PathBuf::from(r"D:\SteamLibrary");
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: library_root.clone(),
+            orphan_evidence: OrphanEvidence::Heuristic,
+            games: vec![GameInstall {
+                name: "Test Game".to_string(),
+                install_dir: install_dir.path().to_path_buf(),
+                app_id: None,
+            }],
+        };
+
+        let games =
+            persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
+        let (game_id, name, path) = &games[0];
+        let scanned =
+            scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path)
+                .expect("scan game");
+
+        let expected = Some(LibraryOrigin {
+            vendor: Some("steam".to_string()),
+            root: library_root,
+        });
+        assert_eq!(scanned.len(), 2, "both files must be findings");
+        assert!(
+            scanned.iter().all(|row| row.library == expected),
+            "a fresh scan must attribute every row to the library it came from, got {:?}",
+            scanned.iter().map(|row| &row.library).collect::<Vec<_>>()
+        );
+
+        let loaded = crate::worker::load::load_findings(&conn).expect("load should succeed");
+        assert_eq!(loaded.len(), scanned.len());
+        for row in &scanned {
+            let mirrored = loaded
+                .iter()
+                .find(|candidate| candidate.file_id == row.file_id)
+                .expect("every scanned row must come back from the load path");
+            assert_eq!(
+                mirrored.library, row.library,
+                "load must reconstruct the same library the scan reported for file {}",
+                row.file_id
+            );
+        }
+    }
+
+    /// The same agreement for the orphan path, which reaches the library by a
+    /// different route on both sides (the recorded evidence root rather than a
+    /// game's `library_id`) and so can drift independently of the game path.
+    #[test]
+    fn scan_and_load_agree_on_an_orphan_row_library() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let library_root = PathBuf::from(r"F:\SteamLibrary");
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: library_root.clone(),
+            orphan_evidence: OrphanEvidence::Authoritative,
+            games: Vec::new(),
+        };
+        persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
+
+        let orphans = vec![PreparedOrphan {
+            full_path: library_root.join(r"steamapps\common\Leftover"),
+            evidence_library_path: library_root.clone(),
+            size: 10,
+            size_on_disk: 4096,
+            kind: OrphanKind::UnmanagedFolder,
+        }];
+        let scanned =
+            persist_orphans(&mut conn, &orphans, Lang::Uk, 0).expect("persist should succeed");
+
+        let expected = Some(LibraryOrigin {
+            vendor: Some("steam".to_string()),
+            root: library_root,
+        });
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(
+            scanned[0].library, expected,
+            "an orphan must name the library it was found in, not be left blank"
+        );
+
+        let loaded = crate::worker::load::load_findings(&conn).expect("load should succeed");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded[0].library, scanned[0].library,
+            "load must reconstruct the same library the scan reported for the orphan"
         );
     }
 

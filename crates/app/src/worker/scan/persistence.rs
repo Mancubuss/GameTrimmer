@@ -320,13 +320,22 @@ pub(super) fn persist_prepared_game(
         [prepared.game_id],
         |row| row.get(0),
     )?;
-    let evidence_library_path: String = conn.query_row(
-        "SELECT gl.path FROM games g
+    // One read serves two purposes: the path is this game's safety evidence,
+    // and (vendor, path) together are the row's library attribution. Both are
+    // read from `game_libraries` rather than from the in-memory
+    // `DiscoveredLibrary`, so a later `worker::load` - which can only read this
+    // table - reconstructs exactly the same attribution.
+    let (library_vendor, evidence_library_path): (String, String) = conn.query_row(
+        "SELECT gl.vendor, gl.path FROM games g
          JOIN game_libraries gl ON gl.id = g.library_id
          WHERE g.id = ?1",
         [prepared.game_id],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let library = LibraryOrigin {
+        vendor: Some(library_vendor),
+        root: PathBuf::from(&evidence_library_path),
+    };
     let evidence_status: Option<String> = conn
         .query_row(
             "SELECT status FROM scan_library_evidence
@@ -423,6 +432,7 @@ pub(super) fn persist_prepared_game(
             group_dir: finding.group_dir.clone(),
             deletion_block_reason,
             imported_untrusted: finding.provenance == RuleProvenance::ImportedUntrusted,
+            library: Some(library.clone()),
         });
     }
 
