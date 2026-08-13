@@ -89,6 +89,13 @@ pub struct OpOutcome {
     /// A failed final journal update never hides the observed filesystem
     /// outcome; startup reconciliation will repair the pending intent.
     pub journal_error: Option<String>,
+    /// Identity and hard-link count read from the live file *immediately
+    /// before* it was removed, so callers can tell whether removing this path
+    /// actually freed its allocation or merely dropped one of several names
+    /// for it. `None` when nothing was removed, or when the query failed -
+    /// see [`crate::hardlink::reclaimable_bytes`], which treats `None` as
+    /// "assume unshared".
+    pub share: Option<crate::hardlink::FileShare>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,6 +365,7 @@ pub fn execute_delete_plans_observed(
                 error: Some(DeleteBlockReason::StaleDatabaseRow.to_string()),
                 status: FsOutcome::Blocked,
                 journal_error: None,
+                share: None,
             };
             on_outcome(index, &outcome);
             outcomes.push(outcome);
@@ -386,18 +394,26 @@ pub fn execute_delete_plans_observed(
         )?;
         let operation_id = conn.last_insert_rowid();
 
+        // Read the file's hard-link count while it still exists: afterwards
+        // there is no way to tell whether this path was the last name for its
+        // allocation or one of several. Costs one open per file, on a bounded,
+        // user-initiated batch - never on a scan.
+        let mut share = None;
         let (status, error) = match validate_delete_plan(plan) {
-            Ok(path) => match remover.remove(&path) {
-                Ok(()) => (FsOutcome::Removed, None),
-                Err(remove_error) => match std::fs::symlink_metadata(&path) {
-                    Err(metadata_error)
-                        if metadata_error.kind() == std::io::ErrorKind::NotFound =>
-                    {
-                        (FsOutcome::AlreadyAbsent, None)
-                    }
-                    _ => (FsOutcome::Failed, Some(remove_error.to_string())),
-                },
-            },
+            Ok(path) => {
+                share = crate::hardlink::file_share(&path);
+                match remover.remove(&path) {
+                    Ok(()) => (FsOutcome::Removed, None),
+                    Err(remove_error) => match std::fs::symlink_metadata(&path) {
+                        Err(metadata_error)
+                            if metadata_error.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            (FsOutcome::AlreadyAbsent, None)
+                        }
+                        _ => (FsOutcome::Failed, Some(remove_error.to_string())),
+                    },
+                }
+            }
             Err(DeleteBlockReason::Missing) => (FsOutcome::AlreadyAbsent, None),
             Err(reason) => (FsOutcome::Blocked, Some(reason.to_string())),
         };
@@ -426,6 +442,7 @@ pub fn execute_delete_plans_observed(
             error,
             status,
             journal_error,
+            share,
         };
         on_outcome(index, &outcome);
         outcomes.push(outcome);
@@ -502,7 +519,9 @@ fn remove_with_log_observed(
 
         let last_id = conn.last_insert_rowid();
 
-        // Attempt removal
+        // Attempt removal, capturing the link count first (see the observed
+        // path above - after removal the sharing is unknowable).
+        let share = crate::hardlink::file_share(path);
         let remove_result = remover.remove(path);
 
         // UPDATE status based on outcome
@@ -527,6 +546,7 @@ fn remove_with_log_observed(
             error: remove_result.err().map(|e| e.to_string()),
             status: filesystem_status,
             journal_error: None,
+            share,
         };
         on_outcome(index, &outcome);
         outcomes.push(outcome);

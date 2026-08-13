@@ -171,6 +171,7 @@ fn run_delete(
                 purged,
                 nuked,
                 size_on_disk: item.size_on_disk,
+                share: outcome.share,
             }
         })
         .collect();
@@ -253,6 +254,9 @@ pub struct SpaceTally {
 /// is merely bin-bound until emptied.
 pub(crate) fn space_tally(method: DeleteMethod, outcomes: &[RemoveOutcome]) -> SpaceTally {
     let mut tally = SpaceTally::default();
+    let mut freed_items = Vec::new();
+    let mut pending_items = Vec::new();
+
     for outcome in outcomes {
         tally.expected += outcome.size_on_disk;
         if outcome.error.is_some() {
@@ -260,11 +264,21 @@ pub(crate) fn space_tally(method: DeleteMethod, outcomes: &[RemoveOutcome]) -> S
         }
         let recycled_not_nuked = matches!(method, DeleteMethod::RecycleBin) && !outcome.nuked;
         if recycled_not_nuked {
-            tally.recycled_pending += outcome.size_on_disk;
+            pending_items.push((outcome.share, outcome.size_on_disk));
         } else {
-            tally.freed += outcome.size_on_disk;
+            freed_items.push((outcome.share, outcome.size_on_disk));
         }
     }
+
+    // Both figures go through the hard-link arithmetic rather than a plain
+    // sum: a file named by several links keeps its allocation until the last
+    // name is removed, so removing one of them frees nothing, and removing all
+    // of them frees the file's size once - not once per link. `expected` stays
+    // the plain sum on purpose: it is the figure the confirm dialog promised
+    // from stored row sizes, and the gap to `freed` is exactly the honest
+    // signal that some of those bytes were shared.
+    tally.freed = gametrimmer_core::hardlink::reclaimable_bytes(&freed_items);
+    tally.recycled_pending = gametrimmer_core::hardlink::reclaimable_bytes(&pending_items);
     tally
 }
 
@@ -278,6 +292,7 @@ mod tests {
             error: None,
             status: FsOutcome::Removed,
             journal_error: None,
+            share: None,
         }
     }
 
@@ -287,6 +302,7 @@ mod tests {
             error: Some("boom".to_string()),
             status: FsOutcome::Failed,
             journal_error: None,
+            share: None,
         }
     }
 
@@ -342,7 +358,71 @@ mod tests {
             purged: error.is_none(),
             nuked,
             size_on_disk,
+            share: None,
         }
+    }
+
+    /// A removed file that is one of `links` hard links to the same allocation.
+    fn removed_link(size_on_disk: u64, file_index: u64, links: u32) -> RemoveOutcome {
+        RemoveOutcome {
+            file_id: 0,
+            path: PathBuf::from("C:\\x"),
+            error: None,
+            purged: true,
+            nuked: false,
+            size_on_disk,
+            share: Some(gametrimmer_core::hardlink::FileShare {
+                volume_serial: 1,
+                file_index,
+                link_count: links,
+            }),
+        }
+    }
+
+    #[test]
+    fn space_tally_does_not_claim_space_for_a_surviving_hard_link() {
+        // One of two names removed: the allocation stays behind the other
+        // name, so nothing was freed - but the batch still expected its bytes.
+        let outcomes = [removed_link(8 * 1024 * 1024, 42, 2)];
+        let tally = space_tally(DeleteMethod::Permanent, &outcomes);
+        assert_eq!(
+            tally,
+            SpaceTally {
+                expected: 8 * 1024 * 1024,
+                freed: 0,
+                recycled_pending: 0,
+            },
+            "deleting one of two links frees nothing"
+        );
+    }
+
+    #[test]
+    fn space_tally_counts_a_fully_removed_link_set_once() {
+        let outcomes = [
+            removed_link(8 * 1024 * 1024, 42, 2),
+            removed_link(8 * 1024 * 1024, 42, 2),
+        ];
+        let tally = space_tally(DeleteMethod::Permanent, &outcomes);
+        assert_eq!(
+            tally.freed,
+            8 * 1024 * 1024,
+            "both links gone frees the file's size once, not twice"
+        );
+        assert_eq!(
+            tally.expected,
+            16 * 1024 * 1024,
+            "expected still reflects what the dialog promised from row sizes"
+        );
+    }
+
+    #[test]
+    fn space_tally_recycle_of_a_shared_file_pends_nothing() {
+        // Recycling renames the file into the bin; the other link still names
+        // the same allocation, so not even bin-bound space was gained.
+        let outcomes = [removed_link(4096, 7, 3)];
+        let tally = space_tally(DeleteMethod::RecycleBin, &outcomes);
+        assert_eq!(tally.recycled_pending, 0);
+        assert_eq!(tally.freed, 0);
     }
 
     #[test]

@@ -168,6 +168,11 @@ pub struct RemoveOutcome {
     /// queued [`crate::worker::delete::DeleteItem`] so the summary can sum how
     /// much space was actually freed versus expected.
     pub size_on_disk: u64,
+    /// Hard-link identity read from the live file just before removal. A file
+    /// named by several links keeps its allocation until the last name goes,
+    /// so `size_on_disk` alone would over-report what a delete freed; see
+    /// [`gametrimmer_core::hardlink`]. `None` means "assume unshared".
+    pub share: Option<gametrimmer_core::hardlink::FileShare>,
 }
 
 /// Pairs a [`WorkerMsg`] sender with the app's `egui::Context` so every

@@ -2,6 +2,7 @@ pub mod atomic_file;
 pub mod db;
 pub mod error;
 pub mod gamestate;
+pub mod hardlink;
 pub mod langdetect;
 pub mod localized;
 pub mod mftscan;
