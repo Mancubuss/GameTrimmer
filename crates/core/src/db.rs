@@ -13,7 +13,10 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     started_at       INTEGER NOT NULL,
     completed_at     INTEGER,
     state            TEXT NOT NULL,
-    discovery_status TEXT NOT NULL
+    discovery_status TEXT NOT NULL,
+    scan_ms          INTEGER,
+    analyze_ms       INTEGER,
+    total_ms         INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS scan_state (
@@ -28,13 +31,17 @@ CREATE TABLE IF NOT EXISTS game_libraries (
 );
 
 CREATE TABLE IF NOT EXISTS games (
-    id          INTEGER PRIMARY KEY,
-    scan_id     INTEGER NOT NULL DEFAULT 0,
-    library_id  INTEGER NOT NULL REFERENCES game_libraries(id),
-    name        TEXT NOT NULL,
-    install_dir TEXT NOT NULL,
-    app_id      TEXT,
-    build_id    TEXT
+    id           INTEGER PRIMARY KEY,
+    scan_id      INTEGER NOT NULL DEFAULT 0,
+    library_id   INTEGER NOT NULL REFERENCES game_libraries(id),
+    name         TEXT NOT NULL,
+    install_dir  TEXT NOT NULL,
+    app_id       TEXT,
+    build_id     TEXT,
+    files        INTEGER,
+    bytes        INTEGER,
+    bytes_on_disk INTEGER,
+    scan_route   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS files (
@@ -114,7 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_findings_file_id  ON findings(file_id);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_scan   ON scan_diagnostics(scan_id);
 ";
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// Opens (or creates) the database at `path` and applies the schema.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -210,6 +217,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 2 {
         migrate_v2(conn)?;
         conn.pragma_update(None, "user_version", 2)?;
+        version = 2;
+    }
+    if version < 3 {
+        migrate_v3(conn)?;
+        conn.pragma_update(None, "user_version", 3)?;
     }
     Ok(())
 }
@@ -293,6 +305,31 @@ fn migrate_v2(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Adds the durable diagnostic columns: what a scan actually did, rather
+/// than only what it found.
+///
+/// All seven were computed and then discarded before this - per-game file
+/// and byte counts came back from `store_files_no_tx` and were dropped on
+/// the floor, the phase timing lived only in the bottom bar, and the chosen
+/// scan route survived exactly as long as one localized counter string in
+/// the settings dialog. They are the evidence behind "the scan took 40
+/// minutes" and "I turned on the MFT index and nothing got faster", neither
+/// of which could be answered after the fact.
+///
+/// `NULL` for every row written by an earlier build, which is the same
+/// convention `migrate_v1`'s columns follow: unknown, never backfilled, and
+/// populated from the next scan on.
+fn migrate_v3(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "games", "files", "INTEGER")?;
+    add_column_if_missing(conn, "games", "bytes", "INTEGER")?;
+    add_column_if_missing(conn, "games", "bytes_on_disk", "INTEGER")?;
+    add_column_if_missing(conn, "games", "scan_route", "TEXT")?;
+    add_column_if_missing(conn, "scan_runs", "scan_ms", "INTEGER")?;
+    add_column_if_missing(conn, "scan_runs", "analyze_ms", "INTEGER")?;
+    add_column_if_missing(conn, "scan_runs", "total_ms", "INTEGER")?;
+    Ok(())
+}
+
 fn unix_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -326,6 +363,41 @@ pub fn record_scan_library_evidence(
              status = excluded.status",
         params![scan_id, library_path.to_string_lossy(), provider, status],
     )?;
+    Ok(())
+}
+
+/// Records how long each phase of a scan took, in milliseconds.
+///
+/// Kept as three explicit numbers rather than derived from
+/// `completed_at - started_at`: those are second-precision Unix timestamps,
+/// and the question this answers ("which phase was slow") needs the split,
+/// not the total.
+pub fn record_scan_timing(
+    conn: &Connection,
+    scan_id: i64,
+    scan_ms: u64,
+    analyze_ms: u64,
+    total_ms: u64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE scan_runs SET scan_ms = ?2, analyze_ms = ?3, total_ms = ?4 WHERE id = ?1",
+        params![scan_id, scan_ms as i64, analyze_ms as i64, total_ms as i64],
+    )?;
+    Ok(())
+}
+
+/// Records which route each game's install root took (the MFT index or a
+/// directory walk) and, for a walked root, why.
+///
+/// One column on the `games` row rather than a `scan_diagnostics` row per
+/// root: a library of a few thousand games would otherwise add a few
+/// thousand diagnostic rows to every scan, and the route is a property of
+/// the game's row in this generation anyway.
+pub fn record_scan_routes(conn: &Connection, routes: &[(i64, String)]) -> Result<()> {
+    let mut stmt = conn.prepare("UPDATE games SET scan_route = ?2 WHERE id = ?1")?;
+    for (game_id, route) in routes {
+        stmt.execute(params![game_id, route])?;
+    }
     Ok(())
 }
 
@@ -1465,6 +1537,56 @@ mod tests {
             column_exists(&conn, "findings", "group_dir").expect("probe migrated column"),
             "group_dir must exist after migrate"
         );
+
+        migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
+    }
+
+    /// `migrate_v3` must reach a database created before the diagnostic
+    /// columns existed, be idempotent, and leave the row already in it with
+    /// `NULL`s rather than inventing counts for a scan that predates them.
+    #[test]
+    fn migrate_adds_the_diagnostic_columns_to_legacy_tables_and_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open bare in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE games (
+                id          INTEGER PRIMARY KEY,
+                scan_id     INTEGER NOT NULL DEFAULT 0,
+                library_id  INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                install_dir TEXT NOT NULL
+            );
+            CREATE TABLE scan_runs (
+                id               INTEGER PRIMARY KEY,
+                started_at       INTEGER NOT NULL,
+                completed_at     INTEGER,
+                state            TEXT NOT NULL,
+                discovery_status TEXT NOT NULL
+            );
+            INSERT INTO games (library_id, name, install_dir)
+                VALUES (1, 'Older Than The Column', 'C:/Games/Old');",
+        )
+        .expect("create legacy tables");
+
+        migrate(&conn).expect("first migrate should add the columns");
+        for (table, column) in [
+            ("games", "files"),
+            ("games", "bytes"),
+            ("games", "bytes_on_disk"),
+            ("games", "scan_route"),
+            ("scan_runs", "scan_ms"),
+            ("scan_runs", "analyze_ms"),
+            ("scan_runs", "total_ms"),
+        ] {
+            assert!(
+                column_exists(&conn, table, column).expect("probe migrated column"),
+                "{table}.{column} must exist after migrate",
+            );
+        }
+
+        let stats: Option<i64> = conn
+            .query_row("SELECT files FROM games", [], |row| row.get(0))
+            .expect("read the pre-existing row");
+        assert_eq!(stats, None, "a row from an older build has no counts");
 
         migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
     }
