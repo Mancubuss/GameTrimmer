@@ -42,6 +42,14 @@ const KOREAN_FONT_NAME: &str = "malgun-gothic";
 const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/gametrimmer_256.png");
 
 fn main() -> eframe::Result {
+    // Both of these come before anything that could fail, in this order: the
+    // hook so a panic is never silent, then the log file so the hook has
+    // somewhere durable to write. A crash on start is precisely the case
+    // where the log is the *only* artifact the user has - there is no scan,
+    // no database row and no window to read an error off.
+    logger::install_panic_hook();
+    open_log_from_saved_preference();
+
     // Headless (CLI) mode, switched off in the v1 release build (see
     // `cli::args::HEADLESS_ENABLED`). With no argument this returns `LaunchGui`
     // in every build and the graphical app starts exactly as before; with an
@@ -54,6 +62,34 @@ fn main() -> eframe::Result {
     }
 
     run_gui()
+}
+
+/// Opens `gametrimmer.log` before anything else runs, if the saved
+/// preference says logging is on.
+///
+/// `GameTrimmerApp::new_with` applies the same preference again once settings
+/// are fully loaded (that is where the ini migration lives), and enabling the
+/// already-open file is a no-op there - see `logger::set_enabled`. This exists
+/// only to move the *moment the file opens* earlier than the first frame, so
+/// the window between process start and app construction is covered too.
+///
+/// Deliberately `settings::load_file` rather than `load_file_or_migrate`:
+/// this must not create the ini, or the real migration in `new_with` would
+/// find one already there and read the legacy table into nothing. A missing
+/// or unreadable ini falls back to the default, which is logging enabled.
+fn open_log_from_saved_preference() {
+    let Ok(log_path) = worker::log_path() else {
+        return;
+    };
+    let enabled = worker::settings_path()
+        .ok()
+        .and_then(|path| gametrimmer_core::settings::load_file(&path).ok())
+        .map(|settings| settings.logging_enabled)
+        .unwrap_or(gametrimmer_core::settings::Settings::default().logging_enabled);
+
+    if enabled {
+        logger::set_enabled(true, elevation::is_elevated(), &log_path);
+    }
 }
 
 fn run_gui() -> eframe::Result {
