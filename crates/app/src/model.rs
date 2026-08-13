@@ -830,6 +830,214 @@ pub fn build_tree(items: &[FindingItem]) -> Vec<DiskGroup> {
     disks
 }
 
+/// Which column the findings tree is ordered by once the user has picked an
+/// order of their own.
+///
+/// Not one variant per column drawn: the tree has four headings and only three
+/// of them order it.
+///
+/// "Language" is missing because only file rows carry a language tag - every
+/// disk, game, category and folder row leaves that cell blank. Ordering by it
+/// would therefore leave four of the five levels arranged by name and reorder
+/// the fifth, which is a heading that mostly does nothing and a promise the
+/// screen cannot keep.
+///
+/// "Confidence" is missing because that column existed and was removed on
+/// purpose (see `ui::tree_view::REVIEW_MARK_PX`): the percentage was the
+/// detector's internal scale, and the single decision it drove is now the
+/// review mark. A heading cannot be clicked into existence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortColumn {
+    Name,
+    Files,
+    Size,
+}
+
+/// A user-chosen tree order: one column, one direction.
+///
+/// Carried as `Option<TreeSort>` everywhere, and `None` does not mean
+/// "unsorted" - it means the tree's own designed order, which no combination
+/// of column and direction reproduces: [`build_tree`] mixes disks by letter,
+/// games by size, categories by [`CATEGORY_ORDER`], and folders before files
+/// within a category. That order is how the screen communicates cleanup
+/// priority, so it stays reachable rather than being a state the first click
+/// destroys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeSort {
+    pub column: SortColumn,
+    pub descending: bool,
+}
+
+impl TreeSort {
+    /// `primary` turned the way the active direction wants it.
+    ///
+    /// Only the primary key is flipped. Every comparison below falls back to a
+    /// name tie-break, and that tie-break stays ascending in both directions so
+    /// that reversing the sort never also scrambles the rows which are equal
+    /// under the chosen column.
+    fn directed(self, primary: std::cmp::Ordering) -> std::cmp::Ordering {
+        if self.descending {
+            primary.reverse()
+        } else {
+            primary
+        }
+    }
+}
+
+/// Reorders an already-built tree in place. A no-op for `None`, which is what
+/// keeps [`build_tree`] the single definition of the default order: callers
+/// rebuild and then call this, rather than this having to know how to undo
+/// itself.
+///
+/// Applied at every level that has siblings to order - disks, games within a
+/// disk, categories within a game, nodes within a category, and a folder's
+/// member files. Levels whose rows leave the sorted column blank (no file row
+/// shows a count) compare equal on it and fall through to the name tie-break,
+/// so a sort never leaves part of the tree in an order nothing on screen
+/// accounts for.
+///
+/// Under an active sort, folders and standalone files inside a category are
+/// ordered together instead of folders-first. That partition is part of the
+/// *default* order's meaning ("biggest cleanup opportunities lead, then where
+/// things are"); keeping it under an explicit sort would make "by size" a lie
+/// for precisely the case the sort exists to answer - a large loose file that
+/// should outrank a small folder.
+pub fn sort_tree(tree: &mut [DiskGroup], items: &[FindingItem], sort: Option<TreeSort>) {
+    let Some(sort) = sort else {
+        return;
+    };
+
+    for disk_group in tree.iter_mut() {
+        for game in disk_group.games.iter_mut() {
+            for category_node in game.categories.iter_mut() {
+                for node in category_node.nodes.iter_mut() {
+                    if let TreeNode::Folder { item_indices, .. } = node {
+                        item_indices.sort_by(|&a, &b| cmp_member_files(items, sort, a, b));
+                    }
+                }
+                category_node
+                    .nodes
+                    .sort_by(|a, b| cmp_nodes(items, sort, a, b));
+                // `all_indices` is defined as the flattening of `nodes` (see
+                // `CategoryNode::all_indices`), and `export` walks the tree in
+                // exactly that order - so it is rebuilt here instead of being
+                // left describing the order `build_tree` produced.
+                category_node.all_indices = category_node
+                    .nodes
+                    .iter()
+                    .flat_map(node_all_indices)
+                    .collect();
+            }
+            game.categories.sort_by(|a, b| cmp_categories(sort, a, b));
+            game.all_indices = game
+                .categories
+                .iter()
+                .flat_map(|category_node| category_node.all_indices.iter().copied())
+                .collect();
+        }
+        disk_group.games.sort_by(|a, b| cmp_games(sort, a, b));
+        disk_group.all_indices = disk_group
+            .games
+            .iter()
+            .flat_map(|game| game.all_indices.iter().copied())
+            .collect();
+    }
+
+    tree.sort_by(|a, b| cmp_disks(sort, a, b));
+}
+
+/// A category's position in [`CATEGORY_ORDER`] - its place in the default
+/// tree, and what stands in for its "name" when sorting (see
+/// [`cmp_categories`]).
+fn category_rank(category: DisplayCategory) -> usize {
+    CATEGORY_ORDER
+        .iter()
+        .position(|&candidate| candidate == category)
+        .unwrap_or(CATEGORY_ORDER.len())
+}
+
+/// Orders two disk rows.
+fn cmp_disks(sort: TreeSort, a: &DiskGroup, b: &DiskGroup) -> std::cmp::Ordering {
+    let primary = match sort.column {
+        SortColumn::Name => path_cmp(&a.disk, &b.disk),
+        SortColumn::Files => a.all_indices.len().cmp(&b.all_indices.len()),
+        SortColumn::Size => a.total_bytes.cmp(&b.total_bytes),
+    };
+    sort.directed(primary)
+        .then_with(|| path_cmp(&a.disk, &b.disk))
+}
+
+/// Orders two game rows within one disk.
+fn cmp_games(sort: TreeSort, a: &GameNode, b: &GameNode) -> std::cmp::Ordering {
+    let primary = match sort.column {
+        SortColumn::Name => path_cmp(&a.game_name, &b.game_name),
+        SortColumn::Files => a.all_indices.len().cmp(&b.all_indices.len()),
+        SortColumn::Size => a.total_bytes.cmp(&b.total_bytes),
+    };
+    sort.directed(primary)
+        .then_with(|| path_cmp(&a.game_name, &b.game_name))
+}
+
+/// Orders two category rows within one game.
+///
+/// Their "name" order is [`CATEGORY_ORDER`], not the localized label: the
+/// taxonomy is fixed and six entries long, and keying it to the display string
+/// would rearrange the tree whenever the interface language changes.
+fn cmp_categories(sort: TreeSort, a: &CategoryNode, b: &CategoryNode) -> std::cmp::Ordering {
+    let primary = match sort.column {
+        SortColumn::Name => category_rank(a.category).cmp(&category_rank(b.category)),
+        SortColumn::Files => a.all_indices.len().cmp(&b.all_indices.len()),
+        SortColumn::Size => a.total_bytes.cmp(&b.total_bytes),
+    };
+    sort.directed(primary)
+        .then_with(|| category_rank(a.category).cmp(&category_rank(b.category)))
+}
+
+/// The figure a node's row carries in the "Files" column: a folder's member
+/// count, or 1 for a standalone file - whose own row leaves the cell blank,
+/// which is why every file ties here and the name breaks it.
+fn node_file_count(node: &TreeNode) -> usize {
+    match node {
+        TreeNode::Folder { item_indices, .. } => item_indices.len(),
+        TreeNode::File { .. } => 1,
+    }
+}
+
+/// Orders two nodes within one category - folders and standalone files
+/// together, see [`sort_tree`].
+fn cmp_nodes(
+    items: &[FindingItem],
+    sort: TreeSort,
+    a: &TreeNode,
+    b: &TreeNode,
+) -> std::cmp::Ordering {
+    let primary = match sort.column {
+        SortColumn::Name => path_cmp(&node_sort_key(items, a), &node_sort_key(items, b)),
+        SortColumn::Files => node_file_count(a).cmp(&node_file_count(b)),
+        SortColumn::Size => node_bytes(items, a).cmp(&node_bytes(items, b)),
+    };
+    sort.directed(primary)
+        .then_with(|| path_cmp(&node_sort_key(items, a), &node_sort_key(items, b)))
+}
+
+/// Orders two of a folder's member files. Every member row leaves the count
+/// cell blank, so under that column the path is left to decide.
+fn cmp_member_files(
+    items: &[FindingItem],
+    sort: TreeSort,
+    a: usize,
+    b: usize,
+) -> std::cmp::Ordering {
+    let (left, right) = (&items[a].row, &items[b].row);
+    let primary = match sort.column {
+        SortColumn::Name => path_cmp(&left.rel_path, &right.rel_path),
+        SortColumn::Files => std::cmp::Ordering::Equal,
+        SortColumn::Size => left.size_on_disk.cmp(&right.size_on_disk),
+    };
+    sort.directed(primary)
+        .then_with(|| path_cmp(&left.rel_path, &right.rel_path))
+}
+
 /// Whether every / any item in `indices` is currently selected. Used to
 /// drive the tri-state checkbox on category and game headers.
 pub fn group_selection_state(items: &[FindingItem], indices: &[usize]) -> (bool, bool) {
@@ -1190,6 +1398,263 @@ mod tests {
             keys,
             vec!["redist", "docs", "bonus", "loc", "other", "orphan"]
         );
+    }
+
+    /// Two games on one disk, the alphabetically-first one being the smaller,
+    /// so "by name" and "by size" cannot accidentally agree.
+    fn two_games() -> Vec<FindingItem> {
+        vec![
+            item(
+                1,
+                "Alpha",
+                FindingSource::Rule(Category::RedistFolder),
+                90,
+                100,
+            ),
+            item(
+                2,
+                "Beta",
+                FindingSource::Rule(Category::RedistFolder),
+                90,
+                900,
+            ),
+        ]
+    }
+
+    fn game_names(tree: &[DiskGroup]) -> Vec<String> {
+        tree[0]
+            .games
+            .iter()
+            .map(|game| game.game_name.clone())
+            .collect()
+    }
+
+    fn sorted(items: &[FindingItem], column: SortColumn, descending: bool) -> Vec<DiskGroup> {
+        let mut tree = build_tree(items);
+        sort_tree(&mut tree, items, Some(TreeSort { column, descending }));
+        tree
+    }
+
+    /// `None` is the tree's own order, so it must reach `build_tree`'s output
+    /// untouched - this is what lets the third click on a heading give the
+    /// designed order back rather than an approximation of it.
+    #[test]
+    fn sort_tree_leaves_the_default_order_alone() {
+        let items = two_games();
+        let mut tree = build_tree(&items);
+        let before = game_names(&tree);
+
+        sort_tree(&mut tree, &items, None);
+
+        assert_eq!(game_names(&tree), before);
+    }
+
+    #[test]
+    fn sort_tree_orders_games_by_name_in_both_directions() {
+        let items = two_games();
+
+        assert_eq!(
+            game_names(&sorted(&items, SortColumn::Name, false)),
+            vec!["Alpha", "Beta"],
+        );
+        assert_eq!(
+            game_names(&sorted(&items, SortColumn::Name, true)),
+            vec!["Beta", "Alpha"],
+        );
+    }
+
+    /// Ascending by size is the case the default order can never produce:
+    /// `build_tree` puts the largest game first, so a test that only checked
+    /// descending would pass against a `sort_tree` that did nothing at all.
+    #[test]
+    fn sort_tree_orders_games_by_size_in_both_directions() {
+        let items = two_games();
+
+        assert_eq!(
+            game_names(&sorted(&items, SortColumn::Size, false)),
+            vec!["Alpha", "Beta"],
+        );
+        assert_eq!(
+            game_names(&sorted(&items, SortColumn::Size, true)),
+            vec!["Beta", "Alpha"],
+        );
+    }
+
+    /// Every member row of a folder leaves the "Files" cell blank, so ordering
+    /// by that column has nothing to compare them on and the path decides.
+    ///
+    /// Asserted in both directions on purpose: the name tie-break stays
+    /// ascending either way, so flipping a column the rows do not carry must
+    /// not shuffle them for a reason nothing on screen states.
+    #[test]
+    fn sort_tree_leaves_a_blank_column_to_the_name_in_either_direction() {
+        let items = vec![
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game",
+                    "C:\\Games\\Test",
+                    "data\\b.bin",
+                    FindingSource::Rule(Category::RedistFolder),
+                    90,
+                    900,
+                ),
+                "data",
+            ),
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game",
+                    "C:\\Games\\Test",
+                    "data\\a.bin",
+                    FindingSource::Rule(Category::RedistFolder),
+                    90,
+                    10,
+                ),
+                "data",
+            ),
+        ];
+
+        for descending in [false, true] {
+            let tree = sorted(&items, SortColumn::Files, descending);
+            let TreeNode::Folder { item_indices, .. } = &tree[0].games[0].categories[0].nodes[0]
+            else {
+                panic!("both findings share a group_dir, so they collapse into one folder");
+            };
+            assert_eq!(
+                item_indices
+                    .iter()
+                    .map(|&i| items[i].row.rel_path.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["data\\a.bin", "data\\b.bin"],
+                "descending={descending}",
+            );
+        }
+    }
+
+    /// The claim that makes a size sort worth having: a large loose file
+    /// outranks a small folder. The default order never interleaves the two -
+    /// every folder precedes every file - so this is exactly what an explicit
+    /// sort has to override.
+    #[test]
+    fn sort_tree_interleaves_folders_and_files_by_size() {
+        let items = vec![
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game",
+                    "C:\\Games\\Test",
+                    "small\\a.bin",
+                    FindingSource::Rule(Category::RedistFolder),
+                    90,
+                    10,
+                ),
+                "small",
+            ),
+            item_at(
+                1,
+                "Game",
+                "C:\\Games\\Test",
+                "huge.bin",
+                FindingSource::Rule(Category::RedistFolder),
+                90,
+                5000,
+            ),
+        ];
+
+        let default_first = &build_tree(&items)[0].games[0].categories[0].nodes[0];
+        assert!(
+            matches!(default_first, TreeNode::Folder { .. }),
+            "the default order is meant to lead with folders - this test has nothing to prove otherwise",
+        );
+
+        let tree = sorted(&items, SortColumn::Size, true);
+        let TreeNode::File { index } = &tree[0].games[0].categories[0].nodes[0] else {
+            panic!("the largest node is a loose file, so a size sort must lead with it");
+        };
+        assert_eq!(items[*index].row.rel_path, "huge.bin");
+    }
+
+    #[test]
+    fn sort_tree_orders_a_folders_member_files_by_size() {
+        let items = vec![
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game",
+                    "C:\\Games\\Test",
+                    "data\\a.bin",
+                    FindingSource::Rule(Category::RedistFolder),
+                    90,
+                    10,
+                ),
+                "data",
+            ),
+            with_group_dir(
+                item_at(
+                    1,
+                    "Game",
+                    "C:\\Games\\Test",
+                    "data\\b.bin",
+                    FindingSource::Rule(Category::RedistFolder),
+                    90,
+                    900,
+                ),
+                "data",
+            ),
+        ];
+
+        let tree = sorted(&items, SortColumn::Size, true);
+        let TreeNode::Folder { item_indices, .. } = &tree[0].games[0].categories[0].nodes[0] else {
+            panic!("both findings share a group_dir, so they collapse into one folder");
+        };
+        assert_eq!(
+            item_indices
+                .iter()
+                .map(|&i| items[i].row.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["data\\b.bin", "data\\a.bin"],
+        );
+    }
+
+    /// `all_indices` is defined as the flattening of `nodes`, and the CSV
+    /// export walks the tree in that order. A sort that reordered the nodes
+    /// and left the index list describing the old order would silently make
+    /// the export disagree with the screen.
+    #[test]
+    fn sort_tree_keeps_all_indices_in_step_with_the_nodes_it_reordered() {
+        let items = vec![
+            item_at(
+                1,
+                "Game",
+                "C:\\Games\\Test",
+                "small.bin",
+                FindingSource::Rule(Category::RedistFolder),
+                90,
+                10,
+            ),
+            item_at(
+                1,
+                "Game",
+                "C:\\Games\\Test",
+                "huge.bin",
+                FindingSource::Rule(Category::RedistFolder),
+                90,
+                5000,
+            ),
+        ];
+
+        let tree = sorted(&items, SortColumn::Size, true);
+        let category_node = &tree[0].games[0].categories[0];
+        let flattened: Vec<usize> = category_node
+            .nodes
+            .iter()
+            .flat_map(node_all_indices)
+            .collect();
+
+        assert_eq!(category_node.all_indices, flattened);
+        assert_eq!(tree[0].games[0].all_indices, flattened);
+        assert_eq!(tree[0].all_indices, flattened);
     }
 
     #[test]

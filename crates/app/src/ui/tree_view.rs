@@ -64,8 +64,8 @@ use crate::app::GameTrimmerApp;
 use crate::i18n::{self, Lang};
 use crate::model::{
     self, category_display, category_ui_key, format_size, group_selection_state, is_orphan_branch,
-    set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem, GameNode, TreeNode,
-    AUTO_SELECT_CONFIDENCE_THRESHOLD,
+    set_group_selection, toggle_group, DiskGroup, DisplayCategory, FindingItem, GameNode,
+    SortColumn, TreeNode, TreeSort, AUTO_SELECT_CONFIDENCE_THRESHOLD,
 };
 use crate::search::SearchIndex;
 use crate::ui::row_actions;
@@ -90,6 +90,23 @@ const SIZE_COLUMN_PX: f32 = 92.0;
 /// from the tree (it survives in the row's tooltip, beside the rule that
 /// produced it, and in the CSV export) and what is left is the mark.
 const REVIEW_MARK_PX: f32 = 18.0;
+
+/// Arrows a column heading carries while the tree is ordered by it.
+///
+/// Deliberately not the \u{25b2}/\u{25bc} pair: \u{25bc} is already the glyph
+/// every expandable row uses for "open", and one character meaning both
+/// "expanded" and "descending" on the same screen is a puzzle for the reader,
+/// not a saving.
+const SORT_ASCENDING_GLYPH: &str = "\u{2191}";
+const SORT_DESCENDING_GLYPH: &str = "\u{2193}";
+
+/// What a sortable heading carries while the tree is *not* ordered by it.
+///
+/// Every sortable heading is marked, always - a heading that only reveals
+/// itself as a control once the pointer is over it is a control nobody knows
+/// to look for. The double-headed arrow says "this can go either way" without
+/// claiming a direction the tree is not currently in.
+const SORT_AVAILABLE_GLYPH: &str = "\u{2195}";
 
 /// One visible row in the flattened tree, referencing the source tree only
 /// by index - cheap to push into a per-frame `Vec` for tens of thousands of
@@ -171,7 +188,13 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             return;
         }
 
-        show_column_headers(ui, lang);
+        // Applied straight away rather than deferred to the end of the frame:
+        // nothing has borrowed the tree yet at this point, and reordering it
+        // now means the rows flattened below are already the ones the click
+        // asked for, instead of the screen lagging the header by a frame.
+        if let Some(next) = show_column_headers(ui, lang, app.tree_sort) {
+            app.set_tree_sort(next);
+        }
         ui.separator();
 
         let row_height = ui.spacing().interact_size.y;
@@ -265,19 +288,106 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 }
 
 /// The header row naming the fixed columns, laid out with the same widths
-/// as every data row so the columns visually line up.
-fn show_column_headers(ui: &mut egui::Ui, lang: Lang) {
+/// as every data row so the columns visually line up. Every heading is also
+/// the control that orders the tree by its column.
+///
+/// Returns the sort state the user's click asks for, or `None` if they did not
+/// click a heading this frame. Reporting the request rather than applying it
+/// keeps this function free of `GameTrimmerApp` - it can be reasoned about, and
+/// tested, as "these four headings, this current order, this click".
+fn show_column_headers(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    current: Option<TreeSort>,
+) -> Option<Option<TreeSort>> {
     let s = i18n::strings(lang);
-    row_columns(
+    // The four cells are laid out by sibling closures, so none of them can
+    // hold a `&mut` to the answer. A `Cell` lets each of them write through a
+    // shared borrow instead; at most one is clicked per frame.
+    let clicked: std::cell::Cell<Option<Option<TreeSort>>> = std::cell::Cell::new(None);
+    let record = |request: Option<Option<TreeSort>>| {
+        if let Some(next) = request {
+            clicked.set(Some(next));
+        }
+    };
+
+    row_columns_with(
         ui,
-        egui::RichText::new(s.col_language).strong(),
-        egui::RichText::new(s.col_files).strong(),
-        egui::RichText::new(s.col_size).strong(),
+        // Plain text, and the only heading in this row that is not a control:
+        // a language tag exists on file rows alone, so ordering by it would
+        // arrange four of the five levels by name and the fifth by tag. See
+        // `model::SortColumn` for why that heading is not offered at all
+        // rather than offered and quietly useless.
+        |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(s.col_language).strong()).truncate());
+        },
+        |ui| record(header_cell(ui, s.col_files, SortColumn::Files, current, s)),
+        |ui| record(header_cell(ui, s.col_size, SortColumn::Size, current, s)),
         |ui| {
             ui.add_space(4.0);
-            ui.strong(s.col_name);
+            record(header_cell(ui, s.col_name, SortColumn::Name, current, s));
         },
     );
+
+    clicked.get()
+}
+
+/// Draws one column heading and reports the sort state a click on it asks for.
+///
+/// The heading carries a direction arrow only while the tree is actually
+/// ordered by it, so the row states which column is in force instead of
+/// leaving the user to infer it from the data.
+fn header_cell(
+    ui: &mut egui::Ui,
+    title: &str,
+    column: SortColumn,
+    current: Option<TreeSort>,
+    s: &i18n::Strings,
+) -> Option<Option<TreeSort>> {
+    let label = match current.filter(|sort| sort.column == column) {
+        Some(sort) if sort.descending => format!("{title} {SORT_DESCENDING_GLYPH}"),
+        Some(_) => format!("{title} {SORT_ASCENDING_GLYPH}"),
+        None => format!("{title} {SORT_AVAILABLE_GLYPH}"),
+    };
+    // Frameless, so the row still reads as a table heading rather than as four
+    // buttons stacked above the tree - but a button all the same, so it
+    // highlights under the pointer and "this can be clicked" is discoverable
+    // without having to wait for the tooltip.
+    let response = ui
+        .add(egui::Button::new(egui::RichText::new(label).strong()).frame(false))
+        .on_hover_text(s.col_sort_hint);
+    response.clicked().then(|| next_sort(current, column))
+}
+
+/// The sort state one click on `column` moves to, cycling
+/// ordered -> reversed -> the tree's own order (`None`), then round again.
+///
+/// The third step is the reason this is a cycle rather than a toggle. `None` is
+/// not "unsorted": it is the order `model::build_tree` designed, which mixes
+/// four different keys across the levels and which no column-and-direction pair
+/// reproduces. Without a way back, the first click on any heading would destroy
+/// it for the rest of the session.
+///
+/// Which direction a column opens in differs by what it holds: the numeric
+/// columns start descending because "biggest first" is the question being
+/// asked of them, while the textual ones start at A. Opening a size sort at the
+/// smallest files would spend the click that matters on the answer nobody
+/// wanted.
+fn next_sort(current: Option<TreeSort>, column: SortColumn) -> Option<TreeSort> {
+    let opens_descending = matches!(column, SortColumn::Files | SortColumn::Size);
+    match current {
+        Some(sort) if sort.column == column && sort.descending == opens_descending => {
+            Some(TreeSort {
+                column,
+                descending: !opens_descending,
+            })
+        }
+        Some(sort) if sort.column == column => None,
+        _ => Some(TreeSort {
+            column,
+            descending: opens_descending,
+        }),
+    }
 }
 
 /// Lays out one row as [flexible left part | Language | Files | Size], with
@@ -291,6 +401,36 @@ fn row_columns(
     size: egui::RichText,
     left: impl FnOnce(&mut egui::Ui),
 ) {
+    row_columns_with(
+        ui,
+        |ui| {
+            ui.add(egui::Label::new(lang).truncate());
+        },
+        |ui| {
+            ui.add(egui::Label::new(count).truncate());
+        },
+        |ui| {
+            ui.add(egui::Label::new(size).truncate());
+        },
+        left,
+    );
+}
+
+/// [`row_columns`] with the three fixed-width cells drawn by closures instead
+/// of being plain text.
+///
+/// Only the header row needs this - its cells are buttons, not labels. It
+/// exists so the header keeps going through the same widths and the same
+/// nested layouts as every data row: a second hand-written copy of this
+/// arrangement is exactly how a table's heading drifts out of line with its
+/// body one edit at a time.
+fn row_columns_with(
+    ui: &mut egui::Ui,
+    lang: impl FnOnce(&mut egui::Ui),
+    count: impl FnOnce(&mut egui::Ui),
+    size: impl FnOnce(&mut egui::Ui),
+    left: impl FnOnce(&mut egui::Ui),
+) {
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             right_cell(ui, SIZE_COLUMN_PX, size);
@@ -301,14 +441,14 @@ fn row_columns(
     });
 }
 
-/// One fixed-width, right-aligned cell of [`row_columns`].
-fn right_cell(ui: &mut egui::Ui, width: f32, text: egui::RichText) {
+/// One fixed-width, right-aligned cell of [`row_columns_with`].
+fn right_cell(ui: &mut egui::Ui, width: f32, content: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(
         egui::vec2(width, ui.spacing().interact_size.y),
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
             ui.set_min_width(width);
-            ui.add(egui::Label::new(text).truncate());
+            content(ui);
         },
     );
 }
@@ -1425,6 +1565,191 @@ mod tests {
 
         test.assert_label(SEEDED_FILE_NAME);
         test
+    }
+
+    /// The two seeded games, in the order `UiTest::seed_findings` creates
+    /// them - which is also alphabetical, so a reversal is visible.
+    const SEEDED_GAMES: [&str; 2] = ["Test Game 0", "Test Game 1"];
+
+    /// Where a seeded game's row currently sits, by the label the tree draws
+    /// for it (game names are rendered quoted, see `show_game_row`).
+    fn game_row_top(test: &UiTest, game: &str) -> f32 {
+        test.rect_of(&i18n::quoted(test.app().lang(), game)).top()
+    }
+
+    /// A heading as the row draws it - the column's name plus the glyph for
+    /// the order it is in (see `header_cell`).
+    fn heading(title: &str, glyph: &str) -> String {
+        format!("{title} {glyph}")
+    }
+
+    /// A sortable heading has to say so while it is still untouched. A control
+    /// that only reveals itself under the pointer is one nobody knows to look
+    /// for - and the language heading, which is not a control, must not wear
+    /// the mark and invite a click that does nothing.
+    #[test]
+    fn every_sortable_heading_is_marked_before_it_is_touched() {
+        let mut test = tree_of_files([90; 2]);
+        let s = test.strings();
+
+        for title in [s.col_name, s.col_files, s.col_size] {
+            test.assert_label(&heading(title, SORT_AVAILABLE_GLYPH));
+        }
+
+        test.assert_label(s.col_language);
+        test.assert_no_label(&heading(s.col_language, SORT_AVAILABLE_GLYPH));
+
+        test.click(s.col_language);
+        assert_eq!(
+            test.app().tree_sort,
+            None,
+            "the language heading is a label, not a control - clicking it must order nothing",
+        );
+    }
+
+    /// The mark costs every heading a glyph's worth of width, and the fixed
+    /// columns are narrow. It must not push a heading out of its own cell and
+    /// over its neighbour, which is what would knock the whole table's headings
+    /// out of line with the rows below them.
+    #[test]
+    fn a_marked_heading_stays_inside_its_column() {
+        let test = tree_of_files([90; 2]);
+        let s = test.strings();
+
+        let files = test.rect_of(&heading(s.col_files, SORT_AVAILABLE_GLYPH));
+        let size = test.rect_of(&heading(s.col_size, SORT_AVAILABLE_GLYPH));
+
+        assert!(
+            files.width() <= COUNT_COLUMN_PX,
+            "the \"{}\" heading is {} wide in a {COUNT_COLUMN_PX}pt column",
+            s.col_files,
+            files.width(),
+        );
+        assert!(
+            size.width() <= SIZE_COLUMN_PX,
+            "the \"{}\" heading is {} wide in a {SIZE_COLUMN_PX}pt column",
+            s.col_size,
+            size.width(),
+        );
+        assert!(
+            files.right() <= size.left(),
+            "the two right-hand headings overlap: {files:?} runs into {size:?}",
+        );
+    }
+
+    /// Each heading orders the tree by its column, reverses on the next click,
+    /// and hands the tree's own order back on the third (GT-31).
+    #[test]
+    fn clicking_a_column_heading_cycles_it_through_both_directions_and_back() {
+        let mut test = tree_of_files([90; 2]);
+        let size = test.strings().col_size;
+
+        assert_eq!(
+            test.app().tree_sort,
+            None,
+            "a freshly built tree is in its own order, with no column claiming it",
+        );
+
+        test.click(&heading(size, SORT_AVAILABLE_GLYPH));
+        assert_eq!(
+            test.app().tree_sort,
+            Some(TreeSort {
+                column: SortColumn::Size,
+                descending: true,
+            }),
+        );
+        test.assert_label(&heading(size, SORT_DESCENDING_GLYPH));
+
+        test.click(&heading(size, SORT_DESCENDING_GLYPH));
+        assert_eq!(
+            test.app().tree_sort,
+            Some(TreeSort {
+                column: SortColumn::Size,
+                descending: false,
+            }),
+        );
+        test.assert_label(&heading(size, SORT_ASCENDING_GLYPH));
+
+        test.click(&heading(size, SORT_ASCENDING_GLYPH));
+        assert_eq!(
+            test.app().tree_sort,
+            None,
+            "the third click has to return the tree's designed order, not a fourth sort",
+        );
+        test.assert_label(&heading(size, SORT_AVAILABLE_GLYPH));
+    }
+
+    /// A column opens in the direction its own content is asked about: largest
+    /// first for the numeric columns, A first for the textual one. Also covers
+    /// moving the sort from one column to another.
+    #[test]
+    fn a_numeric_heading_opens_at_the_largest_and_a_textual_one_at_a() {
+        let mut test = tree_of_files([90; 2]);
+        let s = test.strings();
+
+        test.click(&heading(s.col_name, SORT_AVAILABLE_GLYPH));
+        assert_eq!(
+            test.app().tree_sort,
+            Some(TreeSort {
+                column: SortColumn::Name,
+                descending: false,
+            }),
+        );
+
+        test.click(&heading(s.col_files, SORT_AVAILABLE_GLYPH));
+        assert_eq!(
+            test.app().tree_sort,
+            Some(TreeSort {
+                column: SortColumn::Files,
+                descending: true,
+            }),
+            "moving the sort to another column starts that column's own way round",
+        );
+    }
+
+    /// The click has to reach the rows, not only the state behind them and the
+    /// arrow in the heading.
+    ///
+    /// The seeded games are equal in size, so their default order is already
+    /// alphabetical - the first assertion is the baseline, and the reversal
+    /// after it is the claim.
+    #[test]
+    fn reversing_a_heading_moves_the_rows_on_screen() {
+        let mut test = tree_of_files([90; 2]);
+        let name = test.strings().col_name;
+
+        test.click(&heading(name, SORT_AVAILABLE_GLYPH));
+        assert!(
+            game_row_top(&test, SEEDED_GAMES[0]) < game_row_top(&test, SEEDED_GAMES[1]),
+            "ascending by name puts {} above {}",
+            SEEDED_GAMES[0],
+            SEEDED_GAMES[1],
+        );
+
+        test.click(&heading(name, SORT_ASCENDING_GLYPH));
+        assert!(
+            game_row_top(&test, SEEDED_GAMES[1]) < game_row_top(&test, SEEDED_GAMES[0]),
+            "reversing the order has to move the rows, not just flip the arrow",
+        );
+    }
+
+    /// A sort is a preference about how to read a tree, not a selection keyed
+    /// to one result set - so a delete, which rebuilds the tree from scratch,
+    /// must not quietly drop it.
+    #[test]
+    fn a_chosen_order_survives_a_tree_rebuild() {
+        let mut test = tree_of_files([90; 2]);
+        test.click(&heading(test.strings().col_name, SORT_AVAILABLE_GLYPH));
+        let chosen = test.app().tree_sort;
+
+        test.app_mut().rebuild_tree();
+        test.run();
+
+        assert_eq!(test.app().tree_sort, chosen);
+        assert!(
+            game_row_top(&test, SEEDED_GAMES[0]) < game_row_top(&test, SEEDED_GAMES[1]),
+            "the rebuilt tree fell back to the default order",
+        );
     }
 
     /// A search that matches nothing must say so. Before this, the empty tree

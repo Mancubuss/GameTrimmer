@@ -234,6 +234,8 @@ pub(super) const STRINGS: Strings = Strings {
     col_files: "Files",
     col_size: "Size",
     col_name: "Name",
+    col_sort_hint: "Click to sort by this column, again to reverse it, \
+                    a third time for the original order",
     review_mark_hint: "The app is less sure about this file, so it was not ticked for you. \
          Check what it is - the tooltip on its name gives the path and the reason - before \
          you delete it.",

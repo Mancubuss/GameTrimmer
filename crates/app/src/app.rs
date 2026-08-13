@@ -216,6 +216,13 @@ pub struct GameTrimmerApp {
     /// "View" button). `None` = the full tree. UI-only; never persisted, and
     /// cleared whenever a fresh tree is built.
     pub tree_category_filter: Option<model::DisplayCategory>,
+    /// The column and direction the user ordered the tree by, or `None` for
+    /// the tree's own designed order (see `model::sort_tree`). UI-only and
+    /// never persisted - but, unlike the filter and the search above,
+    /// deliberately *kept* across a fresh scan: it is a preference about how to
+    /// read a tree, not a selection keyed to the result set that is being
+    /// replaced.
+    pub tree_sort: Option<model::TreeSort>,
     /// Name search text (name search), as typed. UI-only, never persisted, and
     /// cleared whenever a fresh tree is built - a query from the previous
     /// result set would silently hide most of the new one.
@@ -428,6 +435,7 @@ impl GameTrimmerApp {
             tree_scroll_offset: 0.0,
             tree_viewport_height: 0.0,
             tree_category_filter: None,
+            tree_sort: None,
             tree_search: String::new(),
             tree_search_index: search::SearchIndex::default(),
             tree_search_corpus: search::Corpus::default(),
@@ -1014,6 +1022,31 @@ impl GameTrimmerApp {
         self.tree_cursor = None;
     }
 
+    /// Rebuilds the findings tree and puts it back into the user's chosen
+    /// order.
+    ///
+    /// The two steps belong together at every call site: `build_tree` only ever
+    /// produces the default order, so a plain rebuild after a delete would
+    /// silently throw away an active sort. `pub(crate)` so the test harness can
+    /// seed findings through the same path.
+    pub(crate) fn rebuild_tree(&mut self) {
+        self.tree = model::build_tree(&self.findings);
+        model::sort_tree(&mut self.tree, &self.findings, self.tree_sort);
+    }
+
+    /// Orders the findings tree by a column of the user's choosing, or restores
+    /// the tree's own order with `None` (see `model::sort_tree`). Resets the
+    /// keyboard cursor for the same reason [`Self::set_category_filter`] does:
+    /// every row index it could be holding now names a different row.
+    pub fn set_tree_sort(&mut self, sort: Option<model::TreeSort>) {
+        if sort == self.tree_sort {
+            return;
+        }
+        self.tree_sort = sort;
+        self.rebuild_tree();
+        self.tree_cursor = None;
+    }
+
     /// Applies a new name-search query (name search), rebuilding the match index.
     /// No-op when the text is unchanged, so the index is not rebuilt on frames
     /// where the user merely clicked into the field. Resets the keyboard
@@ -1437,7 +1470,7 @@ impl GameTrimmerApp {
         }
 
         if self.tree_dirty {
-            self.tree = model::build_tree(&self.findings);
+            self.rebuild_tree();
             self.tree_dirty = false;
         }
 
@@ -1526,7 +1559,7 @@ impl GameTrimmerApp {
                     })
                     .collect();
                 self.occupancy = occupancy;
-                self.tree = model::build_tree(&self.findings);
+                self.rebuild_tree();
                 // A fresh scan means a fresh tree shape - stale toggle keys
                 // (folders/categories that no longer exist, or now mean
                 // something else) must not leak into it, and the keyboard
@@ -1610,7 +1643,7 @@ impl GameTrimmerApp {
                 // This arm always rebuilds the full tree unconditionally, so
                 // any pending mid-batch `FileRemoved` dirtiness is already
                 // subsumed - clear it to avoid a redundant rebuild next frame.
-                self.tree = model::build_tree(&self.findings);
+                self.rebuild_tree();
                 self.tree_dirty = false;
                 self.status_message = i18n::remove_done_status(lang, succeeded, failed.len());
                 self.remove_summary = Some(RemoveSummary {

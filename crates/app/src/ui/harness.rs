@@ -224,7 +224,7 @@ impl UiTest {
                 removed: false,
             })
             .collect();
-        app.tree = crate::model::build_tree(&app.findings);
+        app.rebuild_tree();
         // What `WorkerMsg::Done` does after swapping in a real result set:
         // fold the search corpus over the new findings. Assigning `findings`
         // here without it would leave the name search looking at an empty

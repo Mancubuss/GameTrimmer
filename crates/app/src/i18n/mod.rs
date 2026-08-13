@@ -297,6 +297,11 @@ pub struct Strings {
     pub col_files: &'static str,
     pub col_size: &'static str,
     pub col_name: &'static str,
+    /// Tooltip on every column header, spelling out what clicking it does.
+    /// Without it the headers are four words that happen to be clickable, and
+    /// the third click - the one that gives the tree's own order back - is
+    /// undiscoverable.
+    pub col_sort_hint: &'static str,
     /// Tooltip on the \u{26a0} that marks a file the detector is less sure
     /// about. The mark replaced a per-row "Confidence" percentage: the number
     /// was the app's internal scale and told the user nothing actionable,
@@ -597,6 +602,7 @@ impl Strings {
             ("col_files", self.col_files),
             ("col_size", self.col_size),
             ("col_name", self.col_name),
+            ("col_sort_hint", self.col_sort_hint),
             ("review_mark_hint", self.review_mark_hint),
             ("ctx_reveal_in_explorer", self.ctx_reveal_in_explorer),
             ("ctx_open_with", self.ctx_open_with),
