@@ -522,7 +522,19 @@ fn run_scan(
         timing.analyze,
         findings.len()
     ));
-
+    // Same numbers the bottom bar shows, kept past this session: "the scan
+    // took 40 minutes" is otherwise unanswerable without asking the user to
+    // sit through it again. Non-fatal - a scan that produced results must
+    // not fail because a note about it could not be written.
+    if let Err(err) = db::record_scan_timing(
+        &conn,
+        scan_id,
+        timing.scan.as_millis() as u64,
+        timing.analyze.as_millis() as u64,
+        timing.total.as_millis() as u64,
+    ) {
+        crate::logger::log(&format!("Failed to record scan timing: {err}"));
+    }
 
     notifier.send(WorkerMsg::Done {
         findings,
@@ -1662,6 +1674,47 @@ mod tests {
                 row.file_id
             );
         }
+    }
+
+    /// GT-117. The counts came back from the insert loop and were dropped
+    /// on the floor, so "which game made the scan slow" could not be
+    /// answered after the fact - only re-measured by running it again.
+    #[test]
+    fn a_scanned_game_keeps_its_file_and_byte_counts() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("readme.txt"), b"abc");
+        write_file(&install_dir.path().join("manual.pdf"), b"de");
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: PathBuf::from(r"D:\SteamLibrary"),
+            orphan_evidence: OrphanEvidence::Heuristic,
+            games: vec![GameInstall {
+                name: "Test Game".to_string(),
+                install_dir: install_dir.path().to_path_buf(),
+                app_id: None,
+            }],
+        };
+        let games =
+            persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
+        let (game_id, name, path) = &games[0];
+        scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path)
+            .expect("scan game");
+
+        let (files, bytes): (i64, i64) = conn
+            .query_row(
+                "SELECT files, bytes FROM games WHERE id = ?1",
+                [game_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read back the per-game stats");
+
+        assert_eq!(files, 2);
+        assert_eq!(bytes, 5, "3 + 2 bytes of content");
     }
 
     /// GT-116. The routing decision used to survive only as a localized

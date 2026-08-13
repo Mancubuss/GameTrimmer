@@ -176,6 +176,8 @@ fn run_delete(
         })
         .collect();
 
+    record_space_tally(&conn, method, &mapped);
+
     let removed_ids: Vec<i64> = mapped
         .iter()
         .filter(|outcome| outcome.purged)
@@ -204,6 +206,55 @@ fn run_delete(
         occupancy,
         method,
     });
+}
+
+/// Writes the batch's space accounting where it outlives the dialog that
+/// shows it.
+///
+/// "It said 40 GB and my disk didn't change" has exactly three possible
+/// answers - the Recycle Bin still holds it, the files were hard-linked, or
+/// a removal failed - and [`SpaceTally`]'s three numbers separate them.
+/// They were computed on the UI thread *after* this worker returned, so
+/// they existed only for as long as the dialog was open; computing them
+/// here instead costs one pure function call and keeps them.
+///
+/// One row rather than a column per file: the three totals and the two
+/// counts are what the question needs, and a per-file breakdown would add a
+/// row for every deleted file to answer a question about the batch.
+/// Deliberately not fatal, and deliberately silent on failure beyond the
+/// log - the files are already gone, and a bookkeeping note must not look
+/// like a failed delete.
+fn record_space_tally(
+    conn: &rusqlite::Connection,
+    method: DeleteMethod,
+    outcomes: &[RemoveOutcome],
+) {
+    let scan_id = match db::active_scan_id(conn) {
+        // No active generation means nothing to attach the note to. That
+        // combination should not occur (these rows were deleted out of a
+        // scan) but it is not worth an error path.
+        Ok(None) | Err(_) => return,
+        Ok(Some(scan_id)) => scan_id,
+    };
+    let tally = space_tally(method, outcomes);
+    let nuked = outcomes.iter().filter(|outcome| outcome.nuked).count();
+    let shared = outcomes
+        .iter()
+        .filter(|outcome| outcome.share.is_some_and(|share| share.link_count > 1))
+        .count();
+    let message = format!(
+        "method={method:?} files={} expected={} freed={} recycled_pending={} \
+         nuked={nuked} hardlinked={shared}",
+        outcomes.len(),
+        tally.expected,
+        tally.freed,
+        tally.recycled_pending,
+    );
+    if let Err(err) =
+        db::record_scan_diagnostic(conn, scan_id, "delete", "space-tally", None, &message)
+    {
+        crate::logger::log(&format!("Failed to record the delete space tally: {err}"));
+    }
 }
 
 /// Decides, per outcome, whether a reported-success removal was actually a

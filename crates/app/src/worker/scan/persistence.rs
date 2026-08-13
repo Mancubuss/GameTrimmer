@@ -301,7 +301,21 @@ pub(super) fn persist_prepared_game(
         params![prepared.game_id],
     )?;
 
-    store_files_no_tx(conn, prepared.game_id, &prepared.entries)?;
+    // The stats come back from the insert loop that was going to run
+    // anyway, so keeping them is free - they were simply dropped before.
+    // Per-game file and byte counts are the natural unit for explaining a
+    // slow scan ("this one game holds 400 000 files"), which the totals
+    // alone never showed.
+    let stats = store_files_no_tx(conn, prepared.game_id, &prepared.entries)?;
+    conn.execute(
+        "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4 WHERE id = ?1",
+        params![
+            prepared.game_id,
+            stats.files as i64,
+            stats.bytes as i64,
+            stats.bytes_on_disk as i64
+        ],
+    )?;
     conn.execute(
         "UPDATE files SET scan_id = (SELECT scan_id FROM games WHERE id = ?1)
          WHERE game_id = ?1",
