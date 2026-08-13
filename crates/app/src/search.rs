@@ -190,6 +190,17 @@ impl SearchIndex {
         !self.query.is_empty()
     }
 
+    /// The query as this index tested it - trimmed and folded to lowercase -
+    /// or `""` when inactive.
+    ///
+    /// Exposed so that `ui::highlight` can tint the matched characters using
+    /// the very string the filtering used. Handing out the raw text the user
+    /// typed instead would let the two disagree about case or whitespace, and
+    /// a row would appear with nothing on it explaining why.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
     /// Whether the finding at `index` matches. Out-of-range indices (an index
     /// built against an older findings list) count as non-matching rather than
     /// panicking - the index is rebuilt the next time the query changes.

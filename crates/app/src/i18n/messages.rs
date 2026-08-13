@@ -834,11 +834,22 @@ pub fn top_group_label(lang: Lang, key: &crate::model::TopKey) -> String {
     }
 }
 
-pub fn quoted(lang: Lang, name: &str) -> String {
+/// The opening and closing quotation marks `lang` puts around a name.
+///
+/// Split out of [`quoted`] because the findings tree needs the two halves
+/// separately: a search match is tinted inside the name, and the marks around
+/// it are punctuation the row added, which the search never saw (see
+/// `ui::highlight::Part`).
+pub fn quote_marks(lang: Lang) -> (&'static str, &'static str) {
     match lang {
-        Lang::En => format!("\u{201c}{name}\u{201d}"),
-        Lang::Uk => format!("\u{ab}{name}\u{bb}"),
+        Lang::En => ("\u{201c}", "\u{201d}"),
+        Lang::Uk => ("\u{ab}", "\u{bb}"),
     }
+}
+
+pub fn quoted(lang: Lang, name: &str) -> String {
+    let (open, close) = quote_marks(lang);
+    format!("{open}{name}{close}")
 }
 
 /// "Select everything in this whole top-level branch", phrased for the axis
@@ -1028,15 +1039,19 @@ pub fn deselect_category_in_game(lang: Lang, category: &str, game: &str) -> Stri
     }
 }
 
-/// A file row's name under [`GroupAxis::Flat`], where there are no headings
-/// above it to say which game it came from.
+/// What joins the game to its relative path on a file row under
+/// [`GroupAxis::Flat`], where there are no headings above the row to say which
+/// game it came from.
 ///
-/// Not the absolute path: the Name column truncates on the right, and an
-/// absolute path truncated on the right hides the filename - the one part of
-/// it the row exists to show.
-pub fn flat_row_name(lang: Lang, game: &str, rel_path: &str) -> String {
-    format!("{} \u{2014} {rel_path}", quoted(lang, game))
-}
+/// The row shows the relative path and not the absolute one: the Name column
+/// truncates on the right, and an absolute path truncated on the right hides
+/// the filename - the one part of it the row exists to show.
+///
+/// A constant rather than a `flat_row_name(lang, game, rel_path)` that returns
+/// the finished string, because the row is assembled from pieces: the game and
+/// the path are fields the search can match and this dash is not (see
+/// `ui::highlight::Part`).
+pub const FLAT_ROW_SEPARATOR: &str = " \u{2014} ";
 
 /// Tooltip for a file row: the full path on the first line (details on
 /// demand - the inline row only shows the leaf name), then the classification

@@ -68,6 +68,7 @@ use crate::model::{
     SortColumn, TopGroup, TopKey, TreeNode, TreeSort, AUTO_SELECT_CONFIDENCE_THRESHOLD,
 };
 use crate::search::SearchIndex;
+use crate::ui::highlight::{self, Part};
 use crate::ui::row_actions;
 
 /// Horizontal indent per nesting level (top-level branch = 0, game = 1,
@@ -340,7 +341,11 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         let findings = &mut app.findings;
         let toggles = &mut app.tree_toggles;
         let cursor = &mut app.tree_cursor;
-        let axis = app.tree_axis;
+        let ctx = RowCtx {
+            axis: app.tree_axis,
+            lang,
+            query: app.tree_search_index.query(),
+        };
 
         // Keep the scrollbar drawn even when the content happens to fit, so the
         // list's right edge (and the width available to file rows) stays fixed
@@ -360,8 +365,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                     cursor,
                     rows[row_index],
                     row_index,
-                    axis,
-                    lang,
+                    ctx,
                 );
             }
         });
@@ -1058,6 +1062,22 @@ fn handle_keyboard(
     None
 }
 
+/// What every row of one frame needs and no row owns: the axis the tree is cut
+/// along, the interface language, and the search query whose matches the names
+/// tint.
+///
+/// One `Copy` bundle rather than three parameters threaded through five row
+/// functions - they always travel together, and the row functions are already
+/// long in the arguments.
+#[derive(Debug, Clone, Copy)]
+struct RowCtx<'a> {
+    axis: GroupAxis,
+    lang: Lang,
+    /// Folded exactly as [`SearchIndex`] folded it, or `""` when no search is
+    /// in effect.
+    query: &'a str,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn show_row(
     ui: &mut egui::Ui,
@@ -1067,8 +1087,7 @@ fn show_row(
     cursor: &mut Option<usize>,
     visible: VisibleRow,
     row_index: usize,
-    axis: GroupAxis,
-    lang: Lang,
+    ctx: RowCtx<'_>,
 ) {
     let VisibleRow { row, indent } = visible;
     let row_rect = egui::Rect::from_min_size(
@@ -1119,19 +1138,19 @@ fn show_row(
 
     match row {
         Row::Top { d } => show_top_row(
-            ui, tree, findings, toggles, cursor, d, row_index, indent, lang,
+            ui, tree, findings, toggles, cursor, d, row_index, indent, ctx,
         ),
         Row::Game { d, g } => show_game_row(
-            ui, tree, findings, toggles, cursor, d, g, row_index, indent, axis, lang,
+            ui, tree, findings, toggles, cursor, d, g, row_index, indent, ctx,
         ),
         Row::Category { d, g, c } => show_category_row(
-            ui, tree, findings, toggles, cursor, d, g, c, row_index, indent, lang,
+            ui, tree, findings, toggles, cursor, d, g, c, row_index, indent, ctx,
         ),
         Row::Folder { d, g, c, n } => show_folder_row(
-            ui, tree, findings, toggles, cursor, d, g, c, n, row_index, indent, lang,
+            ui, tree, findings, toggles, cursor, d, g, c, n, row_index, indent, ctx,
         ),
         Row::File { d, g, c, n, member } => show_file_row(
-            ui, tree, findings, cursor, d, g, c, n, member, row_index, indent, axis, lang,
+            ui, tree, findings, cursor, d, g, c, n, member, row_index, indent, ctx,
         ),
     }
 }
@@ -1161,10 +1180,14 @@ fn show_top_row(
     d: usize,
     row_index: usize,
     indent: usize,
-    lang: Lang,
+    ctx: RowCtx<'_>,
 ) {
+    let lang = ctx.lang;
     let top_group = &tree[d];
     let key = top_key(&top_group.key);
+    // Not tinted by the search: a disk letter, a launcher, a library root and a
+    // category name are none of them fields the index reads, so a query can
+    // never be the reason this heading is on screen.
     let name = egui::RichText::new(i18n::top_group_label(lang, &top_group.key)).strong();
     let response = show_header_row(
         ui,
@@ -1214,9 +1237,9 @@ fn show_game_row(
     g: usize,
     row_index: usize,
     indent: usize,
-    axis: GroupAxis,
-    lang: Lang,
+    ctx: RowCtx<'_>,
 ) {
+    let lang = ctx.lang;
     let top_group = &tree[d];
     let game = &top_group.games[g];
     let key = game_key(&top_group.key, game.game_id);
@@ -1226,9 +1249,20 @@ fn show_game_row(
     // the stored `game_name` is empty.
     let label = game_branch_label(lang, game);
     let name = if is_orphan_branch(game.game_id) {
-        egui::RichText::new(label.clone()).strong()
+        // A UI string, not a name the search index holds: drawn as decoration
+        // so a query that happens to occur in it tints nothing.
+        highlight::strong_name(ui, &[Part::decoration(label.as_str())], ctx.query)
     } else {
-        egui::RichText::new(i18n::quoted(lang, &label)).strong()
+        let (open, close) = i18n::quote_marks(lang);
+        highlight::strong_name(
+            ui,
+            &[
+                Part::decoration(open),
+                Part::searched(label.as_str()),
+                Part::decoration(close),
+            ],
+            ctx.query,
+        )
     };
     let response = show_header_row(
         ui,
@@ -1261,7 +1295,7 @@ fn show_game_row(
     // not the game's whole contribution to the tree - so the plain "Select all
     // in {game}" would claim more than the click does. `game.all_indices` is
     // the same either way; only the sentence changes.
-    let scoped_category = match (axis, &top_group.key) {
+    let scoped_category = match (ctx.axis, &top_group.key) {
         (GroupAxis::Category, TopKey::Category(category)) => Some(*category),
         _ => None,
     };
@@ -1329,8 +1363,9 @@ fn show_category_row(
     c: usize,
     row_index: usize,
     indent: usize,
-    lang: Lang,
+    ctx: RowCtx<'_>,
 ) {
+    let lang = ctx.lang;
     let top_group = &tree[d];
     let game = &top_group.games[g];
     let category_node = &game.categories[c];
@@ -1407,8 +1442,9 @@ fn show_folder_row(
     n: usize,
     row_index: usize,
     indent: usize,
-    lang: Lang,
+    ctx: RowCtx<'_>,
 ) {
+    let lang = ctx.lang;
     let top_group = &tree[d];
     let game = &top_group.games[g];
     let category_node = &game.categories[c];
@@ -1426,7 +1462,11 @@ fn show_folder_row(
         category_node.category,
         group_dir,
     );
-    let name = egui::RichText::new(format!("{group_dir}\\"));
+    // The trailing separator is part of the relative path the search reads, so
+    // it is searchable text and not decoration: a query ending in `\` matched
+    // this folder through it.
+    let label = format!("{group_dir}\\");
+    let name = highlight::name(ui, &[Part::searched(label.as_str())], ctx.query);
     let response = show_header_row(
         ui,
         findings,
@@ -1474,7 +1514,7 @@ fn show_header_row(
     level: usize,
     indices: &[usize],
     total_bytes: u64,
-    name: egui::RichText,
+    name: impl Into<egui::WidgetText>,
     lang: Lang,
 ) -> egui::Response {
     let mut name_response = None;
@@ -1638,11 +1678,13 @@ fn show_file_row(
     member: Option<usize>,
     row_index: usize,
     indent: usize,
-    axis: GroupAxis,
-    lang: Lang,
+    ctx: RowCtx<'_>,
 ) {
+    let lang = ctx.lang;
     let node = &tree[d].games[g].categories[c].nodes[n];
-    let (index, display_name) = match (node, member) {
+    // Owned pieces: `findings` is borrowed mutably below for the checkbox, so
+    // nothing here may keep pointing into it.
+    let (index, name_parts): (usize, Vec<Part<'static>>) = match (node, member) {
         (
             TreeNode::Folder {
                 group_dir,
@@ -1659,7 +1701,7 @@ fn show_file_row(
                 .strip_prefix(&format!("{group_dir}\\"))
                 .unwrap_or(rel_path)
                 .to_string();
-            (index, name)
+            (index, vec![Part::searched(name)])
         }
         (TreeNode::File { index }, None) => {
             let row = &findings[*index].row;
@@ -1668,20 +1710,30 @@ fn show_file_row(
             // all, so a bare relative path would leave a list of "loc_0.pak"
             // with nothing to tell one game's from another's - the row has to
             // carry that itself.
-            let name = if axis == GroupAxis::Flat {
+            let parts = if ctx.axis == GroupAxis::Flat {
+                let (open, close) = i18n::quote_marks(lang);
+                // On the orphan branch the leading name is a UI heading rather
+                // than a game the search index knows, so it is decoration.
                 let game = if is_orphan_branch(row.game_id) {
-                    i18n::strings(lang).orphan_branch_label.to_string()
+                    Part::decoration(i18n::strings(lang).orphan_branch_label.to_string())
                 } else {
-                    row.game_name.clone()
+                    Part::searched(row.game_name.clone())
                 };
-                i18n::flat_row_name(lang, &game, &row.rel_path)
+                vec![
+                    Part::decoration(open),
+                    game,
+                    Part::decoration(close),
+                    Part::decoration(i18n::FLAT_ROW_SEPARATOR),
+                    Part::searched(row.rel_path.clone()),
+                ]
             } else {
-                row.rel_path.clone()
+                vec![Part::searched(row.rel_path.clone())]
             };
-            (*index, name)
+            (*index, parts)
         }
         _ => unreachable!("Row::File member/node kind mismatch"),
     };
+    let display_name = highlight::name(ui, &name_parts, ctx.query);
     let level = indent;
 
     let item = &mut findings[index];
@@ -1818,6 +1870,18 @@ mod tests {
         test.app_mut().set_tree_axis(axis);
         test.run();
         open_every_branch(test);
+    }
+
+    /// The whole label a file row carries under the flat axis, which is the
+    /// only axis whose rows name their own game. Assembled from the same two
+    /// i18n pieces `show_file_row` assembles it from, so the pieces are what
+    /// the assertions are pinned to rather than a second copy of the text.
+    fn flat_row_name(lang: Lang, game: &str, rel_path: &str) -> String {
+        format!(
+            "{}{}{rel_path}",
+            i18n::quoted(lang, game),
+            i18n::FLAT_ROW_SEPARATOR,
+        )
     }
 
     /// The two seeded games, in the order `UiTest::seed_findings` creates
@@ -2020,6 +2084,55 @@ mod tests {
 
         test.assert_label(s.search_no_matches);
         test.assert_no_label(s.no_findings_hint);
+    }
+
+    /// Tinting the match rewrites the name as a multi-section layout job, and
+    /// a job that dropped, duplicated or reordered a piece would still be a
+    /// perfectly valid job. The label is the one thing that says it did not:
+    /// it is the concatenation of every section, so it has to come back
+    /// character for character what it was before the search was typed.
+    ///
+    /// This is also the whole of what the harness can see - the tint itself is
+    /// a background colour on a section, which the accessibility tree does not
+    /// carry, so it is pinned by `ui::highlight`'s own tests instead.
+    #[test]
+    fn tinting_a_match_leaves_the_row_names_exactly_as_they_read() {
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+        let game = i18n::quoted(lang, SEEDED_GAMES[0]);
+
+        // Matches inside a file name and inside a game name, one at a time, so
+        // each row kind is drawn with a tint of its own rather than riding on
+        // a query that only lit up its neighbour.
+        for query in ["loc_0", "test game 0"] {
+            test.app_mut().set_search_query(query.to_string());
+            test.run();
+
+            test.assert_label(SEEDED_FILE_NAME);
+            test.assert_label(&game);
+            assert_eq!(
+                test.count_labels(SEEDED_FILE_NAME),
+                1,
+                "the tinted name for {query:?} was drawn as more than one label",
+            );
+        }
+    }
+
+    /// The flat row's name is four pieces - quotation marks, the game, a dash,
+    /// the path - and only two of them are the search's to tint. It still has
+    /// to read as one name.
+    #[test]
+    fn a_tinted_flat_row_still_reads_as_one_name() {
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+        regroup(&mut test, model::GroupAxis::Flat);
+        let name = flat_row_name(lang, SEEDED_GAMES[0], "data/loc_0.pak");
+
+        for query in ["loc_0", "test game 0"] {
+            test.app_mut().set_search_query(query.to_string());
+            test.run();
+            test.assert_label(&name);
+        }
     }
 
     /// The same window with no query at all keeps the original hint: the two
@@ -2600,11 +2713,7 @@ mod tests {
         test.assert_no_label(SEEDED_FILE_NAME);
 
         for (i, game) in SEEDED_GAMES.iter().enumerate() {
-            test.assert_label(&i18n::flat_row_name(
-                lang,
-                game,
-                &format!("data/loc_{i}.pak"),
-            ));
+            test.assert_label(&flat_row_name(lang, game, &format!("data/loc_{i}.pak")));
         }
     }
 
@@ -2629,11 +2738,7 @@ mod tests {
         regroup(&mut test, model::GroupAxis::Flat);
 
         let flat = test
-            .rect_of(&i18n::flat_row_name(
-                lang,
-                SEEDED_GAMES[0],
-                "data/loc_0.pak",
-            ))
+            .rect_of(&flat_row_name(lang, SEEDED_GAMES[0], "data/loc_0.pak"))
             .left();
         assert!(
             flat < by_category,
@@ -2651,7 +2756,7 @@ mod tests {
         let mut test = tree_of_files([90; 2]);
         let lang = test.app().lang();
         regroup(&mut test, model::GroupAxis::Flat);
-        let first = i18n::flat_row_name(lang, SEEDED_GAMES[0], "data/loc_0.pak");
+        let first = flat_row_name(lang, SEEDED_GAMES[0], "data/loc_0.pak");
         test.assert_label(&first);
 
         // The seeded findings are all localizations, so filtering to a
