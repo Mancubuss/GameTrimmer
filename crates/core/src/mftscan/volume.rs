@@ -94,5 +94,17 @@ fn open_volume_file(letter: char) -> Result<File> {
 /// only reliable way to test either is to attempt the same open that
 /// `scan_roots` will perform.
 pub fn is_available(volume: char) -> bool {
-    open_volume(volume).is_ok()
+    availability(volume).is_ok()
+}
+
+/// The same probe as [`is_available`], keeping the error instead of
+/// collapsing it to `false`.
+///
+/// "Unavailable" covers four quite different situations - not NTFS, an ACL,
+/// a filter driver, or no such volume - and the boolean cannot tell them
+/// apart, which makes "MFT fails on drive X" undiagnosable from a bug
+/// report. `open_volume_file` already builds a descriptive message around
+/// the Win32 error; this just stops throwing it away.
+pub fn availability(volume: char) -> Result<()> {
+    open_volume(volume).map(|_| ())
 }

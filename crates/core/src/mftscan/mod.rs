@@ -53,7 +53,7 @@ use crate::error::{CoreError, Result};
 use crate::scanner::FileEntry;
 
 pub use media::{media_kind, MediaKind};
-pub use volume::is_available;
+pub use volume::{availability, is_available};
 
 /// One progress update emitted during an MFT streaming pass, fired once per
 /// chunk of records read and parsed (not once per record - a full-sized

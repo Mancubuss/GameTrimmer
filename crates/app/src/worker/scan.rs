@@ -294,6 +294,7 @@ fn run_scan(
         "MFT pass: {} via MFT, {} via walkdir",
         mft_pass.mft_count, mft_pass.walkdir_count
     ));
+    record_routing_evidence(&conn, scan_id, &games, &mft_pass);
 
     // Marks the end of the "scan" phase (discovery + persist + the MFT
     // pre-pass) and the start of "analyze" (per-game scan+classify+write) -
@@ -484,8 +485,12 @@ fn run_scan(
         ));
     }
 
-    let routing_breakdown =
-        scan_route::format_walkdir_breakdown(lang, total, &mft_pass.walkdir_reasons);
+    let walked_reasons: Vec<scan_route::WalkdirReason> = mft_pass
+        .walkdir_reasons
+        .iter()
+        .map(|(_, reason)| *reason)
+        .collect();
+    let routing_breakdown = scan_route::format_walkdir_breakdown(lang, total, &walked_reasons);
 
     let scan_summary = scan_route::format_scan_summary(
         lang,
@@ -517,6 +522,7 @@ fn run_scan(
         timing.analyze,
         findings.len()
     ));
+
 
     notifier.send(WorkerMsg::Done {
         findings,
@@ -685,11 +691,95 @@ struct MftPassOutcome {
     entries: HashMap<i64, Vec<FileEntry>>,
     mft_count: usize,
     walkdir_count: usize,
-    /// Why each walked root was walked, one entry per root. Kept rather
-    /// than discarded so the settings dialog can tell a user who turned on
-    /// "prefer the MFT index" and saw no speed-up what actually happened -
-    /// see `scan_route::format_walkdir_breakdown`.
-    walkdir_reasons: Vec<scan_route::WalkdirReason>,
+    /// Why each walked root was walked, one entry per root, paired with the
+    /// game whose root it was. Kept rather than discarded so the settings
+    /// dialog can tell a user who turned on "prefer the MFT index" and saw
+    /// no speed-up what actually happened (see
+    /// `scan_route::format_walkdir_breakdown`), and so the decision itself
+    /// survives the process - the aggregate counter string it used to
+    /// collapse into could say "3 roots walked, not elevated" but never
+    /// *which* three.
+    walkdir_reasons: Vec<(i64, scan_route::WalkdirReason)>,
+    /// What the per-volume probe saw, one entry per volume actually
+    /// checked. Bounded by the number of drive letters in play, unlike the
+    /// per-root list.
+    volume_probes: Vec<VolumeProbe>,
+}
+
+/// One volume's routing inputs, as observed rather than as decided.
+///
+/// `error` is the whole point: `is_available` used to collapse "not NTFS",
+/// "blocked by an ACL", "held by a filter driver" and "no such volume" into
+/// a single `false`, which is why "MFT fails on drive X" could not be
+/// diagnosed from a bug report.
+struct VolumeProbe {
+    letter: char,
+    /// `false` when the media reports a seek penalty (or is unknown), which
+    /// is what keeps a root on the MFT path.
+    ssd: bool,
+    /// `None` when the volume opened, `Some(message)` when it did not.
+    /// Never set for a volume skipped as SSD - nothing was attempted there.
+    error: Option<String>,
+}
+
+/// Writes the MFT pass's routing decisions where they outlive the process.
+///
+/// Two shapes, because the two questions have different cardinalities. The
+/// per-root route is a column on the game's own row - a library of a few
+/// thousand games would otherwise add a few thousand diagnostic rows to
+/// every scan. The per-volume probe is a `scan_diagnostics` row, bounded by
+/// the number of drive letters in play, and it is the only place the real
+/// Win32 open error is recorded at all.
+///
+/// Entirely non-fatal: this is evidence about a scan, and failing to write
+/// it must never fail the scan it describes. Both failures degrade to a log
+/// line, which is where the same information went before this existed.
+fn record_routing_evidence(
+    conn: &Connection,
+    scan_id: i64,
+    games: &[(i64, String, PathBuf)],
+    mft_pass: &MftPassOutcome,
+) {
+    let walked: HashMap<i64, scan_route::WalkdirReason> =
+        mft_pass.walkdir_reasons.iter().copied().collect();
+    let routes: Vec<(i64, String)> = games
+        .iter()
+        .map(|(game_id, _, _)| {
+            let route = match walked.get(game_id) {
+                // The label is the machine-readable variant name, not the
+                // localized one: this is read back by whoever receives a
+                // report, and `format_walkdir_breakdown` still produces the
+                // sentence the user sees.
+                Some(reason) => format!("walkdir:{reason:?}"),
+                None => "mft".to_string(),
+            };
+            (*game_id, route)
+        })
+        .collect();
+    if let Err(err) = db::record_scan_routes(conn, &routes) {
+        crate::logger::log(&format!("Failed to record scan routes: {err}"));
+    }
+
+    for probe in &mft_pass.volume_probes {
+        let message = match (&probe.error, probe.ssd) {
+            (Some(err), _) => format!("unavailable: {err}"),
+            (None, true) => "no seek penalty (SSD/NVMe), routed to walkdir".to_string(),
+            (None, false) => "available, seek penalty or unknown media".to_string(),
+        };
+        if let Err(err) = db::record_scan_diagnostic(
+            conn,
+            scan_id,
+            "mftscan",
+            "volume-probe",
+            Some(Path::new(&format!("{}:", probe.letter))),
+            &message,
+        ) {
+            crate::logger::log(&format!(
+                "Failed to record the probe of volume {}: {err}",
+                probe.letter
+            ));
+        }
+    }
 }
 
 /// Runs the (single, non-cancellable) MFT index pass ahead of the per-game
@@ -735,7 +825,8 @@ fn run_mft_pass(
             entries: HashMap::new(),
             mft_count: 0,
             walkdir_count: total,
-            walkdir_reasons: vec![reason; total],
+            walkdir_reasons: games.iter().map(|(id, _, _)| (*id, reason)).collect(),
+            volume_probes: Vec::new(),
         };
     }
 
@@ -761,14 +852,28 @@ fn run_mft_pass(
     // probe runs unconditionally in that mode even for SSD/NVMe volumes.
     let mut volume_available: HashMap<char, bool> = HashMap::new();
     let mut volume_ssd: HashMap<char, bool> = HashMap::new();
+    let mut volume_probes: Vec<VolumeProbe> = Vec::new();
     for letter in scan_route::volumes_to_check(elevated, scan_routing, &checks) {
         if scan_routing == ScanRouting::ForceMft
             || scan_route::mft_worthwhile(mftscan::media_kind(letter))
         {
+            // `availability` rather than `is_available`: same probe, but the
+            // error survives instead of collapsing into `false`.
+            let probe = mftscan::availability(letter);
             volume_ssd.insert(letter, false);
-            volume_available.insert(letter, mftscan::is_available(letter));
+            volume_available.insert(letter, probe.is_ok());
+            volume_probes.push(VolumeProbe {
+                letter,
+                ssd: false,
+                error: probe.err().map(|err| err.to_string()),
+            });
         } else {
             volume_ssd.insert(letter, true);
+            volume_probes.push(VolumeProbe {
+                letter,
+                ssd: true,
+                error: None,
+            });
         }
     }
 
@@ -777,7 +882,7 @@ fn run_mft_pass(
     // affect another volume's already-decided-good results - each volume
     // gets its own `mftscan::scan_roots` call.
     let mut candidates_by_volume: HashMap<char, Vec<(i64, PathBuf)>> = HashMap::new();
-    let mut walkdir_reasons: Vec<scan_route::WalkdirReason> = Vec::new();
+    let mut walkdir_reasons: Vec<(i64, scan_route::WalkdirReason)> = Vec::new();
     for check in &checks {
         if let ScanRoute::Walkdir(reason) = scan_route::initial_route(
             elevated,
@@ -786,7 +891,7 @@ fn run_mft_pass(
             &volume_available,
             &volume_ssd,
         ) {
-            walkdir_reasons.push(reason);
+            walkdir_reasons.push((check.game_id, reason));
             continue;
         }
         let Some(letter) = check.volume_letter else {
@@ -839,7 +944,7 @@ fn run_mft_pass(
                 // A candidate the pass itself rejected: `dispatch_scans`
                 // falls back to a walk for it, so it belongs in the
                 // breakdown alongside the roots never tried at all.
-                ScanRoute::Walkdir(reason) => walkdir_reasons.push(reason),
+                ScanRoute::Walkdir(reason) => walkdir_reasons.push((game_id, reason)),
             }
         }
     }
@@ -850,6 +955,7 @@ fn run_mft_pass(
         mft_count,
         walkdir_count: total - mft_count,
         walkdir_reasons,
+        volume_probes,
     }
 }
 
@@ -1556,6 +1662,84 @@ mod tests {
                 row.file_id
             );
         }
+    }
+
+    /// GT-116. The routing decision used to survive only as a localized
+    /// counter string in the settings dialog: it could say "2 roots were
+    /// walked, not elevated" but never which two, and not after a restart.
+    #[test]
+    fn the_route_each_root_took_survives_in_the_database() {
+        let conn = db::open_in_memory().expect("open in-memory db");
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: PathBuf::from(r"D:\SteamLibrary"),
+            orphan_evidence: OrphanEvidence::Heuristic,
+            games: vec![
+                GameInstall {
+                    name: "Walked".to_string(),
+                    install_dir: PathBuf::from(r"D:\SteamLibrary\Walked"),
+                    app_id: None,
+                },
+                GameInstall {
+                    name: "Indexed".to_string(),
+                    install_dir: PathBuf::from(r"D:\SteamLibrary\Indexed"),
+                    app_id: None,
+                },
+            ],
+        };
+        let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
+        let games = persist_libraries(&conn, std::slice::from_ref(&library), scan_id)
+            .expect("persist library");
+        let walked_id = games[0].0;
+
+        record_routing_evidence(
+            &conn,
+            scan_id,
+            &games,
+            &MftPassOutcome {
+                entries: HashMap::new(),
+                mft_count: 1,
+                walkdir_count: 1,
+                walkdir_reasons: vec![(walked_id, scan_route::WalkdirReason::SsdVolume)],
+                volume_probes: vec![VolumeProbe {
+                    letter: 'D',
+                    ssd: false,
+                    error: Some("cannot open \\\\.\\D: for raw MFT scan".to_string()),
+                }],
+            },
+        );
+
+        let mut routes: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT name, scan_route FROM games ORDER BY name")
+                .expect("prepare");
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("query");
+            rows.collect::<rusqlite::Result<_>>().expect("collect")
+        };
+        routes.sort();
+        assert_eq!(
+            routes,
+            vec![
+                ("Indexed".to_string(), "mft".to_string()),
+                ("Walked".to_string(), "walkdir:SsdVolume".to_string()),
+            ],
+        );
+
+        // The volume's own error text is the half `is_available` used to
+        // throw away, and the only thing that tells "not NTFS" from "blocked
+        // by an ACL" in a report.
+        let (path, message): (String, String) = conn
+            .query_row(
+                "SELECT path, message FROM scan_diagnostics
+                 WHERE scan_id = ?1 AND stage = 'volume-probe'",
+                [scan_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read back the volume probe");
+        assert_eq!(path, "D:");
+        assert!(message.contains("raw MFT scan"), "{message}");
     }
 
     /// The same agreement for the orphan path, which reaches the library by a
@@ -2369,8 +2553,11 @@ mod tests {
         assert_eq!(outcome.walkdir_count, 2);
         assert_eq!(
             outcome.walkdir_reasons,
-            vec![scan_route::WalkdirReason::NotElevated; 2],
-            "the diagnostics line has to name the reason, not just the count",
+            vec![
+                (1i64, scan_route::WalkdirReason::NotElevated),
+                (2i64, scan_route::WalkdirReason::NotElevated),
+            ],
+            "the diagnostics line has to name the reason and the root, not just the count",
         );
     }
 
@@ -2401,7 +2588,7 @@ mod tests {
         assert_eq!(outcome.walkdir_count, 1);
         assert_eq!(
             outcome.walkdir_reasons,
-            vec![scan_route::WalkdirReason::NoVolumeLetter],
+            vec![(1i64, scan_route::WalkdirReason::NoVolumeLetter)],
         );
     }
 
@@ -2434,7 +2621,10 @@ mod tests {
         assert_eq!(outcome.walkdir_count, 2);
         assert_eq!(
             outcome.walkdir_reasons,
-            vec![scan_route::WalkdirReason::ForcedBySetting; 2],
+            vec![
+                (1i64, scan_route::WalkdirReason::ForcedBySetting),
+                (2i64, scan_route::WalkdirReason::ForcedBySetting),
+            ],
             "a setting the user can undo has to be named as the cause",
         );
     }
