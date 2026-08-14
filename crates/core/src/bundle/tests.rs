@@ -211,15 +211,41 @@ fn a_written_bundle_reopens_as_an_archive() {
 
 /// The preview must be the file, not a description of it: whatever the
 /// user read before pressing the button is what lands in the archive.
+///
+/// Every line but one, and the exception is the point rather than a
+/// loophole: `generated at` is stamped when each rendering happens, so the
+/// preview honestly carries the moment it was previewed and the archive the
+/// moment it was written. Comparing those two would assert that no second
+/// ticks between the click and the write - a test that passes on a fast
+/// machine and fails on a slow one, which is what it did.
 #[test]
-fn the_preview_is_byte_for_byte_the_summary_in_the_archive() {
+fn the_preview_is_the_summary_in_the_archive_line_for_line() {
     let (_dir, input) = fixture();
 
     let previewed = summary(&input).expect("render preview");
     let bundle = build(&input);
 
-    assert_eq!(previewed, entry(&bundle.bytes, "summary.txt"));
-    assert_eq!(previewed, bundle.summary);
+    assert_eq!(
+        without_generated_at(&previewed),
+        without_generated_at(&entry(&bundle.bytes, "summary.txt")),
+    );
+    assert_eq!(
+        without_generated_at(&previewed),
+        without_generated_at(&bundle.summary),
+    );
+    // The excluded line still has to be there, or the exclusion above would
+    // quietly cover its disappearance.
+    assert!(previewed.contains("generated at:"), "{previewed}");
+}
+
+/// Everything except the wall-clock stamp - see the caller for why that one
+/// line cannot be compared.
+fn without_generated_at(summary: &str) -> String {
+    summary
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("generated at:"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The preview has to change when a toggle does, or it is not a preview of
