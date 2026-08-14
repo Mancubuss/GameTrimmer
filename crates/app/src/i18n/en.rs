@@ -183,6 +183,7 @@ pub(super) const STRINGS: Strings = Strings {
     logging_label: "Diagnostic log",
     logging_checkbox: "Write diagnostic log (gametrimmer.log next to the app)",
     logging_hint: "Records errors and scan events locally. On by default; you can turn it off.",
+    log_path_label: "Log file:",
     bundle_label: "Diagnostic bundle",
     bundle_hint: "Collects a .zip you can attach to a bug report. It is written to \
          a folder you choose and sent by nobody - GameTrimmer has no network \

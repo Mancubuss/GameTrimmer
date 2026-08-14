@@ -544,6 +544,15 @@ impl GameTrimmerApp {
         self.db_path.as_deref()
     }
 
+    /// The `gametrimmer.log` beside the executable, when one is in play.
+    ///
+    /// Shown in the settings dialog for the same reason the database path is
+    /// (see `ui::settings::data`): a file the user is asked to attach to a
+    /// bug report has to be findable without knowing where the exe lives.
+    pub fn log_path(&self) -> Option<&std::path::Path> {
+        self.log_path.as_deref()
+    }
+
     /// Test-only read access to the portable ini path.
     #[cfg(test)]
     pub fn settings_path(&self) -> Option<&std::path::Path> {
@@ -2071,6 +2080,17 @@ impl GameTrimmerApp {
     /// [`Self::new_for_test`].
     pub fn set_system_language_for_test(&mut self, lang: Lang) {
         self.system_lang = lang;
+    }
+
+    /// Gives the test app a log path *without* opening the file.
+    ///
+    /// `new_for_test` deliberately passes `None`, because `new_with` opens
+    /// whatever path it is given - and the logger's open file is process
+    /// global, so every UI test would be fighting the others for it. The
+    /// settings dialog only needs the path to render, never the handle, so
+    /// this sets the one and not the other.
+    pub fn set_log_path_for_test(&mut self, path: std::path::PathBuf) {
+        self.log_path = Some(path);
     }
 }
 

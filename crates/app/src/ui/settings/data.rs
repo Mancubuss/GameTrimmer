@@ -77,6 +77,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     super::row_heading(ui, s.logging_label, s.badge_immediately);
     ui.checkbox(&mut picked_logging_enabled, s.logging_checkbox);
     ui.small(s.logging_hint);
+    show_log_file(app, ui, s);
 
     ui.add_space(12.0);
     ui.separator();
@@ -221,6 +222,51 @@ fn show_database_file(
     });
 }
 
+/// Where the diagnostic log is, beside the toggle that writes it.
+///
+/// The database path is shown a few rows up for exactly this reason: a file
+/// the user is asked to attach to a bug report has to be findable without
+/// knowing where the exe lives. The log had the same problem and none of the
+/// same help - the checkbox names the file but not the folder, and the
+/// folder is wherever the portable build was unpacked.
+///
+/// Rendered whether logging is on or off: a user turning it back on wants
+/// to know where the file will appear, and a user who just turned it off
+/// may still want to send the one already written.
+fn show_log_file(app: &GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::Strings) {
+    let Some(path) = app.log_path() else {
+        return;
+    };
+    let display_path = row_actions::windows_path_string(path);
+
+    ui.add_space(4.0);
+    ui.label(s.log_path_label);
+    // Truncated, like the database path above and for the same reason: a
+    // deep path would push the buttons out of the dialog, and "Copy" is
+    // one click away.
+    ui.add(egui::Label::new(&display_path).truncate());
+    ui.horizontal(|ui| {
+        if ui.button(s.btn_copy).clicked() {
+            ui.ctx().copy_text(display_path.clone());
+        }
+        if ui.button(s.btn_open_folder).clicked() {
+            if let Some(parent) = path.parent() {
+                let (program, args) = row_actions::open_folder_args(parent);
+                if let Err(err) = row_actions::launch(program, &args) {
+                    crate::logger::error(&format!("Failed to open Explorer: {err}"));
+                }
+            }
+        }
+        // Only once there is something to size: before the first line is
+        // written the file does not exist, and "0 B" would read as a
+        // logging failure rather than as an empty log.
+        if let Ok(meta) = std::fs::metadata(path) {
+            ui.add_space(8.0);
+            ui.label(format_size(app.lang(), meta.len()));
+        }
+    });
+}
+
 /// Running state and outcome of a compact/clear job.
 ///
 /// The top-bar status line and progress bar are behind this modal, so
@@ -353,6 +399,22 @@ mod tests {
         test.assert_label(s.btn_copy);
         test.assert_label(s.btn_open_folder);
         test.assert_label(s.btn_compact_database);
+    }
+
+    /// GT-128. The log had the same discoverability problem the database
+    /// path is shown to solve, and none of the same help: the checkbox names
+    /// the file but not the folder, and the folder is wherever the portable
+    /// build happens to be unpacked.
+    #[test]
+    fn the_log_file_is_findable_beside_the_toggle_that_writes_it() {
+        let mut test = open_data();
+        let log = std::path::PathBuf::from(r"C:\Games\GameTrimmer\gametrimmer.log");
+        test.app_mut().set_log_path_for_test(log.clone());
+        test.run();
+        let s = test.strings();
+
+        test.assert_label(s.log_path_label);
+        test.assert_label(&row_actions::windows_path_string(&log));
     }
 
     /// The path itself, not just its label - a bug report needs the string,
