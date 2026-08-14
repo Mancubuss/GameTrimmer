@@ -254,6 +254,13 @@ pub struct Strings {
     pub logging_label: &'static str,
     pub logging_checkbox: &'static str,
     pub logging_hint: &'static str,
+    pub bundle_label: &'static str,
+    pub bundle_hint: &'static str,
+    pub btn_generate_bundle: &'static str,
+    pub bundle_titles_checkbox: &'static str,
+    pub bundle_operations_checkbox: &'static str,
+    pub bundle_preview_label: &'static str,
+    pub bundle_save_title: &'static str,
 
     // -- libraries_panel --
     pub libraries_header: &'static str,
@@ -358,6 +365,7 @@ pub struct Strings {
     pub verb_delete: &'static str,
     pub verb_compact: &'static str,
     pub verb_clear: &'static str,
+    pub verb_bundle: &'static str,
 
     // -- model.rs: category display names --
     pub category_redist: &'static str,
@@ -405,6 +413,8 @@ pub enum Verb {
     Delete,
     Compact,
     Clear,
+    /// Assembling the diagnostic bundle, one section at a time.
+    Bundle,
 }
 
 pub fn verb_label(lang: Lang, verb: Verb) -> &'static str {
@@ -415,6 +425,7 @@ pub fn verb_label(lang: Lang, verb: Verb) -> &'static str {
         Verb::Delete => s.verb_delete,
         Verb::Compact => s.verb_compact,
         Verb::Clear => s.verb_clear,
+        Verb::Bundle => s.verb_bundle,
     }
 }
 
@@ -579,6 +590,16 @@ impl Strings {
             ("logging_label", self.logging_label),
             ("logging_checkbox", self.logging_checkbox),
             ("logging_hint", self.logging_hint),
+            ("bundle_label", self.bundle_label),
+            ("bundle_hint", self.bundle_hint),
+            ("btn_generate_bundle", self.btn_generate_bundle),
+            ("bundle_titles_checkbox", self.bundle_titles_checkbox),
+            (
+                "bundle_operations_checkbox",
+                self.bundle_operations_checkbox,
+            ),
+            ("bundle_preview_label", self.bundle_preview_label),
+            ("bundle_save_title", self.bundle_save_title),
             ("libraries_header", self.libraries_header),
             ("btn_add_folder", self.btn_add_folder),
             ("picking_folder", self.picking_folder),
@@ -649,6 +670,7 @@ impl Strings {
             ("verb_delete", self.verb_delete),
             ("verb_compact", self.verb_compact),
             ("verb_clear", self.verb_clear),
+            ("verb_bundle", self.verb_bundle),
             ("category_redist", self.category_redist),
             ("category_docs", self.category_docs),
             ("category_bonus", self.category_bonus),

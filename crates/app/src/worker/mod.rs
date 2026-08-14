@@ -2,6 +2,7 @@
 //! filesystem runs on a spawned `std::thread`, communicating back to the
 //! UI thread through an `mpsc` channel of [`WorkerMsg`].
 
+pub mod bundle;
 pub mod clear;
 pub mod compact;
 pub mod delete;
@@ -128,6 +129,14 @@ pub enum WorkerMsg {
     /// `None` means the user cancelled the file picker.
     RulesImportDone {
         summary: Option<String>,
+        error: Option<String>,
+    },
+    /// The background "Generate diagnostic bundle" job finished.
+    /// path and rror both None means the user closed the save
+    /// dialog - the same "nothing happened, nothing went wrong" shape
+    /// ExportDone already uses.
+    BundleDone {
+        path: Option<PathBuf>,
         error: Option<String>,
     },
     /// The background "Compact database" job finished.

@@ -442,6 +442,22 @@ pub fn pending_delete_reconciled(lang: Lang, count: usize) -> String {
 
 // -- worker::compact --
 
+// -- worker::bundle --
+
+pub fn bundle_failed(lang: Lang, err: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => format!("Failed to write the diagnostic bundle: {err}"),
+        Lang::Uk => format!("Не вдалося записати діагностичний пакет: {err}"),
+    }
+}
+
+pub fn bundle_saved_to(lang: Lang, path: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => format!("Diagnostic bundle saved to {path}"),
+        Lang::Uk => format!("Діагностичний пакет збережено у {path}"),
+    }
+}
+
 pub fn compact_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En => format!("Failed to compact the database: {err}"),

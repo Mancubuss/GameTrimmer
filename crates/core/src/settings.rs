@@ -590,7 +590,11 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
     }
 }
 
-fn settings_values(settings: &Settings) -> [(&'static str, String); 12] {
+/// The ini's key/value pairs, which is also how the diagnostic bundle
+/// reports the parsed settings: `Settings` is not serde-backed, and this is
+/// already the canonical text form of every field, so a `Serialize` derive
+/// would be a second description of the same thing to keep in sync.
+pub fn settings_values(settings: &Settings) -> [(&'static str, String); 12] {
     [
         (DELETE_METHOD_KEY, settings.delete_method.as_str().into()),
         (APP_LANGUAGE_KEY, settings.app_language.as_str().into()),

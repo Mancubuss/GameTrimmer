@@ -183,6 +183,15 @@ pub(super) const STRINGS: Strings = Strings {
     logging_label: "Diagnostic log",
     logging_checkbox: "Write diagnostic log (gametrimmer.log next to the app)",
     logging_hint: "Records errors and scan events locally. On by default; you can turn it off.",
+    bundle_label: "Diagnostic bundle",
+    bundle_hint: "Collects a .zip you can attach to a bug report. It is written to \
+         a folder you choose and sent by nobody - GameTrimmer has no network \
+         code. Read the preview below: that text is in the file.",
+    btn_generate_bundle: "Save diagnostic bundle...",
+    bundle_titles_checkbox: "Include real game names (otherwise Game 1, Game 2, ...)",
+    bundle_operations_checkbox: "Include the deletion journal row by row (otherwise counts only)",
+    bundle_preview_label: "What the bundle will say about this machine:",
+    bundle_save_title: "Save diagnostic bundle",
 
     libraries_header: "Libraries",
     btn_add_folder: "Add folder...",
@@ -277,6 +286,7 @@ pub(super) const STRINGS: Strings = Strings {
     verb_delete: "Deleting",
     verb_compact: "Compacting database",
     verb_clear: "Clearing database",
+    verb_bundle: "Collecting diagnostics",
 
     category_redist: "Redistributables",
     category_docs: "Documentation and reference material",

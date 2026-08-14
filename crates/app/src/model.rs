@@ -96,9 +96,13 @@ pub struct FindingRow {
     /// ancestor directory in which every file is flagged as non-essential -
     /// letting the tree collapse that folder into a single node instead of
     /// scattering its files across categories. `None` when no such ancestor
-    /// exists (an "orphan" finding, shown as its own row). UI-only grouping
-    /// metadata, computed by `worker::scan::assign_group_dirs` - never
-    /// persisted to the database.
+    /// exists (an "orphan" finding, shown as its own row). Computed by
+    /// `worker::scan::assign_group_dirs`, persisted by
+    /// `worker::scan::persistence` into `findings.group_dir`, and read back
+    /// by `worker::load` - so a reload shows the same tree shape as the
+    /// scan that produced it without recomputing it from the full file
+    /// list. (This doc previously claimed it was never persisted, which
+    /// stopped being true when the column was added in schema v1.)
     pub group_dir: Option<String>,
     /// Present when this row is read-only. The same core preflight enforces
     /// this at execution time; the UI uses it only to explain and disable the

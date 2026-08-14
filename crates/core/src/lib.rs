@@ -1,4 +1,5 @@
 pub mod atomic_file;
+pub mod bundle;
 pub mod db;
 pub mod error;
 pub mod gamestate;

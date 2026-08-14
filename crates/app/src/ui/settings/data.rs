@@ -78,6 +78,11 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     ui.checkbox(&mut picked_logging_enabled, s.logging_checkbox);
     ui.small(s.logging_hint);
 
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(8.0);
+    let bundle_clicked = show_bundle(app, ui, s);
+
     if compact_clicked {
         app.start_compact();
     }
@@ -87,7 +92,91 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     if picked_logging_enabled != app.settings.logging_enabled {
         app.set_logging_enabled(picked_logging_enabled);
     }
+    if bundle_clicked {
+        app.start_bundle();
+    }
 }
+
+/// The diagnostic bundle: two opt-ins, the preview, and the button.
+///
+/// The preview is the point of the whole layout. This section exists
+/// because "attach your database" used to be an unanswerable request (see
+/// the module docs), and answering it with a file the user cannot see
+/// inside would trade one opaque artifact for another. So the actual
+/// generated `summary.txt` is rendered here, above the button, and the
+/// toggles regenerate it - what the user reads is what gets written,
+/// rather than a checkbox list describing it.
+///
+/// Returns whether the generate button was clicked, following this
+/// module's rule that a button never calls into the app during the render
+/// pass.
+fn show_bundle(app: &mut GameTrimmerApp, ui: &mut egui::Ui, s: &i18n::Strings) -> bool {
+    super::row_heading(ui, s.bundle_label, s.badge_immediately);
+    ui.small(s.bundle_hint);
+    ui.add_space(6.0);
+
+    let mut options = app.bundle_options;
+    ui.checkbox(&mut options.include_game_titles, s.bundle_titles_checkbox);
+    ui.checkbox(
+        &mut options.include_operations_detail,
+        s.bundle_operations_checkbox,
+    );
+    if options != app.bundle_options {
+        app.bundle_options = options;
+    }
+    // After applying the toggles, so the preview below is always the one
+    // for the options currently shown rather than the previous frame's.
+    app.refresh_bundle_preview();
+
+    ui.add_space(8.0);
+    ui.label(s.bundle_preview_label);
+    if let Some((_, preview)) = &app.bundle_preview {
+        // Bounded height and *wrapped* text, never extended: a monospace
+        // line long enough to widen the pane would widen the dialog, and
+        // `the_modal_does_not_move_or_resize_between_sections` is the test
+        // that catches exactly that - the settings dialog must not jump as
+        // the user moves between sections.
+        egui::ScrollArea::vertical()
+            .max_height(PREVIEW_HEIGHT)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(preview).monospace())
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+            });
+    }
+
+    ui.add_space(8.0);
+    let clicked = ui
+        .add_enabled(!app.busy, egui::Button::new(s.btn_generate_bundle))
+        .clicked();
+
+    if app.bundle_active {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(s.running_ellipsis);
+        });
+    } else if let Some(result) = &app.bundle_result {
+        ui.add_space(4.0);
+        match result {
+            Ok(message) => {
+                ui.colored_label(SUCCESS_GREEN, message);
+            }
+            Err(message) => {
+                ui.colored_label(ui.visuals().error_fg_color, message);
+            }
+        }
+    }
+
+    clicked
+}
+
+/// Tall enough to show the summary's identity and counts without scrolling
+/// (the part a user actually reads before deciding) while keeping the
+/// button on screen at the standard window size.
+const PREVIEW_HEIGHT: f32 = 180.0;
 
 /// The database path, its size, and the two ways to act on it.
 ///
@@ -169,6 +258,90 @@ mod tests {
         test.app_mut().settings_section = SettingsSection::Data;
         test.run();
         test
+    }
+
+    /// The bundle lives in this section rather than in a panel of its own,
+    /// because this section exists precisely because "attach your database"
+    /// was an unanswerable request - and the bundle is the real answer to it.
+    #[test]
+    fn the_bundle_action_lives_beside_the_database_path() {
+        let test = open_data();
+        let s = test.strings();
+
+        test.assert_label(s.bundle_label);
+        test.assert_label(s.btn_generate_bundle);
+        test.assert_label(s.bundle_titles_checkbox);
+        test.assert_label(s.bundle_operations_checkbox);
+        // Same section, not a new one: the database path is still here.
+        test.assert_label(s.db_path_label);
+    }
+
+    /// The rule the whole layout is built around: the user sees the actual
+    /// generated text before any byte is written, not a checkbox list
+    /// describing it.
+    #[test]
+    fn the_preview_shows_the_real_summary_before_anything_is_written() {
+        let test = open_data();
+
+        let (_, preview) = test
+            .app()
+            .bundle_preview
+            .as_ref()
+            .expect("the preview renders as soon as the section opens");
+        assert!(
+            preview.contains("GameTrimmer diagnostic bundle"),
+            "{preview}"
+        );
+        assert!(preview.contains("Privacy"), "{preview}");
+        // The preview is rendered, so its heading is on screen too.
+        test.assert_label(test.strings().bundle_preview_label);
+    }
+
+    /// A toggle has to change the preview, or it is not a preview of what
+    /// will be written. Asserted through the rendered text rather than the
+    /// flag, since the flag agreeing with itself proves nothing.
+    #[test]
+    fn opting_in_to_game_titles_changes_what_the_preview_promises() {
+        let mut test = open_data();
+        let s = test.strings();
+
+        let before = test.app().bundle_preview.clone().expect("preview").1;
+        assert!(before.contains("Game 1, Game 2"), "{before}");
+
+        test.click(s.bundle_titles_checkbox);
+
+        let after = test.app().bundle_preview.clone().expect("preview").1;
+        assert_ne!(before, after, "the preview must follow the toggle");
+        assert!(after.contains("INCLUDED because you chose to"), "{after}");
+    }
+
+    /// Both opt-ins default to off. They are the two sections that carry
+    /// the most about the user rather than about the program, so the
+    /// default has to be the quiet one.
+    #[test]
+    fn both_opt_ins_start_switched_off() {
+        let test = open_data();
+
+        assert_eq!(
+            test.app().bundle_options,
+            gametrimmer_core::bundle::BundleOptions::default(),
+        );
+        assert!(!test.app().bundle_options.include_game_titles);
+        assert!(!test.app().bundle_options.include_operations_detail);
+    }
+
+    /// The button is a save action, not a send action, and the hint has to
+    /// say so - the one thing a privacy-sensitive user checks first.
+    #[test]
+    fn the_hint_states_that_nothing_is_transmitted() {
+        let test = open_data();
+
+        test.assert_label(test.strings().bundle_hint);
+        assert!(
+            test.strings().bundle_hint.contains("no network")
+                || test.strings().bundle_hint.contains("немає мережевого"),
+            "the hint must state that nothing leaves the machine",
+        );
     }
 
     #[test]

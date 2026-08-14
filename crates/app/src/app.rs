@@ -267,6 +267,17 @@ pub struct GameTrimmerApp {
     /// own jobs, never for an unrelated scan the user left running. The
     /// automatic post-delete compaction deliberately does not set it - the
     /// dialog isn't open then and never needs to reflect it.
+    /// Opt-ins for the diagnostic bundle. Not persisted to the ini on
+    /// purpose: a privacy choice that survives restarts is one the user
+    /// stops re-reading, and both of these are decisions worth taking
+    /// again each time a bundle is generated.
+    pub bundle_options: gametrimmer_core::bundle::BundleOptions,
+    /// The rendered `summary.txt` shown before anything is written, and the
+    /// options it was rendered for - so a toggle re-renders it and nothing
+    /// else does. `None` until the Data section is first opened.
+    pub bundle_preview: Option<(gametrimmer_core::bundle::BundleOptions, String)>,
+    pub bundle_active: bool,
+    pub bundle_result: Option<Result<String, String>>,
     pub db_maint_active: bool,
     /// Outcome of the last database maintenance job, shown inside the
     /// settings dialog next to its buttons for the same reason as
@@ -473,6 +484,10 @@ impl GameTrimmerApp {
             export_active: false,
             rules_io_active: false,
             rules_io_result: None,
+            bundle_options: gametrimmer_core::bundle::BundleOptions::default(),
+            bundle_preview: None,
+            bundle_active: false,
+            bundle_result: None,
             db_maint_active: false,
             db_maint_result: None,
             confirm_delete: None,
@@ -1194,6 +1209,68 @@ impl GameTrimmerApp {
 
     /// Spawns the "Compact database" job (WAL checkpoint + `VACUUM`).
     /// No-op while another job is running.
+    /// Renders `summary.txt` for the current opt-ins, reusing the last
+    /// render when nothing changed.
+    ///
+    /// Cheap enough to call from the render pass: it is counts and identity
+    /// only, not the findings projection. That is what lets the preview be
+    /// the actual file rather than a description of it - the same function
+    /// produces the archive's own `summary.txt`.
+    pub fn refresh_bundle_preview(&mut self) {
+        if self
+            .bundle_preview
+            .as_ref()
+            .is_some_and(|(options, _)| *options == self.bundle_options)
+        {
+            return;
+        }
+        let Some(db_path) = self.db_path.clone() else {
+            return;
+        };
+        let text = worker::bundle::input_from_paths(db_path, self.bundle_options, self.elevated)
+            .map_err(|err| err.to_string())
+            .and_then(|input| {
+                gametrimmer_core::bundle::summary(&input).map_err(|err| err.to_string())
+            });
+        self.bundle_preview = Some(match text {
+            Ok(summary) => (self.bundle_options, summary),
+            // A preview that cannot be rendered is itself worth showing:
+            // the same failure would meet the real generation.
+            Err(err) => (self.bundle_options, i18n::bundle_failed(self.lang(), err)),
+        });
+    }
+
+    pub fn start_bundle(&mut self) {
+        if self.busy {
+            return;
+        }
+        let Some(db_path) = self.db_path.clone() else {
+            self.status_message = i18n::strings(self.lang()).no_db_path.to_string();
+            return;
+        };
+        let input =
+            match worker::bundle::input_from_paths(db_path, self.bundle_options, self.elevated) {
+                Ok(input) => input,
+                Err(err) => {
+                    self.bundle_result = Some(Err(i18n::bundle_failed(self.lang(), err)));
+                    return;
+                }
+            };
+
+        self.bundle_active = true;
+        self.bundle_result = None;
+        self.begin_job(true);
+        self.status_message = i18n::strings(self.lang()).bundle_label.to_string();
+        let handle = worker::bundle::spawn_bundle(
+            input,
+            self.cancel.clone(),
+            self.tx.clone(),
+            self.lang(),
+            self.egui_ctx.clone(),
+        );
+        self._worker = Some(handle);
+    }
+
     pub fn start_compact(&mut self) {
         if self.busy {
             return;
@@ -1724,10 +1801,32 @@ impl GameTrimmerApp {
                 }
             }
             WorkerMsg::Cancelled => {
+                // A cancelled bundle wrote nothing, so the dialog's own
+                // result stays empty rather than claiming a failure.
+                self.bundle_active = false;
                 self.end_job();
                 self.progress = None;
                 self._worker = None;
                 self.status_message = i18n::strings(lang).scan_cancelled.to_string();
+            }
+            WorkerMsg::BundleDone { path, error } => {
+                self.bundle_active = false;
+                self.end_job();
+                self.progress = None;
+                self._worker = None;
+                self.bundle_result = match (&path, error) {
+                    (_, Some(error)) => {
+                        crate::logger::log(&error);
+                        Some(Err(error))
+                    }
+                    (Some(path), None) => {
+                        let message = i18n::bundle_saved_to(lang, path.display());
+                        self.status_message = message.clone();
+                        Some(Ok(message))
+                    }
+                    // Both `None`: the user closed the save dialog.
+                    (None, None) => None,
+                };
             }
             WorkerMsg::Error { msg } => {
                 // The fatal counterpart of the `Warning` arm below, and it

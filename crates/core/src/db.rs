@@ -121,7 +121,11 @@ CREATE INDEX IF NOT EXISTS idx_findings_file_id  ON findings(file_id);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_scan   ON scan_diagnostics(scan_id);
 ";
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+/// `pub` so the diagnostic bundle can report the database's own
+/// `user_version` beside the version this build understands - the pair is
+/// what distinguishes "your database is from a newer build" from "it is
+/// damaged".
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// Opens (or creates) the database at `path` and applies the schema.
 pub fn open(path: &Path) -> Result<Connection> {

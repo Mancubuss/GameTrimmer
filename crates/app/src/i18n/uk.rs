@@ -184,6 +184,16 @@ pub(super) const STRINGS: Strings = Strings {
     logging_checkbox: "Писати діагностичний журнал (gametrimmer.log поруч із застосунком)",
     logging_hint: "Локально записує помилки та події сканування. Типово ввімкнено; \
          журнал можна вимкнути.",
+    bundle_label: "Діагностичний пакет",
+    bundle_hint: "Збирає .zip, який можна прикріпити до звіту про ваду. Файл \
+         зберігається в обрану вами теку, і його ніхто не надсилає - у \
+         GameTrimmer немає мережевого коду. Прочитайте прев'ю нижче: цей \
+         текст лежить у файлі.",
+    btn_generate_bundle: "Зберегти діагностичний пакет...",
+    bundle_titles_checkbox: "Включити справжні назви ігор (інакше Game 1, Game 2, ...)",
+    bundle_operations_checkbox: "Включити журнал видалень порядково (інакше лише лічильники)",
+    bundle_preview_label: "Що пакет скаже про цю машину:",
+    bundle_save_title: "Зберегти діагностичний пакет",
 
     libraries_header: "Бібліотеки",
     btn_add_folder: "Додати теку...",
@@ -280,6 +290,7 @@ pub(super) const STRINGS: Strings = Strings {
     verb_delete: "Видалення",
     verb_compact: "Стискання бази даних",
     verb_clear: "Очищення бази даних",
+    verb_bundle: "Збирання діагностики",
 
     category_redist: "Дистрибутиви",
     category_docs: "Документація і довідкові матеріали",
