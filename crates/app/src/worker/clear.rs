@@ -80,9 +80,9 @@ fn run_clear(db_path: &Path, notifier: &Notifier, lang: Lang) {
         Ok(()) => None,
         Err(err) if db::is_corruption_error(&err) => match db::rebuild_database(db_path) {
             Ok(_conn) => {
-                notifier.send(WorkerMsg::Warning {
-                    msg: i18n::clear_rebuilt_after_corruption(lang),
-                });
+                notifier.report_warning(i18n::Reported::new(lang, |l| {
+                    i18n::clear_rebuilt_after_corruption(l)
+                }));
                 None
             }
             Err(rebuild_err) => {

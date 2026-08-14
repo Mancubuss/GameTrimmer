@@ -145,7 +145,7 @@ fn run_scan(
         }) {
         Ok(engine) => engine,
         Err(err) => {
-            send_warning(notifier, i18n::rules_json_load_failed(lang, err));
+            notifier.report_warning(i18n::Reported::new(lang, |l| i18n::rules_json_load_failed(l, &err)));
             match RuleEngine::from_json_in(
                 gametrimmer_core::rules::BUILTIN_RULES_JSON,
                 lang.as_str(),
@@ -154,7 +154,7 @@ fn run_scan(
                 Err(err) => {
                     // The embedded defaults are validated by core tests, so
                     // this is unreachable short of a broken build.
-                    send_error(notifier, i18n::builtin_rules_corrupted(lang, err));
+                    notifier.report_error(i18n::Reported::new(lang, |l| i18n::builtin_rules_corrupted(l, &err)));
                     return;
                 }
             }
@@ -174,7 +174,7 @@ fn run_scan(
         }) {
         Ok(data) => data,
         Err(err) => {
-            send_warning(notifier, i18n::l10n_rules_load_failed(lang, err));
+            notifier.report_warning(i18n::Reported::new(lang, |l| i18n::l10n_rules_load_failed(l, &err)));
             LangData::builtin()
         }
     };
@@ -183,7 +183,7 @@ fn run_scan(
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
-            send_error(notifier, i18n::db_open_error_long(lang, err));
+            notifier.report_error(i18n::Reported::new(lang, |l| i18n::db_open_error_long(l, &err)));
             return;
         }
     };
@@ -204,7 +204,7 @@ fn run_scan(
     } = match discovery::discover_libraries(&conn, lang, notifier) {
         Ok(discovery) => discovery,
         Err(error) => {
-            send_error(notifier, error);
+            notifier.report_error(error);
             return;
         }
     };
@@ -221,7 +221,7 @@ fn run_scan(
     let scan_id = match db::begin_scan(&conn, discovery_status) {
         Ok(scan_id) => scan_id,
         Err(err) => {
-            send_error(notifier, i18n::libraries_write_failed(lang, err));
+            notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
             return;
         }
     };
@@ -241,7 +241,7 @@ fn run_scan(
         if let Err(err) =
             db::record_scan_library_evidence(&conn, scan_id, &library.path, library.vendor, status)
         {
-            send_error(notifier, i18n::libraries_write_failed(lang, err));
+            notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
             return;
         }
     }
@@ -254,7 +254,7 @@ fn run_scan(
             diagnostic.path.as_deref(),
             &diagnostic.message,
         ) {
-            send_error(notifier, i18n::libraries_write_failed(lang, err));
+            notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
             return;
         }
     }
@@ -262,7 +262,7 @@ fn run_scan(
     let games = match persist_libraries(&conn, &libraries, scan_id) {
         Ok(games) => games,
         Err(err) => {
-            send_error(notifier, i18n::libraries_write_failed(lang, err));
+            notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
             return;
         }
     };
@@ -370,12 +370,12 @@ fn run_scan(
                 generation.abort(&mut conn, "cancelled");
                 notifier.send(WorkerMsg::Cancelled);
             } else {
-                send_error(notifier, i18n::scan_incomplete(lang, err));
+                notifier.report_error(i18n::Reported::new(lang, |l| i18n::scan_incomplete(l, &err)));
             }
             return;
         }
         Err(_) => {
-            send_error(notifier, i18n::write_thread_crashed(lang));
+            notifier.report_error(i18n::Reported::new(lang, i18n::write_thread_crashed));
             return;
         }
     };
@@ -433,7 +433,7 @@ fn run_scan(
                         )
                     })
                 {
-                    send_error(notifier, i18n::libraries_write_failed(lang, err));
+                    notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
                     return;
                 }
                 for row in &mut findings {
@@ -455,13 +455,13 @@ fn run_scan(
                     findings.append(&mut rows);
                 }
                 Err(err) => {
-                    send_error(notifier, i18n::orphans_persist_failed(lang, err));
+                    notifier.report_error(i18n::Reported::new(lang, |l| i18n::orphans_persist_failed(l, &err)));
                     return;
                 }
             }
         }
     } else if let Err(err) = persist_orphans(&mut conn, &[], lang, scan_id) {
-        send_error(notifier, i18n::orphans_persist_failed(lang, err));
+        notifier.report_error(i18n::Reported::new(lang, |l| i18n::orphans_persist_failed(l, &err)));
         return;
     }
 
@@ -471,7 +471,7 @@ fn run_scan(
         return;
     }
     if let Err(err) = generation.activate(&mut conn) {
-        send_error(notifier, i18n::libraries_write_failed(lang, err));
+        notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
         return;
     }
 
@@ -1047,14 +1047,6 @@ fn volume_failure_results(
         .collect()
 }
 
-fn send_error(notifier: &Notifier, msg: String) {
-    notifier.send(WorkerMsg::Error { msg });
-}
-
-fn send_warning(notifier: &Notifier, msg: String) {
-    notifier.send(WorkerMsg::Warning { msg });
-}
-
 /// One file's finding, already resolved (rule engine vs. localization
 /// detector) but not yet persisted - `rel_path` is looked back up against
 /// `files.id` once the file rows exist, since that id doesn't exist until
@@ -1404,6 +1396,46 @@ fn combine_finding(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GT-127. The whole point of routing reports through `Reported`: the
+    /// log gets English whatever the interface language is, and the window
+    /// gets the user's own. Before this, one rendering served both, so a
+    /// Ukrainian install produced a log nobody could grep against the
+    /// source.
+    ///
+    /// GT-115's log half lives here now, for the same reason - this is the
+    /// last place the message exists in both languages.
+    #[test]
+    fn a_fatal_error_is_logged_in_english_and_shown_in_the_users_language() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notifier = Notifier::new(tx, egui::Context::default());
+
+        let contents = crate::logger::captured_for_test(|_dir| {
+            notifier.report_error(i18n::Reported::new(Lang::Uk, |l| {
+                i18n::libraries_write_failed(l, "gt_probe_disk_full")
+            }));
+        });
+
+        assert!(
+            contents.contains("[ERROR]") && contents.contains("Failed to write libraries"),
+            "the log takes the English rendering, marked as a failure: {contents}",
+        );
+        assert!(
+            !contents.contains("Помилка запису"),
+            "the interface language must not reach the log: {contents}",
+        );
+
+        let WorkerMsg::Error { msg } = rx.try_recv().expect("the window is told too") else {
+            panic!("report_error must send an Error message");
+        };
+        assert!(
+            msg.contains("Помилка запису"),
+            "the window keeps the user's language: {msg}",
+        );
+        // Both halves name the underlying cause - the split is the wording,
+        // not the evidence.
+        assert!(msg.contains("gt_probe_disk_full"), "{msg}");
+    }
     use gametrimmer_core::db;
     use gametrimmer_core::langdetect::{LangDetector, LangEvidence, LangKind, LangReason};
     use gametrimmer_core::providers::GameInstall;

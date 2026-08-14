@@ -39,29 +39,29 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
-            notifier.send(WorkerMsg::Error {
-                msg: i18n::db_open_error_short(lang, err),
-            });
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::db_open_error_short(l, &err)
+            }));
             return;
         }
     };
 
     if let Err(err) = db::cleanup_abandoned_scans(&mut conn) {
-        notifier.send(WorkerMsg::Warning {
-            msg: i18n::scan_incomplete(lang, err),
-        });
+        notifier.report_warning(i18n::Reported::new(lang, |l| {
+            i18n::scan_incomplete(l, &err)
+        }));
     }
 
     match gametrimmer_core::ops::reconcile_pending_operations(&mut conn) {
         Ok(reconciled) if !reconciled.is_empty() => {
-            notifier.send(WorkerMsg::Warning {
-                msg: i18n::pending_delete_reconciled(lang, reconciled.len()),
-            });
+            notifier.report_warning(i18n::Reported::new(lang, |l| {
+                i18n::pending_delete_reconciled(l, reconciled.len())
+            }));
         }
         Ok(_) => {}
-        Err(err) => notifier.send(WorkerMsg::Warning {
-            msg: i18n::db_update_after_delete_failed(lang, err),
-        }),
+        Err(err) => notifier.report_warning(i18n::Reported::new(lang, |l| {
+            i18n::db_update_after_delete_failed(l, &err)
+        })),
     }
 
     match load_scan_diagnostics(&conn) {
@@ -71,14 +71,14 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
                     Some(path) => format!("{message} [{stage}: {path}]"),
                     None => format!("{message} [{stage}]"),
                 };
-                notifier.send(WorkerMsg::Warning {
-                    msg: i18n::provider_failed(lang, provider, detail),
-                });
+                notifier.report_warning(i18n::Reported::new(lang, |l| {
+                    i18n::provider_failed(l, &provider, &detail)
+                }));
             }
         }
-        Err(err) => notifier.send(WorkerMsg::Warning {
-            msg: i18n::provider_failed(lang, "database", err),
-        }),
+        Err(err) => notifier.report_warning(i18n::Reported::new(lang, |l| {
+            i18n::provider_failed(l, "database", &err)
+        })),
     }
 
     match load_findings(&conn) {
@@ -98,9 +98,9 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
             });
         }
         Err(err) => {
-            notifier.send(WorkerMsg::Error {
-                msg: i18n::load_previous_results_failed(lang, err),
-            });
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::load_previous_results_failed(l, &err)
+            }));
         }
     }
 }

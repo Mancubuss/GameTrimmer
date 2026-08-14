@@ -450,6 +450,38 @@ pub(crate) fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Runs `body` with logging enabled into a fresh temp directory and hands
+/// back what was written, then unconditionally disables logging again -
+/// including when `body` panics, since the guard drops either way and a
+/// leaked open handle would follow the next test into a temp dir that no
+/// longer exists.
+///
+/// Lives here beside [`TEST_LOCK`] rather than in any one test module,
+/// because three of them need it now: `app` asserts a startup failure
+/// reaches the file, `worker::scan` asserts the language split of
+/// `send_error`, and `logger`'s own tests assert the line format.
+#[cfg(test)]
+pub(crate) fn captured_for_test(body: impl FnOnce(&Path)) -> String {
+    struct DisableOnDrop<'a>(&'a Path);
+    impl Drop for DisableOnDrop<'_> {
+        fn drop(&mut self) {
+            set_enabled(false, false, self.0);
+        }
+    }
+
+    let _lock = lock_for_test();
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let log_path = dir.path().join("gametrimmer.log");
+
+    let _disable = DisableOnDrop(&log_path);
+    set_enabled(true, false, &log_path);
+    body(dir.path());
+    // Read before the guard disables logging: writes are unbuffered, so
+    // dropping the handle flushes nothing, but reading first keeps the
+    // order obvious.
+    std::fs::read_to_string(&log_path).expect("read the captured log")
+}
+
 /// Reads the wall clock and the zone it is in, and formats the pair.
 ///
 /// The two Win32 calls are together here so [`format_timestamp`] stays pure

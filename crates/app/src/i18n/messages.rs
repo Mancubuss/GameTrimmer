@@ -9,6 +9,44 @@ use gametrimmer_core::langdetect::{LangEvidence, LangReason};
 use super::{strings, Lang};
 use crate::model::RiskLevel;
 
+/// One report rendered twice: English for the diagnostic log, the interface
+/// language for the window.
+///
+/// The two audiences are genuinely different. Whoever reads a log is
+/// diagnosing a problem, often on someone else's machine, and needs text
+/// they can search for and compare against the source; the person at the
+/// window needs their own language. Before this, the worker rendered once -
+/// in the interface language - and the log inherited whatever that was, so
+/// a Ukrainian install produced a log that could not be grepped for
+/// "Failed to write libraries" and a mixed log whenever a call site had
+/// hardcoded `Lang::En` instead.
+///
+/// Rendering happens here, at the point of production, because that is the
+/// only place both the message and the arguments are still in hand: further
+/// up all that survives is a finished string, and a finished string cannot
+/// be translated back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reported {
+    /// English, for the log.
+    pub log: String,
+    /// The interface language, for the window.
+    pub shown: String,
+}
+
+impl Reported {
+    /// Renders `message` once per audience.
+    ///
+    /// `message` is called twice, so it must borrow rather than consume its
+    /// arguments - every `i18n` function here takes `impl Display`, which
+    /// `&T` satisfies.
+    pub fn new(lang: Lang, message: impl Fn(Lang) -> String) -> Self {
+        Self {
+            log: message(Lang::En),
+            shown: message(lang),
+        }
+    }
+}
+
 /// Why one root was walked instead of read from the MFT index, in the
 /// settings dialog's routing diagnostics (see
 /// `worker::scan_route::format_walkdir_breakdown`). Phrased as a cause, not

@@ -15,7 +15,7 @@ pub(super) fn discover_libraries(
     conn: &Connection,
     lang: Lang,
     notifier: &Notifier,
-) -> Result<DiscoveryOutcome, String> {
+) -> Result<DiscoveryOutcome, i18n::Reported> {
     let mut libraries = Vec::new();
     let mut diagnostics = Vec::new();
     let mut degraded = false;
@@ -55,11 +55,13 @@ pub(super) fn discover_libraries(
             ));
         }
         if report.status == DiscoveryStatus::Failed {
-            return Err(i18n::provider_failed(
-                lang,
-                provider.name(),
-                "discovery failed; the previous complete snapshot was preserved",
-            ));
+            return Err(i18n::Reported::new(lang, |l| {
+                i18n::provider_failed(
+                    l,
+                    provider.name(),
+                    "discovery failed; the previous complete snapshot was preserved",
+                )
+            }));
         }
 
         degraded |= report.status == DiscoveryStatus::Degraded;
@@ -76,13 +78,17 @@ pub(super) fn discover_libraries(
     match manual::discover_manual_libraries(conn, lang) {
         Ok((manual_libraries, manual_warnings, manual_diagnostics)) => {
             for warning in manual_warnings {
-                send_warning(notifier, warning);
+                notifier.report_warning(warning);
             }
             degraded |= !manual_diagnostics.is_empty();
             diagnostics.extend(manual_diagnostics);
             libraries.extend(manual_libraries);
         }
-        Err(error) => return Err(i18n::manual_libraries_read_failed(lang, error)),
+        Err(error) => {
+            return Err(i18n::Reported::new(lang, |l| {
+                i18n::manual_libraries_read_failed(l, &error)
+            }))
+        }
     }
 
     // Providers and the manual list may report the same root. Libraries are
@@ -91,7 +97,7 @@ pub(super) fn discover_libraries(
     let libraries = providers::merge_libraries_by_path(libraries);
     let libraries = providers::dedupe_games_across_libraries(libraries);
     if libraries.is_empty() {
-        return Err(i18n::no_libraries_found(lang));
+        return Err(i18n::Reported::new(lang, i18n::no_libraries_found));
     }
 
     Ok(DiscoveryOutcome {

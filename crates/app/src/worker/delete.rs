@@ -51,9 +51,9 @@ fn run_delete(
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
-            notifier.send(WorkerMsg::Error {
-                msg: i18n::db_open_error_short(lang, err),
-            });
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::db_open_error_short(l, &err)
+            }));
             return;
         }
     };
@@ -67,15 +67,13 @@ fn run_delete(
     let plans = match prepare_delete_plans(&conn, &file_ids, remover.action()) {
         Ok(plans) if plans.len() == items.len() => plans,
         Ok(_) => {
-            notifier.send(WorkerMsg::Error {
-                msg: i18n::delete_failed(lang, "delete preflight returned an incomplete batch"),
-            });
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::delete_failed(l, "delete preflight returned an incomplete batch")
+            }));
             return;
         }
         Err(err) => {
-            notifier.send(WorkerMsg::Error {
-                msg: i18n::delete_failed(lang, err),
-            });
+            notifier.report_error(i18n::Reported::new(lang, |l| i18n::delete_failed(l, &err)));
             return;
         }
     };
@@ -114,17 +112,15 @@ fn run_delete(
                 });
             }
             if let Some(journal_error) = &outcome.journal_error {
-                notifier.send(WorkerMsg::Warning {
-                    msg: i18n::db_update_after_delete_failed(lang, journal_error),
-                });
+                notifier.report_warning(i18n::Reported::new(lang, |l| {
+                    i18n::db_update_after_delete_failed(l, journal_error)
+                }));
             }
         },
     ) {
         Ok(outcomes) => outcomes,
         Err(err) => {
-            notifier.send(WorkerMsg::Error {
-                msg: i18n::delete_failed(lang, err),
-            });
+            notifier.report_error(i18n::Reported::new(lang, |l| i18n::delete_failed(l, &err)));
             return;
         }
     };
@@ -140,9 +136,9 @@ fn run_delete(
         DeleteMethod::RecycleBin => match gametrimmer_core::ops::recycled_original_paths() {
             Ok(paths) => Some(paths.into_iter().collect()),
             Err(err) => {
-                notifier.send(WorkerMsg::Warning {
-                    msg: i18n::recycle_bin_list_failed(lang, err),
-                });
+                notifier.report_warning(i18n::Reported::new(lang, |l| {
+                    i18n::recycle_bin_list_failed(l, &err)
+                }));
                 None
             }
         },
@@ -189,9 +185,9 @@ fn run_delete(
         // session's in-memory state is still correct - only a later load of
         // saved results would show stale rows until the next successful
         // purge or rescan.
-        notifier.send(WorkerMsg::Warning {
-            msg: i18n::db_update_after_delete_failed(lang, err),
-        });
+        notifier.report_warning(i18n::Reported::new(lang, |l| {
+            i18n::db_update_after_delete_failed(l, &err)
+        }));
     }
 
     // Recompute the occupied-space snapshot now that the deleted files'

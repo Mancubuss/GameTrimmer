@@ -1829,24 +1829,22 @@ impl GameTrimmerApp {
                 };
             }
             WorkerMsg::Error { msg } => {
-                // The fatal counterpart of the `Warning` arm below, and it
-                // reaches the log for the same reason: this is the message
-                // the user quotes in a bug report, and until it was written
-                // here their log ended at "Scan started". Logged in English
-                // while the window keeps the user's language - see the
-                // startup `db_error` in `new_with` for why the two differ.
-                crate::logger::error(&i18n::error_prefixed(Lang::En, &msg));
+                // Not logged here. `msg` arrives already rendered in the
+                // interface language, so logging it would put Ukrainian in
+                // the log on a Ukrainian install; the English rendering is
+                // written by `worker::scan::send_error`, which is the last
+                // place both languages are still available.
                 self.end_job();
                 self.progress = None;
                 self._worker = None;
                 self.status_message = i18n::error_prefixed(lang, msg);
             }
-            WorkerMsg::Warning { msg } => {
-                // Scan-time diagnostics are for whoever reads a bug report:
-                // an app id or a manifest field name tells the person at the
-                // window nothing about what the scan did or did not cover.
-                crate::logger::log(&msg);
-            }
+            // `Warning` carries a scan-time diagnostic that is for whoever
+            // reads a bug report - an app id or a manifest field name tells
+            // the person at the window nothing they can act on. It is
+            // logged by `worker::scan::send_warning`, for the same reason
+            // the `Error` arm above no longer logs.
+            WorkerMsg::Warning { msg: _ } => {}
             WorkerMsg::FolderPicked { path } => {
                 self.folder_picker_active = false;
                 if let Some(path) = path {
@@ -2184,49 +2182,26 @@ mod tests {
     /// it, a `logger` unit test running in parallel would swap the file out
     /// from under these assertions.
     fn captured_log(body: impl FnOnce(&std::path::Path)) -> String {
-        struct DisableOnDrop<'a>(&'a std::path::Path);
-        impl Drop for DisableOnDrop<'_> {
-            fn drop(&mut self) {
-                logger::set_enabled(false, false, self.0);
-            }
-        }
-
-        let _lock = logger::lock_for_test();
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let log_path = dir.path().join("gametrimmer.log");
-
-        let contents = {
-            let _disable = DisableOnDrop(&log_path);
-            logger::set_enabled(true, false, &log_path);
-            body(dir.path());
-            // Read before the guard disables logging: dropping the handle is
-            // what flushes nothing here (writes are unbuffered), but reading
-            // inside keeps the order obvious.
-            std::fs::read_to_string(&log_path).expect("read the captured log")
-        };
-        contents
+        logger::captured_for_test(body)
     }
 
-    /// GT-115. The fatal message is the one the user quotes in a bug report,
-    /// and the log used to end at "Scan started" instead of naming it - while
-    /// `WorkerMsg::Warning`, one arm below, was logged all along.
+    /// GT-115, now split with GT-127. A fatal worker error still has to
+    /// reach the window - the log half moved to `worker::scan::send_error`,
+    /// which is the last place the message exists in both languages, and is
+    /// asserted there.
     #[test]
-    fn a_fatal_worker_error_reaches_the_log() {
-        let contents = captured_log(|dir| {
-            let mut app = GameTrimmerApp::new_for_test(dir);
-            app.apply_message(WorkerMsg::Error {
-                msg: "gt_probe_scan_blew_up".to_string(),
-            });
-            assert!(
-                app.status_message.contains("gt_probe_scan_blew_up"),
-                "the window must still report it too: {}",
-                app.status_message,
-            );
+    fn a_fatal_worker_error_reaches_the_window() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut app = GameTrimmerApp::new_for_test(dir.path());
+
+        app.apply_message(WorkerMsg::Error {
+            msg: "gt_probe_scan_blew_up".to_string(),
         });
 
         assert!(
-            contents.contains("gt_probe_scan_blew_up"),
-            "the fatal error should be in the log: {contents}",
+            app.status_message.contains("gt_probe_scan_blew_up"),
+            "{}",
+            app.status_message,
         );
     }
 

@@ -212,6 +212,31 @@ impl Notifier {
         let _ = self.tx.send(msg);
         self.ctx.request_repaint();
     }
+
+    /// Reports a fatal failure: English to the diagnostic log, the interface
+    /// language to the window.
+    ///
+    /// The logging belongs here and not in the app's `WorkerMsg::Error` arm
+    /// because this is the last point where the message still exists in both
+    /// languages - past the channel it is one finished string, and which
+    /// language that string is in would depend on a setting.
+    ///
+    /// Every worker reports through these two rather than through
+    /// `send(WorkerMsg::Error { .. })` directly. When the logging lived in
+    /// the app arm, "every worker" happened for free; now it is a rule, and
+    /// a worker that sends the variant by hand writes nothing to the log.
+    pub(crate) fn report_error(&self, report: crate::i18n::Reported) {
+        crate::logger::error(&report.log);
+        self.send(WorkerMsg::Error { msg: report.shown });
+    }
+
+    /// Reports a non-fatal diagnostic. Same split as [`Self::report_error`];
+    /// the level is the only difference, since a warning is by definition
+    /// something the work carried on past.
+    pub(crate) fn report_warning(&self, report: crate::i18n::Reported) {
+        crate::logger::log(&report.log);
+        self.send(WorkerMsg::Warning { msg: report.shown });
+    }
 }
 
 /// Computes the live disk-usage snapshot (see
@@ -295,6 +320,56 @@ pub fn ensure_l10n_rules_path() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GT-127's regression guard, written because the regression happened.
+    ///
+    /// Moving the logging out of the app's `WorkerMsg::Error` arm and into
+    /// [`Notifier::report_error`] silently un-logged every worker that sent
+    /// the variant itself - seventeen sites across delete, load and clear
+    /// that had been covered for free while the app arm did the logging.
+    /// Nothing failed: the messages still reached the window, and only the
+    /// log went quiet, which is the failure mode this whole epic exists to
+    /// remove.
+    ///
+    /// A source check rather than a behavioural one, because the thing to
+    /// prevent is a *new call site* taking the shortcut, and no runtime
+    /// assertion can see a site nobody ran.
+    #[test]
+    fn no_worker_sends_a_report_without_logging_it() {
+        let worker_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker");
+        let mut offenders = Vec::new();
+
+        let mut pending = vec![worker_dir.clone()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read the worker source directory") {
+                let path = entry.expect("read a worker source entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                if path.extension().is_some_and(|ext| ext == "rs")
+                    // `mod.rs` is where the two legitimate sends live.
+                    && path != worker_dir.join("mod.rs")
+                {
+                    let source = std::fs::read_to_string(&path).expect("read a worker source file");
+                    for (number, line) in source.lines().enumerate() {
+                        if line.contains("send(WorkerMsg::Error")
+                            || line.contains("send(WorkerMsg::Warning")
+                        {
+                            offenders.push(format!("{}:{}", path.display(), number + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "these sites bypass Notifier::report_error/report_warning and so write \
+             nothing to the diagnostic log:\n{}",
+            offenders.join("\n"),
+        );
+    }
 
     /// `db_path()` and `settings_path()` (and, by the same `exe_dir()`
     /// construction, `ensure_rules_path()`/`ensure_l10n_rules_path()`) must

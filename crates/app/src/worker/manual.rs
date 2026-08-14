@@ -94,7 +94,7 @@ pub fn discover_manual_libraries(
     lang: Lang,
 ) -> CoreResult<(
     Vec<DiscoveredLibrary>,
-    Vec<String>,
+    Vec<i18n::Reported>,
     Vec<DiscoveryDiagnostic>,
 )> {
     let mut stmt = conn.prepare("SELECT path FROM game_libraries WHERE vendor = ?1")?;
@@ -124,10 +124,12 @@ pub fn discover_manual_libraries(
                 orphan_evidence: OrphanEvidence::Heuristic,
             }),
             Err(err) => {
-                warnings.push(format!(
-                    "{}: {err}",
-                    i18n::manual_library_unavailable(lang, path.display())
-                ));
+                warnings.push(i18n::Reported::new(lang, |l| {
+                    format!(
+                        "{}: {err}",
+                        i18n::manual_library_unavailable(l, path.display())
+                    )
+                }));
                 diagnostics.push(DiscoveryDiagnostic {
                     provider: MANUAL_VENDOR,
                     stage: "library-enumeration",
@@ -269,7 +271,13 @@ mod tests {
         assert_eq!(libraries[0].orphan_evidence, OrphanEvidence::Degraded);
         assert_eq!(warnings.len(), 1);
         assert_eq!(diagnostics.len(), 1);
-        assert!(warnings[0].contains(&missing_path.display().to_string()));
+        assert!(warnings[0]
+            .shown
+            .contains(&missing_path.display().to_string()));
+        assert_eq!(
+            warnings[0].log, warnings[0].shown,
+            "an English interface renders both audiences the same",
+        );
 
         let count: i64 = conn
             .query_row(
