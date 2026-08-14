@@ -26,7 +26,12 @@ use crate::model::{
 /// row *content* does not: the Disk column is read from each finding's own
 /// install directory rather than from the branch it happens to sit under, so
 /// grouping by launcher cannot make the column report "steam" as a disk.
-pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[TopGroup]) -> String {
+pub fn export_csv(
+    lang: Lang,
+    descriptions: &crate::worker::descriptions::Descriptions,
+    findings: &[FindingItem],
+    tree: &[TopGroup],
+) -> String {
     let mut out = String::from('\u{FEFF}');
     out.push_str(i18n::csv_header(lang));
     out.push_str("\r\n");
@@ -52,6 +57,7 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[TopGroup]) -> St
                             for &index in item_indices {
                                 push_row(
                                     lang,
+                                    descriptions,
                                     &mut out,
                                     category_node.category,
                                     game_name,
@@ -63,6 +69,7 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[TopGroup]) -> St
                         TreeNode::File { index } => {
                             push_row(
                                 lang,
+                                descriptions,
                                 &mut out,
                                 category_node.category,
                                 game_name,
@@ -92,6 +99,7 @@ pub fn export_csv(lang: Lang, findings: &[FindingItem], tree: &[TopGroup]) -> St
 /// there is no grouping to mirror and each finding answers for itself.
 fn push_row(
     lang: Lang,
+    descriptions: &crate::worker::descriptions::Descriptions,
     out: &mut String,
     category: Option<DisplayCategory>,
     game_name: &str,
@@ -111,7 +119,8 @@ fn push_row(
         format_size(lang, row.size),
         row.confidence.to_string(),
         source_key(row.source).to_string(),
-        row.rule_desc.clone(),
+        // The stored text is English; the CSV follows the window.
+        descriptions.display(row.source, &row.rule_desc),
         row.lang_tag.clone().unwrap_or_default(),
         (if item.selected { s.csv_yes } else { s.csv_no }).to_string(),
     ];
@@ -144,6 +153,14 @@ pub fn write_export(path: &Path, csv: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The CSV asks the same resolver the window does. These tests are
+    /// about the file's shape, not about translation, so an English index -
+    /// which passes every description through unchanged - keeps them
+    /// independent of whatever the rule pack next to the test binary says.
+    fn descriptions() -> crate::worker::descriptions::Descriptions {
+        crate::worker::descriptions::Descriptions::load(Lang::En)
+    }
+
     use super::*;
     use crate::model::{build_tree, FindingRow, FindingSource, GroupAxis};
     use gametrimmer_core::rules::Category;
@@ -184,7 +201,7 @@ mod tests {
         let items = vec![finding("Game A", "file.txt", None, 10, true)];
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &items, &tree);
+        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
 
         assert!(csv.starts_with('\u{FEFF}'));
     }
@@ -194,7 +211,7 @@ mod tests {
         let items: Vec<FindingItem> = Vec::new();
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &items, &tree);
+        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
         let header_line = csv.trim_start_matches('\u{FEFF}').lines().next().unwrap();
 
         assert_eq!(header_line, i18n::csv_header(Lang::Uk));
@@ -206,7 +223,7 @@ mod tests {
         let items = vec![finding("Game A", "file.txt", None, 10, true)];
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &items, &tree);
+        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
 
         assert!(
             csv.contains("\"test; rule\""),
@@ -223,7 +240,7 @@ mod tests {
         items[1].removed = true;
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &items, &tree);
+        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
         let data_row_count = csv.lines().count() - 1; // minus the header
 
         assert_eq!(
@@ -244,7 +261,7 @@ mod tests {
         let items = vec![docs_finding, bonus_finding];
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &items, &tree);
+        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
 
         for line in csv.lines().skip(1) {
             if line.is_empty() {

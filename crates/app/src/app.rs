@@ -182,6 +182,16 @@ pub struct GameTrimmerApp {
     pub last_scan_timing: Option<model::ScanTiming>,
 
     pub findings: Vec<FindingItem>,
+    /// Turns each finding's stored (English) description into the one the
+    /// window shows - see `worker::descriptions`.
+    ///
+    /// Held here rather than applied to the rows once, because the answer
+    /// depends on the *current* interface language: overwriting
+    /// `FindingRow::rule_desc` with a translation destroys the English key
+    /// the next translation would need, which is exactly how a language
+    /// switch used to leave the previous language's text on screen.
+    /// Rebuilt by [`Self::refresh_descriptions`].
+    pub descriptions: worker::descriptions::Descriptions,
     /// Live disk-usage snapshot (total + per-library), refreshed by every
     /// `WorkerMsg::Done` (scan or load) - see
     /// `gametrimmer_core::db::occupied_by_library`. Never persisted.
@@ -466,6 +476,7 @@ impl GameTrimmerApp {
             last_progress_detail_at: 0.0,
             last_scan_timing: None,
             findings: Vec::new(),
+            descriptions: worker::descriptions::Descriptions::load(Lang::En),
             occupancy: model::Occupancy::default(),
             tree: Vec::new(),
             tree_dirty: false,
@@ -622,7 +633,19 @@ impl GameTrimmerApp {
             app_language: preference,
             ..self.settings.clone()
         };
+        // Findings already on screen describe themselves through
+        // `descriptions`, so the index has to follow the language here -
+        // otherwise the tree keeps speaking the language it was loaded in.
+        self.refresh_descriptions();
         self.persist_settings();
+    }
+
+    /// Rebuilds the finding-description index for the language now in
+    /// effect. Cheap enough to call on a language switch (it reads the rule
+    /// pack once), and skipped entirely for an English interface, where the
+    /// stored text is already what gets shown.
+    fn refresh_descriptions(&mut self) {
+        self.descriptions = worker::descriptions::Descriptions::load(self.lang());
     }
 
     /// Reads every `game_libraries` row for the library management list.
@@ -744,7 +767,7 @@ impl GameTrimmerApp {
 
         let lang = self.lang();
         let s = i18n::strings(lang);
-        let csv = export::export_csv(lang, &self.findings, &self.tree);
+        let csv = export::export_csv(lang, &self.descriptions, &self.findings, &self.tree);
         let (title, text_filter_label) = (s.export_dialog_title, s.text_file_filter_label);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -1660,6 +1683,10 @@ impl GameTrimmerApp {
                 timing,
                 routing_breakdown,
             } => {
+                // A rules import between one scan and the next changes what
+                // the descriptions resolve to, so the index is rebuilt with
+                // the results rather than only when the language changes.
+                self.refresh_descriptions();
                 self.end_job();
                 self.progress = None;
                 self._worker = None;

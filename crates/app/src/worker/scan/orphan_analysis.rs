@@ -163,7 +163,6 @@ pub(super) fn collect_orphans(
 pub(super) fn persist_orphans(
     conn: &mut Connection,
     orphans: &[PreparedOrphan],
-    lang: Lang,
     scan_id: i64,
 ) -> CoreResult<Vec<FindingRow>> {
     let tx = conn.transaction()?;
@@ -215,7 +214,10 @@ pub(super) fn persist_orphans(
         for orphan in orphans {
             let source = FindingSource::Orphan(orphan.kind);
             let confidence = orphan_confidence(orphan.kind);
-            let reason = i18n::orphan_reason(lang, orphan.kind);
+            // Stored in English like every other description in the database;
+            // `worker::descriptions` rebuilds the localized sentence from
+            // `orphan.kind` when the row is drawn.
+            let reason = i18n::orphan_reason(Lang::En, orphan.kind);
 
             // Stored full-path-in-`rel_path`: an orphan has no game row to hold
             // its `install_dir`, so the row must be self-contained. `load`

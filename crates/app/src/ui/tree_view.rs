@@ -344,6 +344,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         let ctx = RowCtx {
             axis: app.tree_axis,
             lang,
+            descriptions: &app.descriptions,
             query: app.tree_search_index.query(),
         };
 
@@ -1073,6 +1074,9 @@ fn handle_keyboard(
 struct RowCtx<'a> {
     axis: GroupAxis,
     lang: Lang,
+    /// Resolves each row's stored (English) description into the current
+    /// language - see `worker::descriptions`.
+    descriptions: &'a crate::worker::descriptions::Descriptions,
     /// Folded exactly as [`SearchIndex`] folded it, or `""` when no search is
     /// in effect.
     query: &'a str,
@@ -1751,7 +1755,10 @@ fn show_file_row(
     // clipboard payload, and the argument to every context-menu shell action.
     let abs_path = row_actions::windows_path_string(&item.row.install_dir.join(&item.row.rel_path));
 
-    let mut hover = i18n::hover_reason(lang, &abs_path, &item.row.rule_desc, item.row.confidence);
+    let reason = ctx
+        .descriptions
+        .display(item.row.source, &item.row.rule_desc);
+    let mut hover = i18n::hover_reason(lang, &abs_path, &reason, item.row.confidence);
     if let Some(lang_tag) = &item.row.lang_tag {
         hover.push_str(&i18n::hover_lang_suffix(lang, lang_tag));
     }

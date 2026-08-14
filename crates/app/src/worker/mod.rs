@@ -6,6 +6,7 @@ pub mod bundle;
 pub mod clear;
 pub mod compact;
 pub mod delete;
+pub(crate) mod descriptions;
 pub mod load;
 pub mod manual;
 pub mod rules_io;

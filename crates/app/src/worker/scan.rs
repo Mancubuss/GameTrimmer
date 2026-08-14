@@ -140,21 +140,22 @@ fn run_scan(
     let engine = match super::ensure_rules_path()
         .map_err(CoreError::from)
         .and_then(|path| {
-            RuleEngine::load_in(&path, lang.as_str())
+            RuleEngine::load(&path)
                 .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
         }) {
         Ok(engine) => engine,
         Err(err) => {
-            notifier.report_warning(i18n::Reported::new(lang, |l| i18n::rules_json_load_failed(l, &err)));
-            match RuleEngine::from_json_in(
-                gametrimmer_core::rules::BUILTIN_RULES_JSON,
-                lang.as_str(),
-            ) {
+            notifier.report_warning(i18n::Reported::new(lang, |l| {
+                i18n::rules_json_load_failed(l, &err)
+            }));
+            match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON) {
                 Ok(engine) => engine,
                 Err(err) => {
                     // The embedded defaults are validated by core tests, so
                     // this is unreachable short of a broken build.
-                    notifier.report_error(i18n::Reported::new(lang, |l| i18n::builtin_rules_corrupted(l, &err)));
+                    notifier.report_error(i18n::Reported::new(lang, |l| {
+                        i18n::builtin_rules_corrupted(l, &err)
+                    }));
                     return;
                 }
             }
@@ -174,7 +175,9 @@ fn run_scan(
         }) {
         Ok(data) => data,
         Err(err) => {
-            notifier.report_warning(i18n::Reported::new(lang, |l| i18n::l10n_rules_load_failed(l, &err)));
+            notifier.report_warning(i18n::Reported::new(lang, |l| {
+                i18n::l10n_rules_load_failed(l, &err)
+            }));
             LangData::builtin()
         }
     };
@@ -183,7 +186,9 @@ fn run_scan(
     let mut conn = match db::open(db_path) {
         Ok(conn) => conn,
         Err(err) => {
-            notifier.report_error(i18n::Reported::new(lang, |l| i18n::db_open_error_long(l, &err)));
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::db_open_error_long(l, &err)
+            }));
             return;
         }
     };
@@ -221,7 +226,9 @@ fn run_scan(
     let scan_id = match db::begin_scan(&conn, discovery_status) {
         Ok(scan_id) => scan_id,
         Err(err) => {
-            notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::libraries_write_failed(l, &err)
+            }));
             return;
         }
     };
@@ -241,7 +248,9 @@ fn run_scan(
         if let Err(err) =
             db::record_scan_library_evidence(&conn, scan_id, &library.path, library.vendor, status)
         {
-            notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::libraries_write_failed(l, &err)
+            }));
             return;
         }
     }
@@ -254,7 +263,9 @@ fn run_scan(
             diagnostic.path.as_deref(),
             &diagnostic.message,
         ) {
-            notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::libraries_write_failed(l, &err)
+            }));
             return;
         }
     }
@@ -262,7 +273,9 @@ fn run_scan(
     let games = match persist_libraries(&conn, &libraries, scan_id) {
         Ok(games) => games,
         Err(err) => {
-            notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::libraries_write_failed(l, &err)
+            }));
             return;
         }
     };
@@ -340,7 +353,6 @@ fn run_scan(
             &games,
             &engine,
             &lang_detector,
-            lang,
             cancel,
             &result_tx,
             &mft_pass.entries,
@@ -370,7 +382,9 @@ fn run_scan(
                 generation.abort(&mut conn, "cancelled");
                 notifier.send(WorkerMsg::Cancelled);
             } else {
-                notifier.report_error(i18n::Reported::new(lang, |l| i18n::scan_incomplete(l, &err)));
+                notifier.report_error(i18n::Reported::new(lang, |l| {
+                    i18n::scan_incomplete(l, &err)
+                }));
             }
             return;
         }
@@ -433,7 +447,9 @@ fn run_scan(
                         )
                     })
                 {
-                    notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
+                    notifier.report_error(i18n::Reported::new(lang, |l| {
+                        i18n::libraries_write_failed(l, &err)
+                    }));
                     return;
                 }
                 for row in &mut findings {
@@ -449,19 +465,23 @@ fn run_scan(
                     }
                 }
             }
-            match persist_orphans(&mut conn, &orphan_collection.orphans, lang, scan_id) {
+            match persist_orphans(&mut conn, &orphan_collection.orphans, scan_id) {
                 Ok(mut rows) => {
                     crate::logger::log(&format!("Orphans: {} found", rows.len()));
                     findings.append(&mut rows);
                 }
                 Err(err) => {
-                    notifier.report_error(i18n::Reported::new(lang, |l| i18n::orphans_persist_failed(l, &err)));
+                    notifier.report_error(i18n::Reported::new(lang, |l| {
+                        i18n::orphans_persist_failed(l, &err)
+                    }));
                     return;
                 }
             }
         }
-    } else if let Err(err) = persist_orphans(&mut conn, &[], lang, scan_id) {
-        notifier.report_error(i18n::Reported::new(lang, |l| i18n::orphans_persist_failed(l, &err)));
+    } else if let Err(err) = persist_orphans(&mut conn, &[], scan_id) {
+        notifier.report_error(i18n::Reported::new(lang, |l| {
+            i18n::orphans_persist_failed(l, &err)
+        }));
         return;
     }
 
@@ -471,7 +491,9 @@ fn run_scan(
         return;
     }
     if let Err(err) = generation.activate(&mut conn) {
-        notifier.report_error(i18n::Reported::new(lang, |l| i18n::libraries_write_failed(l, &err)));
+        notifier.report_error(i18n::Reported::new(lang, |l| {
+            i18n::libraries_write_failed(l, &err)
+        }));
         return;
     }
 
@@ -591,7 +613,6 @@ fn dispatch_scans(
     games: &[(i64, String, PathBuf)],
     engine: &RuleEngine,
     lang_detector: &LangDetector,
-    ui_lang: Lang,
     cancel: &AtomicBool,
     result_tx: &SyncSender<GameOutcome>,
     mft_entries: &HashMap<i64, Vec<FileEntry>>,
@@ -643,7 +664,6 @@ fn dispatch_scans(
                 install_dir,
                 entries.clone(),
                 enabled_categories,
-                ui_lang,
                 cancel,
             ),
             None => scan_and_prepare_game(
@@ -653,7 +673,6 @@ fn dispatch_scans(
                 name,
                 install_dir,
                 enabled_categories,
-                ui_lang,
                 cancel,
             ),
         };
@@ -1106,7 +1125,6 @@ fn scan_and_prepare_game(
     name: &str,
     install_dir: &Path,
     enabled_categories: &[String],
-    ui_lang: Lang,
     cancel: &AtomicBool,
 ) -> CoreResult<PreparedGame> {
     let entries = scan_dir_cancellable(install_dir, cancel)?;
@@ -1121,7 +1139,6 @@ fn scan_and_prepare_game(
         install_dir,
         entries,
         enabled_categories,
-        ui_lang,
         cancel,
     )
 }
@@ -1162,7 +1179,6 @@ fn classify_game(
     install_dir: &Path,
     entries: Vec<FileEntry>,
     enabled_categories: &[String],
-    ui_lang: Lang,
     cancel: &AtomicBool,
 ) -> CoreResult<PreparedGame> {
     // `analyze_game` needs sibling context (the language-family heuristic),
@@ -1188,7 +1204,7 @@ fn classify_game(
         let rule_finding = engine.classify(&entry.rel_path);
         let lang_finding = lang_findings.get(&index);
 
-        if let Some(combined) = combine_finding(rule_finding, lang_finding, ui_lang) {
+        if let Some(combined) = combine_finding(rule_finding, lang_finding) {
             if category_enabled(enabled_categories, display_category(combined.source)) {
                 combined_by_index.push((index, combined));
             }
@@ -1336,7 +1352,6 @@ fn scan_and_classify_game(
         name,
         install_dir,
         &[],
-        Lang::En,
         &never_cancel,
     )?;
     let db_tx = conn.transaction()?;
@@ -1369,11 +1384,7 @@ struct CombinedFinding {
 /// text: the same choice the orphan pass already makes. The cost is that
 /// switching the interface language leaves already-scanned findings describing
 /// themselves in the previous one until the next scan.
-fn combine_finding(
-    rule: Option<Finding>,
-    lang: Option<&LangFinding>,
-    ui_lang: Lang,
-) -> Option<CombinedFinding> {
+fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<CombinedFinding> {
     match (rule, lang) {
         (Some(r), _) => Some(CombinedFinding {
             source: FindingSource::Rule(r.category),
@@ -1384,7 +1395,7 @@ fn combine_finding(
         }),
         (None, Some(l)) => Some(CombinedFinding {
             source: FindingSource::Loc(l.kind),
-            rule_id: i18n::lang_reason(ui_lang, &l.reason),
+            rule_id: i18n::lang_reason(Lang::En, &l.reason),
             confidence: l.confidence,
             provenance: RuleProvenance::Builtin,
             lang_tag: Some(l.lang_tag.clone()),
@@ -1465,7 +1476,7 @@ mod tests {
             provenance: RuleProvenance::Builtin,
         };
 
-        let combined = combine_finding(Some(rule), Some(&lang_finding_de()), Lang::En)
+        let combined = combine_finding(Some(rule), Some(&lang_finding_de()))
             .expect("a rule match must produce a finding");
 
         assert!(matches!(
@@ -1477,7 +1488,7 @@ mod tests {
 
     #[test]
     fn combine_finding_uses_localization_only_when_no_rule_matches() {
-        let combined = combine_finding(None, Some(&lang_finding_de()), Lang::En)
+        let combined = combine_finding(None, Some(&lang_finding_de()))
             .expect("a localization finding alone must survive");
 
         assert!(matches!(
@@ -1526,7 +1537,6 @@ mod tests {
             "Test Game",
             install_dir.path(),
             &[],
-            Lang::En,
             &cancel,
         );
 
@@ -1563,7 +1573,6 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &[],
-            Lang::En,
             &cancel,
         );
 
@@ -1854,8 +1863,7 @@ mod tests {
             size_on_disk: 4096,
             kind: OrphanKind::UnmanagedFolder,
         }];
-        let scanned =
-            persist_orphans(&mut conn, &orphans, Lang::Uk, 0).expect("persist should succeed");
+        let scanned = persist_orphans(&mut conn, &orphans, 0).expect("persist should succeed");
 
         let expected = Some(LibraryOrigin {
             vendor: Some("steam".to_string()),
@@ -2487,7 +2495,6 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries.clone(),
             &[], // empty = every category enabled
-            Lang::En,
             &never_cancel,
         )
         .expect("uncancelled classify_game should succeed");
@@ -2505,7 +2512,6 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &["redist".to_string()], // "docs" is not in the enabled list
-            Lang::En,
             &never_cancel,
         )
         .expect("uncancelled classify_game should succeed");
@@ -2531,7 +2537,6 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &["docs".to_string()],
-            Lang::En,
             &AtomicBool::new(false),
         )
         .expect("uncancelled classify_game should succeed");
@@ -2766,11 +2771,8 @@ mod tests {
     /// here covers both without building a tree and a `FindingItem` list.
     #[test]
     fn an_english_scan_produces_no_cyrillic_reasons() {
-        let engine = RuleEngine::from_json_in(
-            gametrimmer_core::rules::BUILTIN_RULES_JSON,
-            Lang::En.as_str(),
-        )
-        .expect("builtin rules compile");
+        let engine = RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON)
+            .expect("builtin rules compile");
         let entries = vec![
             // Claimed by a rule: the docs_file pattern.
             entry(r"Docs\manual.pdf"),
@@ -2790,7 +2792,6 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &[],
-            Lang::En,
             &AtomicBool::new(false),
         )
         .expect("classify_game should succeed");
@@ -2821,15 +2822,20 @@ mod tests {
         }
     }
 
-    /// The same guard from the other side: a Ukrainian scan must still speak
-    /// Ukrainian, so the fix is a translation rather than a deletion.
+    /// GT-129, and the inverse of what this test used to assert.
+    ///
+    /// It used to demand that a Ukrainian scan produce Ukrainian
+    /// descriptions - true of the window, but the same text is what
+    /// `findings.rule_id` stores and what the diagnostic bundle ships to
+    /// whoever is diagnosing the report. Storage is English now whatever the
+    /// interface language is; the translation happens on the way to the
+    /// screen (`worker::descriptions`), which the tests there cover.
     #[test]
-    fn a_ukrainian_scan_still_describes_findings_in_ukrainian() {
-        let engine = RuleEngine::from_json_in(
-            gametrimmer_core::rules::BUILTIN_RULES_JSON,
-            Lang::Uk.as_str(),
-        )
-        .expect("builtin rules compile");
+    fn a_ukrainian_scan_still_stores_its_descriptions_in_english() {
+        // Built the way `run_scan` builds it now - unconditionally English,
+        // with no interface language reaching the engine at all.
+        let engine = RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON)
+            .expect("builtin rules compile");
         let entries = vec![
             entry(r"Docs\manual.pdf"),
             entry(r"Voices\Voice_english.pak"),
@@ -2846,7 +2852,6 @@ mod tests {
             Path::new("C:/Games/Test"),
             entries,
             &[],
-            Lang::Uk,
             &AtomicBool::new(false),
         )
         .expect("classify_game should succeed");
@@ -2861,8 +2866,8 @@ mod tests {
                 .find(|f| std::mem::discriminant(&f.source) == std::mem::discriminant(&source));
             let found = found.unwrap_or_else(|| panic!("no finding for {source:?}"));
             assert!(
-                found.rule_id.chars().any(is_cyrillic),
-                "a Ukrainian scan should describe {source:?} in Ukrainian, got {:?}",
+                !found.rule_id.chars().any(is_cyrillic),
+                "what reaches the database must be English for {source:?}, got {:?}",
                 found.rule_id
             );
         }
@@ -3207,8 +3212,7 @@ mod tests {
             kind: OrphanKind::UnmanagedFolder,
         }];
 
-        let rows =
-            persist_orphans(&mut conn, &orphans, Lang::Uk, 0).expect("persist should succeed");
+        let rows = persist_orphans(&mut conn, &orphans, 0).expect("persist should succeed");
 
         // The returned row is shaped for the UI: sentinel game id, empty name,
         // container as install_dir, folder name as rel_path.
@@ -3266,7 +3270,7 @@ mod tests {
             size_on_disk: 10,
             kind: OrphanKind::UnmanagedFolder,
         }];
-        persist_orphans(&mut conn, &first, Lang::Uk, 0).expect("first persist");
+        persist_orphans(&mut conn, &first, 0).expect("first persist");
 
         // A later scan finds a different leftover; the old one is gone.
         let second = vec![PreparedOrphan {
@@ -3276,7 +3280,7 @@ mod tests {
             size_on_disk: 20,
             kind: OrphanKind::UnmanagedFolder,
         }];
-        persist_orphans(&mut conn, &second, Lang::Uk, 0).expect("second persist");
+        persist_orphans(&mut conn, &second, 0).expect("second persist");
 
         let paths: Vec<String> = {
             let mut stmt = conn.prepare("SELECT rel_path FROM files").expect("prepare");
@@ -3305,10 +3309,10 @@ mod tests {
             size_on_disk: 10,
             kind: OrphanKind::UnmanagedFolder,
         }];
-        persist_orphans(&mut conn, &existing, Lang::Uk, 0).expect("seed orphan rows");
+        persist_orphans(&mut conn, &existing, 0).expect("seed orphan rows");
 
         // The empty-list call is how a disabled category clears residue.
-        let rows = persist_orphans(&mut conn, &[], Lang::Uk, 0).expect("clear should succeed");
+        let rows = persist_orphans(&mut conn, &[], 0).expect("clear should succeed");
         assert!(rows.is_empty());
 
         let file_count: i64 = conn
@@ -3354,7 +3358,6 @@ mod tests {
                 size_on_disk: 10,
                 kind: OrphanKind::UnmanagedFolder,
             }],
-            Lang::Uk,
             0,
         )
         .expect("persist");
