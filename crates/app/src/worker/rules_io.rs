@@ -528,11 +528,12 @@ mod tests {
         gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
         drop(conn);
 
-        let merged = r#"[
+        let merged = r#"{"version":1,"rules":[
             {"category":"dev_leftovers","pattern":"^preview_fixture\\.tmp$",
              "desc":"Preview fixture","confidence":90}
-        ]"#;
-        let impact = preview_active_impact(Some(&db_path), Some("[]"), Some(merged), false)
+        ]}"#;
+        let empty = r#"{"version":1,"rules":[]}"#;
+        let impact = preview_active_impact(Some(&db_path), Some(empty), Some(merged), false)
             .expect("preview succeeds");
 
         assert_eq!(impact.files, 1);

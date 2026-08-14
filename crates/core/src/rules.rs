@@ -15,6 +15,19 @@ use crate::localized::{LocalizedText, DEFAULT_LANG};
 /// folders live at the root or in a first/second-level folder, not deep
 /// inside asset or engine trees such as `Launcher\QtQuick\Extras`).
 const MAX_SHALLOW_DEPTH: usize = 2;
+
+/// Supported major version of `rules.json`. A file with a greater version was
+/// produced by a newer GameTrimmer - refuse it rather than silently misread
+/// it, exactly as [`crate::langdetect::LANG_PACK_VERSION`] already does for
+/// the localization pack.
+///
+/// The two packs materialize from the built-ins on first use and are then
+/// never overwritten (`worker::ensure_rules_path`), so a hand edit or an
+/// imported community pack wins permanently. Without a version in the file
+/// there is no way, after the fact, to tell which rule set actually produced
+/// a finding - only a diff of the whole file.
+pub const RULE_PACK_VERSION: u32 = 1;
+
 pub const MAX_RULE_PACK_BYTES: usize = 1024 * 1024;
 pub const MAX_RULES: usize = 2_000;
 pub const MAX_REGEX_BYTES: usize = 512;
@@ -138,11 +151,44 @@ pub struct Rule {
     pub extensions: Option<Vec<String>>,
 }
 
-/// Parses the raw rule list of a rules.json without compiling the regexes -
-/// the parse used by the import merge (`crate::packs`), where validation
-/// happens separately through [`RuleEngine::from_json`].
+/// A whole `rules.json`: the version marker and the rules it carries.
+///
+/// The version is the only reason this wraps the list instead of being one -
+/// see [`RULE_PACK_VERSION`]. It is deliberately not an `Option`: a file
+/// without the field is not "version 0", it is a file this build has no way
+/// to interpret, and saying so at the parse is better than guessing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RulePack {
+    pub version: u32,
+    pub rules: Vec<Rule>,
+}
+
+/// Parses a rules.json without compiling the regexes - the parse used by the
+/// import merge (`crate::packs`), where validation happens separately through
+/// [`RuleEngine::from_json`]. A pack from a newer GameTrimmer is refused
+/// here, before any rule of it is looked at.
 pub fn parse_rule_list(json: &str) -> Result<Vec<Rule>> {
-    serde_json::from_str(json).map_err(CoreError::from)
+    let pack: RulePack = serde_json::from_str(json)?;
+    if pack.version > RULE_PACK_VERSION {
+        return Err(CoreError::Other(format!(
+            "rules.json version {} is newer than supported {RULE_PACK_VERSION} - \
+             update GameTrimmer, or use an older rules pack",
+            pack.version,
+        )));
+    }
+    Ok(pack.rules)
+}
+
+/// Serializes a rule list as a complete pack, stamped with the version this
+/// build writes. Every path that produces a rules.json goes through here, so
+/// a merged or restored file can never come out unversioned.
+pub fn serialize_rule_list(rules: &[Rule]) -> Result<String> {
+    serde_json::to_string_pretty(&RulePack {
+        version: RULE_PACK_VERSION,
+        rules: rules.to_vec(),
+    })
+    .map_err(CoreError::from)
 }
 
 /// A classification produced by the engine for one file.
@@ -362,16 +408,25 @@ impl RuleEngine {
 mod tests {
     use super::*;
 
-    fn sample_json() -> &'static str {
-        r#"[
+    /// Wraps a bare rule array in the pack envelope the format requires, so
+    /// a test about rule *semantics* does not restate the wrapper each time.
+    /// The envelope itself is covered directly by the tests further down.
+    fn pack(rules: &str) -> String {
+        format!(r#"{{"version":{RULE_PACK_VERSION},"rules":{rules}}}"#)
+    }
+
+    fn sample_json() -> String {
+        pack(
+            r#"[
             {"category": "redist_folder", "pattern": "^_?commonredist(s)?$", "desc": "Common redist folder", "confidence": 90},
             {"category": "redist_file", "pattern": "^vcredist.*\\.exe$", "desc": "MS Visual C++ Redist", "confidence": 95}
-        ]"#
+        ]"#,
+        )
     }
 
     #[test]
     fn from_json_parses_minimal_rule_set() {
-        let engine = RuleEngine::from_json(sample_json()).expect("valid rules should parse");
+        let engine = RuleEngine::from_json(&sample_json()).expect("valid rules should parse");
         assert_eq!(engine.rules.len(), 2);
         assert_eq!(engine.rules[0].category, Category::RedistFolder);
         assert_eq!(engine.rules[1].confidence, 95);
@@ -379,7 +434,7 @@ mod tests {
 
     #[test]
     fn classify_finds_common_redist_folder_and_file_with_highest_confidence() {
-        let engine = RuleEngine::from_json(sample_json()).unwrap();
+        let engine = RuleEngine::from_json(&sample_json()).unwrap();
 
         let finding = engine
             .classify("_CommonRedist\\vcredist_x64.exe")
@@ -452,7 +507,7 @@ mod tests {
         let json = r#"[
             {"category": "redist_file", "pattern": "^vc_?redist.*\\.exe$", "desc": "MS Visual C++ Redist", "confidence": 95, "max_depth": 4}
         ]"#;
-        let engine = RuleEngine::from_json(json).unwrap();
+        let engine = RuleEngine::from_json(&pack(json)).unwrap();
 
         // Depth 4 (3 folders + file) is beyond the category default of 2,
         // but within this rule's own override.
@@ -545,7 +600,7 @@ mod tests {
         let json = r#"[
             {"category": "bonus", "pattern": "^extras$", "desc": "Bonus", "confidence": 80, "extensions": ["PDF"]}
         ]"#;
-        let engine = RuleEngine::from_json(json).unwrap();
+        let engine = RuleEngine::from_json(&pack(json)).unwrap();
 
         assert!(engine.classify(r"Extras\Artbook.PDF").is_some());
         assert_eq!(engine.classify(r"Extras\readme.txt"), None);
@@ -608,8 +663,8 @@ mod tests {
             {"category": "bonus", "pattern": "^(unterminated", "desc": "Broken rule", "confidence": 80}
         ]"#;
 
-        let err =
-            RuleEngine::from_json(bad_json).expect_err("unterminated group should fail to compile");
+        let err = RuleEngine::from_json(&pack(bad_json))
+            .expect_err("unterminated group should fail to compile");
         let message = err.to_string();
         assert!(
             message.contains("rule #0"),
@@ -628,21 +683,82 @@ mod tests {
         assert!(!engine.rules.is_empty());
     }
 
+    /// The point of the version: a pack written by a newer build is refused
+    /// with a message that says so, instead of being read as far as this
+    /// build happens to understand it.
+    #[test]
+    fn a_pack_from_a_newer_build_is_refused() {
+        let newer = format!(
+            r#"{{"version":{},"rules":[]}}"#,
+            RULE_PACK_VERSION.saturating_add(1)
+        );
+
+        let err = parse_rule_list(&newer).expect_err("a newer pack must not be read");
+
+        let message = err.to_string();
+        assert!(message.contains("newer than supported"), "{message}");
+        assert!(
+            message.contains(&RULE_PACK_VERSION.to_string()),
+            "the message should name the supported version: {message}",
+        );
+    }
+
+    /// The other half: a file with no version is not "version 0" to be read
+    /// leniently - nothing about it says which rules format it holds.
+    #[test]
+    fn a_pack_without_a_version_is_refused_rather_than_assumed() {
+        let bare_array = r#"[{"category":"bonus","pattern":"x","desc":"x","confidence":80}]"#;
+
+        assert!(parse_rule_list(bare_array).is_err());
+        assert!(parse_rule_list(r#"{"rules":[]}"#).is_err());
+    }
+
+    /// Every path that writes a rules.json goes through `serialize_rule_list`
+    /// (the import merge, the restore-to-builtin), so an unversioned file can
+    /// never be produced by the app itself.
+    #[test]
+    fn a_serialized_pack_carries_the_version_and_reparses() {
+        let rules = parse_rule_list(BUILTIN_RULES_JSON).expect("builtin rules parse");
+
+        let json = serialize_rule_list(&rules).expect("rules serialize");
+
+        assert!(
+            json.contains(&format!("\"version\": {RULE_PACK_VERSION}")),
+            "the written pack must declare its version: {}",
+            &json[..json.len().min(120)],
+        );
+        assert_eq!(
+            parse_rule_list(&json).expect("written pack reparses").len(),
+            rules.len(),
+        );
+    }
+
+    /// The embedded pack is the seed for every user's file; if it fell behind
+    /// the constant, every fresh install would materialize a file this build
+    /// then refuses or misreads.
+    #[test]
+    fn the_builtin_pack_declares_the_supported_version() {
+        let pack: RulePack =
+            serde_json::from_str(BUILTIN_RULES_JSON).expect("builtin rules parse as a pack");
+
+        assert_eq!(pack.version, RULE_PACK_VERSION);
+    }
+
     #[test]
     fn strict_schema_and_numeric_bounds_are_enforced() {
         let unknown =
             r#"[{"category":"bonus","pattern":"x","desc":"x","confidence":80,"surprise":true}]"#;
-        assert!(RuleEngine::from_json(unknown).is_err());
+        assert!(RuleEngine::from_json(&pack(unknown)).is_err());
 
         let confidence = r#"[{"category":"bonus","pattern":"x","desc":"x","confidence":101}]"#;
-        assert!(RuleEngine::from_json(confidence).is_err());
+        assert!(RuleEngine::from_json(&pack(confidence)).is_err());
 
         let depth =
             r#"[{"category":"bonus","pattern":"x","desc":"x","confidence":80,"max_depth":33}]"#;
-        assert!(RuleEngine::from_json(depth).is_err());
+        assert!(RuleEngine::from_json(&pack(depth)).is_err());
 
         let extension = r#"[{"category":"bonus","pattern":"x","desc":"x","confidence":80,"extensions":["thisextensionistoolong"]}]"#;
-        assert!(RuleEngine::from_json(extension).is_err());
+        assert!(RuleEngine::from_json(&pack(extension)).is_err());
     }
 
     #[test]
@@ -650,7 +766,7 @@ mod tests {
         let pattern = "x".repeat(MAX_REGEX_BYTES + 1);
         let oversized_regex =
             format!(r#"[{{"category":"bonus","pattern":"{pattern}","desc":"x","confidence":80}}]"#);
-        assert!(RuleEngine::from_json(&oversized_regex).is_err());
+        assert!(RuleEngine::from_json(&pack(&oversized_regex)).is_err());
 
         let rule = r#"{"category":"bonus","pattern":"x","desc":"x","confidence":80}"#;
         let too_many = format!(
@@ -659,7 +775,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        assert!(RuleEngine::from_json(&too_many).is_err());
+        assert!(RuleEngine::from_json(&pack(&too_many)).is_err());
 
         let oversized_file = " ".repeat(MAX_RULE_PACK_BYTES + 1);
         assert!(RuleEngine::from_json(&oversized_file).is_err());

@@ -228,6 +228,11 @@ The analyzer is driven by two JSON files in the repository root:
   marker words (audio/text/video/fonts, negative markers) and the default
   language keep-list.
 
+Both carry a top-level `version`, and a file declaring a version newer than
+the running build supports is refused rather than half-read. A pack you edit
+by hand keeps the version it came with; the app writes the current one
+whenever it produces a pack itself (import merge, restore to built-in).
+
 Both files are a canonical part of the repository (not generated artifacts)
 and are embedded into the exe at build time. They are simultaneously program
 source and standalone downloadable artifacts: they can be fetched straight

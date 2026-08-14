@@ -8,14 +8,14 @@
 
 use crate::error::{CoreError, Result};
 use crate::langdetect::LangPack;
-use crate::rules::{parse_rule_list, Rule, RuleEngine, RuleProvenance};
+use crate::rules::{parse_rule_list, serialize_rule_list, Rule, RuleEngine, RuleProvenance};
 
 /// Which of the two pack files a picked JSON file is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackKind {
-    /// `rules.json` - a JSON array of category rules.
+    /// `rules.json` - `{"version", "rules"}`.
     CategoryRules,
-    /// `l10n_rules.json` - a JSON object (the localization data pack).
+    /// `l10n_rules.json` - `{"version", "languages", ...}`.
     LangPack,
 }
 
@@ -28,20 +28,27 @@ pub struct MergeStats {
     pub updated: usize,
 }
 
-/// Tells the two pack formats apart by their JSON top level. The array vs.
-/// object distinction is structural, so a community file keeps working
-/// whatever it is named.
+/// Tells the two pack formats apart by the payload key each one carries, so
+/// a community file keeps working whatever it is named.
+///
+/// This used to be the cheaper structural test - array meant category rules,
+/// object meant a language pack. Versioning `rules.json` made both objects,
+/// so the distinguishing key is what is left. It is also the more honest
+/// test: it names what the file *contains* rather than what shape it happens
+/// to have.
 pub fn detect_pack_kind(json: &str) -> Result<PackKind> {
     let value: serde_json::Value = serde_json::from_str(json)?;
-    match value {
-        serde_json::Value::Array(_) => Ok(PackKind::CategoryRules),
-        serde_json::Value::Object(_) => Ok(PackKind::LangPack),
-        _ => Err(CoreError::Other(
-            "unrecognized rules file: expected an array of category rules \
-             or a language-pack object"
-                .to_string(),
-        )),
+    if value.get("rules").is_some() {
+        return Ok(PackKind::CategoryRules);
     }
+    if value.get("languages").is_some() {
+        return Ok(PackKind::LangPack);
+    }
+    Err(CoreError::Other(
+        "unrecognized rules file: expected a \"rules\" key (category rules) \
+         or a \"languages\" key (localization pack)"
+            .to_string(),
+    ))
 }
 
 /// Merges an incoming rules.json on top of the current one. Rules are keyed
@@ -74,7 +81,7 @@ pub fn merge_category_rules(base_json: &str, incoming_json: &str) -> Result<(Str
         }
     }
 
-    let json = serde_json::to_string_pretty(&merged)?;
+    let json = serialize_rule_list(&merged)?;
     RuleEngine::from_json(&json)?;
     Ok((json, MergeStats { added, updated }))
 }
@@ -101,15 +108,35 @@ pub fn merge_lang_packs(base_json: &str, incoming_json: &str) -> Result<(String,
 mod tests {
     use super::*;
 
+    /// Wraps a bare rule array in the pack envelope, so a test about merge
+    /// *semantics* does not restate the wrapper each time.
+    fn pack(rules: &str) -> String {
+        format!(r#"{{"version":1,"rules":{rules}}}"#)
+    }
+
     #[test]
     fn detect_pack_kind_tells_the_formats_apart() {
-        assert_eq!(detect_pack_kind("[]").unwrap(), PackKind::CategoryRules);
         assert_eq!(
-            detect_pack_kind(r#"{"version": 1}"#).unwrap(),
+            detect_pack_kind(&pack("[]")).unwrap(),
+            PackKind::CategoryRules
+        );
+        assert_eq!(
+            detect_pack_kind(r#"{"version": 1, "languages": []}"#).unwrap(),
             PackKind::LangPack
         );
         assert!(detect_pack_kind("42").is_err());
         assert!(detect_pack_kind("not json").is_err());
+    }
+
+    /// Both packs are versioned objects now, so the shape alone no longer
+    /// tells them apart - an object carrying neither payload key has to be
+    /// refused rather than guessed at.
+    #[test]
+    fn detect_pack_kind_refuses_an_object_that_is_neither_pack() {
+        let err = detect_pack_kind(r#"{"version": 1}"#).expect_err("neither key is present");
+        let message = err.to_string();
+        assert!(message.contains("rules"), "{message}");
+        assert!(message.contains("languages"), "{message}");
     }
 
     #[test]
@@ -123,7 +150,8 @@ mod tests {
             {"category": "docs_folder", "pattern": "^manuals$", "desc": "Manuals", "confidence": 88}
         ]"#;
 
-        let (json, stats) = merge_category_rules(base, incoming).expect("valid packs merge");
+        let (json, stats) =
+            merge_category_rules(&pack(base), &pack(incoming)).expect("valid packs merge");
 
         assert_eq!(
             stats,
@@ -150,12 +178,12 @@ mod tests {
         let bad_regex = r#"[
             {"category": "bonus", "pattern": "^(broken", "desc": "Bad", "confidence": 80}
         ]"#;
-        assert!(merge_category_rules(base, bad_regex).is_err());
+        assert!(merge_category_rules(&pack(base), &pack(bad_regex)).is_err());
 
         let bad_category = r#"[
             {"category": "no_such_category", "pattern": "^x$", "desc": "Bad", "confidence": 80}
         ]"#;
-        assert!(merge_category_rules(base, bad_category).is_err());
+        assert!(merge_category_rules(&pack(base), &pack(bad_category)).is_err());
     }
 
     #[test]
@@ -168,7 +196,7 @@ mod tests {
             {"category": "docs_file", "pattern": "^readme", "desc": "Readme", "confidence": 88}
         ]"#;
 
-        let (json, _) = merge_category_rules(base, incoming).unwrap();
+        let (json, _) = merge_category_rules(&pack(base), &pack(incoming)).unwrap();
         let merged = parse_rule_list(&json).unwrap();
         assert_eq!(merged[0].max_depth, Some(3));
         assert_eq!(

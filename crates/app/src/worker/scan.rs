@@ -1455,7 +1455,7 @@ mod tests {
     /// `findings` -> `files` -> `games` cleanup chain.
     fn match_all_engine() -> RuleEngine {
         RuleEngine::from_json(
-            r#"[{"category":"docs_file","pattern":".","desc":"test rule","confidence":50}]"#,
+            r#"{"version":1,"rules":[{"category":"docs_file","pattern":".","desc":"test rule","confidence":50}]}"#,
         )
         .expect("valid test rules.json")
     }

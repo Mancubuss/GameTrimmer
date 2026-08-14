@@ -380,22 +380,31 @@ fn settings_section(path: &Path) -> serde_json::Value {
 /// after the fact whether the rule that fired was stock.
 fn rules_section(path: &Path) -> serde_json::Value {
     let bytes = std::fs::read(path);
-    let (crc, len, rules) = match &bytes {
+    let parsed = bytes
+        .as_ref()
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
+    let (crc, len) = match &bytes {
         Ok(bytes) => (
             Some(format!("{:08x}", crc32fast::hash(bytes))),
             Some(bytes.len()),
-            serde_json::from_slice::<serde_json::Value>(bytes)
-                .ok()
-                .and_then(|value| value.as_array().map(|array| array.len())),
         ),
-        Err(_) => (None, None, None),
+        Err(_) => (None, None),
     };
 
     json!({
         "path": path.to_string_lossy(),
         "crc32": crc,
         "bytes": len,
-        "rule_count": rules,
+        // The file's own declared version, not the one this build supports:
+        // a pack from a newer GameTrimmer is exactly the case worth seeing
+        // in a report, and it is the case the scan refuses to load.
+        "version": parsed.as_ref().and_then(|value| value.get("version").cloned()),
+        "supported_version": crate::rules::RULE_PACK_VERSION,
+        "rule_count": parsed
+            .as_ref()
+            .and_then(|value| value.get("rules"))
+            .and_then(|rules| rules.as_array().map(|array| array.len())),
         "read_error": bytes.as_ref().err().map(|err| err.to_string()),
         "matches_builtin": bytes
             .as_ref()
