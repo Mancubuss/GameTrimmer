@@ -207,7 +207,7 @@ fn show_database_file(
             if let Some(parent) = path.parent() {
                 let (program, args) = row_actions::open_folder_args(parent);
                 if let Err(err) = row_actions::launch(program, &args) {
-                    crate::logger::log(&format!("Failed to open Explorer: {err}"));
+                    crate::logger::error(&format!("Failed to open Explorer: {err}"));
                 }
             }
         }

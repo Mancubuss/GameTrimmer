@@ -435,7 +435,7 @@ impl GameTrimmerApp {
         // session header - the one failure where the log is the only artifact
         // they have, since there is no scan to leave a trail either.
         if let Some(message) = &db_error_for_log {
-            logger::log(message);
+            logger::error(message);
         }
 
         let (tx, rx) = mpsc::channel();
@@ -1537,7 +1537,7 @@ impl GameTrimmerApp {
         let lang = self.lang();
         let Some(settings_path) = self.settings_path.clone() else {
             let message = i18n::strings(lang).settings_not_saved_no_path.to_string();
-            crate::logger::log(&message);
+            crate::logger::error(&message);
             self.record_settings_save(Err(message));
             return;
         };
@@ -1546,7 +1546,7 @@ impl GameTrimmerApp {
             Ok(()) => self.record_settings_save(Ok(())),
             Err(err) => {
                 let message = i18n::settings_save_failed(lang, err);
-                crate::logger::log(&message);
+                crate::logger::error(&message);
                 self.record_settings_save(Err(message));
             }
         }
@@ -1561,7 +1561,7 @@ impl GameTrimmerApp {
     /// success message does, or a click that did nothing would look exactly
     /// like a click that worked.
     fn report_action_failure(&mut self, message: String) {
-        crate::logger::log(&message);
+        crate::logger::error(&message);
         self.status_message = i18n::error_prefixed(self.lang(), message);
     }
 
@@ -1816,7 +1816,7 @@ impl GameTrimmerApp {
                 self._worker = None;
                 self.bundle_result = match (&path, error) {
                     (_, Some(error)) => {
-                        crate::logger::log(&error);
+                        crate::logger::error(&error);
                         Some(Err(error))
                     }
                     (Some(path), None) => {
@@ -1835,7 +1835,7 @@ impl GameTrimmerApp {
                 // here their log ended at "Scan started". Logged in English
                 // while the window keeps the user's language - see the
                 // startup `db_error` in `new_with` for why the two differ.
-                crate::logger::log(&i18n::error_prefixed(Lang::En, &msg));
+                crate::logger::error(&i18n::error_prefixed(Lang::En, &msg));
                 self.end_job();
                 self.progress = None;
                 self._worker = None;
@@ -1867,7 +1867,7 @@ impl GameTrimmerApp {
                 self.rules_io_active = false;
                 if let Some(error) = error {
                     let msg = i18n::rules_export_failed(lang, error);
-                    crate::logger::log(&msg);
+                    crate::logger::error(&msg);
                     self.rules_io_result = Some(Err(msg));
                 } else if let Some(path) = path {
                     let msg = i18n::rules_exported_to(lang, path.display());
@@ -1880,7 +1880,7 @@ impl GameTrimmerApp {
                 self.rules_io_active = false;
                 if let Some(error) = error {
                     let msg = i18n::rules_import_failed(lang, error);
-                    crate::logger::log(&msg);
+                    crate::logger::error(&msg);
                     self.rules_io_result = Some(Err(msg));
                 } else if let Some(summary) = summary {
                     self.rules_io_result = Some(Ok(summary.clone()));

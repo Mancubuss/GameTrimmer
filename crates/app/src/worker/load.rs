@@ -196,7 +196,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         let category: String = row.get(6)?;
         let file_id: i64 = row.get(3)?;
         let Some(source) = parse_source_key(&category) else {
-            crate::logger::log(&format!(
+            crate::logger::error(&format!(
                 "Skipped a findings row with an unknown category \"{category}\" (file_id={file_id})"
             ));
             continue;
@@ -251,7 +251,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         let Some(game_id) = row.get::<_, Option<i64>>(0)? else {
             // A non-orphan finding whose game row is missing - impossible under
             // foreign-key enforcement, but skip rather than fabricate a game.
-            crate::logger::log(&format!(
+            crate::logger::error(&format!(
                 "Skipped a findings row with no game (category \"{category}\", file_id={file_id})"
             ));
             continue;

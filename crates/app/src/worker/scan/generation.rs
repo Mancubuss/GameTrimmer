@@ -23,7 +23,7 @@ impl ScanGenerationGuard {
     pub(super) fn abort(&mut self, conn: &mut Connection, state: &str) {
         if !self.terminal {
             if let Err(err) = db::abort_scan(conn, self.scan_id, state) {
-                crate::logger::log(&format!(
+                crate::logger::error(&format!(
                     "Failed to abort scan generation {}: {err}",
                     self.scan_id
                 ));
@@ -48,7 +48,7 @@ impl Drop for ScanGenerationGuard {
             Ok(mut conn) => {
                 let _ = db::abort_scan(&mut conn, self.scan_id, "failed");
             }
-            Err(err) => crate::logger::log(&format!(
+            Err(err) => crate::logger::error(&format!(
                 "Could not reopen the database to abort scan generation {}: {err}",
                 self.scan_id
             )),

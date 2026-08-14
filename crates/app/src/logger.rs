@@ -24,6 +24,10 @@
 //! that has nowhere else to go: with `windows_subsystem = "windows"` a
 //! release build has no console for the default hook's message to land in.
 //!
+//! Every line carries a level - `[INFO]` or `[ERROR]`. That is what lets
+//! the diagnostic bundle's `errors.txt` show the failures instead of the
+//! whole tail, and what lets a reader find them by eye.
+//!
 //! Timestamps carry their UTC offset - `2026-08-14 10:44:02+03:00`. The
 //! database stores Unix seconds, so a bare local wall clock could only be
 //! lined up against it by someone who knew what time zone the machine was
@@ -43,6 +47,28 @@ use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION
 /// here rather than reached for from a module that does not have them.
 const TIME_ZONE_ID_STANDARD: u32 = 1;
 const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+
+/// Severity of one logged line.
+///
+/// Deliberately two variants and not the usual five. The only consumer that
+/// needs to tell lines apart is the diagnostic bundle's `errors.txt`, and
+/// the only question it asks is "did something fail". A `WARN` tier would
+/// have to be assigned by judgement at every call site, and every judgement
+/// call is a chance for two similar failures to land in different tiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Error,
+}
+
+impl Level {
+    fn as_str(self) -> &'static str {
+        match self {
+            Level::Info => "INFO",
+            Level::Error => "ERROR",
+        }
+    }
+}
 
 /// The open log file, and the path it was opened at. The path is kept so
 /// [`set_enabled`] can tell "enable the file already being written to" (a
@@ -119,13 +145,26 @@ pub fn set_enabled(enabled: bool, elevated: bool, log_path: &Path) {
     }
 }
 
-/// Logs a diagnostic message. Always `eprintln!`s it first (preserving
-/// today's dev-console behavior exactly, unconditionally), then - only when
-/// logging is enabled - appends `"[{timestamp}] {msg}"` to the log file. A
-/// write failure disables logging (after one `eprintln!`) rather than
+/// Logs an informational diagnostic - the default level.
+pub fn log(msg: &str) {
+    write(Level::Info, msg);
+}
+
+/// Logs a failure. Same contract as [`log`]; the only difference is the
+/// level stamped on the line, which is what lets a reader - and the
+/// diagnostic bundle - find the failures without reading everything.
+pub fn error(msg: &str) {
+    write(Level::Error, msg);
+}
+
+/// Always `eprintln!`s the message first (preserving today's dev-console
+/// behavior exactly, unconditionally), then - only when logging is enabled -
+/// appends the formatted line to the log file.
+///
+/// A write failure disables logging (after one `eprintln!`) rather than
 /// retrying it on every subsequent call, which would otherwise turn one bad
 /// write into an endless error loop.
-pub fn log(msg: &str) {
+fn write(level: Level, msg: &str) {
     eprintln!("{msg}");
 
     let mut state = lock_state();
@@ -133,12 +172,18 @@ pub fn log(msg: &str) {
         return;
     };
 
-    let line = format!("[{}] {msg}\n", local_timestamp());
+    let line = format_line(level, &local_timestamp(), msg);
 
     if let Err(err) = open.file.write_all(line.as_bytes()) {
         eprintln!("Diagnostic log write failed, disabling logging: {err}");
         *state = None;
     }
+}
+
+/// Builds one log line. Pure, so the format every reader and the diagnostic
+/// bundle depend on is testable without a clock or a file.
+fn format_line(level: Level, timestamp: &str, msg: &str) -> String {
+    format!("[{timestamp}] [{}] {msg}\n", level.as_str())
 }
 
 /// Routes every panic, on every thread, into the diagnostic log.
@@ -365,6 +410,7 @@ mod tests {
             message_line.starts_with('['),
             "logged line should start with a [timestamp]: {message_line}"
         );
+        assert!(message_line.contains("[INFO]"));
         assert!(message_line.contains("a diagnostic message"));
     }
 
@@ -478,6 +524,48 @@ mod tests {
         assert!(std::fs::read_to_string(&second)
             .expect("read the second log")
             .contains("goes to the second file"));
+    }
+
+    /// GT-124. A failure has to be findable in the file without reading
+    /// every line - which is what `errors.txt` in the diagnostic bundle
+    /// depends on.
+    #[test]
+    fn an_error_is_marked_in_the_file_and_an_info_is_not() {
+        let _guard = lock_tests();
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.log");
+
+        set_enabled(true, false, &path);
+        log("an ordinary line");
+        error("a failure");
+        set_enabled(false, false, &path);
+
+        let contents = std::fs::read_to_string(&path).expect("read log file");
+        let error_lines: Vec<_> = contents
+            .lines()
+            .filter(|line| line.contains("[ERROR]"))
+            .collect();
+        assert_eq!(error_lines.len(), 1, "{contents}");
+        assert!(error_lines[0].contains("a failure"), "{contents}");
+        assert!(
+            contents.contains("[INFO] an ordinary line"),
+            "the default level is INFO: {contents}",
+        );
+    }
+
+    /// The line format is what the diagnostic bundle and every human reader
+    /// parse by eye, so it is pinned here rather than only implied by the
+    /// file-writing tests.
+    #[test]
+    fn a_line_carries_its_level() {
+        assert_eq!(
+            format_line(Level::Error, "2026-01-05 09:03:07+03:00", "boom"),
+            "[2026-01-05 09:03:07+03:00] [ERROR] boom\n",
+        );
+        assert_eq!(
+            format_line(Level::Info, "2026-01-05 09:03:07+03:00", "idle"),
+            "[2026-01-05 09:03:07+03:00] [INFO] idle\n",
+        );
     }
 
     /// GT-126. Half-hour and quarter-hour zones are real (India +05:30,

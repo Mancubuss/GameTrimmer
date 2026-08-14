@@ -43,7 +43,11 @@ pub(super) fn run_writer(
                 install_dir,
                 error,
             } => {
-                let message = if error.to_string() == "cancelled" {
+                // Cancellation travels through the same error channel but is
+                // not a failure - marking it ERROR would put a line in
+                // `errors.txt` for every scan the user stopped on purpose.
+                let cancelled = error.to_string() == "cancelled";
+                let message = if cancelled {
                     "cancelled".to_string()
                 } else {
                     format!(
@@ -51,7 +55,11 @@ pub(super) fn run_writer(
                         install_dir.display()
                     )
                 };
-                crate::logger::log(&message);
+                if cancelled {
+                    crate::logger::log(&message);
+                } else {
+                    crate::logger::error(&message);
+                }
                 return Err(CoreError::Other(message));
             }
         }
@@ -274,7 +282,7 @@ fn build_ids_for(library: &DiscoveredLibrary) -> HashMap<String, String> {
             .filter_map(|state| Some((state.app_id, state.build_id?)))
             .collect(),
         Err(err) => {
-            crate::logger::log(&format!(
+            crate::logger::error(&format!(
                 "build ids unavailable for {}: {err}",
                 library.path.display()
             ));
@@ -475,7 +483,7 @@ pub(super) fn persist_prepared_game(
             Some(&prepared.install_dir),
             &message,
         ) {
-            crate::logger::log(&format!(
+            crate::logger::error(&format!(
                 "Failed to record dropped findings for \"{}\": {err}",
                 prepared.name
             ));

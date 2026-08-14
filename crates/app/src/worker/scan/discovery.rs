@@ -48,7 +48,7 @@ pub(super) fn discover_libraries(
                 ),
                 None => format!("{} [{}]", diagnostic.message, diagnostic.stage),
             };
-            crate::logger::log(&i18n::provider_failed(
+            crate::logger::error(&i18n::provider_failed(
                 Lang::En,
                 diagnostic.provider,
                 detail,

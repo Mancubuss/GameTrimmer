@@ -225,7 +225,7 @@ pub(crate) fn occupancy_or_default(conn: &rusqlite::Connection) -> crate::model:
     match gametrimmer_core::db::occupied_by_library(conn) {
         Ok(by_library) => crate::model::Occupancy::from_by_library(by_library),
         Err(err) => {
-            crate::logger::log(&format!(
+            crate::logger::error(&format!(
                 "Failed to compute occupied space per library: {err}"
             ));
             crate::model::Occupancy::default()

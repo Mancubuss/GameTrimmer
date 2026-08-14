@@ -90,7 +90,7 @@ fn run_clear(db_path: &Path, notifier: &Notifier, lang: Lang) {
                 // temp-then-rename in `rebuild_database` leaves the original
                 // file untouched on failure, so nothing was lost - but surface
                 // the real cause in the log rather than discarding it silently.
-                crate::logger::log(&format!(
+                crate::logger::error(&format!(
                     "Failed to rebuild the corrupted database: {rebuild_err}"
                 ));
                 Some(i18n::clear_failed(lang, err))

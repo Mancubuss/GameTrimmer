@@ -253,7 +253,7 @@ fn record_space_tally(
     if let Err(err) =
         db::record_scan_diagnostic(conn, scan_id, "delete", "space-tally", None, &message)
     {
-        crate::logger::log(&format!("Failed to record the delete space tally: {err}"));
+        crate::logger::error(&format!("Failed to record the delete space tally: {err}"));
     }
 }
 

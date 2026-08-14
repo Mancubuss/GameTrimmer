@@ -397,7 +397,7 @@ fn run_scan(
                 // Same as provider discovery: full detail to the log, nothing
                 // to the window. The user-visible consequence is already in
                 // the result - no leftovers are offered for this library.
-                crate::logger::log(&i18n::provider_failed(
+                crate::logger::error(&i18n::provider_failed(
                     Lang::En,
                     issue.provider,
                     format!(
@@ -480,7 +480,7 @@ fn run_scan(
     // scan must not be reported as failed just because its final
     // housekeeping checkpoint didn't take.
     if let Err(err) = db::checkpoint_truncate(&conn) {
-        crate::logger::log(&format!(
+        crate::logger::error(&format!(
             "Failed to checkpoint the WAL after the scan: {err}"
         ));
     }
@@ -533,7 +533,7 @@ fn run_scan(
         timing.analyze.as_millis() as u64,
         timing.total.as_millis() as u64,
     ) {
-        crate::logger::log(&format!("Failed to record scan timing: {err}"));
+        crate::logger::error(&format!("Failed to record scan timing: {err}"));
     }
 
     notifier.send(WorkerMsg::Done {
@@ -769,7 +769,7 @@ fn record_routing_evidence(
         })
         .collect();
     if let Err(err) = db::record_scan_routes(conn, &routes) {
-        crate::logger::log(&format!("Failed to record scan routes: {err}"));
+        crate::logger::error(&format!("Failed to record scan routes: {err}"));
     }
 
     for probe in &mft_pass.volume_probes {
@@ -786,7 +786,7 @@ fn record_routing_evidence(
             Some(Path::new(&format!("{}:", probe.letter))),
             &message,
         ) {
-            crate::logger::log(&format!(
+            crate::logger::error(&format!(
                 "Failed to record the probe of volume {}: {err}",
                 probe.letter
             ));
