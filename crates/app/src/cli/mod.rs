@@ -202,7 +202,6 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     let options = ScanOptions {
         lang,
         keep_languages: settings.keep_languages.clone(),
-        scan_routing: settings.scan_routing,
         enabled_categories: settings.enabled_categories.clone(),
     };
 

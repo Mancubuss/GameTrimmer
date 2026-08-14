@@ -28,7 +28,6 @@ use gametrimmer_core::providers::{
 use gametrimmer_core::rules::{Finding, RuleEngine, RuleProvenance};
 use gametrimmer_core::safety::{SafetySnapshot, SnapshotCapture};
 use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry};
-use gametrimmer_core::settings::ScanRouting;
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang, Verb};
@@ -79,11 +78,6 @@ pub struct ScanOptions {
     /// The persisted `keep_languages` setting - languages the localization
     /// detector never flags.
     pub keep_languages: Vec<String>,
-    /// The persisted `scan_routing` setting (see
-    /// `gametrimmer_core::settings::ScanRouting`) - it only ever narrows or
-    /// widens which routing outcomes are considered, never bypasses a
-    /// correctness gate (see `scan_route::initial_route`).
-    pub scan_routing: ScanRouting,
     /// The persisted `enabled_categories` setting - findings in unchecked
     /// categories are dropped at classification time (empty = all enabled).
     pub enabled_categories: Vec<String>,
@@ -117,18 +111,16 @@ fn run_scan(
     let ScanOptions {
         lang,
         keep_languages,
-        scan_routing,
         enabled_categories,
     } = options;
-    let (lang, keep_languages, scan_routing, enabled_categories) = (
+    let (lang, keep_languages, enabled_categories) = (
         *lang,
         keep_languages.as_slice(),
-        *scan_routing,
         enabled_categories.as_slice(),
     );
     let started_at = Instant::now();
     crate::logger::log(&format!(
-        "Scan started (routing: {scan_routing:?}, elevated: {elevated}, keep: {})",
+        "Scan started (elevated: {elevated}, keep: {})",
         keep_languages.join(",")
     ));
     // Both rule files live next to the executable and are materialized from
@@ -307,7 +299,7 @@ fn run_scan(
     // simply have no entry in `mft_pass.entries` - `dispatch_scans` falls
     // back to a normal `scan_dir` walk for those, exactly as before this
     // path existed.
-    let mft_pass = run_mft_pass(elevated, scan_routing, &games, cancel, notifier, lang);
+    let mft_pass = run_mft_pass(elevated, &games, cancel, notifier, lang);
     crate::logger::log(&format!(
         "MFT pass: {} via MFT, {} via walkdir",
         mft_pass.mft_count, mft_pass.walkdir_count
@@ -840,7 +832,6 @@ fn record_routing_evidence(
 /// stuck phase - see `mftscan::MftProgress`.
 fn run_mft_pass(
     elevated: bool,
-    scan_routing: ScanRouting,
     games: &[(i64, String, PathBuf)],
     cancel: &AtomicBool,
     notifier: &Notifier,
@@ -851,12 +842,7 @@ fn run_mft_pass(
     if !elevated {
         // The one early exit: no volume can be opened for raw MFT reads at
         // all, so every root walks for the same reason.
-        let forced = scan_routing == ScanRouting::ForceWalkdir;
-        let reason = if forced {
-            scan_route::WalkdirReason::ForcedBySetting
-        } else {
-            scan_route::WalkdirReason::NotElevated
-        };
+        let reason = scan_route::WalkdirReason::NotElevated;
         return MftPassOutcome {
             entries: HashMap::new(),
             mft_count: 0,
@@ -882,17 +868,11 @@ fn run_mft_pass(
     // probing raw-open availability. HDDs (and unknown media) stay on the
     // MFT path - that is where it wins by orders of magnitude on a cold
     // cache. See scan_route::mft_worthwhile / WalkdirReason::SsdVolume.
-    // `ScanRouting::ForceMft` still needs `is_available` for every checked
-    // volume regardless of media kind - it only bypasses the SSD speed
-    // heuristic, never the volume-availability correctness gate - so the
-    // probe runs unconditionally in that mode even for SSD/NVMe volumes.
     let mut volume_available: HashMap<char, bool> = HashMap::new();
     let mut volume_ssd: HashMap<char, bool> = HashMap::new();
     let mut volume_probes: Vec<VolumeProbe> = Vec::new();
-    for letter in scan_route::volumes_to_check(elevated, scan_routing, &checks) {
-        if scan_routing == ScanRouting::ForceMft
-            || scan_route::mft_worthwhile(mftscan::media_kind(letter))
-        {
+    for letter in scan_route::volumes_to_check(elevated, &checks) {
+        if scan_route::mft_worthwhile(mftscan::media_kind(letter)) {
             // `availability` rather than `is_available`: same probe, but the
             // error survives instead of collapsing into `false`.
             let probe = mftscan::availability(letter);
@@ -920,13 +900,9 @@ fn run_mft_pass(
     let mut candidates_by_volume: HashMap<char, Vec<(i64, PathBuf)>> = HashMap::new();
     let mut walkdir_reasons: Vec<(i64, scan_route::WalkdirReason)> = Vec::new();
     for check in &checks {
-        if let ScanRoute::Walkdir(reason) = scan_route::initial_route(
-            elevated,
-            scan_routing,
-            check,
-            &volume_available,
-            &volume_ssd,
-        ) {
+        if let ScanRoute::Walkdir(reason) =
+            scan_route::initial_route(elevated, check, &volume_available, &volume_ssd)
+        {
             walkdir_reasons.push((check.game_id, reason));
             continue;
         }
@@ -2634,14 +2610,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let (tx, _rx) = std::sync::mpsc::channel();
         let notifier = Notifier::new(tx, egui::Context::default());
-        let outcome = run_mft_pass(
-            false,
-            ScanRouting::Auto,
-            &games,
-            &cancel,
-            &notifier,
-            Lang::En,
-        );
+        let outcome = run_mft_pass(false, &games, &cancel, &notifier, Lang::En);
 
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
@@ -2669,14 +2638,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let (tx, _rx) = std::sync::mpsc::channel();
         let notifier = Notifier::new(tx, egui::Context::default());
-        let outcome = run_mft_pass(
-            true,
-            ScanRouting::Auto,
-            &games,
-            &cancel,
-            &notifier,
-            Lang::En,
-        );
+        let outcome = run_mft_pass(true, &games, &cancel, &notifier, Lang::En);
 
         assert!(outcome.entries.is_empty());
         assert_eq!(outcome.mft_count, 0);
@@ -2684,43 +2646,6 @@ mod tests {
         assert_eq!(
             outcome.walkdir_reasons,
             vec![(1i64, scan_route::WalkdirReason::NoVolumeLetter)],
-        );
-    }
-
-    /// `ScanRouting::ForceWalkdir` must route every game to walkdir even
-    /// when elevated, lettered, and otherwise MFT-eligible - and must never
-    /// touch `mftscan::is_available`/`media_kind` (unreachable in a unit
-    /// test without real volumes, but the resulting counts are the
-    /// observable contract, matching `run_mft_pass_routes_everything_to_walkdir_when_not_elevated`).
-    #[test]
-    fn run_mft_pass_routes_everything_to_walkdir_when_force_walkdir() {
-        let games = vec![
-            (1i64, "Game A".to_string(), PathBuf::from(r"G:\Games\A")),
-            (2i64, "Game B".to_string(), PathBuf::from(r"D:\Games\B")),
-        ];
-
-        let cancel = AtomicBool::new(false);
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
-        let outcome = run_mft_pass(
-            true,
-            ScanRouting::ForceWalkdir,
-            &games,
-            &cancel,
-            &notifier,
-            Lang::En,
-        );
-
-        assert!(outcome.entries.is_empty());
-        assert_eq!(outcome.mft_count, 0);
-        assert_eq!(outcome.walkdir_count, 2);
-        assert_eq!(
-            outcome.walkdir_reasons,
-            vec![
-                (1i64, scan_route::WalkdirReason::ForcedBySetting),
-                (2i64, scan_route::WalkdirReason::ForcedBySetting),
-            ],
-            "a setting the user can undo has to be named as the cause",
         );
     }
 

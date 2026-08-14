@@ -12,8 +12,7 @@ use eframe::egui;
 
 use gametrimmer_core::mftscan;
 use gametrimmer_core::settings::{
-    ConfirmBehavior, DeleteMethod, Lang, LanguagePreference, ScanRouting, SelectionProfile,
-    Settings, Theme,
+    ConfirmBehavior, DeleteMethod, Lang, LanguagePreference, SelectionProfile, Settings, Theme,
 };
 
 use crate::elevation;
@@ -319,12 +318,11 @@ pub struct GameTrimmerApp {
     pub elevated: bool,
     /// Whether the startup modal offering a UAC relaunch (for faster MFT
     /// scanning) is currently shown. Only ever `true` at startup, and only
-    /// when `!elevated` *and* elevating would actually help: under
-    /// `ScanRouting::ForceWalkdir` the MFT path is never used at all; under
-    /// `ScanRouting::Auto`, only if at least one game library's volume is
-    /// not a confirmed SSD (see `scan_route::should_offer_elevation` for the
-    /// full decision table, and `compute_show_elevation_prompt` for how the
-    /// per-volume media probe feeding it is gathered).
+    /// when `!elevated`, the user has not permanently refused
+    /// (`settings.never_ask_elevation`), *and* elevating would actually help:
+    /// at least one game library's volume must not be a confirmed SSD, on
+    /// which the MFT path would lose to a directory walk anyway. See
+    /// `scan_route::should_offer_elevation` and `compute_show_elevation_prompt`.
     pub show_elevation_prompt: bool,
 }
 
@@ -424,7 +422,7 @@ impl GameTrimmerApp {
         // never shown otherwise, so there is nothing this decision could
         // change.
         let show_elevation_prompt =
-            !elevated && compute_show_elevation_prompt(settings.scan_routing, &libraries);
+            !elevated && compute_show_elevation_prompt(settings.never_ask_elevation, &libraries);
 
         // Logging is enabled by default (see
         // `settings::Settings::logging_enabled`), while an explicit saved
@@ -964,7 +962,6 @@ impl GameTrimmerApp {
             worker::scan::ScanOptions {
                 lang: self.lang(),
                 keep_languages: self.settings.keep_languages.clone(),
-                scan_routing: self.settings.scan_routing,
                 enabled_categories: self.settings.enabled_categories.clone(),
             },
         );
@@ -983,7 +980,14 @@ impl GameTrimmerApp {
         self.show_elevation_prompt = false;
     }
 
-    pub fn continue_without_elevation(&mut self) {
+    /// Dismisses the elevation offer for this session, and - when the modal's
+    /// checkbox was ticked - for every future one too.
+    ///
+    /// `never_ask` is persisted before the modal closes rather than after,
+    /// so a crash between the click and the next launch cannot lose an answer
+    /// the user has already given.
+    pub fn continue_without_elevation(&mut self, never_ask: bool) {
+        self.set_never_ask_elevation(never_ask);
         self.show_elevation_prompt = false;
     }
 
@@ -1410,15 +1414,18 @@ impl GameTrimmerApp {
         self.persist_settings();
     }
 
-    /// Applies a new scan-routing mode and persists it immediately,
-    /// mirroring `set_delete_method`. Takes effect on the *next* scan - a
-    /// scan already in progress keeps using the mode it was spawned with.
-    pub fn set_scan_routing(&mut self, scan_routing: ScanRouting) {
-        if self.settings.scan_routing == scan_routing {
+    /// Records whether the UAC-relaunch offer should stay suppressed across
+    /// restarts, and persists it immediately, mirroring `set_delete_method`.
+    ///
+    /// Only ever set from the modal itself: the answer belongs where the
+    /// question is asked, not in a settings screen the user would have to go
+    /// looking for while the modal is in the way.
+    pub fn set_never_ask_elevation(&mut self, never_ask: bool) {
+        if self.settings.never_ask_elevation == never_ask {
             return;
         }
         self.settings = Settings {
-            scan_routing,
+            never_ask_elevation: never_ask,
             ..self.settings.clone()
         };
         self.persist_settings();
@@ -2016,11 +2023,10 @@ impl GameTrimmerApp {
 /// Only called when `!elevated` - an elevated startup never shows the modal
 /// at all (see `show_elevation_prompt`'s doc comment), so there is nothing to
 /// compute in that case.
-fn compute_show_elevation_prompt(scan_routing: ScanRouting, libraries: &[LibraryRow]) -> bool {
-    // `ForceWalkdir` never shows the prompt regardless of media kind (see
-    // `should_offer_elevation`) - skip probing entirely rather than paying
-    // for `DeviceIoControl` calls whose result can never change the answer.
-    if scan_routing == ScanRouting::ForceWalkdir {
+fn compute_show_elevation_prompt(never_ask: bool, libraries: &[LibraryRow]) -> bool {
+    // A standing refusal is checked before anything is probed: the answer
+    // cannot change, so the `DeviceIoControl` calls would be pure cost.
+    if never_ask {
         return false;
     }
 
@@ -2036,7 +2042,7 @@ fn compute_show_elevation_prompt(scan_routing: ScanRouting, libraries: &[Library
         .map(|letter| (letter, mftscan::media_kind(letter)))
         .collect();
 
-    scan_route::should_offer_elevation(scan_routing, &volume_media)
+    scan_route::should_offer_elevation(&volume_media)
 }
 
 /// Converts the persisted theme setting into the egui type that actually

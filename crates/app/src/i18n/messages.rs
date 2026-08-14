@@ -64,7 +64,6 @@ pub fn walkdir_reason_label(
         (Lang::En, R::CanonicalMismatch) => "junction, symlink or subst drive",
         (Lang::En, R::MftFailed) => "the MFT read failed",
         (Lang::En, R::MftEmptyOnNonEmptyDisk) => "the MFT returned nothing for a non-empty folder",
-        (Lang::En, R::ForcedBySetting) => "the directory walk is forced in Settings",
         (Lang::Uk, R::NotElevated) => "запущено не від імені адміністратора",
         (Lang::Uk, R::NoVolumeLetter) => "не на локальному диску з літерою",
         (Lang::Uk, R::VolumeUnavailable) => "не вдалося відкрити том",
@@ -72,7 +71,6 @@ pub fn walkdir_reason_label(
         (Lang::Uk, R::CanonicalMismatch) => "з'єднання, символьне посилання або subst-диск",
         (Lang::Uk, R::MftFailed) => "читання MFT не вдалося",
         (Lang::Uk, R::MftEmptyOnNonEmptyDisk) => "MFT нічого не повернув для непорожньої теки",
-        (Lang::Uk, R::ForcedBySetting) => "обхід тек примусово увімкнено в налаштуваннях",
     }
 }
 

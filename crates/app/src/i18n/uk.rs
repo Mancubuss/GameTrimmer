@@ -109,6 +109,7 @@ pub(super) const STRINGS: Strings = Strings {
          нічого.",
     btn_continue_without_elevation: "Продовжити без прискорення",
     btn_relaunch_elevated: "Перезапустити від імені адміністратора",
+    elevation_never_ask: "Більше не питати",
     confirm_delete_heading: "Підтвердження видалення",
     confirm_label_permanent: "Видалити безповоротно",
     confirm_label_recycle: "Перемістити в Кошик",
@@ -149,24 +150,9 @@ pub(super) const STRINGS: Strings = Strings {
     keep_languages_hint: "Файли, визначені як такі, що належать позначеній мові, ніколи не \
          пропонуються до видалення. Принаймні одна мова має лишатися позначеною. \
          Зміни діятимуть з наступного сканування.",
-    scan_routing_label: "Спосіб перебору файлів під час сканування:",
-    scan_routing_auto_label: "Автоматично (рекомендовано)",
-    scan_routing_auto_hint: "Використовує швидкий MFT-індекс на жорстких дисках і звичайний \
-         обхід тек на SSD/NVMe — залежно від того, що швидше для конкретного носія. \
-         MFT-індекс потребує прав адміністратора: без них кожен диск обходиться теками, \
-         і саме тому GameTrimmer пропонує перезапуск з підвищеними правами лише тоді, \
-         коли бібліотека лежить на жорсткому диску.",
-    // Not "Завжди": elevation, volume-letter and canonical-path gates all
-    // still send a game to the folder walk under this mode.
-    scan_routing_force_mft_label: "Надавати перевагу MFT, де доступно",
-    scan_routing_force_mft_hint: "Використовує MFT-індекс навіть на SSD/NVMe, де обхід тек \
-         зазвичай швидший. Потребує прав адміністратора; томи, які неможливо прочитати цим \
-         способом (без підвищення прав, мережеві диски, junction/symlink), усе одно \
-         повертаються до обходу тек. Діятиме з наступного сканування.",
-    scan_routing_force_walkdir_label: "Завжди обходити теки",
-    scan_routing_force_walkdir_hint: "Повністю пропускає MFT-індекс і завжди сканує обходом тек, \
-         навіть на жорстких дисках, де MFT-індекс зазвичай швидший. Діятиме з наступного \
-         сканування.",
+    scan_method_label: "Як минулий скан читав файли:",
+    scan_method_hint: "Обирається для кожного диска: індекс NTFS на жорстких дисках, обхід тек \
+         на SSD, де обхід швидший.",
     app_language_label: "Мова застосунку:",
     lang_name_system: "За мовою Windows",
     lang_name_en: "Англійська",

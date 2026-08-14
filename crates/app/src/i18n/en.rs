@@ -110,6 +110,7 @@ pub(super) const STRINGS: Strings = Strings {
          would buy nothing.",
     btn_continue_without_elevation: "Continue without acceleration",
     btn_relaunch_elevated: "Restart as administrator",
+    elevation_never_ask: "Don't ask again",
     confirm_delete_heading: "Confirm deletion",
     confirm_label_permanent: "Delete permanently",
     confirm_label_recycle: "Move to Recycle Bin",
@@ -151,23 +152,9 @@ pub(super) const STRINGS: Strings = Strings {
     keep_languages_hint: "Files identified as belonging to a checked language are never \
          proposed for deletion. At least one language must stay checked. \
          Changes take effect on the next scan.",
-    scan_routing_label: "Scan file-enumeration method:",
-    scan_routing_auto_label: "Auto (recommended)",
-    scan_routing_auto_hint: "Uses the fast MFT index on hard drives and a regular folder walk \
-         on SSDs/NVMe, whichever is faster for that drive type. The MFT index needs \
-         administrator rights - without them every drive is walked instead, which is why \
-         GameTrimmer offers to restart elevated only when a library sits on a hard drive.",
-    // Not "Always": elevation, volume-letter and canonical-path gates all
-    // still send a game to the folder walk under this mode.
-    scan_routing_force_mft_label: "Prefer the MFT index where available",
-    scan_routing_force_mft_hint: "Uses the MFT index even on SSDs/NVMe, where a folder walk is \
-         normally faster. Requires administrator rights; volumes that can't be read this way \
-         (not elevated, network drives, junctions/symlinks) still fall back to a folder walk. \
-         Takes effect on the next scan.",
-    scan_routing_force_walkdir_label: "Always walk folders",
-    scan_routing_force_walkdir_hint: "Skips the MFT index entirely and always scans by walking \
-         folders, even on hard drives where the MFT index is normally faster. Takes effect on \
-         the next scan.",
+    scan_method_label: "How the last scan read files:",
+    scan_method_hint: "Chosen per drive: the NTFS index on hard drives, a folder walk on SSDs, \
+         where walking is faster.",
     app_language_label: "App language:",
     lang_name_system: "Follow Windows",
     lang_name_en: "English",

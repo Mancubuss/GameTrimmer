@@ -195,6 +195,9 @@ pub struct Strings {
     pub elevation_when_asked: &'static str,
     pub btn_continue_without_elevation: &'static str,
     pub btn_relaunch_elevated: &'static str,
+    /// Checkbox label inside the elevation modal: the persistent way to stop
+    /// the UAC prompt, now that "always walk folders" no longer exists.
+    pub elevation_never_ask: &'static str,
     pub confirm_delete_heading: &'static str,
     pub confirm_label_permanent: &'static str,
     pub confirm_label_recycle: &'static str,
@@ -227,13 +230,15 @@ pub struct Strings {
     pub running_ellipsis: &'static str,
     pub keep_languages_label: &'static str,
     pub keep_languages_hint: &'static str,
-    pub scan_routing_label: &'static str,
-    pub scan_routing_auto_label: &'static str,
-    pub scan_routing_auto_hint: &'static str,
-    pub scan_routing_force_mft_label: &'static str,
-    pub scan_routing_force_mft_hint: &'static str,
-    pub scan_routing_force_walkdir_label: &'static str,
-    pub scan_routing_force_walkdir_hint: &'static str,
+    /// Heading over the read-only diagnostic line reporting what the last
+    /// scan actually did (`app.last_routing_breakdown`). Routing itself has
+    /// no user-facing control any more - see [`Self::scan_method_hint`].
+    pub scan_method_label: &'static str,
+    /// One line under [`Self::scan_method_label`] explaining that the
+    /// choice is automatic. Must not promise the MFT index is always used
+    /// (it falls back per volume) and must not read as a setting - there is
+    /// no control left to change.
+    pub scan_method_hint: &'static str,
     pub app_language_label: &'static str,
     /// The "follow Windows" language option.
     ///
@@ -520,6 +525,7 @@ impl Strings {
                 self.btn_continue_without_elevation,
             ),
             ("btn_relaunch_elevated", self.btn_relaunch_elevated),
+            ("elevation_never_ask", self.elevation_never_ask),
             ("confirm_delete_heading", self.confirm_delete_heading),
             ("confirm_label_permanent", self.confirm_label_permanent),
             ("confirm_label_recycle", self.confirm_label_recycle),
@@ -559,25 +565,8 @@ impl Strings {
             ("running_ellipsis", self.running_ellipsis),
             ("keep_languages_label", self.keep_languages_label),
             ("keep_languages_hint", self.keep_languages_hint),
-            ("scan_routing_label", self.scan_routing_label),
-            ("scan_routing_auto_label", self.scan_routing_auto_label),
-            ("scan_routing_auto_hint", self.scan_routing_auto_hint),
-            (
-                "scan_routing_force_mft_label",
-                self.scan_routing_force_mft_label,
-            ),
-            (
-                "scan_routing_force_mft_hint",
-                self.scan_routing_force_mft_hint,
-            ),
-            (
-                "scan_routing_force_walkdir_label",
-                self.scan_routing_force_walkdir_label,
-            ),
-            (
-                "scan_routing_force_walkdir_hint",
-                self.scan_routing_force_walkdir_hint,
-            ),
+            ("scan_method_label", self.scan_method_label),
+            ("scan_method_hint", self.scan_method_hint),
             ("app_language_label", self.app_language_label),
             ("lang_name_system", self.lang_name_system),
             ("lang_name_en", self.lang_name_en),
@@ -700,36 +689,6 @@ mod tests {
             for (field, value) in strings(lang).all_fields() {
                 assert!(!value.is_empty(), "{lang:?}::{field} must not be empty");
             }
-        }
-    }
-
-    /// `ForceMft` is not absolute: `worker::scan_route` still falls back to a
-    /// folder walk without elevation, on a volume with no drive letter, on a
-    /// network path, and when the canonical path check fails. A label
-    /// promising "always" is a promise the scanner does not keep.
-    ///
-    /// `ForceWalkdir` is the control: it genuinely has no fallback, so it is
-    /// allowed to say "always" and this test would be vacuous without it.
-    #[test]
-    fn the_mft_routing_label_does_not_promise_what_it_cannot_deliver() {
-        const ABSOLUTES: [(Lang, &str); 2] = [(Lang::En, "always"), (Lang::Uk, "завжди")];
-
-        for (lang, absolute) in ABSOLUTES {
-            let s = strings(lang);
-
-            assert!(
-                !s.scan_routing_force_mft_label
-                    .to_lowercase()
-                    .contains(absolute),
-                "{lang:?} MFT label promises {absolute:?} but the scanner falls back: {:?}",
-                s.scan_routing_force_mft_label,
-            );
-            assert!(
-                s.scan_routing_force_walkdir_label
-                    .to_lowercase()
-                    .contains(absolute),
-                "{lang:?} walkdir label should still say {absolute:?} - it has no fallback",
-            );
         }
     }
 

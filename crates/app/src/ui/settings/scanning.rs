@@ -1,9 +1,9 @@
 //! "Scanning": what gets scanned at all - the registered libraries, the
 //! languages the localization detector never flags, the artifact categories
-//! the scan keeps findings for, and how file enumeration routes between the
-//! MFT index and a directory walk.
+//! the scan keeps findings for, and a read-only report of how the last scan
+//! read files from disk.
 //!
-//! Three choices keep the old dialog's behavior understandable:
+//! Four choices keep the old dialog's behavior understandable:
 //!
 //! * The keep-list is chips plus a search box rather than 36 checkboxes in a
 //!   wrapped block. Only the kept languages are on screen; the rest
@@ -15,11 +15,14 @@
 //!   reason on hover** instead of accepting the click and silently reverting
 //!   it. A control that ignores you reads as broken; one that explains
 //!   itself reads as a floor.
+//! * File enumeration reports, it does not ask. It used to be three radio
+//!   buttons; the routing is decided per volume from the device's own seek
+//!   penalty, and neither override was worth its place on screen - see
+//!   [`show_routing`].
 
 use eframe::egui;
 
 use gametrimmer_core::langdetect::LangData;
-use gametrimmer_core::settings::ScanRouting;
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
@@ -367,54 +370,28 @@ fn toggled(picked: &[String], category: model::DisplayCategory, checked: bool) -
     next
 }
 
-/// How the scanner enumerates files. The MFT index is far faster on a
-/// spinning disk and pointless on an SSD, which is what `Auto` decides.
+/// How the scanner enumerated files last time. Read-only by design: there
+/// is nothing to choose here any more.
+///
+/// This block used to be three radio buttons. They did not survive the
+/// question "who would want this". "Prefer the MFT index" bypassed only the
+/// SSD speed heuristic, so its single effect was a ~40x slower scan on an
+/// SSD; "Always walk folders" was really a way to stop the UAC prompt, and
+/// now says so in the prompt itself (`ui::dialogs::show_elevation_prompt`).
+/// What is left is the half that was actually informative: which route each
+/// root took, and why - without it, a scan that quietly walked everything
+/// because the app is not elevated looks identical to one that used the
+/// index.
 fn show_routing(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let s = i18n::strings(app.lang());
-    let mut picked = app.settings.scan_routing;
 
-    super::row_heading(ui, s.scan_routing_label, s.badge_next_scan);
-    ui.add_enabled_ui(!app.busy, |ui| {
-        for (routing, label, hint, id) in [
-            (
-                ScanRouting::Auto,
-                s.scan_routing_auto_label,
-                s.scan_routing_auto_hint,
-                "gt_settings_routing_auto_hint",
-            ),
-            (
-                ScanRouting::ForceMft,
-                s.scan_routing_force_mft_label,
-                s.scan_routing_force_mft_hint,
-                "gt_settings_routing_mft_hint",
-            ),
-            (
-                ScanRouting::ForceWalkdir,
-                s.scan_routing_force_walkdir_label,
-                s.scan_routing_force_walkdir_hint,
-                "gt_settings_routing_walkdir_hint",
-            ),
-        ] {
-            ui.radio_value(&mut picked, routing, label);
-            ui.indent(id, |ui| {
-                ui.small(hint);
-            });
-            ui.add_space(4.0);
-        }
-    });
+    ui.strong(s.scan_method_label);
+    ui.add_space(4.0);
+    ui.small(s.scan_method_hint);
 
-    // What actually happened last time. "Prefer the MFT index" is a
-    // preference, not a promise - without this a user who turned it on and
-    // saw no speed-up had no way to learn that the app is not elevated, or
-    // that their library sits on an SSD where walking is the faster route
-    // anyway.
     if !app.last_routing_breakdown.is_empty() {
         ui.add_space(6.0);
         ui.small(&app.last_routing_breakdown);
-    }
-
-    if picked != app.settings.scan_routing {
-        app.set_scan_routing(picked);
     }
 }
 
@@ -444,7 +421,7 @@ mod tests {
         test.assert_label(s.libraries_header);
         test.assert_label(s.keep_languages_label);
         test.assert_label(s.categories_label);
-        test.assert_label(s.scan_routing_label);
+        test.assert_label(s.scan_method_label);
     }
 
     #[test]
@@ -700,17 +677,6 @@ mod tests {
         test.assert_label(s.disabled_last_category);
     }
 
-    #[test]
-    fn picking_a_routing_mode_persists_it() {
-        let mut test = open_scanning();
-        let s = test.strings();
-        assert_eq!(test.app().settings.scan_routing, ScanRouting::Auto);
-
-        test.click(s.scan_routing_force_walkdir_label);
-
-        assert_eq!(test.app().settings.scan_routing, ScanRouting::ForceWalkdir);
-    }
-
     /// Nothing to report is reported as nothing: a "0 roots walked" line
     /// after every clean scan would be noise.
     #[test]
@@ -725,17 +691,29 @@ mod tests {
         test.assert_label("gt_routing_probe");
     }
 
-    /// The routing hints are `Ui::indent` calls - the construct that
-    /// panicked in the first attempt when a section body inherited the nav
-    /// row's horizontal layout (plan §2A). This is the tallest section, so
-    /// they are also the most likely to need scrolling to reach.
+    /// The block explains what happened; it must not offer a choice, because
+    /// there is none. A stray clickable control here would be a promise the
+    /// scanner does not keep - the route is decided per volume from the
+    /// device's own seek penalty, not from anything on this screen.
     #[test]
-    fn the_indented_routing_hints_render_instead_of_panicking() {
+    fn the_scan_method_block_only_reports_and_never_offers_a_setting() {
         let test = open_scanning();
         let s = test.strings();
 
-        test.assert_label(s.scan_routing_auto_hint);
-        test.assert_label(s.scan_routing_force_mft_hint);
-        test.assert_label(s.scan_routing_force_walkdir_hint);
+        test.assert_label(s.scan_method_label);
+        test.assert_label(s.scan_method_hint);
+
+        for gone in [
+            "Auto",
+            "Авто",
+            "MFT index",
+            "Always walk",
+            "Завжди обходити",
+        ] {
+            assert!(
+                !test.has_label(gone),
+                "the retired routing control {gone:?} is still on screen",
+            );
+        }
     }
 }

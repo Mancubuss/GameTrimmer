@@ -39,8 +39,15 @@ fn label_reserving_height(ui: &mut egui::Ui, text: &str, tallest: &str) {
 }
 
 /// Startup modal offering to relaunch elevated for the faster MFT scan
-/// path. Only shown once, and only when the process isn't already
-/// Administrator-elevated (see `crate::elevation`).
+/// path. Shown when the process isn't already Administrator-elevated (see
+/// `crate::elevation`) and elevating would actually change a route.
+///
+/// The "don't ask again" checkbox is the modal's own, not a settings-screen
+/// option, and it is the only permanent way to refuse. Before the routing
+/// modes were retired, refusing permanently meant finding "Always walk
+/// folders" in Settings - a file-enumeration strategy standing in for
+/// "stop asking me", which is neither where the user is looking nor what
+/// they mean. Dismissing the modal without it still lasts one session only.
 fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     if !app.show_elevation_prompt {
         return;
@@ -49,6 +56,9 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let s = i18n::strings(app.lang());
     let mut relaunch = false;
     let mut cont = false;
+    // Edited copy, written back through `app` only on the way out - the
+    // modal body borrows `app` immutably for `s`.
+    let mut never_ask = app.settings.never_ask_elevation;
 
     let modal = egui::Modal::new(egui::Id::new("gt_elevation_prompt")).show(ui.ctx(), |ui| {
         ui.set_min_width(380.0);
@@ -60,6 +70,8 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         // and "why am I being asked at all" are the two questions this modal
         // used to leave to the README.
         ui.small(s.elevation_when_asked);
+        ui.add_space(8.0);
+        ui.checkbox(&mut never_ask, s.elevation_never_ask);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button(s.btn_continue_without_elevation).clicked() {
@@ -80,9 +92,13 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     }
 
     if relaunch {
+        // Relaunching deliberately ignores the checkbox: the user is saying
+        // yes *now*, and a relaunch restarts the process, so a stored "never
+        // ask" would only be read on some later launch where it would
+        // contradict the answer they actually gave.
         app.relaunch_elevated();
     } else if cont {
-        app.continue_without_elevation();
+        app.continue_without_elevation(never_ask);
     }
 }
 

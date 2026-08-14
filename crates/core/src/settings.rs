@@ -147,54 +147,11 @@ impl LanguagePreference {
     }
 }
 
-/// How game-library scanning chooses its file-enumeration path.
-///
-/// `Auto` is the default: HDD volumes use the NTFS MFT index, SSD volumes
-/// use a directory walk (measured ~40x faster on SSD). Forcing a mode only
-/// overrides that speed heuristic - the hard correctness gates (elevation,
-/// lettered local volume, no canonical mismatch, volume available) still
-/// apply to `ForceMft` exactly as they do to `Auto`; only `ForceWalkdir`
-/// skips the MFT path (and its volume probing) entirely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ScanRouting {
-    /// Automatically choose between MFT index and directory walk based on
-    /// volume type.
-    #[default]
-    Auto,
-    /// Prefer the MFT index wherever it is usable, including on SSD/NVMe
-    /// where a directory walk would normally be faster.
-    ///
-    /// Not a guarantee, despite the `Force` name: without elevation, on a
-    /// volume with no drive letter, on a network path, or when the canonical
-    /// path check fails, the scan still falls back to a directory walk. The
-    /// user-facing label says "prefer", not "always", for that reason.
-    ForceMft,
-    /// Always use directory walking. Unlike [`Self::ForceMft`] this one has
-    /// no fallback, so it really is unconditional.
-    ForceWalkdir,
-}
-
-impl ScanRouting {
-    /// Stable string form persisted in `gametrimmer.ini`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ScanRouting::Auto => "auto",
-            ScanRouting::ForceMft => "force_mft",
-            ScanRouting::ForceWalkdir => "force_walkdir",
-        }
-    }
-
-    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values (e.g.
-    /// written by a future version) - callers fall back to the default.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "auto" => Some(ScanRouting::Auto),
-            "force_mft" => Some(ScanRouting::ForceMft),
-            "force_walkdir" => Some(ScanRouting::ForceWalkdir),
-            _ => None,
-        }
-    }
-}
+/// The value the retired `scan_routing` setting used for "never use the MFT
+/// index". It is the only one of the three old modes that carried a decision
+/// worth keeping, and [`Settings::never_ask_elevation`] is where it now
+/// lives - see that field for why the other two were dropped.
+pub(crate) const LEGACY_ROUTING_FORCE_WALKDIR: &str = "force_walkdir";
 
 /// UI color scheme.
 ///
@@ -442,9 +399,29 @@ pub struct Settings {
     /// the localization detector never flags for deletion. Always
     /// non-empty - see [`default_keep_languages`].
     pub keep_languages: Vec<String>,
-    /// How scanning chooses between the MFT index and a directory walk per
-    /// game root - see [`ScanRouting`].
-    pub scan_routing: ScanRouting,
+    /// Whether the startup modal offering a UAC relaunch stays suppressed
+    /// across restarts.
+    ///
+    /// This is what is left of the retired three-way `scan_routing` setting,
+    /// and it is deliberately not a routing mode. Routing itself has one
+    /// behavior now: the MFT index wherever it is both usable and faster, a
+    /// directory walk everywhere else, decided per volume from the device's
+    /// own seek penalty (see `mftscan::media_kind`). The two overrides that
+    /// setting used to offer did not survive the question "who would want
+    /// this":
+    ///
+    /// * "Prefer the MFT index" only ever bypassed the SSD speed heuristic,
+    ///   so its single effect was making the scan ~40x slower on an SSD.
+    /// * "Always walk folders" was the only *permanent* way to stop being
+    ///   asked for Administrator rights on every launch - dismissing the
+    ///   modal lasts one session. That is the decision worth keeping, and
+    ///   this field is it, stated as what the user actually wanted rather
+    ///   than as a file-enumeration strategy.
+    ///
+    /// An ini written before this field existed migrates on load: the old
+    /// `scan_routing=force_walkdir` becomes `true`, both other modes
+    /// `false`. See [`settings_from_values`].
+    pub never_ask_elevation: bool,
     pub theme: Theme,
     /// Scanned-artifact category ids (normalized: trimmed, lowercased,
     /// deduplicated) the scan worker keeps findings for. **Empty means every
@@ -507,7 +484,7 @@ impl Default for Settings {
             delete_method: DeleteMethod::default(),
             app_language: LanguagePreference::default(),
             keep_languages: default_keep_languages(),
-            scan_routing: ScanRouting::default(),
+            never_ask_elevation: false,
             theme: Theme::default(),
             enabled_categories: Vec::new(),
             selection_profile: SelectionProfile::default(),
@@ -523,7 +500,13 @@ impl Default for Settings {
 const DELETE_METHOD_KEY: &str = "delete_method";
 const APP_LANGUAGE_KEY: &str = "app_language";
 const KEEP_LANGUAGES_KEY: &str = "keep_languages";
-const SCAN_ROUTING_KEY: &str = "scan_routing";
+/// Read-only leftover of the retired routing setting. Still listed in
+/// [`SETTINGS_KEYS`] so [`parse_ini`] does not discard the line before
+/// [`settings_from_values`] can migrate it into
+/// [`Settings::never_ask_elevation`]; never written back, so the key decays
+/// out of the ini on the first save.
+const LEGACY_SCAN_ROUTING_KEY: &str = "scan_routing";
+const NEVER_ASK_ELEVATION_KEY: &str = "never_ask_elevation";
 const THEME_KEY: &str = "theme";
 const ENABLED_CATEGORIES_KEY: &str = "enabled_categories";
 const SELECTION_PROFILE_KEY: &str = "selection_profile";
@@ -533,11 +516,12 @@ const LOGGING_ENABLED_KEY: &str = "logging_enabled";
 const HAS_SCANNED_KEY: &str = "has_scanned";
 const DISCLAIMER_ACCEPTED_KEY: &str = "disclaimer_accepted";
 
-const SETTINGS_KEYS: [&str; 12] = [
+const SETTINGS_KEYS: [&str; 13] = [
     DELETE_METHOD_KEY,
     APP_LANGUAGE_KEY,
     KEEP_LANGUAGES_KEY,
-    SCAN_ROUTING_KEY,
+    LEGACY_SCAN_ROUTING_KEY,
+    NEVER_ASK_ELEVATION_KEY,
     THEME_KEY,
     ENABLED_CATEGORIES_KEY,
     SELECTION_PROFILE_KEY,
@@ -562,9 +546,16 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
         keep_languages: value(KEEP_LANGUAGES_KEY)
             .map(parse_keep_languages)
             .unwrap_or_else(default_keep_languages),
-        scan_routing: value(SCAN_ROUTING_KEY)
-            .and_then(ScanRouting::parse)
-            .unwrap_or_default(),
+        // An explicit value always wins; only a settings file predating this
+        // field falls through to the retired routing mode it replaced. The
+        // migration is one-way and lossy on purpose: `force_walkdir` was the
+        // only mode carrying a decision ("stop asking me for Administrator
+        // rights"), and the other two said nothing this field can express.
+        never_ask_elevation: value(NEVER_ASK_ELEVATION_KEY)
+            .and_then(parse_bool)
+            .unwrap_or_else(|| {
+                value(LEGACY_SCAN_ROUTING_KEY) == Some(LEGACY_ROUTING_FORCE_WALKDIR)
+            }),
         theme: value(THEME_KEY).and_then(Theme::parse).unwrap_or_default(),
         enabled_categories: value(ENABLED_CATEGORIES_KEY)
             .map(parse_enabled_categories)
@@ -602,7 +593,10 @@ pub fn settings_values(settings: &Settings) -> [(&'static str, String); 12] {
             KEEP_LANGUAGES_KEY,
             serialize_keep_languages(&settings.keep_languages),
         ),
-        (SCAN_ROUTING_KEY, settings.scan_routing.as_str().into()),
+        (
+            NEVER_ASK_ELEVATION_KEY,
+            bool_as_str(settings.never_ask_elevation).into(),
+        ),
         (THEME_KEY, settings.theme.as_str().into()),
         (
             ENABLED_CATEGORIES_KEY,
@@ -976,57 +970,107 @@ mod tests {
         );
     }
 
+    /// The prompt is offered by default: suppressing it is a decision the
+    /// user has to have made, and a fresh install has made no decisions.
     #[test]
-    fn defaults_to_auto_scan_routing_on_empty_database() {
+    fn defaults_to_asking_about_elevation_on_empty_database() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
         let settings = load(&conn).expect("load settings");
-        assert_eq!(settings.scan_routing, ScanRouting::Auto);
+        assert!(!settings.never_ask_elevation);
     }
 
     #[test]
-    fn scan_routing_round_trips_through_as_str_parse() {
-        for routing in [
-            ScanRouting::Auto,
-            ScanRouting::ForceMft,
-            ScanRouting::ForceWalkdir,
-        ] {
-            assert_eq!(ScanRouting::parse(routing.as_str()), Some(routing));
-        }
-        assert_eq!(ScanRouting::parse("nonsense"), None);
-    }
-
-    #[test]
-    fn save_then_load_round_trips_every_scan_routing_variant() {
+    fn save_then_load_round_trips_both_elevation_answers() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
-        for routing in [
-            ScanRouting::Auto,
-            ScanRouting::ForceMft,
-            ScanRouting::ForceWalkdir,
-        ] {
+        for never_ask in [true, false] {
             let settings = Settings {
-                scan_routing: routing,
+                never_ask_elevation: never_ask,
                 ..Settings::default()
             };
             save(&conn, &settings).expect("save settings");
             let loaded = load(&conn).expect("load settings");
-            assert_eq!(loaded.scan_routing, routing);
+            assert_eq!(loaded.never_ask_elevation, never_ask);
         }
     }
 
     #[test]
-    fn unknown_scan_routing_value_falls_back_to_auto() {
+    fn unknown_elevation_value_falls_back_to_asking() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('scan_routing', 'random')",
+            "INSERT INTO settings (key, value) VALUES ('never_ask_elevation', 'random')",
             [],
         )
         .expect("insert unknown value");
         let settings = load(&conn).expect("load settings");
-        assert_eq!(
-            settings.scan_routing,
-            ScanRouting::Auto,
+        assert!(
+            !settings.never_ask_elevation,
             "a value written by a future version must not break loading"
         );
+    }
+
+    /// The retired `scan_routing` setting had exactly one mode carrying a
+    /// decision worth keeping: `force_walkdir` also meant "never offer me
+    /// the UAC relaunch". Dropping the setting without carrying that over
+    /// would start asking again, every launch, with no way to refuse -
+    /// the modal's own dismissal lasts one session (`app::continue_without_elevation`).
+    #[test]
+    fn the_retired_force_walkdir_mode_migrates_into_never_asking() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('scan_routing', 'force_walkdir')",
+            [],
+        )
+        .expect("insert legacy value");
+
+        let settings = load(&conn).expect("load settings");
+
+        assert!(
+            settings.never_ask_elevation,
+            "a user who had turned the MFT path off is being asked for admin again",
+        );
+    }
+
+    /// The other two modes said nothing about elevation, so they must not
+    /// silently suppress the prompt.
+    #[test]
+    fn the_other_retired_routing_modes_migrate_into_still_asking() {
+        for legacy in ["auto", "force_mft"] {
+            let conn = crate::db::open_in_memory().expect("open in-memory db");
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('scan_routing', ?1)",
+                [legacy],
+            )
+            .expect("insert legacy value");
+
+            let settings = load(&conn).expect("load settings");
+
+            assert!(
+                !settings.never_ask_elevation,
+                "{legacy:?} silently suppressed the elevation prompt",
+            );
+        }
+    }
+
+    /// Migration is a fallback, not an override: once the new field has been
+    /// written, a stale `scan_routing` line left in the file must not be able
+    /// to flip it back.
+    #[test]
+    fn an_explicit_elevation_answer_outranks_the_legacy_routing_key() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('scan_routing', 'force_walkdir')",
+            [],
+        )
+        .expect("insert legacy value");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('never_ask_elevation', 'false')",
+            [],
+        )
+        .expect("insert explicit value");
+
+        let settings = load(&conn).expect("load settings");
+
+        assert!(!settings.never_ask_elevation);
     }
 
     #[test]
@@ -1407,13 +1451,9 @@ mod tests {
                 ..Settings::default()
             });
         }
-        for scan_routing in [
-            ScanRouting::Auto,
-            ScanRouting::ForceMft,
-            ScanRouting::ForceWalkdir,
-        ] {
+        for never_ask_elevation in [true, false] {
             cases.push(Settings {
-                scan_routing,
+                never_ask_elevation,
                 ..Settings::default()
             });
         }
@@ -1479,6 +1519,7 @@ mod tests {
               app_language=fr\n\
               keep_languages=\n\
               scan_routing=teleport\n\
+              never_ask_elevation=maybe\n\
               theme=sepia\n\
               enabled_categories=\n\
               selection_profile=reckless\n\
