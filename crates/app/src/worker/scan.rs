@@ -225,6 +225,11 @@ fn run_scan(
             return;
         }
     };
+    // From here to the end of the scan, every logged line names this
+    // generation - including the ones written deep inside persistence and
+    // inside the `catch_unwind` sites, which is where the association is
+    // worth the most. Dropped on every exit path, cancellation included.
+    let _log_scope = crate::logger::ScanScope::new(scan_id);
     let mut generation = ScanGenerationGuard::new(db_path, scan_id);
 
     for library in &libraries {

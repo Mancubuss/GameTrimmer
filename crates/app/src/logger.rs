@@ -24,6 +24,10 @@
 //! that has nowhere else to go: with `windows_subsystem = "windows"` a
 //! release build has no console for the default hook's message to land in.
 //!
+//! A line written during a scan also names that scan's `scan_runs.id`, so
+//! the file and the database can be read against each other. Two scans in
+//! one session were previously separated by nothing at all.
+//!
 //! Every line carries a level - `[INFO]` or `[ERROR]`. That is what lets
 //! the diagnostic bundle's `errors.txt` show the failures instead of the
 //! whole tail, and what lets a reader find them by eye.
@@ -36,6 +40,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
 use windows::Win32::System::SystemInformation::GetLocalTime;
@@ -47,6 +52,43 @@ use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION
 /// here rather than reached for from a module that does not have them.
 const TIME_ZONE_ID_STANDARD: u32 = 1;
 const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+
+/// The `scan_runs.id` currently being written, or [`NO_SCAN`] outside a scan.
+///
+/// A global rather than a parameter because the call sites that most need
+/// the association are the deepest ones - a persistence failure four calls
+/// below `run_scan`, a provider panic inside `catch_unwind` - and threading
+/// an id through all of them to reach [`log`] would be a wide change for a
+/// diagnostic field. Set through [`ScanScope`], which restores it on every
+/// exit path including a panic.
+static SCAN_GENERATION: AtomicI64 = AtomicI64::new(NO_SCAN);
+
+/// Sentinel for "no scan is running". Real ids are SQLite rowids, which
+/// start at 1, so zero can never collide with one.
+const NO_SCAN: i64 = 0;
+
+/// Binds every line logged for its lifetime to `scan_id`, and unbinds on
+/// drop.
+///
+/// A guard rather than a matching pair of calls because `run_scan` leaves
+/// through cancellation, several early returns and three `catch_unwind`
+/// sites; a manual reset would have to be repeated at each of them, and the
+/// one that got missed would stamp the next scan's id on lines belonging to
+/// no scan at all.
+pub struct ScanScope;
+
+impl ScanScope {
+    pub fn new(scan_id: i64) -> Self {
+        SCAN_GENERATION.store(scan_id, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for ScanScope {
+    fn drop(&mut self) {
+        SCAN_GENERATION.store(NO_SCAN, Ordering::Relaxed);
+    }
+}
 
 /// Severity of one logged line.
 ///
@@ -172,7 +214,7 @@ fn write(level: Level, msg: &str) {
         return;
     };
 
-    let line = format_line(level, &local_timestamp(), msg);
+    let line = format_line(level, &local_timestamp(), scan_generation(), msg);
 
     if let Err(err) = open.file.write_all(line.as_bytes()) {
         eprintln!("Diagnostic log write failed, disabling logging: {err}");
@@ -180,10 +222,21 @@ fn write(level: Level, msg: &str) {
     }
 }
 
+/// The `scan_runs.id` currently in scope, if any - see [`ScanScope`].
+fn scan_generation() -> Option<i64> {
+    match SCAN_GENERATION.load(Ordering::Relaxed) {
+        NO_SCAN => None,
+        id => Some(id),
+    }
+}
+
 /// Builds one log line. Pure, so the format every reader and the diagnostic
-/// bundle depend on is testable without a clock or a file.
-fn format_line(level: Level, timestamp: &str, msg: &str) -> String {
-    format!("[{timestamp}] [{}] {msg}\n", level.as_str())
+/// bundle depend on is testable without a clock, a scan or a file.
+fn format_line(level: Level, timestamp: &str, scan: Option<i64>, msg: &str) -> String {
+    match scan {
+        Some(id) => format!("[{timestamp}] [{}] [scan {id}] {msg}\n", level.as_str()),
+        None => format!("[{timestamp}] [{}] {msg}\n", level.as_str()),
+    }
 }
 
 /// Routes every panic, on every thread, into the diagnostic log.
@@ -557,15 +610,57 @@ mod tests {
     /// parse by eye, so it is pinned here rather than only implied by the
     /// file-writing tests.
     #[test]
-    fn a_line_carries_its_level() {
+    fn a_line_carries_its_level_and_its_scan() {
         assert_eq!(
-            format_line(Level::Error, "2026-01-05 09:03:07+03:00", "boom"),
-            "[2026-01-05 09:03:07+03:00] [ERROR] boom\n",
+            format_line(Level::Error, "2026-01-05 09:03:07+03:00", Some(42), "boom"),
+            "[2026-01-05 09:03:07+03:00] [ERROR] [scan 42] boom\n",
         );
         assert_eq!(
-            format_line(Level::Info, "2026-01-05 09:03:07+03:00", "idle"),
+            format_line(Level::Info, "2026-01-05 09:03:07+03:00", None, "idle"),
             "[2026-01-05 09:03:07+03:00] [INFO] idle\n",
         );
+    }
+
+    /// GT-125. Outside a scan there is no generation to name, and stamping
+    /// one anyway would tie unrelated lines to whichever scan ran last.
+    #[test]
+    fn the_scan_generation_appears_only_inside_a_scan() {
+        let _guard = lock_tests();
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.log");
+
+        set_enabled(true, false, &path);
+        log("before the scan");
+        {
+            let _scope = ScanScope::new(42);
+            log("during the scan");
+        }
+        log("after the scan");
+        set_enabled(false, false, &path);
+
+        let contents = std::fs::read_to_string(&path).expect("read log file");
+        assert!(contents.contains("[scan 42] during the scan"), "{contents}");
+        assert!(
+            !contents.contains("[scan 42] before the scan")
+                && !contents.contains("[scan 42] after the scan"),
+            "the generation must not leak outside its scope: {contents}",
+        );
+    }
+
+    /// GT-125's failure mode: `run_scan` has several early returns and three
+    /// `catch_unwind` sites, so the reset has to survive an unwind rather
+    /// than depend on reaching a matching call.
+    #[test]
+    fn a_panic_inside_a_scan_still_clears_the_generation() {
+        let _guard = lock_tests();
+
+        let result = std::panic::catch_unwind(|| {
+            let _scope = ScanScope::new(7);
+            panic!("gt_probe_scan_scope");
+        });
+
+        assert!(result.is_err(), "the probe was supposed to panic");
+        assert_eq!(scan_generation(), None);
     }
 
     /// GT-126. Half-hour and quarter-hour zones are real (India +05:30,
