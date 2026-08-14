@@ -23,6 +23,11 @@
 //! [`install_panic_hook`] routes panics here too, which is the one diagnostic
 //! that has nowhere else to go: with `windows_subsystem = "windows"` a
 //! release build has no console for the default hook's message to land in.
+//!
+//! Timestamps carry their UTC offset - `2026-08-14 10:44:02+03:00`. The
+//! database stores Unix seconds, so a bare local wall clock could only be
+//! lined up against it by someone who knew what time zone the machine was
+//! in; on a log attached to a bug report, nobody does.
 
 use std::fs::File;
 use std::io::Write;
@@ -30,6 +35,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use windows::Win32::System::SystemInformation::GetLocalTime;
+use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+
+/// `GetTimeZoneInformation`'s return values. The `windows` crate binds only
+/// `TIME_ZONE_ID_INVALID` of the four - the other three are plain SDK
+/// `#define`s that its metadata does not carry - so they are spelled out
+/// here rather than reached for from a module that does not have them.
+const TIME_ZONE_ID_STANDARD: u32 = 1;
+const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
 
 /// The open log file, and the path it was opened at. The path is kept so
 /// [`set_enabled`] can tell "enable the file already being written to" (a
@@ -120,11 +133,7 @@ pub fn log(msg: &str) {
         return;
     };
 
-    // SAFETY: `GetLocalTime` takes no arguments and simply fills in and
-    // returns a `SYSTEMTIME` value on the stack - there is no buffer or
-    // pointer for the caller to get wrong.
-    let now = unsafe { GetLocalTime() };
-    let line = format!("[{}] {msg}\n", format_timestamp(&now));
+    let line = format!("[{}] {msg}\n", local_timestamp());
 
     if let Err(err) = open.file.write_all(line.as_bytes()) {
         eprintln!("Diagnostic log write failed, disabling logging: {err}");
@@ -237,14 +246,73 @@ pub(crate) fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Formats a `SYSTEMTIME` (local wall-clock time, from `GetLocalTime`) as
-/// `YYYY-MM-DD HH:MM:SS`. A pure, unit-testable wrapper around the otherwise
-/// untestable Win32 call in [`log`].
-fn format_timestamp(st: &windows::Win32::Foundation::SYSTEMTIME) -> String {
+/// Reads the wall clock and the zone it is in, and formats the pair.
+///
+/// The two Win32 calls are together here so [`format_timestamp`] stays pure
+/// and testable - the interesting part is the formatting, not the reading.
+fn local_timestamp() -> String {
+    // SAFETY: `GetLocalTime` takes no arguments and simply fills in and
+    // returns a `SYSTEMTIME` value on the stack - there is no buffer or
+    // pointer for the caller to get wrong.
+    let now = unsafe { GetLocalTime() };
+    format_timestamp(&now, local_offset_minutes())
+}
+
+/// Minutes east of UTC for the machine's current zone, daylight saving
+/// included.
+///
+/// Win32 states the bias the other way round - `Bias` is the number of
+/// minutes to *add* to local time to get UTC - so both terms are negated
+/// here to produce the sign an ISO-8601 offset uses. The seasonal component
+/// comes from whichever bias the API says is in effect, rather than from
+/// comparing dates against the transition rules ourselves.
+fn local_offset_minutes() -> i32 {
+    let mut info = TIME_ZONE_INFORMATION::default();
+    // SAFETY: `GetTimeZoneInformation` fills the caller-allocated
+    // `TIME_ZONE_INFORMATION` above; the pointer is valid, correctly
+    // aligned, and lives for the whole call.
+    let id = unsafe { GetTimeZoneInformation(&mut info) };
+    let seasonal = match id {
+        TIME_ZONE_ID_DAYLIGHT => info.DaylightBias,
+        TIME_ZONE_ID_STANDARD => info.StandardBias,
+        // `TIME_ZONE_ID_UNKNOWN` (a zone with no DST rules) and the error
+        // return both mean there is no seasonal component to apply. An
+        // error here is not worth reporting: it would report once per line,
+        // and the base bias is still the best answer available.
+        _ => 0,
+    };
+    -(info.Bias + seasonal)
+}
+
+/// Formats a `SYSTEMTIME` (local wall-clock time, from `GetLocalTime`) with
+/// its UTC offset as `YYYY-MM-DD HH:MM:SS+HH:MM`.
+///
+/// The offset is what makes the line reconcilable with the database, which
+/// stores Unix seconds: without it, a timestamp read on a different machine
+/// is only interpretable by someone who knows which zone produced it - and
+/// on a log attached to a bug report, nobody does.
+fn format_timestamp(st: &windows::Win32::Foundation::SYSTEMTIME, offset_minutes: i32) -> String {
     format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}{}",
+        st.wYear,
+        st.wMonth,
+        st.wDay,
+        st.wHour,
+        st.wMinute,
+        st.wSecond,
+        format_offset(offset_minutes),
     )
+}
+
+/// Formats a UTC offset in minutes as `+HH:MM` / `-HH:MM`.
+///
+/// Minutes and not just hours: India is +05:30, Nepal +05:45, Chatham
+/// +12:45. An hours-only offset would be silently wrong for those and
+/// correct everywhere the developer is likely to test.
+fn format_offset(minutes: i32) -> String {
+    let sign = if minutes < 0 { '-' } else { '+' };
+    let magnitude = minutes.unsigned_abs();
+    format!("{sign}{:02}:{:02}", magnitude / 60, magnitude % 60)
 }
 
 #[cfg(test)]
@@ -412,6 +480,19 @@ mod tests {
             .contains("goes to the second file"));
     }
 
+    /// GT-126. Half-hour and quarter-hour zones are real (India +05:30,
+    /// Nepal +05:45, Chatham +12:45), and an hours-only offset would be
+    /// correct everywhere this is likely to be tested and wrong there.
+    #[test]
+    fn the_offset_carries_minutes_and_a_sign() {
+        assert_eq!(format_offset(180), "+03:00");
+        assert_eq!(format_offset(330), "+05:30");
+        assert_eq!(format_offset(345), "+05:45");
+        assert_eq!(format_offset(0), "+00:00");
+        assert_eq!(format_offset(-300), "-05:00");
+        assert_eq!(format_offset(-210), "-03:30");
+    }
+
     #[test]
     fn format_timestamp_zero_pads_every_field() {
         let st = windows::Win32::Foundation::SYSTEMTIME {
@@ -425,6 +506,6 @@ mod tests {
             wMilliseconds: 0,
         };
 
-        assert_eq!(format_timestamp(&st), "2026-01-05 09:03:07");
+        assert_eq!(format_timestamp(&st, 180), "2026-01-05 09:03:07+03:00");
     }
 }
