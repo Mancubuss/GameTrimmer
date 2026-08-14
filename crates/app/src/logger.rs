@@ -24,18 +24,26 @@
 //! that has nowhere else to go: with `windows_subsystem = "windows"` a
 //! release build has no console for the default hook's message to land in.
 //!
-//! A line written during a scan also names that scan's `scan_runs.id`, so
-//! the file and the database can be read against each other. Two scans in
-//! one session were previously separated by nothing at all.
+//! # The shape of a line
 //!
-//! Every line carries a level - `[INFO]` or `[ERROR]`. That is what lets
-//! the diagnostic bundle's `errors.txt` show the failures instead of the
-//! whole tail, and what lets a reader find them by eye.
+//! ```text
+//! [2026-08-14 10:44:02+03:00] [ERROR] [scan 42] Failed to record scan timing: ...
+//! [2026-08-14 10:44:03+03:00] [INFO] Scan cancelled
+//! ```
 //!
-//! Timestamps carry their UTC offset - `2026-08-14 10:44:02+03:00`. The
-//! database stores Unix seconds, so a bare local wall clock could only be
-//! lined up against it by someone who knew what time zone the machine was
-//! in; on a log attached to a bug report, nobody does.
+//! Each of the three leading fields answers a question the log could not
+//! answer before:
+//!
+//! - **The offset** makes the timestamp reconcilable with the database,
+//!   which stores Unix seconds. A bare local wall clock is only
+//!   interpretable by someone who knows what time zone the machine was in.
+//! - **The level** is what lets the diagnostic bundle's `errors.txt` show
+//!   the failures instead of the whole tail.
+//! - **The scan generation** ties a line to its `scan_runs` row. Two scans
+//!   in one session were previously separated by nothing at all.
+//!
+//! Messages themselves are always English, whatever the interface language
+//! is set to (see [`log`]).
 
 use std::fs::File;
 use std::io::Write;
@@ -53,49 +61,23 @@ use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION
 const TIME_ZONE_ID_STANDARD: u32 = 1;
 const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
 
-/// The `scan_runs.id` currently being written, or [`NO_SCAN`] outside a scan.
+/// Upper bound on the live log file. Past this the current file is renamed
+/// aside (see [`rolled_path`]) and a fresh one started, so the pair on disk
+/// can reach twice this and no more.
 ///
-/// A global rather than a parameter because the call sites that most need
-/// the association are the deepest ones - a persistence failure four calls
-/// below `run_scan`, a provider panic inside `catch_unwind` - and threading
-/// an id through all of them to reach [`log`] would be a wide change for a
-/// diagnostic field. Set through [`ScanScope`], which restores it on every
-/// exit path including a panic.
-static SCAN_GENERATION: AtomicI64 = AtomicI64::new(NO_SCAN);
-
-/// Sentinel for "no scan is running". Real ids are SQLite rowids, which
-/// start at 1, so zero can never collide with one.
-const NO_SCAN: i64 = 0;
-
-/// Binds every line logged for its lifetime to `scan_id`, and unbinds on
-/// drop.
-///
-/// A guard rather than a matching pair of calls because `run_scan` leaves
-/// through cancellation, several early returns and three `catch_unwind`
-/// sites; a manual reset would have to be repeated at each of them, and the
-/// one that got missed would stamp the next scan's id on lines belonging to
-/// no scan at all.
-pub struct ScanScope;
-
-impl ScanScope {
-    pub fn new(scan_id: i64) -> Self {
-        SCAN_GENERATION.store(scan_id, Ordering::Relaxed);
-        Self
-    }
-}
-
-impl Drop for ScanScope {
-    fn drop(&mut self) {
-        SCAN_GENERATION.store(NO_SCAN, Ordering::Relaxed);
-    }
-}
+/// 5 MB is roughly a hundred thousand lines - months of ordinary use, and
+/// still small enough to attach to a bug report. The bundle only ever
+/// carries the last 256 KB anyway (`core::bundle::LOG_TAIL_BYTES`); this
+/// bound is about the file the user has to live with on disk, not about
+/// what gets reported.
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 /// Severity of one logged line.
 ///
 /// Deliberately two variants and not the usual five. The only consumer that
 /// needs to tell lines apart is the diagnostic bundle's `errors.txt`, and
 /// the only question it asks is "did something fail". A `WARN` tier would
-/// have to be assigned by judgement at every call site, and every judgement
+/// have to be assigned at 37 call sites by judgement, and every judgement
 /// call is a chance for two similar failures to land in different tiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -112,13 +94,38 @@ impl Level {
     }
 }
 
-/// The open log file, and the path it was opened at. The path is kept so
-/// [`set_enabled`] can tell "enable the file already being written to" (a
-/// no-op) from "enable a different file" (a real re-open) - see there for
-/// why that distinction has to exist.
+/// The `scan_runs.id` currently being written, or [`NO_SCAN`] outside a scan.
+///
+/// A global rather than a parameter because the call sites that most need
+/// the association are the deepest ones - a persistence failure four calls
+/// below `run_scan`, a provider panic inside `catch_unwind` - and threading
+/// an id through all of them to reach `logger::log` would be a wide change
+/// for a diagnostic field. Set through [`ScanScope`], which restores it on
+/// every exit path including a panic.
+static SCAN_GENERATION: AtomicI64 = AtomicI64::new(NO_SCAN);
+
+/// Sentinel for "no scan is running". Real ids are SQLite rowids, which
+/// start at 1, so zero can never collide with one.
+const NO_SCAN: i64 = 0;
+
+/// The open log file, and what is needed to reopen it.
+///
+/// The path is kept so [`set_enabled`] can tell "enable the file already
+/// being written to" (a no-op) from "enable a different file" (a real
+/// re-open) - see there for why that distinction has to exist. `elevated`
+/// is kept for the same reason: rolling the file mid-session starts a fresh
+/// one, and its header has to say the same thing the session's first header
+/// did.
+///
+/// `bytes` is tracked rather than re-`stat`ed per line: the size only
+/// changes because this process wrote to it, so a counter is exact and
+/// costs nothing, while a `metadata()` call per line would put a syscall in
+/// front of every diagnostic.
 struct OpenLog {
     path: PathBuf,
     file: File,
+    elevated: bool,
+    bytes: u64,
 }
 
 /// `Some(..)` when logging is enabled and the file is open; `None` when
@@ -160,6 +167,19 @@ pub fn set_enabled(enabled: bool, elevated: bool, log_path: &Path) {
         return;
     }
 
+    open_at(&mut state, elevated, log_path);
+}
+
+/// Opens `log_path` for appending, writes the session header and records the
+/// resulting size, replacing whatever `state` held.
+///
+/// Shared by [`set_enabled`] and the mid-session roll in [`write`] so the
+/// two cannot drift: a rolled file has to be indistinguishable from one
+/// opened at startup, header included, or the second half of a long session
+/// reads as a log with no provenance.
+fn open_at(state: &mut Option<OpenLog>, elevated: bool, log_path: &Path) {
+    roll_if_oversized(log_path);
+
     match File::options().create(true).append(true).open(log_path) {
         Ok(mut file) => {
             let header = format!(
@@ -172,9 +192,16 @@ pub fn set_enabled(enabled: bool, elevated: bool, log_path: &Path) {
             if let Err(err) = file.write_all(header.as_bytes()) {
                 eprintln!("Failed to write diagnostic log header: {err}");
             }
+            // From the file, not from the header length: opening appends to
+            // whatever an earlier session left behind, and starting the
+            // counter at zero would let an already-large file grow by a
+            // further `MAX_LOG_BYTES` before the bound noticed.
+            let bytes = file.metadata().map(|meta| meta.len()).unwrap_or(0);
             *state = Some(OpenLog {
                 path: log_path.to_path_buf(),
                 file,
+                elevated,
+                bytes,
             });
         }
         Err(err) => {
@@ -187,7 +214,68 @@ pub fn set_enabled(enabled: bool, elevated: bool, log_path: &Path) {
     }
 }
 
+/// Where the previous generation goes: `gametrimmer.log` -> `gametrimmer.log.old`.
+///
+/// One generation, not a numbered series. The reason to keep any history at
+/// all is that a user reporting a problem may roll past it while collecting
+/// the report; the reason not to keep six is that nobody reads the sixth,
+/// and each one is another file to explain in the folder next to the exe.
+fn rolled_path(log_path: &Path) -> PathBuf {
+    let mut name = log_path.file_name().unwrap_or_default().to_os_string();
+    name.push(".old");
+    log_path.with_file_name(name)
+}
+
+/// Renames an oversized log aside, so the caller can open a fresh one.
+///
+/// Entirely best-effort: if the rename fails (the previous generation is
+/// open in an editor, the directory is read-only) the log simply keeps
+/// growing, which is the behaviour that existed before the bound and is
+/// still better than losing the diagnostic. Called with the log file
+/// *closed* - Windows refuses to rename a file this process holds open.
+fn roll_if_oversized(log_path: &Path) {
+    let Ok(metadata) = std::fs::metadata(log_path) else {
+        return;
+    };
+    if metadata.len() <= MAX_LOG_BYTES {
+        return;
+    }
+    if let Err(err) = std::fs::rename(log_path, rolled_path(log_path)) {
+        eprintln!("Could not roll the diagnostic log aside, it will keep growing: {err}");
+    }
+}
+
+/// Binds every line logged for its lifetime to `scan_id`, and unbinds on
+/// drop.
+///
+/// A guard rather than a matching pair of calls because `run_scan` leaves
+/// through cancellation, several early returns and three `catch_unwind`
+/// sites; a manual reset would have to be repeated at each of them, and the
+/// one that got missed would stamp the next scan's id on lines belonging to
+/// no scan at all.
+pub struct ScanScope;
+
+impl ScanScope {
+    pub fn new(scan_id: i64) -> Self {
+        SCAN_GENERATION.store(scan_id, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for ScanScope {
+    fn drop(&mut self) {
+        SCAN_GENERATION.store(NO_SCAN, Ordering::Relaxed);
+    }
+}
+
 /// Logs an informational diagnostic - the default level.
+///
+/// `msg` is expected to be English regardless of the interface language.
+/// The log is read by whoever is diagnosing the problem, not by the user
+/// running the app: the user already gets the same failure on the status
+/// line in their own language, and a file that switches language depending
+/// on a setting is harder to search than one written in either language
+/// consistently.
 pub fn log(msg: &str) {
     write(Level::Info, msg);
 }
@@ -201,7 +289,8 @@ pub fn error(msg: &str) {
 
 /// Always `eprintln!`s the message first (preserving today's dev-console
 /// behavior exactly, unconditionally), then - only when logging is enabled -
-/// appends the formatted line to the log file.
+/// appends the formatted line to the log file, rolling the file aside first
+/// if this line would push it past [`MAX_LOG_BYTES`].
 ///
 /// A write failure disables logging (after one `eprintln!`) rather than
 /// retrying it on every subsequent call, which would otherwise turn one bad
@@ -210,16 +299,33 @@ fn write(level: Level, msg: &str) {
     eprintln!("{msg}");
 
     let mut state = lock_state();
-    let Some(open) = state.as_mut() else {
+    let Some(open) = state.as_ref() else {
         return;
     };
 
     let line = format_line(level, &local_timestamp(), scan_generation(), msg);
+    let addition = line.len() as u64;
 
+    if open.bytes.saturating_add(addition) > MAX_LOG_BYTES {
+        // Take the handle down before renaming: Windows refuses to rename a
+        // file the calling process still holds open, so a roll attempted
+        // around a live handle would fail every time and the bound would
+        // never take effect.
+        let path = open.path.clone();
+        let elevated = open.elevated;
+        *state = None;
+        open_at(&mut state, elevated, &path);
+    }
+
+    let Some(open) = state.as_mut() else {
+        return;
+    };
     if let Err(err) = open.file.write_all(line.as_bytes()) {
         eprintln!("Diagnostic log write failed, disabling logging: {err}");
         *state = None;
+        return;
     }
+    open.bytes = open.bytes.saturating_add(addition);
 }
 
 /// The `scan_runs.id` currently in scope, if any - see [`ScanScope`].
@@ -463,7 +569,6 @@ mod tests {
             message_line.starts_with('['),
             "logged line should start with a [timestamp]: {message_line}"
         );
-        assert!(message_line.contains("[INFO]"));
         assert!(message_line.contains("a diagnostic message"));
     }
 
@@ -579,9 +684,53 @@ mod tests {
             .contains("goes to the second file"));
     }
 
-    /// GT-124. A failure has to be findable in the file without reading
-    /// every line - which is what `errors.txt` in the diagnostic bundle
-    /// depends on.
+    #[test]
+    fn format_timestamp_zero_pads_every_field() {
+        let st = windows::Win32::Foundation::SYSTEMTIME {
+            wYear: 2026,
+            wMonth: 1,
+            wDayOfWeek: 0,
+            wDay: 5,
+            wHour: 9,
+            wMinute: 3,
+            wSecond: 7,
+            wMilliseconds: 0,
+        };
+
+        assert_eq!(format_timestamp(&st, 180), "2026-01-05 09:03:07+03:00");
+    }
+
+    /// GT-126. Half-hour and quarter-hour zones are real (India +05:30,
+    /// Nepal +05:45, Chatham +12:45), and an hours-only offset would be
+    /// correct everywhere this is likely to be tested and wrong there.
+    #[test]
+    fn the_offset_carries_minutes_and_a_sign() {
+        assert_eq!(format_offset(180), "+03:00");
+        assert_eq!(format_offset(330), "+05:30");
+        assert_eq!(format_offset(345), "+05:45");
+        assert_eq!(format_offset(0), "+00:00");
+        assert_eq!(format_offset(-300), "-05:00");
+        assert_eq!(format_offset(-210), "-03:30");
+    }
+
+    /// GT-124 and GT-125. The line format is what the diagnostic bundle and
+    /// every human reader parse by eye, so it is pinned here rather than
+    /// only implied by the file-writing tests.
+    #[test]
+    fn a_line_carries_its_level_and_its_scan() {
+        assert_eq!(
+            format_line(Level::Error, "2026-01-05 09:03:07+03:00", Some(42), "boom"),
+            "[2026-01-05 09:03:07+03:00] [ERROR] [scan 42] boom\n",
+        );
+        assert_eq!(
+            format_line(Level::Info, "2026-01-05 09:03:07+03:00", None, "idle"),
+            "[2026-01-05 09:03:07+03:00] [INFO] idle\n",
+        );
+    }
+
+    /// The end of the chain for GT-124: a failure has to be findable in the
+    /// file without reading every line, which is what `errors.txt` in the
+    /// diagnostic bundle depends on.
     #[test]
     fn an_error_is_marked_in_the_file_and_an_info_is_not() {
         let _guard = lock_tests();
@@ -603,21 +752,6 @@ mod tests {
         assert!(
             contents.contains("[INFO] an ordinary line"),
             "the default level is INFO: {contents}",
-        );
-    }
-
-    /// The line format is what the diagnostic bundle and every human reader
-    /// parse by eye, so it is pinned here rather than only implied by the
-    /// file-writing tests.
-    #[test]
-    fn a_line_carries_its_level_and_its_scan() {
-        assert_eq!(
-            format_line(Level::Error, "2026-01-05 09:03:07+03:00", Some(42), "boom"),
-            "[2026-01-05 09:03:07+03:00] [ERROR] [scan 42] boom\n",
-        );
-        assert_eq!(
-            format_line(Level::Info, "2026-01-05 09:03:07+03:00", None, "idle"),
-            "[2026-01-05 09:03:07+03:00] [INFO] idle\n",
         );
     }
 
@@ -663,32 +797,75 @@ mod tests {
         assert_eq!(scan_generation(), None);
     }
 
-    /// GT-126. Half-hour and quarter-hour zones are real (India +05:30,
-    /// Nepal +05:45, Chatham +12:45), and an hours-only offset would be
-    /// correct everywhere this is likely to be tested and wrong there.
+    /// GT-123. The file that already exceeds the bound when a session opens
+    /// it is the common case - the growth happened over previous runs - so
+    /// the roll has to happen at open, not only after this session writes
+    /// enough.
     #[test]
-    fn the_offset_carries_minutes_and_a_sign() {
-        assert_eq!(format_offset(180), "+03:00");
-        assert_eq!(format_offset(330), "+05:30");
-        assert_eq!(format_offset(345), "+05:45");
-        assert_eq!(format_offset(0), "+00:00");
-        assert_eq!(format_offset(-300), "-05:00");
-        assert_eq!(format_offset(-210), "-03:30");
+    fn an_oversized_log_is_rolled_aside_when_it_is_opened() {
+        let _guard = lock_tests();
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.log");
+        std::fs::write(&path, vec![b'x'; (MAX_LOG_BYTES + 1) as usize]).expect("write a big log");
+
+        set_enabled(true, false, &path);
+        log("the first line of the fresh file");
+        set_enabled(false, false, &path);
+
+        let fresh = std::fs::read_to_string(&path).expect("read the fresh log");
+        assert!(fresh.len() < MAX_LOG_BYTES as usize, "{}", fresh.len());
+        assert!(fresh.contains("the first line of the fresh file"));
+        let rolled = std::fs::metadata(rolled_path(&path)).expect("the previous log was kept");
+        assert_eq!(rolled.len(), MAX_LOG_BYTES + 1);
     }
 
+    /// The other half of the bound: a single session that keeps writing must
+    /// roll too, or a long-running scan could grow the file without limit
+    /// between restarts.
     #[test]
-    fn format_timestamp_zero_pads_every_field() {
-        let st = windows::Win32::Foundation::SYSTEMTIME {
-            wYear: 2026,
-            wMonth: 1,
-            wDayOfWeek: 0,
-            wDay: 5,
-            wHour: 9,
-            wMinute: 3,
-            wSecond: 7,
-            wMilliseconds: 0,
-        };
+    fn a_session_that_outgrows_the_bound_rolls_mid_run() {
+        let _guard = lock_tests();
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.log");
+        // Just under the bound, so a couple of ordinary lines cross it.
+        std::fs::write(&path, vec![b'x'; (MAX_LOG_BYTES - 64) as usize]).expect("write a big log");
 
-        assert_eq!(format_timestamp(&st, 180), "2026-01-05 09:03:07+03:00");
+        set_enabled(true, false, &path);
+        log("this line crosses the bound");
+        log("and this one lands in the fresh file");
+        set_enabled(false, false, &path);
+
+        let fresh = std::fs::read_to_string(&path).expect("read the fresh log");
+        assert!(fresh.len() < MAX_LOG_BYTES as usize, "{}", fresh.len());
+        assert!(
+            fresh.contains("and this one lands in the fresh file"),
+            "{fresh}",
+        );
+        assert!(
+            fresh.contains("session start"),
+            "a rolled file still identifies the build that wrote it: {fresh}",
+        );
+        assert!(rolled_path(&path).is_file(), "the previous log was kept");
+    }
+
+    /// Only one generation is kept: rolling twice must replace the previous
+    /// `.old`, not accumulate files next to the executable.
+    #[test]
+    fn rolling_twice_keeps_one_previous_generation() {
+        let _guard = lock_tests();
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.log");
+
+        for _ in 0..2 {
+            std::fs::write(&path, vec![b'x'; (MAX_LOG_BYTES + 1) as usize]).expect("write a log");
+            set_enabled(true, false, &path);
+            set_enabled(false, false, &path);
+        }
+
+        let siblings: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read the log directory")
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .collect();
+        assert_eq!(siblings.len(), 2, "{siblings:?}");
     }
 }
