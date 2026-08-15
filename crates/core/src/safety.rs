@@ -7,7 +7,12 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::{CoreError, Result};
 
+// Both bits are read off `BY_HANDLE_FILE_INFORMATION.dwFileAttributes`, which
+// only the Windows `identity()` has.
+#[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+#[cfg(windows)]
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetKind {
@@ -186,10 +191,54 @@ pub fn normalize_relative_path(raw: &str) -> std::result::Result<PathBuf, Delete
     Ok(path)
 }
 
+/// Classifies a failed `CreateFileW` exactly as the metadata call it replaced
+/// would have been classified.
+///
+/// This distinction is the whole point of the module. `Missing` is a claim
+/// that the target provably does not exist, and a caller is entitled to act on
+/// it by purging rows; anything that merely means "could not be determined"
+/// has to come back as `Metadata` and block. Win32 reports genuine absence as
+/// `ERROR_FILE_NOT_FOUND`/`ERROR_PATH_NOT_FOUND` - the two codes `std` turned
+/// into `io::ErrorKind::NotFound` - and everything else (access denied, a
+/// sharing violation, a not-ready volume, a name Win32 will not parse) as some
+/// other code. The code is read off the error rather than matched out of its
+/// message, which is localized.
+///
+/// One case needs more than the code: a path longer than the legacy `MAX_PATH`
+/// limit. `std` silently rewrote those into `\\?\` verbatim form, so the old
+/// metadata call resolved them; the raw `CreateFileW` here does not, and Win32
+/// answers `ERROR_PATH_NOT_FOUND` for a file that may be sitting right there.
+/// Believing that would be exactly the failure this function exists to
+/// prevent, so on an over-long path absence is never claimed - it blocks, and
+/// says why.
+#[cfg(windows)]
+fn classify_open_failure(path: &Path, error: &windows::core::Error) -> DeleteBlockReason {
+    use windows::core::HRESULT;
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
+
+    // MAX_PATH (260) less the 12 characters Win32 reserves for an 8.3 name in
+    // a directory path: the conservative end of the limit, since guessing long
+    // only ever blocks a deletion that would otherwise have been allowed.
+    const LEGACY_PATH_LIMIT: usize = 248;
+
+    let is_not_found = [ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND]
+        .iter()
+        .any(|code| error.code() == HRESULT::from_win32(code.0));
+    if !is_not_found {
+        return DeleteBlockReason::Metadata(error.to_string());
+    }
+    if path.as_os_str().len() >= LEGACY_PATH_LIMIT {
+        return DeleteBlockReason::Metadata(format!(
+            "path exceeds the {LEGACY_PATH_LIMIT}-character limit this open can address, \
+             so its absence cannot be established: {error}"
+        ));
+    }
+    DeleteBlockReason::Missing
+}
+
 #[cfg(windows)]
 fn identity(path: &Path) -> std::result::Result<FileIdentity, DeleteBlockReason> {
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::fs::MetadataExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::HANDLE;
@@ -199,23 +248,11 @@ fn identity(path: &Path) -> std::result::Result<FileIdentity, DeleteBlockReason>
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
 
-    let metadata = fs::symlink_metadata(path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => DeleteBlockReason::Missing,
-        _ => DeleteBlockReason::Metadata(error.to_string()),
-    })?;
-    let attributes = metadata.file_attributes();
-    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(DeleteBlockReason::ReparsePoint(path.to_path_buf()));
-    }
-    let kind = if metadata.is_dir() {
-        TargetKind::Directory
-    } else if metadata.is_file() {
-        TargetKind::File
-    } else {
-        return Err(DeleteBlockReason::Metadata(
-            "target is neither a regular file nor a directory".into(),
-        ));
-    };
+    // One open, not two. `BY_HANDLE_FILE_INFORMATION` already carries
+    // everything the old `fs::symlink_metadata` call was consulted for - the
+    // reparse-point bit, the directory bit, the size - so reading the metadata
+    // first only bought a second trip through the filesystem on a path this
+    // scan walks 720 000 times.
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let handle = unsafe {
         CreateFileW(
@@ -228,16 +265,33 @@ fn identity(path: &Path) -> std::result::Result<FileIdentity, DeleteBlockReason>
             None,
         )
     }
-    .map_err(|error| DeleteBlockReason::Metadata(error.to_string()))?;
+    .map_err(|error| classify_open_failure(path, &error))?;
     // SAFETY: ownership of the valid handle returned by CreateFileW is moved
     // into File, which closes it exactly once.
     let file = unsafe { fs::File::from_raw_handle(handle.0 as *mut _) };
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` owns a live handle for the duration of the call and
+    // `info` is a valid, fully initialized out-parameter.
     unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle() as *mut _), &mut info) }
         .map_err(|error| DeleteBlockReason::Metadata(error.to_string()))?;
+    // The only reparse-point check, and the stronger of the two the old code
+    // did: FILE_FLAG_OPEN_REPARSE_POINT means this handle is on the link
+    // itself rather than on whatever it points at, so these attributes
+    // describe the same object the metadata pre-check described.
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(DeleteBlockReason::ReparsePoint(path.to_path_buf()));
     }
+    // Windows has no third answer here. Every object reachable through a
+    // filesystem path is either a directory or it is not, and the reparse
+    // case - the one thing that used to make `is_dir()` and `is_file()` both
+    // false - has already been rejected above. The old "neither a regular
+    // file nor a directory" branch was unreachable on this platform; it is
+    // gone rather than left behind as a misleading message.
+    let kind = if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        TargetKind::Directory
+    } else {
+        TargetKind::File
+    };
     let file_index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
     let last_write_time = (u64::from(info.ftLastWriteTime.dwHighDateTime) << 32)
         | u64::from(info.ftLastWriteTime.dwLowDateTime);
@@ -760,6 +814,39 @@ mod tests {
         assert!(matches!(result, Err(DeleteBlockReason::ReparsePoint(_))));
 
         fs::remove_dir(&junction).unwrap();
+    }
+
+    /// `Missing` is a claim a caller may act on by purging rows, so a target
+    /// that is demonstrably *there* and merely unopenable must never produce
+    /// it. A path past the legacy `MAX_PATH` limit is the reachable form of
+    /// that on Windows: `std` reaches such a file by rewriting the path into
+    /// `\\?\` form, while a raw `CreateFileW` answers `ERROR_PATH_NOT_FOUND`
+    /// for a file sitting right there.
+    #[cfg(windows)]
+    #[test]
+    fn a_target_that_exists_but_cannot_be_opened_is_never_reported_as_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut deep = temp.path().to_path_buf();
+        while deep.as_os_str().len() < 300 {
+            deep.push("a-directory-with-a-fairly-long-name");
+        }
+        fs::create_dir_all(&deep).unwrap();
+        let target = deep.join("target.bin");
+        fs::write(&target, b"data").unwrap();
+        // The premise of the test: the file really is there.
+        assert!(
+            fs::symlink_metadata(&target).is_ok(),
+            "the long-path target was not created, so nothing is being tested"
+        );
+
+        let result = identity(&target);
+        match result {
+            Err(DeleteBlockReason::Metadata(_)) => {}
+            Ok(_) => {
+                eprintln!("skipping: this system reaches over-long paths without a verbatim prefix")
+            }
+            other => panic!("an unopenable but present target must block, not vanish: {other:?}"),
+        }
     }
 
     #[cfg(windows)]
