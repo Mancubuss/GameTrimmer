@@ -299,27 +299,15 @@ fn run_scan(
 
     let total = games.len();
 
-    // A single, non-cancellable pre-pass: for every game whose install root
-    // is eligible (elevated, on an NTFS volume that opens, not behind a
-    // junction/symlink/mount point/`subst`), try reading its files straight
-    // out of that volume's Master File Table instead of walking its
-    // directory tree. Ineligible roots, and roots the pass itself rejects,
-    // simply have no entry in `mft_pass.entries` - `dispatch_scans` falls
-    // back to a normal `scan_dir` walk for those, exactly as before this
-    // path existed.
-    let mft_pass = run_mft_pass(elevated, &games, cancel, notifier, lang);
-    crate::logger::log(&format!(
-        "MFT pass: {} via MFT, {} via walkdir",
-        mft_pass.mft_count, mft_pass.walkdir_count
-    ));
-    record_routing_evidence(&conn, scan_id, &games, &mft_pass);
-
-    // Marks the end of the "scan" phase (discovery + persist + the MFT
-    // pre-pass) and the start of "analyze" (per-game scan+classify+write) -
-    // see `crate::model::ScanTiming` for why this split matches what the
-    // progress bar's two verbs (`Verb::Scan`/`Verb::Analyze`) actually show
-    // the user.
-    let scan_phase_end = Instant::now();
+    // Everything the MFT routing can decide before a single byte is read:
+    // which install roots are even eligible (elevated, on an NTFS volume
+    // that opens, not behind a junction/symlink/mount point/`subst`), and
+    // which volume each eligible root will get its file list from. Cheap - a
+    // canonicalization per root and a media/availability probe per volume.
+    // The expensive half, reading each volume's Master File Table, happens
+    // inside `dispatch_scans`, underneath the classification it used to run
+    // strictly before.
+    let plan = plan_mft_pass(elevated, &games);
 
     if cancel.load(Ordering::Relaxed) {
         crate::logger::log("Scan cancelled");
@@ -345,38 +333,79 @@ fn run_scan(
     // progress label.
     let completed = std::sync::atomic::AtomicUsize::new(0);
 
-    let write_outcome = std::thread::scope(|scope| {
+    // Reading one volume's `$MFT`. Passed to `dispatch_scans` rather than
+    // called by it, because this is the seam the overlap has to be tested
+    // at: "a volume's worth of file lists arrives, some time later" is
+    // exactly what a test needs to control, and it cannot conjure an NTFS
+    // volume to control it with.
+    let read_volume = |roots: &[(i64, PathBuf)]| {
+        let game_ids: Vec<i64> = roots.iter().map(|(game_id, _)| *game_id).collect();
+        // One bar, one meaning. The bar counts games classified - the work
+        // that finishes last - and the file-table read, which now runs
+        // underneath it, writes only the detail line. Reporting records read
+        // as the bar's own fraction would put two producers with two
+        // different totals on one bar, and the fraction would jump backwards
+        // every time the other one won.
+        let mut progress_cb = |p: mftscan::MftProgress| {
+            let pct = (p.records_done * 100)
+                .checked_div(p.records_total)
+                .unwrap_or(0);
+            notifier.send(WorkerMsg::Progress {
+                verb: Verb::Analyze,
+                current: completed.load(Ordering::Relaxed),
+                total,
+                detail: i18n::reading_mft_detail(lang, p.volume, pct),
+            });
+        };
+
+        scan_volume_catching_panics(
+            || mftscan::scan_roots(roots, Some(&mut progress_cb), Some(cancel)),
+            &game_ids,
+        )
+    };
+
+    let context = ClassifyContext {
+        engine: &engine,
+        lang_detector: &lang_detector,
+        enabled_categories,
+        cancel,
+        notifier,
+        completed: &completed,
+        total,
+    };
+
+    // Opens the overlapped window: from here until `analyze_phase_end` the
+    // MFT reading and the classification of everything already read run at
+    // the same time. The two durations reported below therefore overlap
+    // rather than partition the run - see `crate::model::ScanTiming`.
+    let dispatch_started = Instant::now();
+
+    let (write_outcome, mft_pass) = std::thread::scope(|scope| {
         let writer = scope.spawn(|| {
             run_writer(
                 &mut conn, result_rx, notifier, total, &completed, cancel, scan_id,
             )
         });
 
-        dispatch_scans(
-            &games,
-            &engine,
-            &lang_detector,
-            cancel,
-            &result_tx,
-            &mft_pass.entries,
-            enabled_categories,
-            notifier,
-            &completed,
-            total,
-        );
+        let mft_pass = dispatch_scans(&context, &games, plan, &read_volume, &result_tx);
         // Dropping the last sender lets the writer's `for outcome in rx`
         // loop end once every dispatched scan has reported in.
         drop(result_tx);
 
-        writer.join()
+        (writer.join(), mft_pass)
     });
 
-    // Marks the end of the "analyze" phase (per-game scan+classify+write) -
-    // right after the writer thread join completes, before any of the
-    // post-scan housekeeping below (WAL checkpoint, summary/occupancy
-    // computation) that the user does not see as part of either progress
-    // verb. See `crate::model::ScanTiming`.
+    // Closes the overlapped window: the writer has joined, so nothing is
+    // reading, classifying or writing any more. Everything past here is
+    // post-scan housekeeping (WAL checkpoint, summary/occupancy
+    // computation) that the user does not see as part of the progress bar.
+    // See `crate::model::ScanTiming`.
     let analyze_phase_end = Instant::now();
+
+    crate::logger::log(&format!(
+        "MFT pass: {} via MFT, {} via walkdir",
+        mft_pass.mft_count, mft_pass.walkdir_count
+    ));
 
     let mut findings = match write_outcome {
         Ok(Ok(findings)) => findings,
@@ -396,6 +425,15 @@ fn run_scan(
             return;
         }
     };
+
+    // Written here rather than before the pool starts, which is where it
+    // used to go: half of this evidence - the candidate roots the pass
+    // itself rejected, see `scan_route::finalize_mft_result` - is only
+    // decided while the pool is running, and the writer thread owns `conn`
+    // for that whole window. Nothing reads `games.scan_route` before the
+    // generation is activated below, so deferring it changes nothing but
+    // when the rows are stamped.
+    record_routing_evidence(&conn, scan_id, &games, &mft_pass);
 
     if cancel.load(Ordering::Relaxed) {
         crate::logger::log("Scan cancelled");
@@ -548,24 +586,34 @@ fn run_scan(
 
     // `scan` and `analyze` are each measured directly from their own Instant
     // pair rather than derived by subtracting one from the other, so they
-    // stay internally consistent. Their sum falls short of `total` by the
-    // post-scan housekeeping between `analyze_phase_end` and here: orphan
-    // collection, generation activation, the WAL checkpoint, this summary
-    // and the occupancy query. That gap is not a rounding error - a rescan
-    // has spent a sixth of its wall clock there - so the log names it
-    // rather than leaving it to be inferred by subtraction. See
+    // stay internally consistent. Since the MFT reading moved underneath the
+    // classification the two spans *overlap*: both start when the libraries
+    // are on disk, `scan` ends when the last volume has been read and
+    // `analyze` when the writer has joined. Their sum therefore exceeds the
+    // total, and the log says so rather than leaving a reader to discover it
+    // by adding two numbers that no longer add up.
+    //
+    // Housekeeping is what happens after `analyze_phase_end`: orphan
+    // collection, routing evidence, generation activation, the WAL
+    // checkpoint, this summary and the occupancy query. It is measured
+    // directly here for the same reason - a rescan has spent a sixth of its
+    // wall clock there, and it can no longer be inferred by subtraction. See
     // `crate::model::ScanTiming`.
     let timing = crate::model::ScanTiming {
-        scan: scan_phase_end.duration_since(started_at),
-        analyze: analyze_phase_end.duration_since(scan_phase_end),
+        scan: mft_pass.read_finished.duration_since(started_at),
+        analyze: analyze_phase_end.duration_since(dispatch_started),
         total: started_at.elapsed(),
     };
+    let housekeeping = timing
+        .total
+        .saturating_sub(analyze_phase_end.duration_since(started_at));
     crate::logger::log(&format!(
-        "Scan done in {:?} (scan {:?}, analyze {:?}, housekeeping {:?}), findings: {}",
+        "Scan done in {:?} (scan {:?} and analyze {:?} overlap - the file table is read \
+         underneath the classification, so these two do not sum to the total; \
+         housekeeping {housekeeping:?}), findings: {}",
         timing.total,
         timing.scan,
         timing.analyze,
-        timing.total.saturating_sub(timing.scan + timing.analyze),
         findings.len()
     ));
     // Same numbers the bottom bar shows, kept past this session: "the scan
@@ -603,147 +651,307 @@ enum GameOutcome {
     },
 }
 
-/// Dispatches every game's scan+classify onto a bounded thread pool. Each
-/// task gets its own cloned `Sender` (cloned here, on the single dispatching
-/// thread, before the task is spawned) - `mpsc::Sender` is `Send` but not
-/// `Sync`, so a clone-per-task is required rather than sharing one `&Sender`
-/// across the pool's worker threads.
-///
-/// `cancel` is polled once per game, right before that game's work starts -
-/// games not yet started are reported as cancelled immediately instead of
-/// being scanned. It is additionally threaded into the walkdir enumeration
-/// (`scan_and_prepare_game` -> `scan_dir_cancellable`) AND into classification
-/// (`classify_game` -> `analyze_game_cancellable` + the rule-engine pass), so
-/// a game already running on a worker thread is interrupted promptly through
-/// whichever phase it is in - directory walk or analysis - rather than
-/// finishing its whole tree or its whole file list first. This holds on the
-/// MFT-entries branch too: it skips the walk but its classification is just as
-/// cancellable, so a huge game (ARK) no longer runs analysis to completion
-/// after Stop is pressed.
-///
-/// `mft_entries` holds the file lists the MFT pass already obtained for
-/// some games (see `run_mft_pass`) - a game present here skips `scan_dir`
-/// entirely and goes straight to classification; a game absent from it (the
-/// common case when not elevated, or whenever the MFT pass rejected that
-/// root) is scanned with `scan_dir_cancellable` exactly as before this path
-/// existed.
-#[allow(clippy::too_many_arguments)]
-fn dispatch_scans(
-    games: &[(i64, String, PathBuf)],
-    engine: &RuleEngine,
-    lang_detector: &LangDetector,
-    cancel: &AtomicBool,
-    result_tx: &SyncSender<GameOutcome>,
-    mft_entries: &HashMap<i64, Vec<FileEntry>>,
-    enabled_categories: &[String],
-    notifier: &Notifier,
-    completed: &std::sync::atomic::AtomicUsize,
+/// The inputs every game's classification shares for a whole run, grouped
+/// so the dispatch path carries one reference instead of seven parameters
+/// that always travel together.
+struct ClassifyContext<'a> {
+    engine: &'a RuleEngine,
+    lang_detector: &'a LangDetector,
+    /// The persisted `enabled_categories` setting; empty means "all".
+    enabled_categories: &'a [String],
+    cancel: &'a AtomicBool,
+    notifier: &'a Notifier,
+    /// Games the writer has finished persisting - written by the writer,
+    /// only read here, to label the "started scanning <game>" progress.
+    completed: &'a std::sync::atomic::AtomicUsize,
+    /// Games in this run: the denominator of every progress message.
     total: usize,
-) {
-    let run_one = |game_id: i64,
-                   name: &str,
-                   install_dir: &Path,
-                   result_tx: SyncSender<GameOutcome>,
-                   worker_notifier: Notifier| {
-        if cancel.load(Ordering::Relaxed) {
-            let _ = result_tx.send(GameOutcome::Failed {
-                name: name.to_string(),
-                install_dir: install_dir.to_path_buf(),
-                error: CoreError::Other("cancelled".to_string()),
-            });
-            return;
-        }
+}
 
-        // Report the game as it *starts*, not just when it finishes. The
-        // completed counter only advances when the writer persists a game,
-        // so at the tail of a scan - when every quick game is done and one
-        // huge game (e.g. ARK) is still being walked on a single worker
-        // thread - the bar would otherwise sit at "N-1/N: <some finished
-        // game>" with no hint of what it's waiting on. This makes the
-        // still-running game's name the visible detail instead.
-        worker_notifier.send(WorkerMsg::Progress {
-            verb: Verb::Analyze,
-            current: completed.load(Ordering::Relaxed),
-            total,
-            detail: name.to_string(),
+/// One game's work as handed to the pool.
+///
+/// Everything is owned - including `entries`, which are *moved* out of the
+/// MFT pass rather than cloned out of a map that outlives the whole scan.
+/// That is what keeps peak memory down: a game's file list is dropped the
+/// moment its task finishes, so what is resident is "read but not yet
+/// classified" rather than "everything every volume held", and the
+/// per-in-flight-game copy the old `entries.clone()` made is gone entirely
+/// (on a 400 000-file game that clone was tens of megabytes, six at a time).
+struct GameTask {
+    game_id: i64,
+    name: String,
+    install_dir: PathBuf,
+    /// `Some` when the MFT pass produced this game's file list. `None` means
+    /// walk the directory instead - either the root was never an MFT
+    /// candidate, or the pass rejected the result it got for it.
+    entries: Option<Vec<FileEntry>>,
+    result_tx: SyncSender<GameOutcome>,
+    /// Cloned per task on the dispatching thread, before the task is
+    /// spawned, rather than shared across the pool's threads.
+    notifier: Notifier,
+}
+
+/// Scans and classifies one game, then reports it to the writer.
+///
+/// `cancel` is polled here, right before the game's work starts - a game not
+/// yet started is reported as cancelled immediately instead of being
+/// scanned. It is additionally threaded into the walkdir enumeration
+/// (`scan_and_prepare_game` -> `scan_dir_cancellable`) AND into
+/// classification (`classify_game` -> `analyze_game_cancellable` + the
+/// rule-engine pass), so a game already running on a worker thread is
+/// interrupted promptly through whichever phase it is in - directory walk or
+/// analysis - rather than finishing its whole tree or its whole file list
+/// first. This holds on the MFT-entries branch too: it skips the walk but
+/// its classification is just as cancellable, so a huge game (ARK) no longer
+/// runs analysis to completion after Stop is pressed.
+fn run_one(ctx: &ClassifyContext<'_>, task: GameTask) {
+    let GameTask {
+        game_id,
+        name,
+        install_dir,
+        entries,
+        result_tx,
+        notifier,
+    } = task;
+
+    if ctx.cancel.load(Ordering::Relaxed) {
+        let _ = result_tx.send(GameOutcome::Failed {
+            name,
+            install_dir,
+            error: CoreError::Other("cancelled".to_string()),
         });
+        return;
+    }
 
-        // Both paths funnel a game through `classify_game`, which is now
-        // cancellable (its localization + rule passes poll `cancel`), so a
-        // Stop during classification interrupts the MFT branch too - not just
-        // the walkdir branch's directory enumeration. Either path reports a
-        // cancelled game through the same `Failed { .. "cancelled" .. }`
-        // channel `run_writer` already treats as a normal user action.
-        let result = match mft_entries.get(&game_id) {
-            Some(entries) => classify_game(
-                engine,
-                lang_detector,
-                game_id,
-                name,
-                install_dir,
-                entries.clone(),
-                enabled_categories,
-                cancel,
-            ),
-            None => scan_and_prepare_game(
-                engine,
-                lang_detector,
-                game_id,
-                name,
-                install_dir,
-                enabled_categories,
-                cancel,
-            ),
-        };
-        let outcome = match result {
-            Ok(prepared) => GameOutcome::Scanned(prepared),
-            Err(error) => GameOutcome::Failed {
-                name: name.to_string(),
-                install_dir: install_dir.to_path_buf(),
-                error,
-            },
-        };
-        let _ = result_tx.send(outcome);
+    // Report the game as it *starts*, not just when it finishes. The
+    // completed counter only advances when the writer persists a game, so at
+    // the tail of a scan - when every quick game is done and one huge game
+    // (e.g. ARK) is still being walked on a single worker thread - the bar
+    // would otherwise sit at "N-1/N: <some finished game>" with no hint of
+    // what it's waiting on. This makes the still-running game's name the
+    // visible detail instead.
+    notifier.send(WorkerMsg::Progress {
+        verb: Verb::Analyze,
+        current: ctx.completed.load(Ordering::Relaxed),
+        total: ctx.total,
+        detail: name.clone(),
+    });
+
+    // Both paths funnel the game through `classify_game`; either reports a
+    // cancelled game through the same `Failed { .. "cancelled" .. }` channel
+    // `run_writer` already treats as a normal user action.
+    let result = match entries {
+        Some(entries) => classify_game(
+            ctx.engine,
+            ctx.lang_detector,
+            game_id,
+            &name,
+            &install_dir,
+            entries,
+            ctx.enabled_categories,
+            ctx.cancel,
+        ),
+        None => scan_and_prepare_game(
+            ctx.engine,
+            ctx.lang_detector,
+            game_id,
+            &name,
+            &install_dir,
+            ctx.enabled_categories,
+            ctx.cancel,
+        ),
     };
+    let outcome = match result {
+        Ok(prepared) => GameOutcome::Scanned(prepared),
+        Err(error) => GameOutcome::Failed {
+            name,
+            install_dir,
+            error,
+        },
+    };
+    let _ = result_tx.send(outcome);
+}
 
+/// One volume's worth of file lists, in the shape `mftscan::scan_roots`
+/// reports them: one entry per game rooted on that volume, each holding
+/// either the game's files or the error that stands in for them.
+type VolumeResults = Vec<(i64, CoreResult<Vec<FileEntry>>)>;
+
+/// Reads one volume's `$MFT` and returns what it found for each of that
+/// volume's candidate roots. `Sync` because the rayon scope body that calls
+/// it must be `Send`, and it is called through a shared reference.
+type VolumeReader<'a> = dyn Fn(&[(i64, PathBuf)]) -> VolumeResults + Sync + 'a;
+
+/// Runs the whole "get every game's files, classify them, hand them to the
+/// writer" half of a scan, with the two things that used to be strictly
+/// sequential now overlapped: this thread reads each eligible volume's
+/// `$MFT` while the pool classifies everything already in hand.
+///
+/// Three groups of games, in the order they start:
+///
+/// 1. Games the MFT pass will never produce entries for - not elevated, no
+///    drive letter, an SSD volume, a junction, a volume that would not open.
+///    They need nothing from the pass, so they start before it does, where
+///    they used to wait behind a pass they never used (33 of 1 603 games on
+///    the reference library).
+/// 2. Games whose volume has just finished being read. A volume's file
+///    entries are complete the moment that volume is, so its games start
+///    then, while the next volume streams.
+/// 3. Games whose MFT result the pass rejected (see
+///    `scan_route::finalize_mft_result`) - started at the same moment as
+///    (2), but walked instead.
+///
+/// The reading itself deliberately stays on this one thread. That is what
+/// keeps `scan_volume_catching_panics` correct (a `catch_unwind` only
+/// catches panics unwinding through its own thread), it keeps two partitions
+/// of one physical disk from fighting over one head, and it buys nothing
+/// anyway: once the reading is hidden under the classification, halving it
+/// changes no wall clock.
+///
+/// `read_volume` is a parameter rather than a direct call to
+/// `mftscan::scan_roots` so the overlap can be tested without an NTFS
+/// volume - see `walkdir_games_start_before_a_volume_has_been_read`.
+fn dispatch_scans(
+    ctx: &ClassifyContext<'_>,
+    games: &[(i64, String, PathBuf)],
+    plan: MftPlan,
+    read_volume: &VolumeReader<'_>,
+    result_tx: &SyncSender<GameOutcome>,
+) -> MftPassOutcome {
     match rayon::ThreadPoolBuilder::new()
         .num_threads(SCAN_THREADS.max(1))
         .build()
     {
         Ok(pool) => pool.scope(|scope| {
-            for (game_id, name, install_dir) in games {
-                // `mpsc::Sender` is `Send` but not `Sync` (and `Notifier`
-                // wraps one), so each task gets its own clone (made here on
-                // the dispatching thread) rather than sharing one
-                // `&Notifier` across worker threads.
-                let result_tx = result_tx.clone();
-                let worker_notifier = notifier.clone();
-                scope.spawn(move |_| {
-                    run_one(*game_id, name, install_dir, result_tx, worker_notifier)
-                });
-            }
+            drive_scan(ctx, games, plan, read_volume, result_tx, &|task| {
+                scope.spawn(move |_| run_one(ctx, task));
+            })
         }),
         // A pool failing to build (extremely unlikely) must not lose the
         // scan entirely - fall back to running everything on this thread.
-        Err(_) => {
-            for (game_id, name, install_dir) in games {
-                run_one(
-                    *game_id,
-                    name,
-                    install_dir,
-                    result_tx.clone(),
-                    notifier.clone(),
-                );
-            }
-        }
+        // Nothing overlaps in that case: each game finishes before the next
+        // volume is read, which is the behaviour this whole function used to
+        // have, only slower. It is also why `read_finished` below is
+        // measured rather than assumed to be an early instant.
+        Err(_) => drive_scan(ctx, games, plan, read_volume, result_tx, &|task| {
+            run_one(ctx, task)
+        }),
     }
 }
 
-/// Result of the MFT index pre-pass: file entries for every game that ended
-/// up going through the MFT path, plus how many games went each way (for
-/// the final status line - see `scan_route::format_scan_summary`).
+/// The body of [`dispatch_scans`], with "start this game's work" left to the
+/// caller: on the pool that is `scope.spawn`, on the fallback path a direct
+/// call. Split out only so those two share one description of what happens
+/// in which order.
+fn drive_scan(
+    ctx: &ClassifyContext<'_>,
+    games: &[(i64, String, PathBuf)],
+    plan: MftPlan,
+    read_volume: &VolumeReader<'_>,
+    result_tx: &SyncSender<GameOutcome>,
+    spawn: &dyn Fn(GameTask),
+) -> MftPassOutcome {
+    let MftPlan {
+        candidates_by_volume,
+        mut walkdir_reasons,
+        volume_probes,
+    } = plan;
+
+    let by_id: HashMap<i64, (&str, &Path)> = games
+        .iter()
+        .map(|(game_id, name, install_dir)| (*game_id, (name.as_str(), install_dir.as_path())))
+        .collect();
+    let candidates: HashSet<i64> = candidates_by_volume
+        .values()
+        .flatten()
+        .map(|(game_id, _)| *game_id)
+        .collect();
+
+    let start = |game_id: i64, name: &str, install_dir: &Path, entries: Option<Vec<FileEntry>>| {
+        spawn(GameTask {
+            game_id,
+            name: name.to_string(),
+            install_dir: install_dir.to_path_buf(),
+            entries,
+            result_tx: result_tx.clone(),
+            notifier: ctx.notifier.clone(),
+        });
+    };
+
+    // (1) Everything no volume owes a file list for starts immediately.
+    for (game_id, name, install_dir) in games {
+        if !candidates.contains(game_id) {
+            start(*game_id, name, install_dir, None);
+        }
+    }
+
+    // (2) and (3): one volume at a time, spawning as each one lands.
+    let mut mft_count = 0usize;
+    for roots in candidates_by_volume.into_values() {
+        let mut reported: HashSet<i64> = HashSet::new();
+        for (game_id, result) in read_volume(&roots) {
+            // Ids come straight from `games`, so a miss here is structurally
+            // impossible; skipping rather than indexing keeps it that way
+            // without a panic if it ever stops being true.
+            let Some((name, install_dir)) = by_id.get(&game_id).copied() else {
+                continue;
+            };
+            reported.insert(game_id);
+            let mft_ok = result.is_ok();
+            let entries = result.unwrap_or_default();
+            let entries_empty = entries.is_empty();
+            let nonempty_on_disk = entries_empty && root_nonempty_on_disk(install_dir);
+
+            match scan_route::finalize_mft_result(mft_ok, entries_empty, nonempty_on_disk) {
+                ScanRoute::Mft => {
+                    mft_count += 1;
+                    start(game_id, name, install_dir, Some(entries));
+                }
+                // A candidate the pass itself rejected: it is walked, so it
+                // belongs in the breakdown alongside the roots never tried.
+                ScanRoute::Walkdir(reason) => {
+                    walkdir_reasons.push((game_id, reason));
+                    start(game_id, name, install_dir, None);
+                }
+            }
+        }
+
+        // A candidate the read said nothing at all about. `scan_roots` seeds
+        // a slot per root and so should never do this, but the old shape
+        // dispatched from `games` and was robust to it for free: a game
+        // missing from the results simply got walked. Preserve that. Losing
+        // a game here would cost its findings with nothing on screen or in
+        // the log to say one went missing.
+        for (game_id, _) in &roots {
+            if reported.contains(game_id) {
+                continue;
+            }
+            let Some((name, install_dir)) = by_id.get(game_id).copied() else {
+                continue;
+            };
+            walkdir_reasons.push((*game_id, scan_route::WalkdirReason::MftFailed));
+            start(*game_id, name, install_dir, None);
+        }
+    }
+
+    MftPassOutcome {
+        mft_count,
+        walkdir_count: games.len() - mft_count,
+        walkdir_reasons,
+        volume_probes,
+        read_finished: Instant::now(),
+    }
+}
+
+/// What the MFT pass ended up doing, once every volume has been read: how
+/// many games went each way (for the final status line - see
+/// `scan_route::format_scan_summary`), why each walked root walked, and when
+/// the reading finished.
+///
+/// No file entries: they are consumed as they are produced (see
+/// [`GameTask`]) rather than collected into a map that has to outlive the
+/// whole classification.
 struct MftPassOutcome {
-    entries: HashMap<i64, Vec<FileEntry>>,
     mft_count: usize,
     walkdir_count: usize,
     /// Why each walked root was walked, one entry per root, paired with the
@@ -759,6 +967,11 @@ struct MftPassOutcome {
     /// checked. Bounded by the number of drive letters in play, unlike the
     /// per-root list.
     volume_probes: Vec<VolumeProbe>,
+    /// When the last volume finished being read - the end of the `scan`
+    /// phase, which no longer coincides with the start of `analyze`. Taken
+    /// here rather than in `run_scan` because only this side knows when the
+    /// reading stopped; the classification it overlaps with runs on past it.
+    read_finished: Instant,
 }
 
 /// One volume's routing inputs, as observed rather than as decided.
@@ -837,43 +1050,42 @@ fn record_routing_evidence(
     }
 }
 
-/// Runs the (single, non-cancellable) MFT index pass ahead of the per-game
-/// scan dispatch: for every game whose install root is eligible (see
-/// `scan_route::initial_route`), tries to read its files straight out of
-/// the NTFS volume's Master File Table instead of walking its directory
-/// tree. Ineligible roots, and roots the pass itself rejects (see
-/// `scan_route::finalize_mft_result`), are simply left out of the returned
-/// map - `dispatch_scans` transparently falls back to `scan_dir` (walkdir)
-/// for any game id not present in it.
+/// What the MFT routing decides before any volume is read: which candidate
+/// roots each volume owes file lists for, which roots are already known to
+/// need a walk, and what each volume's probe saw.
+struct MftPlan {
+    /// Candidates grouped by volume, so that a panic or error while reading
+    /// one volume (see `scan_volume_catching_panics`) can never affect
+    /// another volume's already-decided-good results - each volume gets its
+    /// own `mftscan::scan_roots` call.
+    candidates_by_volume: HashMap<char, Vec<(i64, PathBuf)>>,
+    /// Roots routed to walkdir before the pass began. `drive_scan` appends
+    /// the candidates the pass itself then rejects.
+    walkdir_reasons: Vec<(i64, scan_route::WalkdirReason)>,
+    volume_probes: Vec<VolumeProbe>,
+}
+
+/// Plans the MFT index pass: for every game whose install root is eligible
+/// (see `scan_route::initial_route`), works out which NTFS volume's Master
+/// File Table would supply its files instead of a directory walk. Ineligible
+/// roots go straight into `walkdir_reasons` and never reach a volume.
+///
+/// Everything here is cheap and local - a canonicalization per root, a media
+/// kind and an open probe per *volume*. The expensive part, reading each
+/// volume's `$MFT`, is `drive_scan`'s, where it runs underneath the
+/// classification instead of ahead of it.
 ///
 /// Every game ends up in exactly one of the two buckets that make up
 /// `mft_count + walkdir_count`, by construction: `walkdir_count` is derived
 /// as `total - mft_count` rather than tracked incrementally, so the two
 /// numbers can never drift apart even if a routing edge case is missed.
-///
-/// `cancel` is threaded down into `mftscan::scan_roots` so a cancellation
-/// during this (otherwise non-cancellable) pass stops promptly instead of
-/// reading an entire large volume to completion first. `notifier` receives
-/// one `WorkerMsg::Progress` per chunk of `$MFT` records read on each volume,
-/// so the UI shows something during what used to be a silent, seemingly
-/// stuck phase - see `mftscan::MftProgress`.
-fn run_mft_pass(
-    elevated: bool,
-    games: &[(i64, String, PathBuf)],
-    cancel: &AtomicBool,
-    notifier: &Notifier,
-    lang: Lang,
-) -> MftPassOutcome {
-    let total = games.len();
-
+fn plan_mft_pass(elevated: bool, games: &[(i64, String, PathBuf)]) -> MftPlan {
     if !elevated {
         // The one early exit: no volume can be opened for raw MFT reads at
         // all, so every root walks for the same reason.
         let reason = scan_route::WalkdirReason::NotElevated;
-        return MftPassOutcome {
-            entries: HashMap::new(),
-            mft_count: 0,
-            walkdir_count: total,
+        return MftPlan {
+            candidates_by_volume: HashMap::new(),
             walkdir_reasons: games.iter().map(|(id, _, _)| (*id, reason)).collect(),
             volume_probes: Vec::new(),
         };
@@ -920,10 +1132,6 @@ fn run_mft_pass(
         }
     }
 
-    // Group MFT candidates by volume so that a panic or error while
-    // scanning one volume (see `scan_volume_catching_panics`) can never
-    // affect another volume's already-decided-good results - each volume
-    // gets its own `mftscan::scan_roots` call.
     let mut candidates_by_volume: HashMap<char, Vec<(i64, PathBuf)>> = HashMap::new();
     let mut walkdir_reasons: Vec<(i64, scan_route::WalkdirReason)> = Vec::new();
     for check in &checks {
@@ -942,57 +1150,8 @@ fn run_mft_pass(
             .push((check.game_id, check.install_dir.clone()));
     }
 
-    let install_dir_by_id: HashMap<i64, &PathBuf> =
-        games.iter().map(|(id, _, dir)| (*id, dir)).collect();
-
-    let mut entries_by_id: HashMap<i64, Vec<FileEntry>> = HashMap::new();
-
-    for roots in candidates_by_volume.into_values() {
-        let game_ids: Vec<i64> = roots.iter().map(|(id, _)| *id).collect();
-
-        let mut progress_cb = |p: mftscan::MftProgress| {
-            let pct = (p.records_done * 100)
-                .checked_div(p.records_total)
-                .unwrap_or(0);
-            notifier.send(WorkerMsg::Progress {
-                verb: Verb::Scan,
-                current: p.records_done as usize,
-                total: p.records_total as usize,
-                detail: i18n::reading_mft_detail(lang, p.volume, pct),
-            });
-        };
-
-        let results = scan_volume_catching_panics(
-            || mftscan::scan_roots(&roots, Some(&mut progress_cb), Some(cancel)),
-            &game_ids,
-        );
-
-        for (game_id, result) in results {
-            let mft_ok = result.is_ok();
-            let entries = result.unwrap_or_default();
-            let entries_empty = entries.is_empty();
-            let nonempty_on_disk = entries_empty
-                && install_dir_by_id
-                    .get(&game_id)
-                    .is_some_and(|dir| root_nonempty_on_disk(dir));
-
-            match scan_route::finalize_mft_result(mft_ok, entries_empty, nonempty_on_disk) {
-                ScanRoute::Mft => {
-                    entries_by_id.insert(game_id, entries);
-                }
-                // A candidate the pass itself rejected: `dispatch_scans`
-                // falls back to a walk for it, so it belongs in the
-                // breakdown alongside the roots never tried at all.
-                ScanRoute::Walkdir(reason) => walkdir_reasons.push((game_id, reason)),
-            }
-        }
-    }
-
-    let mft_count = entries_by_id.len();
-    MftPassOutcome {
-        entries: entries_by_id,
-        mft_count,
-        walkdir_count: total - mft_count,
+    MftPlan {
+        candidates_by_volume,
         walkdir_reasons,
         volume_probes,
     }
@@ -1037,9 +1196,12 @@ fn root_nonempty_on_disk(dir: &Path) -> bool {
 /// the MFT/walkdir fallback contract): every game on that volume falls back
 /// to `walkdir`.
 ///
-/// This is only safe to call from the scan worker's own thread (the MFT
-/// pass is not parallelized across threads) - `catch_unwind` only catches a
-/// panic unwinding through the *current* thread. If this were ever
+/// This is only safe to call from the thread that does the reading -
+/// `catch_unwind` only catches a panic unwinding through the *current*
+/// thread. That the reading now runs *concurrently* with classification
+/// (see `dispatch_scans`) changes nothing here: it is still one thread
+/// calling `scan_roots` for one volume after another, which is precisely why
+/// the containment below is still a containment. If the *reading* were ever
 /// parallelized (rayon, spawned threads), each parallel task would need its
 /// own `catch_unwind` inside its own closure; a panic on another thread does
 /// not unwind through this one, and (for rayon specifically) a panicked
@@ -1047,9 +1209,9 @@ fn root_nonempty_on_disk(dir: &Path) -> bool {
 /// after every task in the scope has finished, not from inside a
 /// `catch_unwind` wrapped around a single task.
 fn scan_volume_catching_panics(
-    scan_fn: impl FnOnce() -> CoreResult<Vec<(i64, CoreResult<Vec<FileEntry>>)>>,
+    scan_fn: impl FnOnce() -> CoreResult<VolumeResults>,
     game_ids: &[i64],
-) -> Vec<(i64, CoreResult<Vec<FileEntry>>)> {
+) -> VolumeResults {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(scan_fn)) {
         Ok(Ok(results)) => results,
         Ok(Err(err)) => volume_failure_results(game_ids, err.to_string()),
@@ -1059,10 +1221,7 @@ fn scan_volume_catching_panics(
     }
 }
 
-fn volume_failure_results(
-    game_ids: &[i64],
-    message: String,
-) -> Vec<(i64, CoreResult<Vec<FileEntry>>)> {
+fn volume_failure_results(game_ids: &[i64], message: String) -> VolumeResults {
     game_ids
         .iter()
         .map(|&game_id| (game_id, Err(CoreError::Other(message.clone()))))
@@ -1865,7 +2024,6 @@ mod tests {
             scan_id,
             &games,
             &MftPassOutcome {
-                entries: HashMap::new(),
                 mft_count: 1,
                 walkdir_count: 1,
                 walkdir_reasons: vec![(walked_id, scan_route::WalkdirReason::SsdVolume)],
@@ -1874,6 +2032,7 @@ mod tests {
                     ssd: false,
                     error: Some("cannot open \\\\.\\D: for raw MFT scan".to_string()),
                 }],
+                read_finished: Instant::now(),
             },
         );
 
@@ -2632,7 +2791,7 @@ mod tests {
         let game_ids = vec![10i64, 20i64, 30i64];
 
         let results = scan_volume_catching_panics(
-            || -> CoreResult<Vec<(i64, CoreResult<Vec<FileEntry>>)>> {
+            || -> CoreResult<VolumeResults> {
                 panic!("simulated ntfs crate panic on a malformed volume")
             },
             &game_ids,
@@ -2663,7 +2822,7 @@ mod tests {
         let game_ids = vec![1i64, 2i64];
 
         let results = scan_volume_catching_panics(
-            || -> CoreResult<Vec<(i64, CoreResult<Vec<FileEntry>>)>> {
+            || -> CoreResult<VolumeResults> {
                 Err(CoreError::Other("volume would not open".to_string()))
             },
             &game_ids,
@@ -2696,28 +2855,23 @@ mod tests {
         assert_eq!(entries[0].rel_path, "a.txt");
     }
 
-    /// `run_mft_pass` must never attempt the MFT path at all when not
-    /// elevated - every game goes to `walkdir`, and no volume is even
-    /// probed (there is nothing to unit-test for "no volume probed"
-    /// directly without real disks, but the entries map being empty and the
-    /// counts matching `total`/`0` is the observable contract).
+    /// The MFT path must never even be planned when not elevated - every
+    /// game is a walkdir game with the same reason, and no volume is left
+    /// owing a file list, so `drive_scan` starts all of them before it reads
+    /// anything.
     #[test]
-    fn run_mft_pass_routes_everything_to_walkdir_when_not_elevated() {
+    fn planning_routes_everything_to_walkdir_when_not_elevated() {
         let games = vec![
             (1i64, "Game A".to_string(), PathBuf::from(r"G:\Games\A")),
             (2i64, "Game B".to_string(), PathBuf::from(r"D:\Games\B")),
         ];
 
-        let cancel = AtomicBool::new(false);
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
-        let outcome = run_mft_pass(false, &games, &cancel, &notifier, Lang::En);
+        let plan = plan_mft_pass(false, &games);
 
-        assert!(outcome.entries.is_empty());
-        assert_eq!(outcome.mft_count, 0);
-        assert_eq!(outcome.walkdir_count, 2);
+        assert!(plan.candidates_by_volume.is_empty());
+        assert!(plan.volume_probes.is_empty());
         assert_eq!(
-            outcome.walkdir_reasons,
+            plan.walkdir_reasons,
             vec![
                 (1i64, scan_route::WalkdirReason::NotElevated),
                 (2i64, scan_route::WalkdirReason::NotElevated),
@@ -2726,27 +2880,240 @@ mod tests {
         );
     }
 
-    /// Games with no drive letter (e.g. a UNC path) must never end up in the
-    /// MFT entries map, even when elevated - there is no volume to probe.
+    /// Games with no drive letter (e.g. a UNC path) must never be made a
+    /// volume's candidate, even when elevated - there is no volume to probe.
     #[test]
-    fn run_mft_pass_routes_unc_paths_to_walkdir_even_when_elevated() {
+    fn planning_routes_unc_paths_to_walkdir_even_when_elevated() {
         let games = vec![(
             1i64,
             "Networked Game".to_string(),
             PathBuf::from(r"\\server\share\Games\A"),
         )];
 
-        let cancel = AtomicBool::new(false);
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
-        let outcome = run_mft_pass(true, &games, &cancel, &notifier, Lang::En);
+        let plan = plan_mft_pass(true, &games);
 
-        assert!(outcome.entries.is_empty());
+        assert!(plan.candidates_by_volume.is_empty());
+        assert_eq!(
+            plan.walkdir_reasons,
+            vec![(1i64, scan_route::WalkdirReason::NoVolumeLetter)],
+        );
+    }
+
+    /// The name of a game an outcome is about, whichever way it went.
+    fn outcome_name(outcome: &GameOutcome) -> &str {
+        match outcome {
+            GameOutcome::Scanned(prepared) => &prepared.name,
+            GameOutcome::Failed { name, .. } => name,
+        }
+    }
+
+    /// A plan with one volume owing some games' file lists, and nothing else
+    /// decided - the shape `drive_scan` overlaps against.
+    fn plan_owing(volume: char, roots: Vec<(i64, PathBuf)>) -> MftPlan {
+        MftPlan {
+            candidates_by_volume: HashMap::from([(volume, roots)]),
+            walkdir_reasons: Vec::new(),
+            volume_probes: Vec::new(),
+        }
+    }
+
+    /// The owned halves of a [`ClassifyContext`], in one binding, so the
+    /// dispatch tests below can borrow a whole context out of it instead of
+    /// each repeating six `let`s that say nothing about what they assert.
+    struct Harness {
+        engine: RuleEngine,
+        lang_detector: LangDetector,
+        cancel: AtomicBool,
+        notifier: Notifier,
+        completed: std::sync::atomic::AtomicUsize,
+        /// Held only so the notifier's channel stays open; nothing reads it.
+        _msg_rx: Receiver<WorkerMsg>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let (msg_tx, msg_rx) = std::sync::mpsc::channel();
+            Self {
+                engine: match_all_engine(),
+                lang_detector: LangDetector::new(),
+                cancel: AtomicBool::new(false),
+                notifier: Notifier::new(msg_tx, egui::Context::default()),
+                completed: std::sync::atomic::AtomicUsize::new(0),
+                _msg_rx: msg_rx,
+            }
+        }
+
+        /// Empty `enabled_categories` means "every category enabled".
+        fn context(&self, total: usize) -> ClassifyContext<'_> {
+            ClassifyContext {
+                engine: &self.engine,
+                lang_detector: &self.lang_detector,
+                enabled_categories: &[],
+                cancel: &self.cancel,
+                notifier: &self.notifier,
+                completed: &self.completed,
+                total,
+            }
+        }
+    }
+
+    /// The point of the whole overlap: a game that needs nothing from the
+    /// MFT pass must not wait for it. Asserted at the seam rather than with
+    /// a sleep - the fake volume read *blocks until the walkdir game has
+    /// already been classified*, so the only way this test passes is if that
+    /// game was dispatched before the read began. Under the old sequential
+    /// shape the reader would wait forever, which is what the timeout below
+    /// reports; it is a failure detector, not a delay this test spends.
+    #[test]
+    fn walkdir_games_start_before_a_volume_has_been_read() {
+        let walked_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&walked_dir.path().join("readme.txt"), b"a");
+
+        let indexed_dir = PathBuf::from(r"D:\SteamLibrary\Indexed");
+        let games = vec![
+            (1i64, "Walked".to_string(), walked_dir.path().to_path_buf()),
+            (2i64, "Indexed".to_string(), indexed_dir.clone()),
+        ];
+        let plan = plan_owing('D', vec![(2, indexed_dir)]);
+
+        let harness = Harness::new();
+        let ctx = harness.context(games.len());
+
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<GameOutcome>(8);
+        // The receiver is read from the reading thread (inside `drive_scan`)
+        // and again from this one afterwards; a `Mutex` is what makes the
+        // `&dyn Fn(..) + Sync` reader able to hold it at all.
+        let result_rx = std::sync::Mutex::new(result_rx);
+        let first_seen = std::sync::Mutex::new(None::<String>);
+
+        let read_volume = |roots: &[(i64, PathBuf)]| {
+            let outcome = result_rx
+                .lock()
+                .expect("the receiver lock is never poisoned")
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("a walkdir game must finish while the volume is still being read");
+            *first_seen.lock().expect("lock") = Some(outcome_name(&outcome).to_string());
+            roots
+                .iter()
+                .map(|(game_id, _)| (*game_id, Ok(vec![entry("data\\loc_de.pak")])))
+                .collect()
+        };
+
+        let outcome = dispatch_scans(&ctx, &games, plan, &read_volume, &result_tx);
+        drop(result_tx);
+
+        assert_eq!(
+            first_seen.lock().expect("lock").as_deref(),
+            Some("Walked"),
+            "the game that needs no file table has to be the one that finished first",
+        );
+        let indexed = result_rx
+            .lock()
+            .expect("lock")
+            .recv()
+            .expect("the indexed game reports in too");
+        assert_eq!(outcome_name(&indexed), "Indexed");
+        assert!(
+            matches!(indexed, GameOutcome::Scanned(_)),
+            "entries handed over by the volume read are classified, not walked",
+        );
+        assert_eq!(outcome.mft_count, 1);
+        assert_eq!(outcome.walkdir_count, 1);
+    }
+
+    /// Stop pressed while the reading and the classifying are both live: the
+    /// games a volume hands over after that point must not be classified at
+    /// all. `run_one` checks the flag before it starts, and every task here
+    /// is spawned after the fake read sets it, so this is a decision rather
+    /// than a race.
+    #[test]
+    fn cancelling_while_a_volume_is_being_read_stops_the_games_it_hands_over() {
+        let games = vec![
+            (
+                1i64,
+                "First".to_string(),
+                PathBuf::from(r"D:\SteamLibrary\First"),
+            ),
+            (
+                2i64,
+                "Second".to_string(),
+                PathBuf::from(r"D:\SteamLibrary\Second"),
+            ),
+        ];
+        let plan = plan_owing(
+            'D',
+            games
+                .iter()
+                .map(|(game_id, _, dir)| (*game_id, dir.clone()))
+                .collect(),
+        );
+
+        let harness = Harness::new();
+        let ctx = harness.context(games.len());
+
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<GameOutcome>(8);
+        let read_volume = |roots: &[(i64, PathBuf)]| {
+            harness.cancel.store(true, Ordering::Relaxed);
+            roots
+                .iter()
+                .map(|(game_id, _)| (*game_id, Ok(vec![entry("data\\loc_de.pak")])))
+                .collect()
+        };
+
+        dispatch_scans(&ctx, &games, plan, &read_volume, &result_tx);
+        drop(result_tx);
+
+        let outcomes: Vec<GameOutcome> = result_rx.into_iter().collect();
+        assert_eq!(outcomes.len(), 2, "every game still reports in");
+        for outcome in &outcomes {
+            match outcome {
+                GameOutcome::Failed { error, .. } => assert_eq!(
+                    error.to_string(),
+                    "cancelled",
+                    "a cancelled game travels as a cancellation, not as a failure",
+                ),
+                GameOutcome::Scanned(prepared) => {
+                    panic!("{} was classified after Stop", prepared.name)
+                }
+            }
+        }
+    }
+
+    /// A volume read that answers about nothing must not swallow the games
+    /// it was asked about. `mftscan::scan_roots` seeds a slot per root, so
+    /// this is a guard rather than an observed bug - but the old shape
+    /// dispatched from the game list and so could not lose a game, and a
+    /// game lost here would cost its findings with nothing on screen or in
+    /// the log to say one went missing.
+    #[test]
+    fn a_candidate_the_volume_never_answers_about_is_walked_instead() {
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("readme.txt"), b"a");
+
+        let games = vec![(1i64, "Silent".to_string(), install_dir.path().to_path_buf())];
+        let plan = plan_owing('D', vec![(1, install_dir.path().to_path_buf())]);
+
+        let harness = Harness::new();
+        let ctx = harness.context(games.len());
+
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<GameOutcome>(8);
+        let read_volume = |_roots: &[(i64, PathBuf)]| VolumeResults::new();
+
+        let outcome = dispatch_scans(&ctx, &games, plan, &read_volume, &result_tx);
+        drop(result_tx);
+
+        let outcomes: Vec<GameOutcome> = result_rx.into_iter().collect();
+        assert_eq!(outcomes.len(), 1, "the game still reports in");
+        assert!(
+            matches!(&outcomes[0], GameOutcome::Scanned(prepared) if prepared.name == "Silent"),
+            "a candidate with no answer must be walked, not dropped",
+        );
         assert_eq!(outcome.mft_count, 0);
         assert_eq!(outcome.walkdir_count, 1);
         assert_eq!(
             outcome.walkdir_reasons,
-            vec![(1i64, scan_route::WalkdirReason::NoVolumeLetter)],
+            vec![(1i64, scan_route::WalkdirReason::MftFailed)],
+            "and the breakdown has to name it, like any other walked root",
         );
     }
 

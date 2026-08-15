@@ -371,7 +371,6 @@ pub struct Strings {
     pub settings_not_saved_no_path: &'static str,
 
     // -- worker progress verbs --
-    pub verb_scan: &'static str,
     pub verb_analyze: &'static str,
     pub verb_delete: &'static str,
     pub verb_compact: &'static str,
@@ -415,11 +414,13 @@ pub fn strings(lang: Lang) -> &'static Strings {
 /// the *current* UI language, even if it changes mid-operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
-    /// Reading a volume's file table (the MFT pre-pass) - the "disk" phase.
-    Scan,
-    /// Classifying each game's files - the second, per-game phase. Labelled
-    /// distinctly from [`Verb::Scan`] so the user doesn't read the two scan
-    /// phases as "scanning twice"; see `worker::scan`.
+    /// A scan, all of it. There used to be a second verb here for the MFT
+    /// pre-pass, because it was a phase of its own that ran to completion
+    /// before anything was classified. It no longer is: the file table is
+    /// read underneath the classification (see `worker::scan`), so both
+    /// would now be live at once and would fight over one bar with two
+    /// different totals. The bar counts games and the file-table read
+    /// appears in the detail line instead.
     Analyze,
     Delete,
     Compact,
@@ -431,7 +432,6 @@ pub enum Verb {
 pub fn verb_label(lang: Lang, verb: Verb) -> &'static str {
     let s = strings(lang);
     match verb {
-        Verb::Scan => s.verb_scan,
         Verb::Analyze => s.verb_analyze,
         Verb::Delete => s.verb_delete,
         Verb::Compact => s.verb_compact,
@@ -663,7 +663,6 @@ impl Strings {
                 "settings_not_saved_no_path",
                 self.settings_not_saved_no_path,
             ),
-            ("verb_scan", self.verb_scan),
             ("verb_analyze", self.verb_analyze),
             ("verb_delete", self.verb_delete),
             ("verb_compact", self.verb_compact),
@@ -702,13 +701,7 @@ mod tests {
     #[test]
     fn every_verb_has_a_label_in_both_languages() {
         for lang in [Lang::En, Lang::Uk] {
-            for verb in [
-                Verb::Scan,
-                Verb::Analyze,
-                Verb::Delete,
-                Verb::Compact,
-                Verb::Clear,
-            ] {
+            for verb in [Verb::Analyze, Verb::Delete, Verb::Compact, Verb::Clear] {
                 assert!(!verb_label(lang, verb).is_empty());
             }
         }

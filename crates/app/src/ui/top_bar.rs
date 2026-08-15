@@ -285,6 +285,50 @@ mod tests {
         assert!(!app.can_cancel());
     }
 
+    /// The file table is now read *underneath* the classification rather
+    /// than before it, so both would be reporting at once. They share one
+    /// bar: it counts games (the work that finishes last) and the volume
+    /// read is only the detail line. Pinned here because the alternative -
+    /// a second verb with a records-read fraction of its own - makes the bar
+    /// jump between two unrelated totals for the first half of a scan.
+    #[test]
+    fn the_file_table_read_shows_as_detail_on_the_game_counting_bar() {
+        let mut test = UiTest::new(show);
+        let detail = i18n::reading_mft_detail(test.app().lang(), 'D', 42);
+        test.app_mut().begin_job(true);
+        test.app_mut().apply_message(WorkerMsg::Progress {
+            verb: i18n::Verb::Analyze,
+            current: 7,
+            total: 1603,
+            detail,
+        });
+        test.run();
+
+        // The counter is games, not records: 7 of 1603, while the detail
+        // says what the disk is doing.
+        test.assert_label_containing("7/1603");
+        test.assert_label_containing("42%");
+    }
+
+    /// The same bar, same verb, a moment later - the only thing that changes
+    /// when the reading finishes is the detail line. A verb switch here
+    /// would relabel a bar mid-scan for no change in what it counts.
+    #[test]
+    fn a_classified_game_keeps_the_same_bar_the_volume_read_used() {
+        let mut test = UiTest::new(show);
+        test.app_mut().begin_job(true);
+        test.app_mut().apply_message(WorkerMsg::Progress {
+            verb: i18n::Verb::Analyze,
+            current: 7,
+            total: 1603,
+            detail: "Test Game".to_string(),
+        });
+        test.run();
+
+        let verb = i18n::verb_label(test.app().lang(), i18n::Verb::Analyze);
+        test.assert_label_containing(&format!("{verb} 7/1603: Test Game"));
+    }
+
     // At 8 fps each frame lasts 0.125s; sample the middle of each slot.
     fn frame_at_slot(slot: i64) -> char {
         spinner_frame(slot as f64 * 0.125 + 0.06)

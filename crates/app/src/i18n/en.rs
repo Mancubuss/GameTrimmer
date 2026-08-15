@@ -271,7 +271,6 @@ pub(super) const STRINGS: Strings = Strings {
     database_cleared: "Database cleared.",
     settings_not_saved_no_path: "Settings not saved: no path to gametrimmer.ini.",
 
-    verb_scan: "Scanning",
     verb_analyze: "Analyzing",
     verb_delete: "Deleting",
     verb_compact: "Compacting database",

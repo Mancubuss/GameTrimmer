@@ -47,7 +47,12 @@ pub enum WorkerMsg {
     /// `i18n::verb_label` (kept as an enum rather than a pre-localized
     /// `&'static str` so the label always reflects the *current* UI
     /// language); `detail` names the item currently being worked on (a game
-    /// name for scanning, a file name for deletion). Compaction has no
+    /// name for scanning, a file name for deletion). A scan has one other
+    /// producer of `detail`: the volume whose file table is being read
+    /// underneath the classification writes there too, on the same verb and
+    /// the same game counter, because it is a second thing happening rather
+    /// than a second thing to count - see `worker::scan::run_scan`.
+    /// Compaction has no
     /// per-item detail - it leaves `detail` empty and reports an estimated
     /// `current`/100 percent instead (see
     /// `gametrimmer_core::db::compact_observed`); `ui::top_bar` renders that

@@ -1408,13 +1408,27 @@ pub fn freed_percent(selected: u64, total: u64) -> f64 {
 /// no fresh scan has completed yet (either nothing has been scanned this
 /// session, or the current results were loaded from a previous scan rather
 /// than produced by one - see `WorkerMsg::Done`'s `timing` field).
+///
+/// **These two spans overlap; they are not a partition of `total`.** The
+/// file-table read runs underneath the classification rather than ahead of
+/// it, so both spans start when the libraries are on disk and only their end
+/// points differ. `scan + analyze` therefore exceeds `total`, and the gap
+/// between `analyze`'s end and `total` is post-scan housekeeping. The log
+/// line in `run_scan` states the overlap in words for the same reason this
+/// comment does: a reader who adds the two numbers must not conclude the
+/// arithmetic is broken.
 #[derive(Debug, Clone, Copy)]
 pub struct ScanTiming {
-    /// Discovery + persist + the MFT index pre-pass (`Verb::Scan` in the
-    /// progress bar). Naturally tiny on an SSD-only setup, where the MFT
-    /// pass is skipped entirely - that is the honest phase split, not a bug.
+    /// Discovery + persist + reading every eligible volume's file table -
+    /// the IO half. Naturally tiny on an SSD-only setup, where the MFT pass
+    /// is skipped entirely; on an HDD library it is the span that used to be
+    /// paid before any game was classified and is now hidden underneath
+    /// `analyze`.
     pub scan: std::time::Duration,
-    /// Per-game scan+classify+write (`Verb::Analyze` in the progress bar).
+    /// Per-game classify+write (`Verb::Analyze` in the progress bar), from
+    /// the moment the pool opens to the moment the writer joins. Contains
+    /// the whole of `scan` except the discovery+persist part that precedes
+    /// both.
     pub analyze: std::time::Duration,
     /// The whole scan, start to finish - matches the elapsed time already
     /// folded into `format_scan_summary`'s transient status line.

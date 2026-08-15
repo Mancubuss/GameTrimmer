@@ -274,7 +274,6 @@ pub(super) const STRINGS: Strings = Strings {
     database_cleared: "Базу даних очищено.",
     settings_not_saved_no_path: "Налаштування не збережено: немає шляху до gametrimmer.ini.",
 
-    verb_scan: "Сканування",
     verb_analyze: "Аналіз",
     verb_delete: "Видалення",
     verb_compact: "Стискання бази даних",
