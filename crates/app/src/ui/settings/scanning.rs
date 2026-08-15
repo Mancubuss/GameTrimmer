@@ -472,6 +472,24 @@ fn show_routing(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.small(&app.last_routing_breakdown);
     }
+
+    // The way back. Elevation is otherwise offered only by the startup modal
+    // (`ui::dialogs::show_elevation_prompt`), and that modal is exactly what
+    // "Don't ask again" switches off - which left the checkbox a one-way
+    // door: the setting it writes is not editable here, so the only route
+    // back was editing the ini by hand. The button is not gated on that
+    // setting, because it is equally the way back from having dismissed the
+    // modal for the session, and because "you turned this off" is a worse
+    // thing for the screen to say than simply offering the action.
+    if !app.elevated {
+        ui.add_space(8.0);
+        if ui
+            .add_enabled(!app.busy, egui::Button::new(s.btn_relaunch_elevated))
+            .clicked()
+        {
+            app.relaunch_elevated();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -840,10 +858,40 @@ mod tests {
         test.assert_label("gt_routing_probe");
     }
 
-    /// The block explains what happened; it must not offer a choice, because
-    /// there is none. A stray clickable control here would be a promise the
-    /// scanner does not keep - the route is decided per volume from the
-    /// device's own seek penalty, not from anything on this screen.
+    /// Elevation has to be reachable from here, because the startup modal is
+    /// the only other place that offers it and its "Don't ask again"
+    /// checkbox turns that place off permanently. Without this button the
+    /// checkbox is a one-way door: it writes a setting that no screen can
+    /// edit, leaving the ini as the only route back.
+    #[test]
+    fn an_unelevated_session_can_still_reach_the_restart_offer() {
+        let mut test = open_scanning();
+        let s = test.strings();
+
+        test.app_mut().elevated = false;
+        test.app_mut().settings.never_ask_elevation = true;
+        test.run();
+
+        test.assert_label(s.btn_relaunch_elevated);
+    }
+
+    /// And it must not be on screen when it would do nothing: an already
+    /// elevated process has nothing to relaunch into.
+    #[test]
+    fn the_restart_offer_is_absent_once_already_elevated() {
+        let mut test = open_scanning();
+        let s = test.strings();
+
+        test.app_mut().elevated = true;
+        test.run();
+
+        test.assert_no_label(s.btn_relaunch_elevated);
+    }
+
+    /// The block explains what happened; it must not offer a choice about
+    /// routing, because there is none. A stray routing control here would be
+    /// a promise the scanner does not keep - the route is decided per volume
+    /// from the device's own seek penalty, not from anything on this screen.
     #[test]
     fn the_scan_method_block_only_reports_and_never_offers_a_setting() {
         let test = open_scanning();
