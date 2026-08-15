@@ -408,7 +408,12 @@ pub fn dedupe_games_across_libraries(libraries: Vec<DiscoveredLibrary>) -> Vec<D
 /// A path reduced to its comparable form: lowercase, backslash-separated, no
 /// trailing separator. Windows paths are case-insensitive and providers are not
 /// consistent about either the case or a trailing `\`.
-fn comparable_path(path: &Path) -> String {
+///
+/// `pub` rather than crate-private: this is the one path-comparison routine
+/// in the codebase, and other path-keyed comparisons (library exclusion -
+/// see `Settings::excluded_libraries`) reuse it rather than growing a second,
+/// possibly-inconsistent normalization elsewhere.
+pub fn comparable_path(path: &Path) -> String {
     path.to_string_lossy()
         .replace('/', "\\")
         .trim_end_matches('\\')

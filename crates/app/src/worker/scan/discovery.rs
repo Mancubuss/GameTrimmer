@@ -11,10 +11,18 @@ pub(super) struct DiscoveryOutcome {
 /// Runs every provider and the persisted manual-library source. Confirmed
 /// absence is harmless; degraded inventories remain visible but read-only;
 /// any failed provider or panic rejects the generation before staging starts.
+///
+/// `excluded_libraries` is the persisted `Settings::excluded_libraries`
+/// list, naming registered roots the scan does not descend into. Applied via
+/// [`drop_excluded`], after the cross-provider merge and dedupe below, not
+/// before: filtering earlier would fight the merge, since two providers (or a
+/// provider and a manual entry) can describe the same root before it is
+/// reconciled into one [`DiscoveredLibrary`].
 pub(super) fn discover_libraries(
     conn: &Connection,
     lang: Lang,
     notifier: &Notifier,
+    excluded_libraries: &[String],
 ) -> Result<DiscoveryOutcome, i18n::Reported> {
     let mut libraries = Vec::new();
     let mut diagnostics = Vec::new();
@@ -96,6 +104,7 @@ pub(super) fn discover_libraries(
     // removed using component-boundary path comparison.
     let libraries = providers::merge_libraries_by_path(libraries);
     let libraries = providers::dedupe_games_across_libraries(libraries);
+    let libraries = drop_excluded(libraries, excluded_libraries);
     if libraries.is_empty() {
         return Err(i18n::Reported::new(lang, i18n::no_libraries_found));
     }
@@ -105,4 +114,92 @@ pub(super) fn discover_libraries(
         diagnostics,
         degraded,
     })
+}
+
+/// Drops any library whose root is in `excluded` (a list of
+/// [`providers::comparable_path`] keys - see `Settings::excluded_libraries`).
+///
+/// A library excluded down to nothing here is indistinguishable from one
+/// that was never discovered: it falls through to the same
+/// `no_libraries_found` error as an empty result from every provider. That is
+/// deliberate rather than a special case worth its own message - the UI's
+/// floor (the last included library cannot be excluded, see
+/// `ui::settings::scanning::show_libraries`) is what is supposed to prevent
+/// this in the ordinary flow; a hand-edited ini reaching it anyway should
+/// fail the same way any other empty scan does.
+fn drop_excluded(libraries: Vec<DiscoveredLibrary>, excluded: &[String]) -> Vec<DiscoveredLibrary> {
+    if excluded.is_empty() {
+        return libraries;
+    }
+    libraries
+        .into_iter()
+        .filter(|library| {
+            !excluded
+                .iter()
+                .any(|key| key == &providers::comparable_path(&library.path))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn library(path: &str) -> DiscoveredLibrary {
+        DiscoveredLibrary {
+            vendor: "steam",
+            path: PathBuf::from(path),
+            games: Vec::new(),
+            orphan_evidence: OrphanEvidence::Authoritative,
+        }
+    }
+
+    #[test]
+    fn drop_excluded_removes_only_the_matching_root() {
+        let libraries = vec![library(r"F:\SteamLibrary"), library(r"H:\itch.io")];
+
+        let kept = drop_excluded(
+            libraries,
+            &[providers::comparable_path(Path::new(r"H:\itch.io"))],
+        );
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].path, PathBuf::from(r"F:\SteamLibrary"));
+    }
+
+    /// Windows paths are case-insensitive and can be written with either
+    /// separator - the same requirement `comparable_path` already exists for
+    /// (see `providers::merge_libraries_by_path`), reused rather than
+    /// re-derived here.
+    #[test]
+    fn drop_excluded_compares_case_and_separator_insensitively() {
+        let libraries = vec![library(r"H:\itch.io")];
+
+        let kept = drop_excluded(
+            libraries,
+            &[providers::comparable_path(Path::new("h:/ITCH.IO/"))],
+        );
+
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn drop_excluded_is_a_no_op_with_nothing_excluded() {
+        let libraries = vec![library(r"F:\SteamLibrary"), library(r"H:\itch.io")];
+        let kept = drop_excluded(libraries.clone(), &[]);
+        assert_eq!(kept.len(), libraries.len());
+    }
+
+    /// Excluding every registered library must not error inside this
+    /// function - the empty result is the caller's signal to raise
+    /// `no_libraries_found`, not something `drop_excluded` decides on its own.
+    #[test]
+    fn drop_excluded_can_empty_the_list_entirely() {
+        let libraries = vec![library(r"F:\SteamLibrary")];
+        let kept = drop_excluded(
+            libraries,
+            &[providers::comparable_path(Path::new(r"F:\SteamLibrary"))],
+        );
+        assert!(kept.is_empty());
+    }
 }

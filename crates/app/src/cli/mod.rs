@@ -203,6 +203,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         lang,
         keep_languages: settings.keep_languages.clone(),
         enabled_categories: settings.enabled_categories.clone(),
+        excluded_libraries: settings.excluded_libraries.clone(),
     };
 
     let (findings, scan_summary) = match run_scan_headless(&db_path, elevated, options) {

@@ -361,6 +361,35 @@ fn serialize_enabled_categories(ids: &[String]) -> String {
     ids.join(",")
 }
 
+/// Parses a comma-separated string of excluded-library path keys into a
+/// trimmed, lowercased, order-preserving deduplicated list.
+///
+/// Values are expected to already be normalized via
+/// [`crate::providers::comparable_path`] by the time they reach here - the
+/// UI computes the key from a [`std::path::Path`] before ever calling
+/// [`Settings::excluded_libraries`]'s setter, and this crate has no business
+/// re-deriving path semantics from a bare string. The trim/lowercase here is
+/// only a defensive pass over a hand-edited ini, mirroring
+/// [`parse_enabled_categories`].
+///
+/// Like [`parse_enabled_categories`] and unlike [`parse_keep_languages`], an
+/// empty result stays empty: no exclusions is the ordinary state, not a
+/// fallback to some default set of excluded libraries.
+fn parse_excluded_libraries(value: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    value
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .filter(|s| seen.insert(s.clone()))
+        .collect()
+}
+
+/// Inverse of [`parse_excluded_libraries`] for storage.
+fn serialize_excluded_libraries(paths: &[String]) -> String {
+    paths.join(",")
+}
+
 /// Inverse of [`bool_as_str`]. `None` for unknown values (e.g. written by a
 /// future version) - callers fall back to the field's default.
 fn parse_bool(value: &str) -> Option<bool> {
@@ -439,6 +468,28 @@ pub struct Settings {
     /// reads and writes it, re-applying it to the tree on the spot, and any
     /// hand-edited checkbox drops it to [`SelectionProfile::Custom`] so the
     /// label stops claiming a policy the selection no longer follows.
+    /// Registered library roots (see `game_libraries` in the database) the
+    /// scan does not descend into. Keyed by path, normalized through
+    /// [`crate::providers::comparable_path`] - not by `game_libraries.id`,
+    /// which is not stable across a database rebuild.
+    ///
+    /// This is *exclude*, not *remove*: the row in `game_libraries` is left
+    /// alone, so the library stays visible in Settings with its toggle off
+    /// and survives a re-scan without coming back into the scanned set. A
+    /// vendor-detected library that instead disappeared from the list on
+    /// exclude would simply be Remove wearing a different label - Remove
+    /// already exists for manual libraries and works that way on purpose
+    /// (see `ui::settings::scanning::show_libraries`).
+    ///
+    /// Empty means nothing is excluded - the ordinary state, and the default.
+    /// Unlike [`Self::enabled_categories`], there is no inverted "empty means
+    /// all" convention here: every registered library is scanned unless its
+    /// key is in this list, which is the plain reading of the field name.
+    /// Callers (the settings dialog) are responsible for never letting the
+    /// last included library be excluded - discovery already errors with
+    /// `no_libraries_found` on an empty scan set, so excluding everything
+    /// would leave a scan with nothing to do.
+    pub excluded_libraries: Vec<String>,
     pub selection_profile: SelectionProfile,
     /// The profile a **fresh scan** pre-selects with.
     ///
@@ -487,6 +538,7 @@ impl Default for Settings {
             never_ask_elevation: false,
             theme: Theme::default(),
             enabled_categories: Vec::new(),
+            excluded_libraries: Vec::new(),
             selection_profile: SelectionProfile::default(),
             default_selection_profile: SelectionProfile::default(),
             confirm_behavior: ConfirmBehavior::default(),
@@ -509,6 +561,7 @@ const LEGACY_SCAN_ROUTING_KEY: &str = "scan_routing";
 const NEVER_ASK_ELEVATION_KEY: &str = "never_ask_elevation";
 const THEME_KEY: &str = "theme";
 const ENABLED_CATEGORIES_KEY: &str = "enabled_categories";
+const EXCLUDED_LIBRARIES_KEY: &str = "excluded_libraries";
 const SELECTION_PROFILE_KEY: &str = "selection_profile";
 const DEFAULT_SELECTION_PROFILE_KEY: &str = "default_selection_profile";
 const CONFIRM_BEHAVIOR_KEY: &str = "confirm_behavior";
@@ -516,7 +569,7 @@ const LOGGING_ENABLED_KEY: &str = "logging_enabled";
 const HAS_SCANNED_KEY: &str = "has_scanned";
 const DISCLAIMER_ACCEPTED_KEY: &str = "disclaimer_accepted";
 
-const SETTINGS_KEYS: [&str; 13] = [
+const SETTINGS_KEYS: [&str; 14] = [
     DELETE_METHOD_KEY,
     APP_LANGUAGE_KEY,
     KEEP_LANGUAGES_KEY,
@@ -524,6 +577,7 @@ const SETTINGS_KEYS: [&str; 13] = [
     NEVER_ASK_ELEVATION_KEY,
     THEME_KEY,
     ENABLED_CATEGORIES_KEY,
+    EXCLUDED_LIBRARIES_KEY,
     SELECTION_PROFILE_KEY,
     DEFAULT_SELECTION_PROFILE_KEY,
     CONFIRM_BEHAVIOR_KEY,
@@ -560,6 +614,9 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
         enabled_categories: value(ENABLED_CATEGORIES_KEY)
             .map(parse_enabled_categories)
             .unwrap_or_default(),
+        excluded_libraries: value(EXCLUDED_LIBRARIES_KEY)
+            .map(parse_excluded_libraries)
+            .unwrap_or_default(),
         selection_profile: value(SELECTION_PROFILE_KEY)
             .and_then(SelectionProfile::parse)
             .unwrap_or_default(),
@@ -585,7 +642,7 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
 /// reports the parsed settings: `Settings` is not serde-backed, and this is
 /// already the canonical text form of every field, so a `Serialize` derive
 /// would be a second description of the same thing to keep in sync.
-pub fn settings_values(settings: &Settings) -> [(&'static str, String); 12] {
+pub fn settings_values(settings: &Settings) -> [(&'static str, String); 13] {
     [
         (DELETE_METHOD_KEY, settings.delete_method.as_str().into()),
         (APP_LANGUAGE_KEY, settings.app_language.as_str().into()),
@@ -601,6 +658,10 @@ pub fn settings_values(settings: &Settings) -> [(&'static str, String); 12] {
         (
             ENABLED_CATEGORIES_KEY,
             serialize_enabled_categories(&settings.enabled_categories),
+        ),
+        (
+            EXCLUDED_LIBRARIES_KEY,
+            serialize_excluded_libraries(&settings.excluded_libraries),
         ),
         (
             SELECTION_PROFILE_KEY,
@@ -660,8 +721,8 @@ pub fn load(conn: &Connection) -> Result<Settings> {
 
 /// Persists every settings field.
 ///
-/// All twelve writes go in one transaction. Outside one, each `INSERT` is its
-/// own implicit transaction and costs a WAL sync of its own - twelve syncs per
+/// All thirteen writes go in one transaction. Outside one, each `INSERT` is its
+/// own implicit transaction and costs a WAL sync of its own - thirteen syncs per
 /// flipped radio button, which on a USB flash drive is the difference between
 /// instant and a visible pause (MT-I01, MT-N01). One transaction also makes the
 /// write atomic: a pull mid-save can no longer leave half the settings updated.
@@ -1175,6 +1236,59 @@ mod tests {
     }
 
     #[test]
+    fn defaults_to_no_excluded_libraries_on_empty_database() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        let settings = load(&conn).expect("load settings");
+        assert!(
+            settings.excluded_libraries.is_empty(),
+            "nothing is excluded until the user says otherwise"
+        );
+    }
+
+    #[test]
+    fn save_then_load_round_trips_excluded_libraries() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        let settings = Settings {
+            excluded_libraries: vec![r"h:\itch.io".to_string(), r"f:\steamlibrary".to_string()],
+            ..Settings::default()
+        };
+        save(&conn, &settings).expect("save settings");
+        let loaded = load(&conn).expect("load settings");
+        assert_eq!(loaded.excluded_libraries, settings.excluded_libraries);
+    }
+
+    #[test]
+    fn empty_string_excluded_libraries_stays_empty() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('excluded_libraries', '')",
+            [],
+        )
+        .expect("insert empty string");
+        let settings = load(&conn).expect("load settings");
+        assert!(
+            settings.excluded_libraries.is_empty(),
+            "an empty excluded_libraries must stay empty, not fall back to some default list"
+        );
+    }
+
+    #[test]
+    fn excluded_libraries_normalizes_dedup_trims_lowercases() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            r"INSERT INTO settings (key, value) VALUES ('excluded_libraries', ' H:\ITCH.IO, f:\steamlibrary , F:\SteamLibrary, h:\itch.io ')",
+            [],
+        )
+        .expect("insert messy excluded-libraries");
+        let settings = load(&conn).expect("load settings");
+        assert_eq!(
+            settings.excluded_libraries,
+            vec![r"h:\itch.io".to_string(), r"f:\steamlibrary".to_string()],
+            "excluded-libraries should be deduplicated, trimmed, and lowercased"
+        );
+    }
+
+    #[test]
     fn defaults_to_balanced_profile_on_empty_database() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
         let settings = load(&conn).expect("load settings");
@@ -1487,6 +1601,7 @@ mod tests {
         cases.push(Settings {
             keep_languages: vec!["uk".into(), "en".into(), "ja".into()],
             enabled_categories: vec!["docs".into(), "redist".into()],
+            excluded_libraries: vec![r"h:\itch.io".into()],
             logging_enabled: true,
             has_scanned: true,
             disclaimer_accepted: true,
@@ -1522,6 +1637,7 @@ mod tests {
               never_ask_elevation=maybe\n\
               theme=sepia\n\
               enabled_categories=\n\
+              excluded_libraries=\n\
               selection_profile=reckless\n\
               default_selection_profile=reckless\n\
               confirm_behavior=only_above_1gb\n\
@@ -1534,6 +1650,7 @@ mod tests {
         let loaded = load_file(&path).expect("a damaged ini must remain non-fatal");
         assert_eq!(loaded, Settings::default());
         assert!(loaded.enabled_categories.is_empty());
+        assert!(loaded.excluded_libraries.is_empty());
         assert_eq!(loaded.keep_languages, default_keep_languages());
     }
 

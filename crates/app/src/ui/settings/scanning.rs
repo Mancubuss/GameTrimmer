@@ -20,9 +20,12 @@
 //!   penalty, and neither override was worth its place on screen - see
 //!   [`show_routing`].
 
+use std::path::Path;
+
 use eframe::egui;
 
 use gametrimmer_core::langdetect::LangData;
+use gametrimmer_core::providers;
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
@@ -30,7 +33,7 @@ use crate::model::{
     self, category_display, category_enabled, category_risk, category_ui_key, CATEGORY_ORDER,
 };
 use crate::ui::{gated_button, row_actions};
-use crate::worker::manual::MANUAL_VENDOR;
+use crate::worker::manual::{LibraryRow, MANUAL_VENDOR};
 
 /// Height the candidate list is allowed to take before it scrolls. Bounded
 /// so a search with many hits cannot push the routing block off the section
@@ -57,6 +60,14 @@ fn separate(ui: &mut egui::Ui) {
 /// The registered libraries, with the disk each one occupies. Only manually
 /// added libraries can be removed - a vendor-detected one would simply come
 /// back on the next scan.
+///
+/// Every library, manual or vendor-detected, can instead be *excluded* -
+/// unlike Remove, this leaves the `game_libraries` row and the row on screen
+/// alone, toggle off. A library that vanished from the list on exclude would
+/// just be Remove wearing a different label, and Remove already exists (and
+/// is correct) for manual libraries specifically because a re-scan brings a
+/// vendor-detected one straight back. See
+/// `gametrimmer_core::settings::Settings::excluded_libraries`.
 fn show_libraries(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
     let s = i18n::strings(lang);
@@ -83,6 +94,7 @@ fn show_libraries(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     }
 
     let mut to_remove = None;
+    let mut excluded = app.settings.excluded_libraries.clone();
     for library in &app.libraries {
         ui.horizontal(|ui| {
             ui.label(format!("[{}]", library.vendor));
@@ -91,6 +103,29 @@ fn show_libraries(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 lang,
                 app.occupancy.library_bytes(library.id),
             ));
+
+            let key = providers::comparable_path(&library.path);
+            let included = !excluded.iter().any(|excluded_key| excluded_key == &key);
+            // The floor: excluding every library would leave the scan with
+            // nothing to do (discovery already errors with
+            // `no_libraries_found` on an empty set) - the last included
+            // library refuses the click the same way the last keep-language
+            // or category does, rather than accepting it and reverting.
+            let blocked = (included && included_count(&app.libraries, &excluded) <= 1)
+                .then_some(s.disabled_last_library);
+            let mut checked = included;
+            let response = ui.add_enabled(
+                !app.busy && blocked.is_none(),
+                egui::Checkbox::new(&mut checked, include_in_scan_label(s, &library.path)),
+            );
+            let response = match blocked {
+                Some(reason) => response.on_disabled_hover_text(reason),
+                None => response,
+            };
+            if response.changed() {
+                excluded = toggled_exclusion(&excluded, &key, !checked);
+            }
+
             if library.vendor == MANUAL_VENDOR
                 && ui
                     .add_enabled(!app.busy, egui::Button::new(s.btn_remove))
@@ -100,9 +135,53 @@ fn show_libraries(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             }
         });
     }
+    if excluded != app.settings.excluded_libraries {
+        app.set_excluded_libraries(excluded);
+    }
     if let Some(library_id) = to_remove {
         app.remove_manual_library(library_id);
     }
+}
+
+/// How many of the registered libraries are not in `excluded`.
+fn included_count(libraries: &[LibraryRow], excluded: &[String]) -> usize {
+    libraries
+        .iter()
+        .filter(|library| {
+            let key = providers::comparable_path(&library.path);
+            !excluded.iter().any(|excluded_key| excluded_key == &key)
+        })
+        .count()
+}
+
+/// The per-row checkbox's own accessibility label. It carries the path
+/// rather than a bare "Include in scan" repeated on every row, the same
+/// technique `remove_chip_label` uses for the keep-language chips: several
+/// rows sharing one plain label would make [`crate::ui::harness::UiTest`]'s
+/// label lookups (and a screen reader) unable to tell them apart.
+fn include_in_scan_label(s: &i18n::Strings, path: &Path) -> String {
+    format!(
+        "{} {}",
+        s.library_include_checkbox,
+        row_actions::windows_path_string(path)
+    )
+}
+
+/// The excluded-library list with one library's key added or removed.
+/// Returns a new list rather than editing in place - mirrors `toggled` for
+/// categories, minus that function's "empty means everything" convention:
+/// `excluded_libraries` has no inverted meaning, so there is nothing to
+/// materialize or collapse.
+fn toggled_exclusion(excluded: &[String], key: &str, exclude: bool) -> Vec<String> {
+    let mut next = excluded.to_vec();
+    if exclude {
+        if !next.iter().any(|excluded_key| excluded_key == key) {
+            next.push(key.to_string());
+        }
+    } else {
+        next.retain(|excluded_key| excluded_key != key);
+    }
+    next
 }
 
 /// The language every game's interface falls back to, and the one edit on
@@ -410,6 +489,26 @@ mod tests {
         test
     }
 
+    /// Registers two libraries directly on `app.libraries`, the same field
+    /// `refresh_libraries` populates from the database - a UI test has no
+    /// database, so this is the harness-level equivalent of having scanned
+    /// once with a Steam library and a manually added one already known.
+    fn seed_two_libraries(test: &mut UiTest) {
+        test.app_mut().libraries = vec![
+            LibraryRow {
+                id: 1,
+                vendor: "steam".to_string(),
+                path: std::path::PathBuf::from(r"F:\SteamLibrary"),
+            },
+            LibraryRow {
+                id: 2,
+                vendor: MANUAL_VENDOR.to_string(),
+                path: std::path::PathBuf::from(r"H:\itch.io"),
+            },
+        ];
+        test.run();
+    }
+
     /// Round 2 of the failed attempt shipped a "Scanning" tab that showed
     /// only the library list and a large blank gap below it. Every block has
     /// to be present.
@@ -422,6 +521,56 @@ mod tests {
         test.assert_label(s.keep_languages_label);
         test.assert_label(s.categories_label);
         test.assert_label(s.scan_method_label);
+    }
+
+    /// The central claim of exclude-vs-remove: unchecking a library's toggle
+    /// persists the exclusion and the row stays exactly where it was -
+    /// unlike `remove_manual_library`, nothing disappears from the list.
+    #[test]
+    fn excluding_a_library_persists_and_the_row_stays_visible() {
+        let mut test = open_scanning();
+        let s = test.strings();
+        seed_two_libraries(&mut test);
+
+        let itch_path = Path::new(r"H:\itch.io");
+        let label = include_in_scan_label(s, itch_path);
+        test.click(&label);
+
+        assert_eq!(
+            test.app().settings.excluded_libraries,
+            vec![providers::comparable_path(itch_path)],
+        );
+        // Still on screen, and the checkbox is still reachable by the same
+        // label - excluding is not removing.
+        test.assert_label(&label);
+        test.assert_label(&row_actions::windows_path_string(itch_path));
+    }
+
+    /// Replaces the old dialog's silent-revert behaviour with the same floor
+    /// the keep-list and category table already use: the last included
+    /// library refuses the click and says why on hover, rather than
+    /// accepting it and leaving the scan with nothing to do.
+    #[test]
+    fn the_last_included_library_cannot_be_excluded_and_explains_itself() {
+        let mut test = open_scanning();
+        let s = test.strings();
+        seed_two_libraries(&mut test);
+
+        let steam_path = Path::new(r"F:\SteamLibrary");
+        let itch_path = Path::new(r"H:\itch.io");
+        test.app_mut().settings.excluded_libraries = vec![providers::comparable_path(steam_path)];
+        test.run();
+
+        let label = include_in_scan_label(s, itch_path);
+        test.click(&label);
+
+        assert_eq!(
+            test.app().settings.excluded_libraries,
+            vec![providers::comparable_path(steam_path)],
+            "the only included library must not have been excluded",
+        );
+        test.hover(&label);
+        test.assert_label(s.disabled_last_library);
     }
 
     #[test]

@@ -86,11 +86,12 @@ pub struct Strings {
     pub categories_table_header_profile_behavior: &'static str,
     pub profile_behavior_auto: &'static str,
     pub profile_behavior_manual: &'static str,
-    /// Why the last remaining keep-language or category cannot be switched
-    /// off. The old dialog silently reverted the click, which reads as a
-    /// broken checkbox rather than as a floor.
+    /// Why the last remaining keep-language, category, or included library
+    /// cannot be switched off. The old dialog silently reverted the click,
+    /// which reads as a broken checkbox rather than as a floor.
     pub disabled_last_keep_language: &'static str,
     pub disabled_last_category: &'static str,
+    pub disabled_last_library: &'static str,
     /// The keep-list's one dangerous edit (protected-language editing), which is why these live
     /// inside a red frame rather than beside the other chips.
     ///
@@ -274,6 +275,10 @@ pub struct Strings {
     pub picking_folder: &'static str,
     pub no_libraries_registered: &'static str,
     pub btn_remove: &'static str,
+    /// Per-library toggle. Unlike Remove, unchecking this leaves the row on
+    /// screen and the `game_libraries` row untouched - see
+    /// `gametrimmer_core::settings::Settings::excluded_libraries`.
+    pub library_include_checkbox: &'static str,
 
     // -- onboarding (first-run onboarding) --
     /// The first-run explanation, shown in the empty tree area until the user
@@ -501,6 +506,7 @@ impl Strings {
                 self.disabled_last_keep_language,
             ),
             ("disabled_last_category", self.disabled_last_category),
+            ("disabled_last_library", self.disabled_last_library),
             ("keep_english_warning", self.keep_english_warning),
             ("keep_english_absent", self.keep_english_absent),
             ("btn_keep_english_again", self.btn_keep_english_again),
@@ -596,6 +602,7 @@ impl Strings {
             ("picking_folder", self.picking_folder),
             ("no_libraries_registered", self.no_libraries_registered),
             ("btn_remove", self.btn_remove),
+            ("library_include_checkbox", self.library_include_checkbox),
             ("onboarding_heading", self.onboarding_heading),
             ("onboarding_step_scan", self.onboarding_step_scan),
             ("onboarding_step_review", self.onboarding_step_review),

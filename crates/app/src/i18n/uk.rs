@@ -50,6 +50,7 @@ pub(super) const STRINGS: Strings = Strings {
     profile_behavior_manual: "Ніколи автоматично",
     disabled_last_keep_language: "Щонайменше одна мова має лишатися у списку збереження.",
     disabled_last_category: "Щонайменше одна категорія має лишатися увімкненою.",
+    disabled_last_library: "Щонайменше одна бібліотека має лишатися включеною до сканування.",
     keep_english_warning: "Зняття англійської саме собою нічого не видаляє. Воно змушує \
                            наступне сканування пропонувати англійські файли локалізації, \
                            зокрема інтерфейсні, без яких більшість ігор не запускається.",
@@ -187,6 +188,7 @@ pub(super) const STRINGS: Strings = Strings {
     picking_folder: "Вибір теки...",
     no_libraries_registered: "Бібліотек ще не зареєстровано.",
     btn_remove: "Прибрати",
+    library_include_checkbox: "Включати в сканування",
 
     onboarding_heading: "Звільнити місце, не зносячи ігор",
     onboarding_step_scan: "1. Просканувати. GameTrimmer покаже, що можна прибрати: \

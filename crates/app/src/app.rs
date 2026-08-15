@@ -963,6 +963,7 @@ impl GameTrimmerApp {
                 lang: self.lang(),
                 keep_languages: self.settings.keep_languages.clone(),
                 enabled_categories: self.settings.enabled_categories.clone(),
+                excluded_libraries: self.settings.excluded_libraries.clone(),
             },
         );
         self._worker = Some(handle);
@@ -1460,6 +1461,29 @@ impl GameTrimmerApp {
         }
         self.settings = Settings {
             enabled_categories,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Applies a new excluded-library set and persists it immediately,
+    /// mirroring `set_enabled_categories`. Takes effect on the *next* scan -
+    /// the currently displayed findings (if any) are left untouched.
+    /// Callers (the settings dialog) are responsible for never letting the
+    /// last *included* library be excluded - see
+    /// `ui::settings::scanning::show_libraries`.
+    ///
+    /// This is not `remove_manual_library`'s opposite number: it never
+    /// touches the `game_libraries` row. An excluded library has to stay
+    /// visible in Settings with its toggle off and survive a re-scan without
+    /// re-entering the scanned set - vanishing from the list on exclude
+    /// would just be Remove wearing a different label.
+    pub fn set_excluded_libraries(&mut self, excluded_libraries: Vec<String>) {
+        if self.settings.excluded_libraries == excluded_libraries {
+            return;
+        }
+        self.settings = Settings {
+            excluded_libraries,
             ..self.settings.clone()
         };
         self.persist_settings();

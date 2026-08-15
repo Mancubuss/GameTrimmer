@@ -53,6 +53,7 @@ pub(super) const STRINGS: Strings = Strings {
     profile_behavior_manual: "Never automatic",
     disabled_last_keep_language: "At least one language has to stay on the keep-list.",
     disabled_last_category: "At least one category has to stay enabled.",
+    disabled_last_library: "At least one library has to stay included in the scan.",
     keep_english_warning: "Taking English off the list deletes nothing by itself. It makes the \
                            next scan propose English localization files - interface text among \
                            them, which most games will not start without.",
@@ -186,6 +187,7 @@ pub(super) const STRINGS: Strings = Strings {
     picking_folder: "Selecting folder...",
     no_libraries_registered: "No libraries registered yet.",
     btn_remove: "Remove",
+    library_include_checkbox: "Include in scan",
 
     onboarding_heading: "Free up space without uninstalling games",
     onboarding_step_scan: "1. Scan. GameTrimmer lists what can go: localizations you do not \

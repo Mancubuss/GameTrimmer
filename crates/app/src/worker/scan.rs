@@ -81,6 +81,11 @@ pub struct ScanOptions {
     /// The persisted `enabled_categories` setting - findings in unchecked
     /// categories are dropped at classification time (empty = all enabled).
     pub enabled_categories: Vec<String>,
+    /// The persisted `excluded_libraries` setting - registered library roots
+    /// (normalized, see `gametrimmer_core::providers::comparable_path`) the
+    /// scan does not descend into. Applied in `discovery::discover_libraries`,
+    /// after the cross-provider merge/dedupe pass - see `discovery::drop_excluded`.
+    pub excluded_libraries: Vec<String>,
 }
 
 /// Spawns the scan job on a new thread. `cancel` is polled between games so
@@ -112,11 +117,13 @@ fn run_scan(
         lang,
         keep_languages,
         enabled_categories,
+        excluded_libraries,
     } = options;
-    let (lang, keep_languages, enabled_categories) = (
+    let (lang, keep_languages, enabled_categories, excluded_libraries) = (
         *lang,
         keep_languages.as_slice(),
         enabled_categories.as_slice(),
+        excluded_libraries.as_slice(),
     );
     let started_at = Instant::now();
     crate::logger::log(&format!(
@@ -198,7 +205,7 @@ fn run_scan(
         libraries,
         diagnostics: discovery_diagnostics,
         degraded: discovery_degraded,
-    } = match discovery::discover_libraries(&conn, lang, notifier) {
+    } = match discovery::discover_libraries(&conn, lang, notifier, excluded_libraries) {
         Ok(discovery) => discovery,
         Err(error) => {
             notifier.report_error(error);
