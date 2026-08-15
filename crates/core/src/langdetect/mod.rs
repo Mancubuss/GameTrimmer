@@ -154,7 +154,8 @@ impl LangDetector {
             // The one exception: .NET satellite assemblies
             // (`de\Foo.resources.dll`) exist *only* as per-language
             // resource containers.
-            let is_satellite_assembly = file.rel_path.to_lowercase().ends_with(".resources.dll");
+            let is_satellite_assembly =
+                ends_with_ignore_ascii_case(&file.rel_path, b".resources.dll");
             if matches!(ext.as_deref(), Some("dll") | Some("exe")) && !is_satellite_assembly {
                 continue;
             }
@@ -208,6 +209,20 @@ impl Default for LangDetector {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Allocation-free case-insensitive suffix test. Runs 4.9 M times per scan
+/// (once per file) to spot .NET satellite assemblies, so it must not
+/// lowercase-copy the whole path just to check the last 15 bytes.
+///
+/// ASCII-only comparison is correct here: `suffix` is pure ASCII, and any
+/// byte in `haystack` whose lowercase form is only reachable through
+/// Unicode case folding (non-ASCII) could never equal an ASCII suffix byte
+/// anyway, so `to_lowercase()`'s Unicode awareness bought nothing this
+/// caller could observe.
+fn ends_with_ignore_ascii_case(haystack: &str, suffix: &[u8]) -> bool {
+    let bytes = haystack.as_bytes();
+    bytes.len() >= suffix.len() && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
 fn marker_kind_to_lang_kind(kind: MarkerKind) -> LangKind {

@@ -179,3 +179,37 @@ fn custom_keep_list_suppresses_a_different_language() {
     let findings = detector.analyze_game(&files);
     assert!(findings.is_empty(), "es is now kept: {findings:?}");
 }
+
+// --- Satellite assembly case-insensitivity (C2 allocation removal) -------
+
+#[test]
+fn ends_with_ignore_ascii_case_handles_mixed_case_and_short_haystacks() {
+    // Mixed case must match, same as the old `to_lowercase()` did.
+    assert!(ends_with_ignore_ascii_case(
+        "de\\Foo.Resources.DLL",
+        b".resources.dll"
+    ));
+    // A haystack shorter than the suffix must not panic on the slice.
+    assert!(!ends_with_ignore_ascii_case("a", b".resources.dll"));
+    assert!(!ends_with_ignore_ascii_case("", b".resources.dll"));
+    assert!(!ends_with_ignore_ascii_case("Foo.dll", b".resources.dll"));
+}
+
+#[test]
+fn satellite_assembly_mixed_case_extension_is_not_treated_as_executable() {
+    // A .NET satellite assembly named with mixed case must still be
+    // exempted from the "executable code is never a localization" rule,
+    // and flagged like any other localization file in a language folder.
+    let findings = analyze_one("localization\\pol\\Quests.Resources.DLL");
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    let (_, f) = &findings[0];
+    assert_eq!(f.lang_tag, "pl");
+}
+
+#[test]
+fn plain_dll_in_language_folder_stays_excluded_as_executable() {
+    // Sanity check that a non-satellite .dll is still skipped, proving the
+    // satellite-assembly check above is doing real work.
+    let findings = analyze_one("localization\\pol\\quests.dll");
+    assert!(findings.is_empty(), "{findings:?}");
+}
