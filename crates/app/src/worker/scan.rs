@@ -8,6 +8,7 @@ mod generation;
 mod orphan_analysis;
 mod persistence;
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -345,8 +346,11 @@ fn run_scan(
     let completed = std::sync::atomic::AtomicUsize::new(0);
 
     let write_outcome = std::thread::scope(|scope| {
-        let writer =
-            scope.spawn(|| run_writer(&mut conn, result_rx, notifier, total, &completed, cancel));
+        let writer = scope.spawn(|| {
+            run_writer(
+                &mut conn, result_rx, notifier, total, &completed, cancel, scan_id,
+            )
+        });
 
         dispatch_scans(
             &games,
@@ -1066,12 +1070,25 @@ fn volume_failure_results(
 }
 
 /// One file's finding, already resolved (rule engine vs. localization
-/// detector) but not yet persisted - `rel_path` is looked back up against
-/// `files.id` once the file rows exist, since that id doesn't exist until
-/// `store_files_no_tx` has run. Carrying `size` here (rather than
-/// re-deriving it from `entries` at persist time by `rel_path`) avoids an
-/// O(files x findings) rescan per game.
+/// detector) but not yet persisted - the `files.id` it will reference does
+/// not exist until `store_files_no_tx` has run, so the finding carries
+/// `entry_index` (below) and the writer resolves the id from that. Carrying
+/// `size` here (rather than re-deriving it from `entries` at persist time by
+/// `rel_path`) avoids an O(files x findings) rescan per game.
 struct PreparedFinding {
+    /// Index of this finding's file into [`PreparedGame::entries`].
+    ///
+    /// `store_files_no_tx` returns the inserted `files.id`s in entry order,
+    /// so this is all the writer needs to attach the finding to its row -
+    /// where it used to select every row of the game back out and match on
+    /// `rel_path`. `classify_game` has the index in hand anyway (it is what
+    /// `combined_by_index` is keyed by) and simply threw it away before.
+    entry_index: usize,
+    /// The path itself, still carried alongside the index: the UI row, the
+    /// safety evidence written when a snapshot could not be captured, and
+    /// the orphan/finding comparisons all want it, and at one clone per
+    /// *finding* (720 k) rather than per file it is not the cost that
+    /// mattered.
     rel_path: String,
     size: u64,
     size_on_disk: u64,
@@ -1225,6 +1242,7 @@ fn classify_game(
                 .capture(install_dir, &entry.rel_path)
                 .map_err(|reason| reason.to_string());
             PreparedFinding {
+                entry_index: index,
                 rel_path: entry.rel_path.clone(),
                 size: entry.size,
                 size_on_disk: entry.size_on_disk,
@@ -1262,36 +1280,49 @@ fn classify_game(
 /// a single-file "folder" gains nothing from collapsing, since the file's
 /// own row already represents it - and the (implicit) game root is never a
 /// candidate, since there is no bounding folder above it to collapse into.
+///
+/// The directory chains are *borrowed* from each entry's `rel_path` wherever
+/// possible (see [`dir_prefixes`]): every ancestor path is a prefix of the
+/// file's own path, so counting them needs no allocation at all. Only the
+/// handful of paths that survive as group keys are turned into `String`s, at
+/// the end. Building them the other way - an owned `String` per directory
+/// level per file - meant roughly 25 million allocations, and 25 million
+/// owned-string hashes, per scan of a large library.
 pub(crate) fn assign_group_dirs(
     entries: &[FileEntry],
     flagged: &HashSet<usize>,
 ) -> HashMap<usize, String> {
     // Directory path -> (total files under it, flagged files under it).
-    let mut dir_stats: HashMap<String, (u32, u32)> = HashMap::new();
-    let mut dir_chains: Vec<Vec<String>> = Vec::with_capacity(entries.len());
+    let mut dir_stats: HashMap<Cow<'_, str>, (u32, u32)> = HashMap::new();
 
     for (index, entry) in entries.iter().enumerate() {
-        let chain = dir_prefixes(&entry.rel_path);
-        for dir in &chain {
-            let stats = dir_stats.entry(dir.clone()).or_insert((0, 0));
+        let is_flagged = flagged.contains(&index);
+        for dir in dir_prefixes(&entry.rel_path) {
+            let stats = dir_stats.entry(dir).or_insert((0, 0));
             stats.0 += 1;
-            if flagged.contains(&index) {
+            if is_flagged {
                 stats.1 += 1;
             }
         }
-        dir_chains.push(chain);
     }
 
+    // The chains are recomputed here rather than kept from the loop above:
+    // only the flagged files (a small fraction of a game's tree) need one,
+    // and holding a chain per file was the other half of the old memory
+    // cost.
     let mut group_dirs = HashMap::new();
     for &index in flagged {
-        // `chain` is shallowest-first, so the first collapsible entry found
-        // is the shallowest collapsible ancestor.
-        let collapsible = dir_chains[index].iter().find(|dir| {
-            let (total, flagged_count) = dir_stats.get(dir.as_str()).copied().unwrap_or((0, 0));
+        let Some(entry) = entries.get(index) else {
+            continue;
+        };
+        // The chain is shallowest-first, so the first collapsible entry
+        // found is the shallowest collapsible ancestor.
+        let collapsible = dir_prefixes(&entry.rel_path).into_iter().find(|dir| {
+            let (total, flagged_count) = dir_stats.get(dir).copied().unwrap_or((0, 0));
             total >= 2 && total == flagged_count
         });
         if let Some(dir) = collapsible {
-            group_dirs.insert(index, dir.clone());
+            group_dirs.insert(index, dir.into_owned());
         }
     }
 
@@ -1303,7 +1334,29 @@ pub(crate) fn assign_group_dirs(
 /// itself. E.g. `"a\b\c\file.txt"` -> `["a", "a\\b", "a\\b\\c"]`; a file
 /// directly under the game root (no directory segments) yields an empty
 /// list.
-fn dir_prefixes(rel_path: &str) -> Vec<String> {
+///
+/// Borrowed where it can be, owned where it must be. Both producers of
+/// `rel_path` - `scan_dir_cancellable`, which joins components with `\`, and
+/// the MFT path (`mftscan::pathmap::scan_frn_map`), which does the same -
+/// hand over paths that are already exactly `\`-separated with no empty
+/// segments. For those, every ancestor is literally `&rel_path[..end]` at a
+/// separator, so the whole chain costs nothing but the `Vec`.
+///
+/// A path that is *not* in that shape (a `/` separator, a leading or doubled
+/// separator, a trailing one) has to be normalised, and a normalised prefix
+/// is no longer a substring of the input - so those keep the original owned
+/// build. This is a deliberate fallback rather than a simplification:
+/// silently treating `a/b/c.txt` as one flat segment would change which
+/// folders collapse in the UI tree, which is a behaviour change, not an
+/// optimisation.
+fn dir_prefixes(rel_path: &str) -> Vec<Cow<'_, str>> {
+    if is_canonically_separated(rel_path) {
+        return rel_path
+            .match_indices('\\')
+            .map(|(end, _)| Cow::Borrowed(&rel_path[..end]))
+            .collect();
+    }
+
     let segments: Vec<&str> = rel_path
         .split(['\\', '/'])
         .filter(|segment| !segment.is_empty())
@@ -1319,9 +1372,21 @@ fn dir_prefixes(rel_path: &str) -> Vec<String> {
             acc.push('\\');
         }
         acc.push_str(segment);
-        prefixes.push(acc.clone());
+        prefixes.push(Cow::Owned(acc.clone()));
     }
     prefixes
+}
+
+/// Whether `rel_path` is already in the shape [`dir_prefixes`] can slice
+/// prefixes out of: `\` separators only, and no empty segment (no leading,
+/// doubled, or trailing separator). Under those conditions splitting on `\`
+/// and rejoining with `\` is the identity, so a prefix ending at any
+/// separator is exactly the normalised ancestor path.
+fn is_canonically_separated(rel_path: &str) -> bool {
+    !rel_path.contains('/')
+        && !rel_path.starts_with('\\')
+        && !rel_path.ends_with('\\')
+        && !rel_path.contains("\\\\")
 }
 
 /// Scans, classifies, and persists one game in its own single-game
@@ -1329,6 +1394,10 @@ fn dir_prefixes(rel_path: &str) -> Vec<String> {
 /// [`persist_prepared_game`], kept as the entry point tests exercise
 /// directly - `run_scan`'s real pipeline instead scans games in parallel and
 /// batches several games per commit (see [`dispatch_scans`], [`run_writer`]).
+///
+/// `scan_id` names the generation being written, exactly as `run_scan` hands
+/// it to the writer; tests that never call `db::begin_scan` pass `0`, which
+/// is what `persist_libraries` stamped their `games` rows with.
 #[cfg(test)]
 fn scan_and_classify_game(
     conn: &mut Connection,
@@ -1337,6 +1406,7 @@ fn scan_and_classify_game(
     game_id: i64,
     name: &str,
     install_dir: &Path,
+    scan_id: i64,
 ) -> CoreResult<Vec<FindingRow>> {
     // Empty `enabled_categories` means "every category enabled" - the right
     // default for tests that aren't specifically exercising the filter.
@@ -1354,7 +1424,7 @@ fn scan_and_classify_game(
         &never_cancel,
     )?;
     let db_tx = conn.transaction()?;
-    let findings = persist_prepared_game(&db_tx, &prepared)?;
+    let findings = persist_prepared_game(&db_tx, &prepared, scan_id)?;
     db_tx.commit()?;
     Ok(findings)
 }
@@ -1608,7 +1678,7 @@ mod tests {
     ) -> CoreResult<Vec<(i64, String, PathBuf)>> {
         let games = persist_libraries(conn, std::slice::from_ref(library), 0)?;
         for (game_id, name, install_dir) in &games {
-            scan_and_classify_game(conn, engine, lang_detector, *game_id, name, install_dir)?;
+            scan_and_classify_game(conn, engine, lang_detector, *game_id, name, install_dir, 0)?;
         }
         Ok(games)
     }
@@ -1692,7 +1762,7 @@ mod tests {
             persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
         let (game_id, name, path) = &games[0];
         let scanned =
-            scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path)
+            scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path, 0)
                 .expect("scan game");
 
         let expected = Some(LibraryOrigin {
@@ -1747,7 +1817,7 @@ mod tests {
         let games =
             persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
         let (game_id, name, path) = &games[0];
-        scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path)
+        scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path, 0)
             .expect("scan game");
 
         let (files, bytes): (i64, i64) = conn
@@ -1906,8 +1976,16 @@ mod tests {
             .expect("persist library");
         let (game_id, name, path) = &games[0];
 
-        let rows = scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path)
-            .expect("scan game");
+        let rows = scan_and_classify_game(
+            &mut conn,
+            &engine,
+            &lang_detector,
+            *game_id,
+            name,
+            path,
+            scan_id,
+        )
+        .expect("scan game");
 
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|row| {
@@ -2836,6 +2914,44 @@ mod tests {
     #[test]
     fn dir_prefixes_is_empty_for_a_file_directly_under_the_game_root() {
         assert!(dir_prefixes("readme.txt").is_empty());
+    }
+
+    /// The chains are sliced straight out of `rel_path` when it is already
+    /// `\`-separated, which no path either scan producer emits can violate -
+    /// but a `/`, a doubled separator or a leading one would make a borrowed
+    /// prefix mean something different from the normalised ancestor. Those
+    /// take the owned path, and must still normalise exactly as before.
+    #[test]
+    fn dir_prefixes_normalizes_separators_it_cannot_slice_through() {
+        assert_eq!(
+            dir_prefixes("a/b/c/file.txt"),
+            vec!["a".to_string(), r"a\b".to_string(), r"a\b\c".to_string()],
+            "forward slashes must normalize to the same chain as backslashes"
+        );
+        assert_eq!(
+            dir_prefixes(r"a\\b\file.txt"),
+            vec!["a".to_string(), r"a\b".to_string()],
+            "a doubled separator is one separator, not an empty directory"
+        );
+        assert_eq!(
+            dir_prefixes(r"\a\file.txt"),
+            vec!["a".to_string()],
+            "a leading separator does not create a nameless root directory"
+        );
+    }
+
+    /// The grouping itself must not care which separator wrote the path:
+    /// two files in the same folder, spelled differently, still collapse
+    /// into one group.
+    #[test]
+    fn assign_group_dirs_groups_across_mixed_separators() {
+        let entries = vec![entry("junk/a.txt"), entry(r"junk\b.txt")];
+        let flagged: HashSet<usize> = [0, 1].into_iter().collect();
+
+        let groups = assign_group_dirs(&entries, &flagged);
+
+        assert_eq!(groups.get(&0), Some(&"junk".to_string()));
+        assert_eq!(groups.get(&1), Some(&"junk".to_string()));
     }
 
     #[test]

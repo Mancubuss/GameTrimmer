@@ -8,6 +8,11 @@ use super::*;
 /// game has. Sends one `Progress` message per finished game, in whatever
 /// order results arrive (scanning is parallel, so this is no longer
 /// necessarily the games' discovery order).
+///
+/// `scan_id` is the generation being staged, handed down from `run_scan`
+/// (which got it from `db::begin_scan`) rather than re-read from the
+/// database per game: it is fixed for the whole run, and every row this
+/// writer inserts belongs to it.
 pub(super) fn run_writer(
     conn: &mut Connection,
     result_rx: Receiver<GameOutcome>,
@@ -15,6 +20,7 @@ pub(super) fn run_writer(
     total: usize,
     completed: &std::sync::atomic::AtomicUsize,
     cancel: &AtomicBool,
+    scan_id: i64,
 ) -> CoreResult<Vec<FindingRow>> {
     let mut findings = Vec::new();
     let mut batch: Vec<PreparedGame> = Vec::with_capacity(WRITE_BATCH_SIZE);
@@ -35,7 +41,7 @@ pub(super) fn run_writer(
                 });
                 batch.push(prepared);
                 if batch.len() >= WRITE_BATCH_SIZE {
-                    flush_batch(conn, &mut batch, &mut findings)?;
+                    flush_batch(conn, &mut batch, &mut findings, scan_id)?;
                 }
             }
             GameOutcome::Failed {
@@ -73,7 +79,7 @@ pub(super) fn run_writer(
         }
     }
 
-    flush_batch(conn, &mut batch, &mut findings)?;
+    flush_batch(conn, &mut batch, &mut findings, scan_id)?;
     Ok(findings)
 }
 
@@ -85,6 +91,7 @@ fn flush_batch(
     conn: &mut Connection,
     batch: &mut Vec<PreparedGame>,
     findings: &mut Vec<FindingRow>,
+    scan_id: i64,
 ) -> CoreResult<()> {
     if batch.is_empty() {
         return Ok(());
@@ -93,7 +100,7 @@ fn flush_batch(
     let db_tx = conn.transaction()?;
     let mut pending_rows = Vec::new();
     for prepared in batch.iter() {
-        let mut rows = persist_prepared_game(&db_tx, prepared).map_err(|err| {
+        let mut rows = persist_prepared_game(&db_tx, prepared, scan_id).map_err(|err| {
             CoreError::Other(format!(
                 "failed to write \"{}\" to the database: {err}",
                 prepared.name
@@ -297,9 +304,14 @@ fn build_ids_for(library: &DiscoveredLibrary) -> HashMap<String, String> {
 /// single game per commit pass a fresh `Transaction`; the scan pipeline's
 /// writer thread instead shares one transaction across a batch of games
 /// (see `WRITE_BATCH_SIZE`).
+///
+/// `scan_id` is passed in rather than read back from `games`: the caller has
+/// held it since `db::begin_scan`, and it is the same value for every game in
+/// the run, so querying it per game only bought a round trip.
 pub(super) fn persist_prepared_game(
     conn: &Connection,
     prepared: &PreparedGame,
+    scan_id: i64,
 ) -> CoreResult<Vec<FindingRow>> {
     // `findings.file_id` has no `ON DELETE CASCADE`, and `store_files_no_tx`
     // is about to delete this game's old `files` rows - drop their findings
@@ -314,7 +326,16 @@ pub(super) fn persist_prepared_game(
     // Per-game file and byte counts are the natural unit for explaining a
     // slow scan ("this one game holds 400 000 files"), which the totals
     // alone never showed.
-    let stats = store_files_no_tx(conn, prepared.game_id, &prepared.entries)?;
+    //
+    // `file_ids` comes back from the same loop: `file_ids[i]` is the
+    // `files.id` of `prepared.entries[i]` (see `store_files_no_tx`). Every
+    // finding carries the index of the entry it was made from, so the
+    // `file_id` each one needs is a lookup by position. The alternative this
+    // replaced - selecting all of the rows just inserted back out and keying
+    // them by `rel_path` into a `HashMap` - cost 4.9 million owned strings
+    // and a measured 3.6 s per scan to rediscover ids the insert already
+    // reported.
+    let (stats, file_ids) = store_files_no_tx(conn, scan_id, prepared.game_id, &prepared.entries)?;
     conn.execute(
         "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4 WHERE id = ?1",
         params![
@@ -324,24 +345,7 @@ pub(super) fn persist_prepared_game(
             stats.bytes_on_disk as i64
         ],
     )?;
-    conn.execute(
-        "UPDATE files SET scan_id = (SELECT scan_id FROM games WHERE id = ?1)
-         WHERE game_id = ?1",
-        [prepared.game_id],
-    )?;
 
-    let file_ids: HashMap<String, i64> = {
-        let mut stmt = conn.prepare("SELECT id, rel_path FROM files WHERE game_id = ?1")?;
-        let rows = stmt.query_map(params![prepared.game_id], |row| {
-            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(0)?))
-        })?;
-        rows.collect::<rusqlite::Result<_>>()?
-    };
-    let scan_id: i64 = conn.query_row(
-        "SELECT scan_id FROM games WHERE id = ?1",
-        [prepared.game_id],
-        |row| row.get(0),
-    )?;
     // One read serves two purposes: the path is this game's safety evidence,
     // and (vendor, path) together are the row's library attribution. Both are
     // read from `game_libraries` rather than from the in-memory
@@ -385,17 +389,23 @@ pub(super) fn persist_prepared_game(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
 
-    // Counted rather than logged per finding: one game can drop thousands
-    // at once, and "12 404 findings had no file row" is the same
-    // information as twelve thousand identical lines. One diagnostic row
-    // per game follows the loop.
-    let mut findings_without_file = 0usize;
+    // There used to be a counter here for findings whose `files` row could
+    // not be found, plus a `scan_diagnostic` row explaining the gap - the
+    // exact shape of "findings vanish between runs" when the lookup was a
+    // `rel_path` string match against a map. Resolving by position removes
+    // the failure rather than reporting it: a finding's index came from
+    // `entries`, and `store_files_no_tx` returned exactly one id per entry
+    // in that order, so there is no longer a case in which a finding has no
+    // row. The `debug_assert` pins that invariant where it is established
+    // instead of re-checking it 720 000 times in release.
+    debug_assert_eq!(
+        file_ids.len(),
+        prepared.entries.len(),
+        "store_files_no_tx must return one id per entry, in entry order"
+    );
 
     for finding in &prepared.findings {
-        let Some(&file_id) = file_ids.get(&finding.rel_path) else {
-            findings_without_file += 1;
-            continue;
-        };
+        let file_id = file_ids[finding.entry_index];
 
         insert_finding.execute(params![
             file_id,
@@ -463,31 +473,6 @@ pub(super) fn persist_prepared_game(
             imported_untrusted: finding.provenance == RuleProvenance::ImportedUntrusted,
             library: Some(library.clone()),
         });
-    }
-
-    // The drop above is the exact shape of "findings vanish between runs",
-    // and it used to leave nothing at all - no log line, no counter, no
-    // row. Recorded, not propagated: a finding whose file row is missing is
-    // a reason to explain the gap later, never a reason to fail the scan
-    // that produced the rest of them.
-    if findings_without_file > 0 {
-        let message = format!(
-            "{findings_without_file} of {} findings had no matching files row and were dropped",
-            prepared.findings.len()
-        );
-        if let Err(err) = db::record_scan_diagnostic(
-            conn,
-            scan_id,
-            "scan",
-            "finding-without-file",
-            Some(&prepared.install_dir),
-            &message,
-        ) {
-            crate::logger::error(&format!(
-                "Failed to record dropped findings for \"{}\": {err}",
-                prepared.name
-            ));
-        }
     }
 
     Ok(rows)

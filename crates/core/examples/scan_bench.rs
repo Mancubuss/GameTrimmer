@@ -53,6 +53,11 @@ use rayon::prelude::*;
 use rusqlite::{params, Connection};
 
 const DEFAULT_LIBRARY: &str = r"H:\SteamLibrary";
+/// The generation every row of a bench run belongs to. The benchmark writes
+/// one throwaway generation into a throwaway database and never activates,
+/// prunes, or reloads it, so the value only has to be stable - `0` is what an
+/// un-staged row has carried since `files.scan_id` was added.
+const BENCH_SCAN_ID: i64 = 0;
 const DEFAULT_THREADS: usize = 6;
 const DEFAULT_BATCH: usize = 24;
 
@@ -171,6 +176,11 @@ struct ScannedGame {
 /// logic is app-crate-private - the DB-shape is what matters for the
 /// benchmark, not sharing the exact type).
 struct PreparedFinding {
+    /// Index into `PreparedGame::entries`, mirroring
+    /// `worker::scan::PreparedFinding::entry_index`: `write_batched`
+    /// resolves `file_id` from the ids `store_files_no_tx` returns
+    /// positionally, exactly as the app's writer does.
+    entry_index: usize,
     rel_path: String,
     size: u64,
     category: &'static str,
@@ -417,6 +427,7 @@ fn classify_one(
             continue;
         };
         findings.push(PreparedFinding {
+            entry_index: index,
             rel_path: entry.rel_path.clone(),
             size: entry.size,
             category,
@@ -522,8 +533,13 @@ fn lang_category_key(kind: LangKind) -> &'static str {
 /// is the dominant cost the benchmark is meant to expose.
 fn write_unbatched(conn: &mut Connection, games: &[PreparedGame]) {
     for game in games {
-        store_files(conn, game.game_id, &game.entries).expect("store_files (own transaction)");
+        store_files(conn, BENCH_SCAN_ID, game.game_id, &game.entries)
+            .expect("store_files (own transaction)");
 
+        // Kept deliberately: this mode reproduces the pre-optimization
+        // pipeline, whose cost included resolving `file_id` by reading every
+        // row back. The ids `store_files` now returns are ignored here on
+        // purpose - see `write_batched` for the shape the app actually runs.
         let file_ids = load_file_ids(conn, game.game_id).expect("load file ids back");
         for finding in &game.findings {
             let Some(&file_id) = file_ids.get(&finding.rel_path) else {
@@ -544,18 +560,17 @@ fn write_batched(conn: &mut Connection, games: &[PreparedGame], batch_size: usiz
     for chunk in games.chunks(batch_size.max(1)) {
         let tx = conn.transaction().expect("begin batch transaction");
         for game in chunk {
-            store_files_no_tx(&tx, game.game_id, &game.entries).expect("store_files_no_tx");
+            let (_stats, file_ids) =
+                store_files_no_tx(&tx, BENCH_SCAN_ID, game.game_id, &game.entries)
+                    .expect("store_files_no_tx");
 
-            let file_ids = load_file_ids(&tx, game.game_id).expect("load file ids back");
             let mut insert_finding = tx
                 .prepare_cached(
                     "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
                 .expect("prepare finding insert");
             for finding in &game.findings {
-                let Some(&file_id) = file_ids.get(&finding.rel_path) else {
-                    continue;
-                };
+                let file_id = file_ids[finding.entry_index];
                 insert_finding
                     .execute(params![
                         file_id,

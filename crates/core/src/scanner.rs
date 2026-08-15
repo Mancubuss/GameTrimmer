@@ -196,50 +196,73 @@ where
 /// `worker::scan::persist_prepared_game` in the app crate) call this
 /// directly on a [`rusqlite::Transaction`] (which derefs to `&Connection`)
 /// they opened themselves and commit once after several games.
+///
+/// `scan_id` is the generation these rows belong to and is written by the
+/// `INSERT` itself. It used to be stamped afterwards by a second pass
+/// (`UPDATE files SET scan_id = ... WHERE game_id = ?`), which rewrote every
+/// row of the largest table in the database - measured at 4.8 s per scan on
+/// a 4.9-million-row library - to store a value the caller already held
+/// before the first insert.
+///
+/// Returns the stats **and the id of every row inserted, positionally**:
+/// `ids[i]` is the `files.id` of `entries[i]`, so a caller holding an index
+/// into `entries` (which is how findings are carried; see
+/// `worker::scan::PreparedFinding::entry_index`) can resolve its `file_id`
+/// with no further queries. This is the contract that replaced reading all
+/// 4.9 million rows back into a `HashMap<rel_path, id>` - another 3.6 s per
+/// scan - to answer the same question. It holds because `last_insert_rowid()`
+/// is read immediately after each `execute`, on the same connection, inside
+/// the caller's transaction: nothing else can insert between the two.
 pub fn store_files_no_tx(
     conn: &Connection,
+    scan_id: i64,
     game_id: i64,
     entries: &[FileEntry],
-) -> Result<ScanStats> {
+) -> Result<(ScanStats, Vec<i64>)> {
     conn.execute("DELETE FROM files WHERE game_id = ?1", params![game_id])?;
 
     let mut stats = ScanStats::default();
+    let mut ids = Vec::with_capacity(entries.len());
     {
         let mut stmt = conn.prepare_cached(
-            "INSERT INTO files (game_id, rel_path, size, size_on_disk, mtime) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO files (scan_id, game_id, rel_path, size, size_on_disk, mtime) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         for entry in entries {
             let size_i64 = entry.size as i64;
             let size_on_disk_i64 = entry.size_on_disk as i64;
             stmt.execute(params![
+                scan_id,
                 game_id,
                 entry.rel_path,
                 size_i64,
                 size_on_disk_i64,
                 entry.mtime
             ])?;
+            ids.push(conn.last_insert_rowid());
             stats.files += 1;
             stats.bytes += entry.size;
             stats.bytes_on_disk += entry.size_on_disk;
         }
     }
 
-    Ok(stats)
+    Ok((stats, ids))
 }
 
 /// Replaces the indexed files of `game_id` with `entries` in its own,
 /// single-game transaction (delete + batch insert with a prepared
 /// statement). A thin wrapper around [`store_files_no_tx`] for callers that
-/// don't need to share a transaction across multiple games.
+/// don't need to share a transaction across multiple games; it returns that
+/// function's stats and positional ids unchanged.
 pub fn store_files(
     conn: &mut Connection,
+    scan_id: i64,
     game_id: i64,
     entries: &[FileEntry],
-) -> Result<ScanStats> {
+) -> Result<(ScanStats, Vec<i64>)> {
     let tx = conn.transaction()?;
-    let stats = store_files_no_tx(&tx, game_id, entries)?;
+    let stored = store_files_no_tx(&tx, scan_id, game_id, entries)?;
     tx.commit()?;
-    Ok(stats)
+    Ok(stored)
 }
 
 /// Scans multiple game directories in parallel via rayon. The database
@@ -468,14 +491,18 @@ mod tests {
             FileEntry::logical_only("a.txt", 10, Some(100)),
             FileEntry::logical_only("b\\c.txt", 20, Some(200)),
         ];
-        let stats = store_files(&mut conn, game_id, &first_batch).expect("store first batch");
+        let (stats, ids) =
+            store_files(&mut conn, 0, game_id, &first_batch).expect("store first batch");
         assert_eq!(stats.files, 2);
         assert_eq!(stats.bytes, 30);
+        assert_eq!(ids.len(), 2, "one id per entry, in entry order");
 
         let second_batch = vec![FileEntry::logical_only("only.txt", 42, None)];
-        let stats = store_files(&mut conn, game_id, &second_batch).expect("store second batch");
+        let (stats, ids) =
+            store_files(&mut conn, 0, game_id, &second_batch).expect("store second batch");
         assert_eq!(stats.files, 1);
         assert_eq!(stats.bytes, 42);
+        assert_eq!(ids.len(), 1);
 
         let count: i64 = conn
             .query_row(
@@ -591,7 +618,8 @@ mod tests {
         let entries = vec![FileEntry::logical_only("a.txt", 10, Some(100))];
 
         let tx = conn.transaction().expect("begin transaction");
-        let stats = store_files_no_tx(&tx, game_id, &entries).expect("store within shared tx");
+        let (stats, _ids) =
+            store_files_no_tx(&tx, 0, game_id, &entries).expect("store within shared tx");
         assert_eq!(stats.files, 1);
         tx.commit().expect("commit shared tx");
 
@@ -603,5 +631,50 @@ mod tests {
             )
             .expect("count files");
         assert_eq!(count, 1);
+    }
+
+    /// Pins the contract the writer now depends on instead of reading every
+    /// row back: `ids[i]` is the row of `entries[i]`, and the generation is
+    /// stamped by the insert rather than by a second pass over the table.
+    #[test]
+    fn store_files_no_tx_returns_row_ids_positionally_and_stamps_scan_id() {
+        let mut conn = crate::db::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('steam', 'C:/Games')",
+            [],
+        )
+        .expect("insert library");
+        conn.execute(
+            "INSERT INTO games (library_id, name, install_dir) VALUES (1, 'Test Game', 'C:/Games/Test')",
+            [],
+        )
+        .expect("insert game");
+
+        let game_id = 1i64;
+        let scan_id = 7i64;
+        let entries = vec![
+            FileEntry::logical_only("a.txt", 10, Some(100)),
+            FileEntry::logical_only(r"b\c.txt", 20, Some(200)),
+            FileEntry::logical_only(r"b\d.txt", 30, None),
+        ];
+
+        let (_stats, ids) =
+            store_files(&mut conn, scan_id, game_id, &entries).expect("store entries");
+
+        assert_eq!(ids.len(), entries.len());
+        for (entry, id) in entries.iter().zip(&ids) {
+            let (rel_path, stored_scan_id): (String, i64) = conn
+                .query_row(
+                    "SELECT rel_path, scan_id FROM files WHERE id = ?1",
+                    params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read back the row the returned id names");
+            assert_eq!(
+                rel_path, entry.rel_path,
+                "the id at position i must name the row of entries[i]"
+            );
+            assert_eq!(stored_scan_id, scan_id);
+        }
     }
 }
