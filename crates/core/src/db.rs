@@ -125,7 +125,7 @@ CREATE INDEX IF NOT EXISTS idx_diagnostics_scan   ON scan_diagnostics(scan_id);
 /// `user_version` beside the version this build understands - the pair is
 /// what distinguishes "your database is from a newer build" from "it is
 /// damaged".
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// Opens (or creates) the database at `path` and applies the schema.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -226,6 +226,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 3 {
         migrate_v3(conn)?;
         conn.pragma_update(None, "user_version", 3)?;
+        version = 3;
+    }
+    if version < 4 {
+        migrate_v4(conn)?;
+        conn.pragma_update(None, "user_version", 4)?;
     }
     Ok(())
 }
@@ -279,12 +284,14 @@ fn migrate_v1(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
-    if table_exists(conn, "files")? {
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_files_scan_id ON files(scan_id)",
-            [],
-        )?;
-    }
+    // `idx_files_scan_id` used to be created here too. `migrate_v4` drops it
+    // (see that function's doc comment for the measurements behind why), so
+    // creating it on a database that is about to migrate straight through to
+    // v4 anyway - true for every fresh install, and for any real upgrade
+    // since this code shipped - would only leave behind the free pages of a
+    // create-immediately-undone index. A genuinely old (pre-v1) database
+    // still ends up without the index: `migrate_v4`'s `DROP INDEX IF EXISTS`
+    // is a no-op when it was never created in the first place.
 
     // Generation 0 is the read-only compatibility snapshot for databases
     // created before scan identity and delete-safety evidence existed.
@@ -331,6 +338,27 @@ fn migrate_v3(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "scan_runs", "scan_ms", "INTEGER")?;
     add_column_if_missing(conn, "scan_runs", "analyze_ms", "INTEGER")?;
     add_column_if_missing(conn, "scan_runs", "total_ms", "INTEGER")?;
+    Ok(())
+}
+
+/// Drops `idx_files_scan_id` (added by `migrate_v1`).
+///
+/// Every `files` row in one generation shares the same `scan_id`, so the
+/// index has no selectivity anywhere it is used - "find the rows for this
+/// generation" always means "find (nearly) every row". Measured on a 4.9M-row
+/// `files` table (850 MB database, real reference data): inserting the
+/// generation cost 11.7s with the index against 9.9s without it; the two
+/// full-generation deletes that touch `files.scan_id`
+/// (`prune_superseded_generations`, `abort_scan`) cost ~7.0s/7.9s with it
+/// against ~6.3s/6.9s without; and the two read queries that filter on
+/// `f.scan_id` (`worker::load::load_findings`,
+/// `worker::rules_io::preview_active_impact`) showed no measurable
+/// difference, because the planner still has to walk essentially the whole
+/// table either way. The index costs real time to maintain on every insert
+/// and every generation-wide delete and buys nothing back anywhere it is
+/// consulted - dropping it is a net win on every measured path.
+fn migrate_v4(conn: &Connection) -> Result<()> {
+    conn.execute("DROP INDEX IF EXISTS idx_files_scan_id", [])?;
     Ok(())
 }
 
@@ -1719,6 +1747,58 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    }
+
+    /// `migrate_v4` must drop `idx_files_scan_id` from a schema-v3 database
+    /// that still has it (measurements showed the index costs real time to
+    /// maintain on insert and on the generation-wide deletes and buys
+    /// nothing back anywhere it is consulted - see `migrate_v4`'s doc
+    /// comment), reach `CURRENT_SCHEMA_VERSION`, and be idempotent.
+    #[test]
+    fn schema_v3_migrates_to_v4_by_dropping_the_files_scan_id_index() {
+        let conn = Connection::open_in_memory().expect("open bare in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id           INTEGER PRIMARY KEY,
+                scan_id      INTEGER NOT NULL DEFAULT 0,
+                game_id      INTEGER,
+                rel_path     TEXT NOT NULL,
+                size         INTEGER NOT NULL,
+                size_on_disk INTEGER,
+                mtime        INTEGER
+            );
+            CREATE INDEX idx_files_scan_id ON files(scan_id);
+            PRAGMA user_version = 3;",
+        )
+        .expect("create schema-v3 files table with the old index");
+
+        let has_index = |conn: &Connection| -> bool {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'index' AND name = 'idx_files_scan_id'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("probe sqlite_master")
+                > 0
+        };
+        assert!(
+            has_index(&conn),
+            "precondition: the schema-v3 table must have the index"
+        );
+
+        migrate(&conn).expect("v3 to v4 migration");
+
+        assert!(
+            !has_index(&conn),
+            "idx_files_scan_id must be dropped after migrating to v4"
+        );
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+
+        migrate(&conn).expect("second migrate must be a no-op, not an error on a missing index");
     }
 
     #[test]
