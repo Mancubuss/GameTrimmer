@@ -489,12 +489,24 @@ fn run_scan(
         notifier.send(WorkerMsg::Cancelled);
         return;
     }
+    // Timed on its own because it is the largest thing neither progress verb
+    // covers: activation validates the whole new generation, runs a
+    // database-wide foreign-key check, and deletes the superseded
+    // generation's rows, all in one transaction. A rescan pays for both
+    // generations at once; the first scan of an empty database pays for
+    // almost nothing, which is why the same machine reports wildly different
+    // totals for the same work.
+    let activate_started = Instant::now();
     if let Err(err) = generation.activate(&mut conn) {
         notifier.report_error(i18n::Reported::new(lang, |l| {
             i18n::libraries_write_failed(l, &err)
         }));
         return;
     }
+    crate::logger::log(&format!(
+        "Generation activated in {:?}",
+        activate_started.elapsed()
+    ));
 
     // Fold this connection's own WAL into the main file and truncate it
     // before dropping the connection, rather than leaving a large,
@@ -532,9 +544,12 @@ fn run_scan(
 
     // `scan` and `analyze` are each measured directly from their own Instant
     // pair rather than derived by subtracting one from the other, so they
-    // stay internally consistent; their sum is slightly less than `total`
-    // by the untimed post-scan housekeeping (WAL checkpoint, this summary
-    // and occupancy computation) between `analyze_phase_end` and here - see
+    // stay internally consistent. Their sum falls short of `total` by the
+    // post-scan housekeeping between `analyze_phase_end` and here: orphan
+    // collection, generation activation, the WAL checkpoint, this summary
+    // and the occupancy query. That gap is not a rounding error - a rescan
+    // has spent a sixth of its wall clock there - so the log names it
+    // rather than leaving it to be inferred by subtraction. See
     // `crate::model::ScanTiming`.
     let timing = crate::model::ScanTiming {
         scan: scan_phase_end.duration_since(started_at),
@@ -542,10 +557,11 @@ fn run_scan(
         total: started_at.elapsed(),
     };
     crate::logger::log(&format!(
-        "Scan done in {:?} (scan {:?}, analyze {:?}), findings: {}",
+        "Scan done in {:?} (scan {:?}, analyze {:?}, housekeeping {:?}), findings: {}",
         timing.total,
         timing.scan,
         timing.analyze,
+        timing.total.saturating_sub(timing.scan + timing.analyze),
         findings.len()
     ));
     // Same numbers the bottom bar shows, kept past this session: "the scan
