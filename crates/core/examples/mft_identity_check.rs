@@ -100,20 +100,45 @@ fn compare(
 }
 
 /// Reads one game directory's files the way a scan does, via the MFT.
+///
+/// Every failure is reported. `scan_roots` reports per-volume failures
+/// *inside* its result - one `Err` per game rather than one for the call -
+/// and the first version of this function collected the `Ok`s and dropped
+/// the rest, so a volume this process was not allowed to open produced
+/// "0 files" and no reason at all.
 fn read_entries(dir: &Path) -> Vec<FileEntry> {
+    let Some(letter) = mftscan::volume_letter(dir) else {
+        eprintln!("{} has no drive letter to scan", dir.display());
+        return Vec::new();
+    };
+    if let Err(err) = mftscan::availability(letter) {
+        eprintln!("volume {letter}: cannot be read: {err}");
+        return Vec::new();
+    }
+
     let roots = vec![(1i64, dir.to_path_buf())];
-    match mftscan::scan_roots(&roots, None, None) {
-        Ok(results) => results
-            .into_iter()
-            .filter_map(|(_, entries)| entries.ok())
-            .flatten()
-            .collect(),
+    let results = match mftscan::scan_roots(&roots, None, None) {
+        Ok(results) => results,
         Err(err) => {
             eprintln!("MFT scan failed: {err}");
-            eprintln!("(this needs an elevated shell - the raw volume handle is admin-only)");
-            Vec::new()
+            return Vec::new();
+        }
+    };
+
+    let mut entries = Vec::new();
+    for (_, result) in results {
+        match result {
+            Ok(found) => entries.extend(found),
+            Err(err) => eprintln!("volume scan failed: {err}"),
         }
     }
+    if entries.is_empty() {
+        eprintln!(
+            "the volume was read but nothing under {} matched - check the path",
+            dir.display()
+        );
+    }
+    entries
 }
 
 fn main() {
