@@ -46,6 +46,40 @@ pub fn open_volume(letter: char) -> Result<AlignedReader<File>> {
     ))
 }
 
+/// The volume's serial number, the same 32-bit value
+/// `GetFileInformationByHandle` reports per file as `dwVolumeSerialNumber`.
+///
+/// Costs one call per volume rather than one per file, which is the whole
+/// point: it is the only part of a file's identity that an `$MFT` record
+/// cannot supply, because the record describes a file and this describes the
+/// volume the record lives in.
+///
+/// `None` when the volume cannot be queried - the caller then has no
+/// identity to offer and must fall back to opening the file, which is the
+/// safe direction.
+pub fn serial_number(letter: char) -> Option<u32> {
+    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
+
+    let root = format!(r"{}:\", letter.to_ascii_uppercase());
+    let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut serial = 0u32;
+
+    // SAFETY: `wide` is a null-terminated UTF-16 buffer that outlives the
+    // call; every out-parameter this asks for is a stack local of the right
+    // type, and the ones not wanted are passed as None.
+    let queried = unsafe {
+        GetVolumeInformationW(
+            PCWSTR::from_raw(wide.as_ptr()),
+            None,
+            Some(&mut serial),
+            None,
+            None,
+            None,
+        )
+    };
+    queried.is_ok().then_some(serial)
+}
+
 /// Opens `\\.\<letter>:` for raw, read-only, non-exclusive access, returning
 /// the bare `File`. Internal: [`open_volume`] is the entry point callers
 /// outside this module should use, since a bare `File` over a volume handle

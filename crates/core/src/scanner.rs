@@ -25,6 +25,11 @@ pub struct FileEntry {
     pub size_on_disk: u64,
     /// Unix seconds; None when the mtime is unavailable.
     pub mtime: Option<i64>,
+    /// What the volume's `$MFT` says this file's identity is, when the entry
+    /// came from an MFT pass. `None` for the `walkdir` path, which has no
+    /// such table to read - and `None` means exactly one thing to every
+    /// consumer: go and open the file.
+    pub mft_identity: Option<crate::mftscan::MftIdentity>,
 }
 
 impl FileEntry {
@@ -37,6 +42,7 @@ impl FileEntry {
             size,
             size_on_disk: size,
             mtime,
+            mft_identity: None,
         }
     }
 }
@@ -178,6 +184,9 @@ fn map_walkdir_entry(
         size,
         size_on_disk,
         mtime,
+        // The walkdir path has no `$MFT` to quote, so it offers no identity
+        // and every consumer falls back to opening the file.
+        mft_identity: None,
     }))
 }
 

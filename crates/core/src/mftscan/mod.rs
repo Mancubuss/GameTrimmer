@@ -53,6 +53,7 @@ use crate::error::{CoreError, Result};
 use crate::scanner::FileEntry;
 
 pub use media::{media_kind, MediaKind};
+pub use model::MftIdentity;
 pub use volume::{availability, is_available};
 
 /// One progress update emitted during an MFT streaming pass, fired once per
@@ -222,7 +223,12 @@ fn scan_volume(
         })
         .collect();
 
-    let by_game = pathmap::scan_frn_map(&frn_map, &scan_roots);
+    // One query per volume for the only identity field a record cannot
+    // carry. A volume that will not answer leaves every entry without an
+    // identity, which sends each file back to being opened individually -
+    // slower, and correct.
+    let volume_serial = volume::serial_number(letter);
+    let by_game = pathmap::scan_frn_map(&frn_map, &scan_roots, volume_serial);
     Ok(by_game
         .into_iter()
         .map(|(game_id, entries)| (game_id, Ok(entries)))

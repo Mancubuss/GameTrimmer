@@ -66,3 +66,50 @@ pub struct MftRecord {
 
 /// FRN -> reconstructed record, covering an entire NTFS volume.
 pub type FrnMap = HashMap<u64, MftRecord>;
+
+/// What an `$MFT` record says about a file's identity, in the shape
+/// `safety::FileIdentity` uses.
+///
+/// Deliberately a **separate type**, not a `FileIdentity`. Every field here
+/// is read from a table that was streamed off the volume some seconds ago,
+/// whereas `FileIdentity` means "what the filesystem said when this handle
+/// was opened", and the deletion contract is built on the latter. Until the
+/// two are proven to agree field for field on real data (see
+/// `examples/mft_identity_check.rs`), giving this the safety type's name
+/// would be claiming a guarantee nobody has checked.
+///
+/// The one field an `$MFT` record cannot supply is the volume serial, which
+/// describes the volume rather than the file - see
+/// [`super::volume::serial_number`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MftIdentity {
+    pub volume_serial: u32,
+    /// `sequence << 48 | frn`, the composition Win32 reports as
+    /// `nFileIndexHigh`/`nFileIndexLow`.
+    pub file_index: u64,
+    pub is_directory: bool,
+    pub size: u64,
+    /// The raw 100-nanosecond NT timestamp, matching `ftLastWriteTime`'s
+    /// resolution rather than the rounded seconds in [`MftRecord::mtime`].
+    pub last_write_time: u64,
+    /// NTFS's own attribute bits - see [`MftRecord::nt_attributes`]. Not yet
+    /// known to equal Win32's `dwFileAttributes`.
+    pub nt_attributes: u32,
+}
+
+impl MftRecord {
+    /// Builds the identity this record states, or `None` when the record is
+    /// missing a field identity needs. A partial identity is never returned:
+    /// the caller must be able to treat `Some` as "everything is known" and
+    /// `None` as "open the file instead".
+    pub fn identity(&self, frn: u64, volume_serial: u32) -> Option<MftIdentity> {
+        Some(MftIdentity {
+            volume_serial,
+            file_index: (self.sequence as u64) << 48 | frn,
+            is_directory: self.is_directory,
+            size: self.size,
+            last_write_time: self.mtime_nt?,
+            nt_attributes: self.nt_attributes?,
+        })
+    }
+}

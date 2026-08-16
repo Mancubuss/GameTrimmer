@@ -106,7 +106,11 @@ fn ensure_classified(
 /// no matching files get an empty `Vec`, not an error. Several roots may
 /// name the same directory (two store entries sharing one install dir) -
 /// each gets its own full copy of the files.
-pub fn scan_frn_map(map: &FrnMap, roots: &[ScanRoot]) -> Vec<(i64, Vec<FileEntry>)> {
+pub fn scan_frn_map(
+    map: &FrnMap,
+    roots: &[ScanRoot],
+    volume_serial: Option<u32>,
+) -> Vec<(i64, Vec<FileEntry>)> {
     // 1. Directory child index: (parent FRN, folded name) -> child dir FRN.
     //    Built over directory records only, so its size is the directory
     //    count, not the file count.
@@ -150,10 +154,14 @@ pub fn scan_frn_map(map: &FrnMap, roots: &[ScanRoot]) -> Vec<(i64, Vec<FileEntry
     let mut results: HashMap<i64, Vec<FileEntry>> =
         roots.iter().map(|r| (r.game_id, Vec::new())).collect();
 
-    for record in map.values() {
+    for (&frn, record) in map {
         if record.is_directory {
             continue;
         }
+        // Built once per record rather than once per alias: a hard-linked
+        // file is one file under several names, and its identity is the
+        // same under each of them.
+        let identity = volume_serial.and_then(|serial| record.identity(frn, serial));
 
         for alias in &record.aliases {
             ensure_classified(alias.parent_frn, map, &roots_at_frn, &mut memo);
@@ -172,6 +180,7 @@ pub fn scan_frn_map(map: &FrnMap, roots: &[ScanRoot]) -> Vec<(i64, Vec<FileEntry
                         size: record.size,
                         size_on_disk: record.alloc_size,
                         mtime: record.mtime,
+                        mft_identity: identity,
                     });
                 }
             }
@@ -245,6 +254,63 @@ mod tests {
         map
     }
 
+    /// The identity has to survive the trip from record to entry, and the
+    /// file index has to be assembled the way Win32 reports it - sequence in
+    /// the top 16 bits, record number in the low 48. Getting that
+    /// composition backwards produces a number that matches nothing and
+    /// would block every deletion.
+    #[test]
+    fn an_entry_carries_the_identity_its_record_states() {
+        let mut map = sample_map();
+        let mut record = file(101, "hl.exe", 500, Some(1_000));
+        record.sequence = 9;
+        record.mtime_nt = Some(133_000_000_000_000_000);
+        record.nt_attributes = Some(0x20); // FILE_ATTRIBUTE_ARCHIVE
+        map.insert(102, record);
+
+        let roots = vec![ScanRoot {
+            game_id: 1,
+            root_rel: "SteamLibrary\\HalfLife".to_string(),
+        }];
+        let results = scan_frn_map(&map, &roots, Some(0xDEAD_BEEF));
+
+        let entries = &results[0].1;
+        let exe = entries
+            .iter()
+            .find(|entry| entry.rel_path == "hl.exe")
+            .expect("the file is under the root");
+        let identity = exe.mft_identity.expect("a serial was supplied");
+
+        assert_eq!(identity.volume_serial, 0xDEAD_BEEF);
+        assert_eq!(identity.file_index, 9 << 48 | 102);
+        assert_eq!(identity.size, 500);
+        assert_eq!(identity.last_write_time, 133_000_000_000_000_000);
+        assert_eq!(identity.nt_attributes, 0x20);
+        assert!(!identity.is_directory);
+    }
+
+    /// Two ways to end up without an identity, and both must send the caller
+    /// back to opening the file rather than leaving a half-filled one: a
+    /// volume that would not report its serial, and a record missing a field
+    /// identity needs.
+    #[test]
+    fn a_partial_identity_is_never_offered() {
+        let map = sample_map();
+        let roots = vec![ScanRoot {
+            game_id: 1,
+            root_rel: "SteamLibrary\\HalfLife".to_string(),
+        }];
+
+        for entry in &scan_frn_map(&map, &roots, None)[0].1 {
+            assert!(entry.mft_identity.is_none(), "no serial, no identity");
+        }
+        // `sample_map`'s records carry no attribute bits, so even with a
+        // serial in hand there is nothing complete to offer.
+        for entry in &scan_frn_map(&map, &roots, Some(1))[0].1 {
+            assert!(entry.mft_identity.is_none(), "incomplete record");
+        }
+    }
+
     #[test]
     fn filters_files_under_matching_root_only() {
         let map = sample_map();
@@ -253,7 +319,7 @@ mod tests {
             root_rel: "SteamLibrary\\HalfLife".to_string(),
         }];
 
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         assert_eq!(results.len(), 1);
         let (game_id, entries) = &results[0];
         assert_eq!(*game_id, 1);
@@ -280,7 +346,7 @@ mod tests {
             },
         ];
 
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         let by_id: HashMap<i64, Vec<FileEntry>> = results.into_iter().collect();
 
         let hl = &by_id[&1];
@@ -310,7 +376,7 @@ mod tests {
             },
         ];
 
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         let by_id: HashMap<i64, Vec<FileEntry>> = results.into_iter().collect();
 
         assert_eq!(by_id[&1].len(), 2);
@@ -333,7 +399,7 @@ mod tests {
             },
         ];
 
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         let by_id: HashMap<i64, Vec<FileEntry>> = results.into_iter().collect();
 
         assert!(by_id[&1].iter().any(|e| e.rel_path == "data\\save1.sav"));
@@ -348,7 +414,7 @@ mod tests {
             root_rel: "SteamLibrary\\DoesNotExist".to_string(),
         }];
 
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         assert_eq!(results, vec![(42, Vec::new())]);
     }
 
@@ -360,7 +426,7 @@ mod tests {
             root_rel: "steamlibrary\\halflife".to_string(),
         }];
 
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         let (_, entries) = &results[0];
         let mut rel_paths: Vec<&str> = entries.iter().map(|e| e.rel_path.as_str()).collect();
         rel_paths.sort();
@@ -388,7 +454,7 @@ mod tests {
             },
         ];
 
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         let by_id: HashMap<i64, Vec<FileEntry>> = results.into_iter().collect();
 
         assert!(by_id[&1].iter().any(|e| e.rel_path == "hl.exe"));
@@ -407,7 +473,7 @@ mod tests {
         }];
 
         // Should not panic; the orphan simply cannot be resolved to a path.
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         assert_eq!(results.len(), 1);
     }
 
@@ -423,7 +489,7 @@ mod tests {
             root_rel: String::new(),
         }];
 
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         // No panic, and the cyclic file cannot be resolved so it's dropped.
         assert_eq!(results, vec![(1, Vec::new())]);
     }
@@ -436,7 +502,7 @@ mod tests {
             root_rel: String::new(),
         }];
 
-        let results = scan_frn_map(&map, &roots);
+        let results = scan_frn_map(&map, &roots, None);
         let (_, entries) = &results[0];
         assert_eq!(entries.len(), 3, "all 3 files on the volume should match");
     }
