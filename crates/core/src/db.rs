@@ -619,6 +619,13 @@ pub fn abort_scan(conn: &mut Connection, scan_id: i64, state: &str) -> Result<()
     Ok(())
 }
 
+/// The generation the app currently reads from.
+///
+/// `Some(0)` is **not** a scan: generation 0 is the legacy compatibility
+/// sentinel written into every database at creation (see `migrate_v1`), so a
+/// brand-new database answers `Some(0)` here, not `None`. Callers asking
+/// "has anything been scanned yet" must test `id != 0` - `activate_scan` and
+/// `scan_allows_deletion` both do.
 pub fn active_scan_id(conn: &Connection) -> Result<Option<i64>> {
     Ok(conn
         .query_row(

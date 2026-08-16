@@ -97,6 +97,10 @@ fn flush_batch(
         return Ok(());
     }
 
+    // Timed as a whole batch, commit included: the writer is a single thread
+    // and this is everything it does, so the figure is directly comparable
+    // with the per-game stages the workers are charged for (`crate::perf`).
+    let write_started = std::time::Instant::now();
     let db_tx = conn.transaction()?;
     let mut pending_rows = Vec::new();
     for prepared in batch.iter() {
@@ -109,6 +113,7 @@ fn flush_batch(
         pending_rows.append(&mut rows);
     }
     db_tx.commit()?;
+    perf::add(perf::Stage::Persist, write_started.elapsed());
     findings.append(&mut pending_rows);
     batch.clear();
     Ok(())

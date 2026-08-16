@@ -23,12 +23,14 @@ use gametrimmer_core::error::{CoreError, Result as CoreResult};
 use gametrimmer_core::langdetect::{LangData, LangDetector, LangFinding};
 use gametrimmer_core::mftscan;
 use gametrimmer_core::orphans::{self, OrphanKind};
+use gametrimmer_core::perf;
 use gametrimmer_core::providers::{
     self, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, OrphanEvidence,
 };
 use gametrimmer_core::rules::{Finding, RuleEngine, RuleProvenance};
 use gametrimmer_core::safety::{SafetySnapshot, SnapshotCapture};
 use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry, ScanStats};
+use gametrimmer_core::sysinfo;
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang, Verb};
@@ -47,14 +49,54 @@ use orphan_analysis::{collect_orphans, persist_orphans};
 use persistence::persist_prepared_game;
 use persistence::{persist_libraries, run_writer};
 
-/// Worker threads used for scanning+classifying games in parallel. Chosen
-/// deliberately smaller than "one thread per game" and not tied to CPU count:
-/// this workload is IO-bound (`scan_dir` walks disk), so a handful more
-/// threads than cores keeps multiple directory-read/stat queues busy without
-/// the diminishing returns (and cache thrashing) of one thread per game.
-/// See `crates/core/examples/scan_bench.rs` for the measurements behind this
-/// choice.
+/// Worker threads used for scanning+classifying games in parallel.
+/// Deliberately a small constant rather than the machine's thread count.
+///
+/// Widening it to `available_parallelism()` (12 here, on 16 threads) was
+/// tried on 2026-08-16 and measured: **70.7 s -> 136.8 s**, and the stage
+/// breakdown says exactly where it went. `safety` - one `CreateFileW` per
+/// flagged file, 720 k of them - went from 37.7 s to 617.0 s of thread time,
+/// 52 us per open to 857 us. It is not CPU work: it is random-access
+/// metadata IO against the same mechanical volume the `$MFT` was just read
+/// from, and twelve queues into one set of heads is a seek storm, not
+/// parallelism. Everything that *is* CPU (tokenize, rules, family) measured
+/// the same at either width, which is the tell.
+///
+/// So the number is not stale-because-IO-bound after all - it is small
+/// because a fifth of the analyze phase is still disk seeks. Raising it only
+/// becomes worth re-testing once those seeks are gone, i.e. after safety
+/// identity comes from the MFT records instead of from opening every file
+/// (audit item D2).
 const SCAN_THREADS: usize = 6;
+
+/// Describes what this scan will have to write over, for the environment
+/// line above.
+///
+/// Generation **0 is not a generation**: it is the legacy sentinel every
+/// database is created with, and `db::activate_scan` skips it by the same
+/// `!= 0` test. Reading `active_scan_id` as a plain `Option` reports a
+/// brand-new database as "holds a previous generation", which is the exact
+/// opposite of the truth and is the condition every baseline run is measured
+/// under - this got into the log once already.
+///
+/// The row count rides along because that is what the cost is proportional
+/// to: activating a generation deletes the superseded one's rows in one
+/// transaction, which is why a rescan has cost 2.4x a first scan. `files`
+/// has no `scan_id` index (dropped in A3, it only ever cost writes), so this
+/// is a table scan - tens of milliseconds once per scan, against a phase
+/// measured in tens of seconds.
+fn previous_generation(conn: &Connection) -> String {
+    match db::active_scan_id(conn) {
+        Ok(Some(id)) if id != 0 => {
+            match conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0)) {
+                Ok(rows) => format!("holds generation {id} ({rows} file rows to supersede)"),
+                Err(_) => format!("holds generation {id}"),
+            }
+        }
+        Ok(_) => "empty".to_string(),
+        Err(err) => format!("state unreadable ({err})"),
+    }
+}
 
 /// How many games' `files`/`findings` writes share one database transaction.
 /// Bigger batches commit less often (fewer WAL syncs), but hold a batch's
@@ -192,6 +234,20 @@ fn run_scan(
             return;
         }
     };
+
+    // The conditions two runs of the same scan differ by. Without this line
+    // a six-second gap between two otherwise identical runs has nothing to
+    // be attributed to - see `gametrimmer_core::sysinfo`, which also
+    // explains why "was the cache warm" is answered by the `$MFT` read's
+    // throughput rather than by anything queryable here. Whether the
+    // database already holds a generation belongs on the same line: it is
+    // the largest known factor (a rescan has cost 2.4x a first scan's
+    // analyze time) and it is recorded nowhere else.
+    crate::logger::log(&format!(
+        "Environment: {}, database {}",
+        sysinfo::system_state(),
+        previous_generation(&conn)
+    ));
 
     // Discovery + persist below is the phase that used to show nothing at
     // all for its whole (15-20s on a big library) duration - the UI cleared
@@ -379,6 +435,9 @@ fn run_scan(
     // the same time. The two durations reported below therefore overlap
     // rather than partition the run - see `crate::model::ScanTiming`.
     let dispatch_started = Instant::now();
+    // So the breakdown logged at the end describes this run, not every scan
+    // since the app started.
+    perf::reset();
 
     let (write_outcome, mft_pass) = std::thread::scope(|scope| {
         let writer = scope.spawn(|| {
@@ -616,6 +675,12 @@ fn run_scan(
         timing.analyze,
         findings.len()
     ));
+    // Where that analyze window actually went, stage by stage - the thing
+    // three rounds of optimisation had to guess at. See `perf::report` for
+    // why the sum exceeds the wall clock. The worker count rides along
+    // because the whole line is per-thread sums, and dividing them by the
+    // wrong number of threads is the easiest way to misread it.
+    crate::logger::log(&format!("{} across {SCAN_THREADS} workers", perf::report()));
     // Same numbers the bottom bar shows, kept past this session: "the scan
     // took 40 minutes" is otherwise unanswerable without asking the user to
     // sit through it again. Non-fatal - a scan that produced results must
@@ -1368,6 +1433,7 @@ fn classify_game(
     // First pass: combine each entry's rule/localization findings, keeping
     // the entry's index into `entries` so `assign_group_dirs` (which needs
     // the full file list, not just the flagged ones) can be run afterwards.
+    let rules_started = Instant::now();
     let mut combined_by_index: Vec<(usize, CombinedFinding)> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         // The rule-engine pass is per-file regex work; on a game with
@@ -1386,12 +1452,17 @@ fn classify_game(
         }
     }
 
+    perf::add(perf::Stage::Rules, rules_started.elapsed());
+
     let flagged: HashSet<usize> = combined_by_index.iter().map(|(index, _)| *index).collect();
-    let group_dirs = assign_group_dirs(&entries, &flagged);
+    let group_dirs = perf::timed(perf::Stage::Grouping, || {
+        assign_group_dirs(&entries, &flagged)
+    });
 
     // One cache per game: every finding here shares the same trusted root and
     // most of the same intermediate directories, which is exactly the
     // redundancy `SnapshotCapture` exists to remove.
+    let safety_started = Instant::now();
     let mut capture = SnapshotCapture::new();
     let findings = combined_by_index
         .into_iter()
@@ -1415,6 +1486,7 @@ fn classify_game(
             }
         })
         .collect();
+    perf::add(perf::Stage::Safety, safety_started.elapsed());
 
     Ok(PreparedGame {
         game_id,
@@ -1635,6 +1707,38 @@ fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh database reports `active_scan_id == Some(0)` - the legacy
+    /// sentinel - and the first version of the environment line read that as
+    /// "holds a previous generation", describing every baseline run as the
+    /// opposite of what it was.
+    #[test]
+    fn a_fresh_database_is_reported_as_empty_not_as_a_previous_generation() {
+        let conn = db::open_in_memory().expect("open in-memory db");
+
+        assert_eq!(
+            db::active_scan_id(&conn).expect("read active generation"),
+            Some(0),
+            "precondition: a new database carries the legacy sentinel",
+        );
+        assert_eq!(previous_generation(&conn), "empty");
+    }
+
+    /// The other half: a real generation is named, with the row count that
+    /// predicts what superseding it will cost.
+    #[test]
+    fn an_activated_generation_is_reported_with_its_row_count() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
+        db::activate_scan(&mut conn, scan_id).expect("activate scan");
+
+        let reported = previous_generation(&conn);
+        assert!(
+            reported.contains(&format!("generation {scan_id}")),
+            "{reported:?} does not name the generation",
+        );
+        assert!(reported.contains("0 file rows"), "{reported:?}");
+    }
 
     /// GT-127. The whole point of routing reports through `Reported`: the
     /// log gets English whatever the interface language is, and the window

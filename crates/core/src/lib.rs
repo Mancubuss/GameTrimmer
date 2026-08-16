@@ -11,11 +11,13 @@ pub mod ondisk;
 pub mod ops;
 pub mod orphans;
 pub mod packs;
+pub mod perf;
 pub mod providers;
 pub mod rules;
 pub mod safety;
 pub mod scanner;
 pub mod settings;
+pub mod sysinfo;
 
 #[cfg(test)]
 mod portability_regression_tests {

@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::error::{CoreError, Result as CoreResult};
+use crate::perf;
 use crate::scanner::{collect_cancellable, FileEntry, CANCEL_POLL_INTERVAL};
 
 pub use data::{LangData, LangPack, LANG_PACK_VERSION};
@@ -132,15 +133,20 @@ impl LangDetector {
         files: &[FileEntry],
         cancel: &AtomicBool,
     ) -> CoreResult<Vec<(usize, LangFinding)>> {
-        let seg_lists: Vec<_> =
-            collect_cancellable(files.iter().map(|f| tokenize_path(&f.rel_path)), cancel)?;
-        let occ_lists: Vec<Vec<Occurrence>> = collect_cancellable(
-            seg_lists.iter().map(|s| collect_occurrences(&self.data, s)),
-            cancel,
-        )?;
-        let family_hits =
-            family::compute_family(&self.data, &seg_lists, &occ_lists, &self.keep, cancel)?;
+        let seg_lists: Vec<_> = perf::timed(perf::Stage::Tokenize, || {
+            collect_cancellable(files.iter().map(|f| tokenize_path(&f.rel_path)), cancel)
+        })?;
+        let occ_lists: Vec<Vec<Occurrence>> = perf::timed(perf::Stage::Occurrences, || {
+            collect_cancellable(
+                seg_lists.iter().map(|s| collect_occurrences(&self.data, s)),
+                cancel,
+            )
+        })?;
+        let family_hits = perf::timed(perf::Stage::Family, || {
+            family::compute_family(&self.data, &seg_lists, &occ_lists, &self.keep, cancel)
+        })?;
 
+        let decide_started = std::time::Instant::now();
         let mut out = Vec::with_capacity(files.len());
         for (i, (file, segs)) in files.iter().zip(seg_lists.iter()).enumerate() {
             if i % CANCEL_POLL_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
@@ -189,6 +195,9 @@ impl LangDetector {
                 out.push((i, finding));
             }
         }
+        // Only the completed path is charged: a cancelled analysis reports
+        // nothing anyway, so the early return above needs no bookkeeping.
+        perf::add(perf::Stage::LangDecide, decide_started.elapsed());
         Ok(out)
     }
 

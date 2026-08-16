@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ntfs::{Ntfs, NtfsReadSeek};
 
 use crate::error::{CoreError, Result};
+use crate::perf;
 
 use super::model::FrnMap;
 use super::record::{self, FrnAccumulator};
@@ -136,11 +137,20 @@ where
         }
 
         let take = (total_records - frn_offset).min(chunk_records);
-        let mut chunk_bytes = fetch_chunk(frn_offset, take)?;
+        // Reading and parsing are timed apart because the proposal to split
+        // them across two threads only pays if both halves are substantial;
+        // this loop does them strictly alternately, so whichever is smaller
+        // is the ceiling on that split. See `crate::perf`.
+        let mut chunk_bytes = perf::timed(perf::Stage::MftRead, || fetch_chunk(frn_offset, take))?;
+        // Paired with the stage's duration this is the run's warm/cold
+        // reading - see `perf::mft_throughput`.
+        perf::add_mft_bytes(chunk_bytes.len() as u64);
 
-        for parsed in record::parse_chunk(&mut chunk_bytes, record_size, frn_offset) {
-            acc.add(parsed);
-        }
+        perf::timed(perf::Stage::MftParse, || {
+            for parsed in record::parse_chunk(&mut chunk_bytes, record_size, frn_offset) {
+                acc.add(parsed);
+            }
+        });
 
         frn_offset += take;
 
