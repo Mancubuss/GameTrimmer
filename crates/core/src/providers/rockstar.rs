@@ -13,8 +13,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
+    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const REGISTRY_KEY: &str = r"SOFTWARE\WOW6432Node\Rockstar Games";
@@ -64,28 +64,51 @@ fn discover_rockstar() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
                 continue;
             }
         };
-        let install_folder = subkey.get_value::<String, _>("InstallFolder").ok();
-        let Some(game) = build_game_install(&name, install_folder) else {
-            if !NON_GAME_SUBKEYS
-                .iter()
-                .any(|excluded| excluded.eq_ignore_ascii_case(&name))
-            {
-                diagnostics.push(diagnostic(
-                    "game-entry",
-                    format!("{name} has no usable InstallFolder"),
-                ));
+        // A missing `InstallFolder` is ordinary - a leftover subkey, or one
+        // of the non-game entries `build_game_install` already filters by
+        // name - and must not be conflated with a genuine read failure
+        // (permissions, a corrupt hive), which is the case that actually
+        // needs to keep degrading this provider's evidence.
+        let install_folder = match subkey.get_value::<String, _>("InstallFolder") {
+            Ok(value) => Some(value),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                diagnostics.push(diagnostic("game-value-read", err));
+                continue;
             }
+        };
+        // Whatever `build_game_install` rejects at this point is already an
+        // ordinary case (launcher infrastructure by name, or no usable
+        // install folder), not a failure worth diagnosing.
+        let Some(game) = build_game_install(&name, install_folder) else {
             continue;
         };
-        if game.install_dir.is_dir() {
-            games.push(game);
-        } else {
-            diagnostics.push(DiscoveryDiagnostic {
+        // A directory that isn't there is ordinary - the registry key
+        // survived an uninstall that left it behind - and nothing absent can
+        // be mistaken for residue. A directory that could not be *examined*
+        // is the dangerous shape and stays diagnosed; `super::try_is_dir`
+        // explains why. For Rockstar that hazard is latent rather than live:
+        // orphan detection is wired to Steam, Xbox and itch only
+        // (`orphan_spec_for`). Splitting it here keeps the guarantee true
+        // ahead of that changing, and stops an ordinary uninstall from
+        // degrading the whole provider meanwhile.
+        match super::try_is_dir(&game.install_dir) {
+            Ok(true) => games.push(game),
+            // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
+            Ok(false) => diagnostics.push(DiscoveryDiagnostic {
+                provider: "rockstar",
+                stage: GAME_ABSENT,
+                path: Some(game.install_dir),
+                message:
+                    "registry key present, install directory absent (uninstalled without cleanup)"
+                        .into(),
+            }),
+            Err(err) => diagnostics.push(DiscoveryDiagnostic {
                 provider: "rockstar",
                 stage: "game-path",
                 path: Some(game.install_dir),
-                message: "configured Rockstar install is unavailable".into(),
-            });
+                message: err.to_string(),
+            }),
         }
     }
     finish_report("rockstar", games, diagnostics)
@@ -106,13 +129,20 @@ fn finish_report(
     diagnostics: Vec<DiscoveryDiagnostic>,
 ) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     let mut libraries = super::group_by_parent_dir(provider, games);
-    if diagnostics.is_empty() {
-        DiscoveryReport::complete(libraries)
-    } else {
+    if degrades_evidence(&diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
         DiscoveryReport::degraded(libraries, diagnostics)
+    } else {
+        // Complete, but not necessarily silent: a `GAME_ABSENT` note still
+        // travels so it reaches the log and `scan_diagnostics`.
+        // `DiscoveryReport::complete` would drop it.
+        DiscoveryReport {
+            data: libraries,
+            status: DiscoveryStatus::Complete,
+            diagnostics,
+        }
     }
 }
 /// Builds a `GameInstall` from a raw registry entry: `name` is the subkey name

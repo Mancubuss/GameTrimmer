@@ -9,8 +9,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
+    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const REGISTRY_KEY: &str = r"SOFTWARE\WOW6432Node\GOG.com\Games";
@@ -73,38 +73,65 @@ fn discover_gog() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
                 continue;
             }
         };
+        // A missing `path` is ordinary - a broken/partial entry left behind
+        // by GOG Galaxy - and must not be conflated with a genuine read
+        // failure (permissions, a corrupt hive), which is the case that
+        // actually needs to keep degrading this provider's evidence.
+        let path = match subkey.get_value::<String, _>("path") {
+            Ok(value) => Some(value),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                diagnostics.push(diagnostic("game-value-read", None, err));
+                continue;
+            }
+        };
         let entry = RawGogEntry {
             app_id: app_id.clone(),
             game_name: subkey.get_value::<String, _>("gameName").ok(),
-            path: subkey.get_value::<String, _>("path").ok(),
+            path,
         };
+        // Whatever `build_game_install` rejects at this point is already an
+        // ordinary case (no usable name or path), not a failure worth
+        // diagnosing.
         let Some(game) = build_game_install(entry) else {
-            diagnostics.push(diagnostic(
-                "game-entry",
-                None,
-                format!("GOG registry entry {app_id} has no usable name or path"),
-            ));
             continue;
         };
-        if game.install_dir.is_dir() {
-            games.push(game);
-        } else {
-            diagnostics.push(diagnostic(
-                "game-path",
+        // A directory that isn't there is ordinary - GOG Galaxy left the
+        // registry entry behind after an uninstall - and nothing absent can
+        // be mistaken for residue. A directory that could not be *examined*
+        // is the dangerous shape and stays diagnosed; `super::try_is_dir`
+        // explains why. For GOG that hazard is latent rather than live:
+        // orphan detection is wired to Steam, Xbox and itch only
+        // (`orphan_spec_for`). Splitting it here keeps the guarantee true
+        // ahead of that changing, and stops an ordinary uninstall from
+        // degrading the whole provider meanwhile.
+        match super::try_is_dir(&game.install_dir) {
+            Ok(true) => games.push(game),
+            // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
+            Ok(false) => diagnostics.push(diagnostic(
+                GAME_ABSENT,
                 Some(game.install_dir),
-                "configured GOG install is unavailable",
-            ));
+                "registry entry present, install directory absent (uninstalled without cleanup)",
+            )),
+            Err(err) => diagnostics.push(diagnostic("game-path", Some(game.install_dir), err)),
         }
     }
 
     let mut libraries = super::group_by_parent_dir("gog", games);
-    if diagnostics.is_empty() {
-        DiscoveryReport::complete(libraries)
-    } else {
+    if degrades_evidence(&diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
         DiscoveryReport::degraded(libraries, diagnostics)
+    } else {
+        // Complete, but not necessarily silent: a `GAME_ABSENT` note still
+        // travels so it reaches the log and `scan_diagnostics`.
+        // `DiscoveryReport::complete` would drop it.
+        DiscoveryReport {
+            data: libraries,
+            status: DiscoveryStatus::Complete,
+            diagnostics,
+        }
     }
 }
 

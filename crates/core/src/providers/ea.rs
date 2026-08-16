@@ -24,9 +24,14 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, GameInstall,
+    LibraryProvider, OrphanEvidence,
 };
+
+// `GAME_ABSENT` and `degrades_evidence` live in `super` - see
+// `providers::GAME_ABSENT` for why an absent install dir must not degrade a
+// library the same way an unexaminable one does.
+use super::{degrades_evidence, GAME_ABSENT};
 
 const ORIGIN_GAMES_KEY: &str = r"SOFTWARE\WOW6432Node\Origin Games";
 const EA_DESKTOP_INSTALLED_GAMES_KEY: &str =
@@ -81,29 +86,47 @@ fn discover_ea() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
 
     let mut games = Vec::new();
     for game in super::dedupe_by_install_dir(report.games) {
-        if game.install_dir.is_dir() {
-            games.push(refine_name_from_installer_xml(game));
-        } else {
-            report.diagnostics.push(DiscoveryDiagnostic {
+        // A registry entry whose install dir is simply not there is normal -
+        // uninstalled outside the EA app, or a leftover registry key that
+        // survived an uninstall (the uninstall-registry source above hits
+        // this constantly). A folder we merely failed to read is the
+        // dangerous case: it stays on disk, drops out of `games`, and orphan
+        // detection would then call it residue. Diagnose it.
+        match super::try_is_dir(&game.install_dir) {
+            Ok(true) => games.push(refine_name_from_installer_xml(game)),
+            // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
+            Ok(false) => report.diagnostics.push(DiscoveryDiagnostic {
+                provider: "ea",
+                stage: GAME_ABSENT,
+                path: Some(game.install_dir),
+                message: "registered EA install directory is absent (uninstalled outside the EA app, or a leftover registry key)".into(),
+            }),
+            Err(err) => report.diagnostics.push(DiscoveryDiagnostic {
                 provider: "ea",
                 stage: "game-path",
                 path: Some(game.install_dir),
-                message: "configured EA install is unavailable".into(),
-            });
+                message: err.to_string(),
+            }),
         }
     }
     let mut libraries = super::group_by_parent_dir("ea", games);
-    if report.diagnostics.is_empty() {
-        if report.ea_evidence_found {
-            DiscoveryReport::complete(libraries)
-        } else {
-            DiscoveryReport::not_installed(libraries)
-        }
-    } else {
+    if degrades_evidence(&report.diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
         DiscoveryReport::degraded(libraries, report.diagnostics)
+    } else if report.ea_evidence_found {
+        // Complete, but not necessarily silent: a `GAME_ABSENT` note still
+        // travels so it reaches the log and `scan_diagnostics`.
+        // `DiscoveryReport::complete` would drop it, which is the whole
+        // behaviour this card exists to change.
+        DiscoveryReport {
+            data: libraries,
+            status: DiscoveryStatus::Complete,
+            diagnostics: report.diagnostics,
+        }
+    } else {
+        DiscoveryReport::not_installed(libraries)
     }
 }
 
@@ -177,28 +200,43 @@ fn read_uninstall_games_report() -> ProviderRead {
                 continue;
             }
             report.ea_evidence_found = true;
+            // A missing `InstallLocation` is normal - EA's own client entries
+            // ("EA app", "Origin", ...) carry an empty one by design, and so
+            // does an uninstall record left behind after a game was removed.
+            // A read that fails for any other reason (permissions, a corrupt
+            // hive) is not: the game may still be installed and we simply
+            // could not find out, which is why only that case degrades this
+            // library's orphan evidence.
+            let install_location = match subkey.get_value::<String, _>("InstallLocation") {
+                Ok(value) => Some(value),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    report.diagnostics.push(diagnostic("game-value-read", err));
+                    continue;
+                }
+            };
+            // A missing `DisplayName` is normal (some entries never carry
+            // one; `build_from_uninstall_entry` falls back to the install
+            // folder's name). A read that fails for any other reason only
+            // costs that fallback - unlike the install-path reads above,
+            // losing this one can't drop a live game out of `games`, so it
+            // is recorded and the entry still built with `None`.
+            let display_name = match subkey.get_value::<String, _>("DisplayName") {
+                Ok(value) => Some(value),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    report.diagnostics.push(diagnostic("game-value-read", err));
+                    None
+                }
+            };
             let entry = RawUninstallEntry {
                 key_name: key_name.clone(),
-                display_name: subkey.get_value::<String, _>("DisplayName").ok(),
+                display_name,
                 publisher: Some(publisher),
-                install_location: subkey.get_value::<String, _>("InstallLocation").ok(),
+                install_location,
             };
-            match build_from_uninstall_entry(entry) {
-                Some(game) => report.games.push(game),
-                None => {
-                    let display_name = subkey
-                        .get_value::<String, _>("DisplayName")
-                        .unwrap_or_else(|_| key_name.clone());
-                    if !NON_GAME_NAMES
-                        .iter()
-                        .any(|name| name.eq_ignore_ascii_case(display_name.trim()))
-                    {
-                        report.diagnostics.push(diagnostic(
-                            "uninstall-entry",
-                            format!("{key_name} has no usable InstallLocation"),
-                        ));
-                    }
-                }
+            if let Some(game) = build_from_uninstall_entry(entry) {
+                report.games.push(game);
             }
         }
     }
@@ -280,17 +318,41 @@ fn read_registry_games_report(registry_key: &str) -> ProviderRead {
                 continue;
             }
         };
+        // A missing `Install Dir` is normal - some `Origin Games`/`EA Desktop
+        // InstalledGames` subkeys are DLC or edition records, or a leftover
+        // key from an earlier uninstall, and never had one. A read that
+        // fails for any other reason (permissions, a corrupt hive) is not:
+        // the game may still be installed and we simply could not find out,
+        // which is why only that case degrades this library's orphan
+        // evidence.
+        let install_dir = match subkey.get_value::<String, _>("Install Dir") {
+            Ok(value) => Some(value),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                report.diagnostics.push(diagnostic("game-value-read", err));
+                continue;
+            }
+        };
+        // Same reasoning as the uninstall-registry read above: a missing
+        // `DisplayName` is ordinary (folder-name fallback in
+        // `build_game_install`), and a read failure only costs that
+        // fallback, not the game entry, so it is recorded rather than
+        // dropped.
+        let display_name = match subkey.get_value::<String, _>("DisplayName") {
+            Ok(value) => Some(value),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                report.diagnostics.push(diagnostic("game-value-read", err));
+                None
+            }
+        };
         let entry = RawEaEntry {
             id: id.clone(),
-            display_name: subkey.get_value::<String, _>("DisplayName").ok(),
-            install_dir: subkey.get_value::<String, _>("Install Dir").ok(),
+            display_name,
+            install_dir,
         };
-        match build_game_install(entry) {
-            Some(game) => report.games.push(game),
-            None => report.diagnostics.push(diagnostic(
-                "game-entry",
-                format!("{id} has no usable Install Dir"),
-            )),
+        if let Some(game) = build_game_install(entry) {
+            report.games.push(game);
         }
     }
     report

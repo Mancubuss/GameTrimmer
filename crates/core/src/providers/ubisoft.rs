@@ -14,8 +14,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
+    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const REGISTRY_KEY: &str = r"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs";
@@ -62,33 +62,68 @@ fn discover_ubisoft() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
                 continue;
             }
         };
-        let install_dir = subkey.get_value::<String, _>("InstallDir").ok();
+        // A missing `InstallDir` is ordinary - an uninstalled leftover
+        // subkey, a DLC/edition record with nothing installed - and must
+        // not be conflated with a genuine read failure (permissions, a
+        // corrupt hive), which is the case that actually needs to keep
+        // degrading this provider's evidence.
+        let install_dir = match subkey.get_value::<String, _>("InstallDir") {
+            Ok(value) => Some(value),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                diagnostics.push(diagnostic("game-value-read", err));
+                continue;
+            }
+        };
+        // Whatever `build_game_install` rejects at this point is already an
+        // ordinary case (no install dir, or one with no usable name), not a
+        // failure worth diagnosing.
         let Some(game) = build_game_install(&id, install_dir) else {
-            diagnostics.push(diagnostic(
-                "game-entry",
-                format!("{id} has no usable InstallDir"),
-            ));
             continue;
         };
-        if game.install_dir.is_dir() {
-            games.push(game);
-        } else {
-            diagnostics.push(DiscoveryDiagnostic {
+        // A directory that isn't there is ordinary - Ubisoft left the
+        // registry key behind after an uninstall, or the entry was never
+        // finished - and nothing absent can be mistaken for residue. A
+        // directory that could not be *examined* is the dangerous shape and
+        // stays diagnosed; `super::try_is_dir` explains why. For Ubisoft that
+        // hazard is latent rather than live: orphan detection is wired to
+        // Steam, Xbox and itch only (`orphan_spec_for`). Splitting it here
+        // keeps the guarantee true ahead of that changing, and stops an
+        // ordinary uninstall from degrading the whole provider meanwhile.
+        match super::try_is_dir(&game.install_dir) {
+            Ok(true) => games.push(game),
+            // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
+            Ok(false) => diagnostics.push(DiscoveryDiagnostic {
+                provider: "ubisoft",
+                stage: GAME_ABSENT,
+                path: Some(game.install_dir),
+                message:
+                    "registry key present, install directory absent (uninstalled without cleanup)"
+                        .into(),
+            }),
+            Err(err) => diagnostics.push(DiscoveryDiagnostic {
                 provider: "ubisoft",
                 stage: "game-path",
                 path: Some(game.install_dir),
-                message: "configured Ubisoft install is unavailable".into(),
-            });
+                message: err.to_string(),
+            }),
         }
     }
     let mut libraries = super::group_by_parent_dir("ubisoft", games);
-    if diagnostics.is_empty() {
-        DiscoveryReport::complete(libraries)
-    } else {
+    if degrades_evidence(&diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
         DiscoveryReport::degraded(libraries, diagnostics)
+    } else {
+        // Complete, but not necessarily silent: a `GAME_ABSENT` note still
+        // travels so it reaches the log and `scan_diagnostics`.
+        // `DiscoveryReport::complete` would drop it.
+        DiscoveryReport {
+            data: libraries,
+            status: DiscoveryStatus::Complete,
+            diagnostics,
+        }
     }
 }
 

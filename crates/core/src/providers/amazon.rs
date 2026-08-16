@@ -12,8 +12,8 @@ use rusqlite::{Connection, OpenFlags};
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
+    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const DATABASE_RELATIVE_PATH: &str = r"Amazon Games\Data\Games\Sql\GameInstallInfo.sqlite";
@@ -82,7 +82,17 @@ fn discover_amazon() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             )
         }
     };
-    let (rows, mut diagnostics) = match read_games_report(&conn) {
+    discover_amazon_from_conn(&conn, db_path)
+}
+
+/// The testable core of Amazon discovery: everything past an open
+/// `GameInstallInfo.sqlite` connection. Split out so tests can drive it
+/// against an in-memory database instead of the real launcher install.
+fn discover_amazon_from_conn(
+    conn: &Connection,
+    db_path: PathBuf,
+) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let (rows, mut diagnostics) = match read_games_report(conn) {
         Ok(report) => report,
         Err(err) => {
             return DiscoveryReport::failed(
@@ -93,24 +103,39 @@ fn discover_amazon() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     };
     let mut games = Vec::new();
     for game in rows {
-        if game.install_dir.is_dir() {
-            games.push(game);
-        } else {
-            diagnostics.push(diagnostic(
-                "game-path",
+        // A row whose install directory is simply not there is normal (the
+        // game was uninstalled outside Amazon Games, or the record is stale)
+        // and an absent folder cannot be mistaken for orphan residue. A
+        // folder we merely failed to examine is the dangerous case: it stays
+        // on disk, drops out of `games`, and would look unmanaged. Diagnose
+        // it instead of collapsing both into one `game-path` stage.
+        match super::try_is_dir(&game.install_dir) {
+            Ok(true) => games.push(game),
+            // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
+            Ok(false) => diagnostics.push(diagnostic(
+                GAME_ABSENT,
                 Some(game.install_dir),
-                "configured Amazon Games install is unavailable",
-            ));
+                "database entry present, install directory absent (uninstalled outside Amazon Games, or a stale record)",
+            )),
+            Err(err) => diagnostics.push(diagnostic("game-path", Some(game.install_dir), err)),
         }
     }
     let mut libraries = super::group_by_parent_dir("amazon", games);
-    if diagnostics.is_empty() {
-        DiscoveryReport::complete(libraries)
-    } else {
+    if degrades_evidence(&diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
         DiscoveryReport::degraded(libraries, diagnostics)
+    } else {
+        // Complete, but not necessarily silent: a `GAME_ABSENT` note still
+        // travels so it reaches the log and `scan_diagnostics`.
+        // `DiscoveryReport::complete` would drop it, which is the whole
+        // behaviour this card exists to change.
+        DiscoveryReport {
+            data: libraries,
+            status: DiscoveryStatus::Complete,
+            diagnostics,
+        }
     }
 }
 
@@ -153,13 +178,15 @@ fn read_games_report(
                 continue;
             }
         };
-        match build_game_install(entry) {
-            Some(game) => games.push(game),
-            None => diagnostics.push(diagnostic(
-                "game-entry",
-                None,
-                format!("row {index}: installed game has no usable path or name"),
-            )),
+        // A row that decoded fine but yields no `GameInstall` is the launcher
+        // saying nothing is installed there - a leftover from an uninstall, a
+        // DLC/edition record, or a catalogue entry never downloaded. That is
+        // not a failure and must not cost the library its `Authoritative`
+        // evidence, so it is dropped without a diagnostic. A row that failed
+        // to *decode* (the `Err` arm above) is the real failure and keeps its
+        // own `row-decode` diagnostic.
+        if let Some(game) = build_game_install(entry) {
+            games.push(game);
         }
     }
     Ok((games, diagnostics))
@@ -266,5 +293,187 @@ mod tests {
 
         assert_eq!(games.len(), 1);
         assert_eq!(games[0].name, "Lost Ark");
+    }
+
+    /// A row that decoded fine but has no install directory is ordinary
+    /// launcher state (uninstalled, DLC, never downloaded) - it must vanish
+    /// silently, not leave a `game-entry` diagnostic behind.
+    #[test]
+    fn read_games_report_skips_a_row_with_no_directory_without_a_diagnostic() {
+        let conn = test_db(&[("amzn1.adg.product.1", Some("Broken"), None, 1)]);
+
+        let (games, diagnostics) = read_games_report(&conn).unwrap();
+
+        assert!(games.is_empty());
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// The counterpart: a row that fails to *decode* is a real failure and
+    /// keeps its own diagnostic (already named distinctly, `row-decode`).
+    #[test]
+    fn read_games_report_flags_a_row_that_fails_to_decode() {
+        let conn = test_db(&[]);
+        conn.execute(
+            "INSERT INTO DbSet (Id, ProductTitle, InstallDirectory, Installed)
+             VALUES (NULL, 'Broken', 'F:\\Amazon Games\\Broken', 1)",
+            [],
+        )
+        .unwrap();
+
+        let (games, diagnostics) = read_games_report(&conn).unwrap();
+
+        assert!(games.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].stage, "row-decode");
+    }
+
+    /// The regression this slice exists to prevent: one installed record with
+    /// no usable path used to add a diagnostic, and any diagnostic at all
+    /// flips every library from `Authoritative` to `Degraded`
+    /// (`discover_amazon_from_conn`). A leftover record must not disable
+    /// orphan detection for a library that has a perfectly good other game.
+    #[test]
+    fn a_row_with_no_directory_does_not_degrade_the_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path().join("Fallout 76");
+        std::fs::create_dir(&install_dir).unwrap();
+
+        let conn = test_db(&[
+            (
+                "amzn1.adg.product.1",
+                Some("Fallout 76"),
+                Some(install_dir.to_str().unwrap()),
+                1,
+            ),
+            ("amzn1.adg.product.2", Some("Broken"), None, 1),
+        ]);
+
+        let report = discover_amazon_from_conn(&conn, temp.path().join("GameInstallInfo.sqlite"));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert_eq!(report.data.len(), 1);
+        assert_eq!(
+            report.data[0].orphan_evidence,
+            OrphanEvidence::Authoritative
+        );
+        assert_eq!(report.data[0].games.len(), 1);
+    }
+
+    /// The other half: a row that fails to decode is a real failure and does
+    /// degrade the library it lands in.
+    #[test]
+    fn a_row_that_fails_to_decode_degrades_the_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path().join("Fallout 76");
+        std::fs::create_dir(&install_dir).unwrap();
+
+        let conn = test_db(&[(
+            "amzn1.adg.product.1",
+            Some("Fallout 76"),
+            Some(install_dir.to_str().unwrap()),
+            1,
+        )]);
+        conn.execute(
+            "INSERT INTO DbSet (Id, ProductTitle, InstallDirectory, Installed)
+             VALUES (NULL, 'Broken', 'F:\\Amazon Games\\Broken', 1)",
+            [],
+        )
+        .unwrap();
+
+        let report = discover_amazon_from_conn(&conn, temp.path().join("GameInstallInfo.sqlite"));
+
+        assert_eq!(report.status, crate::providers::DiscoveryStatus::Degraded);
+        assert_eq!(report.data.len(), 1);
+        assert_eq!(report.data[0].orphan_evidence, OrphanEvidence::Degraded);
+    }
+
+    /// A record whose install directory is provably absent - uninstalled
+    /// outside Amazon Games, or a stale record - must not degrade the
+    /// library: an absent folder can never be mistaken for orphan residue.
+    #[test]
+    fn a_game_whose_install_dir_is_absent_keeps_the_library_authoritative() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path().join("Fallout 76");
+        std::fs::create_dir(&install_dir).unwrap();
+        let absent_dir = temp.path().join("Never Downloaded");
+
+        let conn = test_db(&[
+            (
+                "amzn1.adg.product.1",
+                Some("Fallout 76"),
+                Some(install_dir.to_str().unwrap()),
+                1,
+            ),
+            (
+                "amzn1.adg.product.2",
+                Some("Never Downloaded"),
+                Some(absent_dir.to_str().unwrap()),
+                1,
+            ),
+        ]);
+
+        let report = discover_amazon_from_conn(&conn, temp.path().join("GameInstallInfo.sqlite"));
+
+        assert_eq!(report.status, crate::providers::DiscoveryStatus::Complete);
+        assert_eq!(report.data.len(), 1);
+        assert_eq!(
+            report.data[0].orphan_evidence,
+            OrphanEvidence::Authoritative
+        );
+        assert_eq!(report.data[0].games.len(), 1);
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.stage)
+                .collect::<Vec<_>>(),
+            vec![GAME_ABSENT],
+            "the absent install must still leave a trace: {:?}",
+            report.diagnostics
+        );
+    }
+
+    /// The dangerous counterpart: an install directory that cannot be
+    /// examined - as opposed to one that is provably absent - must degrade
+    /// the library, because it may still be sitting on disk and would
+    /// otherwise be misread as orphan residue.
+    #[test]
+    fn a_game_with_an_unexaminable_install_dir_degrades_the_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path().join("Fallout 76");
+        std::fs::create_dir(&install_dir).unwrap();
+        // `<` is invalid in a Windows path component, so the probe fails with
+        // ERROR_INVALID_NAME rather than "not found" - a portable stand-in
+        // for a DACL denial, offline placeholder, or drive not yet spun up.
+        let unexaminable = temp.path().join("bad<name");
+
+        let conn = test_db(&[
+            (
+                "amzn1.adg.product.1",
+                Some("Fallout 76"),
+                Some(install_dir.to_str().unwrap()),
+                1,
+            ),
+            (
+                "amzn1.adg.product.2",
+                Some("Broken"),
+                Some(unexaminable.to_str().unwrap()),
+                1,
+            ),
+        ]);
+
+        let report = discover_amazon_from_conn(&conn, temp.path().join("GameInstallInfo.sqlite"));
+
+        assert_eq!(report.status, crate::providers::DiscoveryStatus::Degraded);
+        assert_eq!(report.data.len(), 1);
+        assert_eq!(report.data[0].orphan_evidence, OrphanEvidence::Degraded);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.stage == "game-path"),
+            "the failed probe must be visible, not silently dropped: {:?}",
+            report.diagnostics
+        );
     }
 }

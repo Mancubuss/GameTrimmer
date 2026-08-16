@@ -256,6 +256,38 @@ pub fn try_is_dir(path: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// The one stage that records something without claiming the library's
+/// inventory is unreliable.
+///
+/// A launcher record whose install directory is missing is normal - the game
+/// was uninstalled elsewhere, or the download is queued or paused - and the
+/// folder cannot be mistaken for orphan residue because it is not there. But
+/// it is also the exact path the complaint "my game isn't in the list"
+/// arrives on, so silence is the wrong answer too.
+///
+/// The distinction has to be explicit because every provider treats "any
+/// diagnostic at all" as "the inventory is no longer authoritative", which is
+/// what lets orphan detection trust it. Recording this one the ordinary way
+/// strips a whole library's orphan-deletion authority over a single absent
+/// folder.
+///
+/// The dangerous neighbour is a folder that *is* there and merely could not be
+/// examined - see [`try_is_dir`]. That one stays an ordinary diagnostic and
+/// keeps degrading, because it is the case where a live installation could be
+/// classified as residue.
+///
+/// ponytail: matched by stage name; if a second non-degrading stage ever
+/// appears, promote this to a field on [`DiscoveryDiagnostic`].
+pub const GAME_ABSENT: &str = "game-absent";
+
+/// Whether this diagnostic set means the library's inventory can no longer be
+/// trusted for orphan detection. Everything except [`GAME_ABSENT`] does.
+pub fn degrades_evidence(diagnostics: &[DiscoveryDiagnostic]) -> bool {
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.stage != GAME_ABSENT)
+}
+
 /// The [`try_is_dir`] contract for a regular file.
 pub fn try_is_file(path: &Path) -> std::io::Result<bool> {
     match std::fs::metadata(path) {

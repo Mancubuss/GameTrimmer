@@ -9,9 +9,14 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, GameInstall,
+    LibraryProvider, OrphanEvidence,
 };
+
+// `GAME_ABSENT` and `degrades_evidence` live in `super` - see
+// `providers::GAME_ABSENT` for why an absent install dir must not degrade a
+// library the same way an unexaminable one does.
+use super::{degrades_evidence, GAME_ABSENT};
 
 const REGISTRY_KEY: &str = r"SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher";
 const REGISTRY_VALUE: &str = "AppDataPath";
@@ -53,7 +58,16 @@ fn discover_epic() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             return DiscoveryReport::failed(Vec::new(), epic_diagnostic("registry", None, err))
         }
     };
-    let entries = match std::fs::read_dir(&manifests_dir) {
+    discover_manifests(&manifests_dir)
+}
+
+/// Reads every `*.item` manifest in `manifests_dir` and builds the games it
+/// describes. Split out from `discover_epic` so the manifest-directory walk -
+/// including the `try_is_dir` absent-vs-unexaminable split below - is
+/// reachable from a test with a temp dir, without going through the registry
+/// lookup in `find_manifests_dir`.
+fn discover_manifests(manifests_dir: &Path) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let entries = match std::fs::read_dir(manifests_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return DiscoveryReport::not_installed(Vec::new())
@@ -61,7 +75,11 @@ fn discover_epic() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                epic_diagnostic("manifest-enumeration", Some(manifests_dir), err),
+                epic_diagnostic(
+                    "manifest-enumeration",
+                    Some(manifests_dir.to_path_buf()),
+                    err,
+                ),
             )
         }
     };
@@ -73,7 +91,7 @@ fn discover_epic() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             Err(err) => {
                 diagnostics.push(epic_diagnostic(
                     "manifest-entry",
-                    Some(manifests_dir.clone()),
+                    Some(manifests_dir.to_path_buf()),
                     err,
                 ));
                 continue;
@@ -97,24 +115,45 @@ fn discover_epic() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
                 continue;
             }
         };
-        if game.install_dir.is_dir() {
-            games.push(game);
-        } else {
-            diagnostics.push(epic_diagnostic(
+        // A manifest whose install dir is simply not there is normal -
+        // uninstalled outside the Epic launcher, or a queued/paused
+        // download - and a folder that does not exist cannot be mistaken
+        // for orphan residue either. A folder we merely failed to read is
+        // the dangerous case: it stays on disk and drops out of `games`,
+        // which is the shape orphan detection reads as residue. Latent for
+        // Epic rather than live - `orphan_spec_for` wires only Steam, Xbox
+        // and itch - so diagnose it and keep the guarantee true in advance.
+        match super::try_is_dir(&game.install_dir) {
+            Ok(true) => games.push(game),
+            // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
+            Ok(false) => diagnostics.push(epic_diagnostic(
+                GAME_ABSENT,
+                Some(game.install_dir),
+                "manifest present, install directory absent (uninstalled outside the Epic launcher, or a queued/paused download)",
+            )),
+            Err(err) => diagnostics.push(epic_diagnostic(
                 "game-path",
                 Some(game.install_dir),
-                "configured Epic install is unavailable",
-            ));
+                err,
+            )),
         }
     }
     let mut libraries = super::group_by_parent_dir("epic", games);
-    if diagnostics.is_empty() {
-        DiscoveryReport::complete(libraries)
-    } else {
+    if degrades_evidence(&diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
         DiscoveryReport::degraded(libraries, diagnostics)
+    } else {
+        // Complete, but not necessarily silent: a `GAME_ABSENT` note still
+        // travels so it reaches the log and `scan_diagnostics`.
+        // `DiscoveryReport::complete` would drop it, which is the whole
+        // behaviour this card exists to change.
+        DiscoveryReport {
+            data: libraries,
+            status: DiscoveryStatus::Complete,
+            diagnostics,
+        }
     }
 }
 
@@ -261,5 +300,78 @@ mod tests {
         assert!(is_item_manifest(Path::new("Fortnite.ITEM")));
         assert!(!is_item_manifest(Path::new("Fortnite.json")));
         assert!(!is_item_manifest(Path::new("Fortnite")));
+    }
+
+    fn item_manifest(display_name: &str, install_location: &Path) -> String {
+        format!(
+            r#"{{"DisplayName": "{name}", "InstallLocation": "{loc}"}}"#,
+            name = display_name,
+            loc = install_location.display().to_string().replace('\\', "\\\\")
+        )
+    }
+
+    /// The counterpart to Steam's paused-download case: a manifest for a
+    /// game that was uninstalled outside the Epic launcher, or whose
+    /// download is still queued, is ordinary and must not degrade the
+    /// report - but it still has to leave a trace, which is the whole point
+    /// of `GAME_ABSENT` existing separately from `DiscoveryStatus::Degraded`.
+    #[test]
+    fn discover_manifests_records_an_absent_install_dir_without_degrading() {
+        let manifests_dir = tempfile::tempdir().unwrap();
+        let install_dir = manifests_dir.path().join("NotThereYet");
+        std::fs::write(
+            manifests_dir.path().join("game.item"),
+            item_manifest("Queued Game", &install_dir),
+        )
+        .unwrap();
+
+        let report = discover_manifests(manifests_dir.path());
+
+        assert_eq!(report.status, DiscoveryStatus::Complete);
+        assert!(
+            report.data.is_empty(),
+            "no game was accepted, so there is no library to group it under"
+        );
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.stage)
+                .collect::<Vec<_>>(),
+            vec![GAME_ABSENT],
+            "the skipped manifest has to leave a trace: {:?}",
+            report.diagnostics
+        );
+    }
+
+    /// An install directory that cannot be examined - as opposed to one that
+    /// is provably absent - must degrade the report. Silently dropping the
+    /// game would leave its live folder unclaimed by any manifest, which is
+    /// the shape orphan detection reads as residue.
+    #[test]
+    fn discover_manifests_degrades_on_an_unexaminable_install_dir() {
+        let manifests_dir = tempfile::tempdir().unwrap();
+        // `<` is invalid in a Windows path component, so the probe fails
+        // with ERROR_INVALID_NAME rather than "not found" - a stand-in for
+        // the real cases (DACL denial, offline placeholder, drive not
+        // ready) that no test can create portably.
+        let install_dir = manifests_dir.path().join("bad<name");
+        std::fs::write(
+            manifests_dir.path().join("game.item"),
+            item_manifest("Broken", &install_dir),
+        )
+        .unwrap();
+
+        let report = discover_manifests(manifests_dir.path());
+
+        assert_eq!(report.status, DiscoveryStatus::Degraded);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.stage == "game-path"),
+            "the failed probe must be visible, not silently dropped: {:?}",
+            report.diagnostics
+        );
     }
 }

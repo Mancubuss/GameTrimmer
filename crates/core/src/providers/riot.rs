@@ -23,9 +23,14 @@ use std::path::{Path, PathBuf};
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, GameInstall,
+    LibraryProvider, OrphanEvidence,
 };
+
+// `GAME_ABSENT` and `degrades_evidence` live in `super` - see `steam.rs` for
+// the provider that first needed the distinction and `providers::GAME_ABSENT`
+// for why it does not degrade evidence on its own.
+use super::{degrades_evidence, GAME_ABSENT};
 
 const METADATA_RELATIVE_PATH: &str = r"Riot Games\Metadata";
 const DEFAULT_PROGRAM_DATA: &str = r"C:\ProgramData";
@@ -118,29 +123,51 @@ fn discover_riot() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             continue;
         }
         match read_product(&product_dir) {
-            Ok(Some(product)) if product.game.install_dir.is_dir() => products.push(product),
-            Ok(Some(product)) => diagnostics.push(diagnostic(
-                "game-path",
-                Some(product.game.install_dir),
-                "configured Riot install is unavailable",
-            )),
+            // A product whose install dir is simply not there is normal (an
+            // uninstall that left the metadata directory behind), and a
+            // folder that does not exist cannot be mistaken for orphan
+            // residue either. A folder that merely could not be examined is
+            // the dangerous case: it stays on disk, drops out of `products`,
+            // and anything diffing this library against its managed set
+            // would then call it residue. Diagnose it - see `try_is_dir`.
+            Ok(Some(product)) => match super::try_is_dir(&product.game.install_dir) {
+                Ok(true) => products.push(product),
+                // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
+                Ok(false) => diagnostics.push(diagnostic(
+                    GAME_ABSENT,
+                    Some(product.game.install_dir),
+                    "product metadata present, install directory absent (uninstall that left the metadata behind)",
+                )),
+                Err(err) => {
+                    diagnostics.push(diagnostic("game-path", Some(product.game.install_dir), err))
+                }
+            },
             Ok(None) => {}
-            Err(err) => diagnostics.push(diagnostic("product-settings", Some(product_dir), err)),
+            Err(err) => {
+                diagnostics.push(diagnostic("product-settings-read", Some(product_dir), err))
+            }
         }
     }
     let mut libraries = group_by_declared_root(products);
-    if diagnostics.is_empty() {
-        DiscoveryReport::complete(libraries)
-    } else {
+    if degrades_evidence(&diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
         DiscoveryReport::degraded(libraries, diagnostics)
+    } else {
+        // Complete, but not necessarily silent: a `GAME_ABSENT` note still
+        // travels so it reaches the log and `scan_diagnostics`.
+        DiscoveryReport {
+            data: libraries,
+            status: DiscoveryStatus::Complete,
+            diagnostics,
+        }
     }
 }
 
 /// One product's metadata: the game, plus the library root Riot itself declared
 /// for it (absent only if the settings file omitted the key).
+#[derive(Debug)]
 struct ProductEntry {
     game: GameInstall,
     root: Option<PathBuf>,
@@ -188,6 +215,12 @@ fn program_data_dir() -> PathBuf {
 
 /// Reads one `Metadata\<product>.<region>` directory into a [`ProductEntry`],
 /// if it describes an installed game.
+///
+/// Returns `Ok(None)` for a directory that is not a game at all
+/// ([`NON_GAME_SLUGS`]) and for a settings file that was read fine but
+/// declares no install path - both mean "nothing to report", not a failure.
+/// `Err` is reserved for cases where the settings file could not be read at
+/// all, which is a real gap in the inventory.
 fn read_product(product_dir: &Path) -> std::result::Result<Option<ProductEntry>, String> {
     let dir_name = product_dir
         .file_name()
@@ -206,8 +239,17 @@ fn read_product(product_dir: &Path) -> std::result::Result<Option<ProductEntry>,
 
     let settings_path = product_dir.join(format!("{dir_name}.product_settings.yaml"));
     let contents = std::fs::read_to_string(settings_path).map_err(|err| err.to_string())?;
-    let install_path = extract_path(&contents, INSTALL_PATH_KEY)
-        .ok_or_else(|| "missing product_install_full_path".to_string())?;
+    // A settings file that reads fine but has no `product_install_full_path`
+    // is not a failure - it is Riot saying nothing is installed for this
+    // product. `teamfighttactics.live` and `.pbe` are part of League and
+    // never installed on their own, but still get a metadata directory and a
+    // settings file. Treating that the same as an unreadable file would flip
+    // every Riot library to `Degraded` (see the caller) over a product that
+    // was never going to be there, so this joins the `NON_GAME_SLUGS` path:
+    // `Ok(None)`, skipped silently, no diagnostic.
+    let Some(install_path) = extract_path(&contents, INSTALL_PATH_KEY) else {
+        return Ok(None);
+    };
     let path = PathBuf::from(install_path);
 
     Ok(Some(ProductEntry {
@@ -397,5 +439,48 @@ mod tests {
     fn display_name_for_falls_back_to_install_dir_leaf() {
         let dir = PathBuf::from(r"F:\Riot Games\2XKO");
         assert_eq!(display_name_for("2xko", &dir), "2XKO");
+    }
+
+    /// `teamfighttactics.live` and `.pbe` are part of League and never
+    /// installed on their own, but Riot still writes them a metadata
+    /// directory and a settings file with no `product_install_full_path`.
+    /// That must read as "nothing here", the same as an excluded slug - not
+    /// as a failure that would flip the whole Riot library to `Degraded`.
+    #[test]
+    fn read_product_returns_ok_none_when_settings_file_has_no_install_path() {
+        let root = tempfile::tempdir().unwrap();
+        let product_dir = root.path().join("teamfighttactics.live");
+        std::fs::create_dir(&product_dir).unwrap();
+        std::fs::write(
+            product_dir.join("teamfighttactics.live.product_settings.yaml"),
+            "channel: live\n",
+        )
+        .unwrap();
+
+        let result = read_product(&product_dir);
+        assert!(
+            matches!(result, Ok(None)),
+            "a readable settings file with no install path is not a failure: {result:?}"
+        );
+    }
+
+    /// The counterpart: a settings file that could not be read at all is a
+    /// real gap in the inventory - a game may be missing and there is no way
+    /// to tell - so it must surface as `Err`, not be swallowed like the
+    /// "nothing installed" case above. Standing in for "unreadable" with
+    /// "missing" since forcing a genuinely unreadable file is awkward on
+    /// Windows; both take the same `read_to_string` error path.
+    #[test]
+    fn read_product_errs_when_the_settings_file_is_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let product_dir = root.path().join("valorant.live");
+        std::fs::create_dir(&product_dir).unwrap();
+        // No `.product_settings.yaml` written.
+
+        let result = read_product(&product_dir);
+        assert!(
+            result.is_err(),
+            "an unreadable settings file must not be mistaken for 'nothing installed': {result:?}"
+        );
     }
 }

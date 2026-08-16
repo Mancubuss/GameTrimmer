@@ -82,29 +82,10 @@ fn discover_steam() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     }
 }
 
-/// The one stage that records something without claiming the library's
-/// inventory is unreliable.
-///
-/// A manifest whose install directory is missing is normal - a queued or
-/// paused download - and the folder cannot be mistaken for orphan residue
-/// because it is not there. But it is also the exact path the complaint "my
-/// game isn't in the list" arrives on, so silence is the wrong answer too.
-///
-/// The distinction has to be explicit because everything else here treats
-/// "any diagnostic at all" as "the inventory is no longer authoritative",
-/// which is what lets orphan detection trust it. Recording this one the
-/// ordinary way would strip a whole library's orphan-deletion authority
-/// over a single paused download.
-///
-/// ponytail: matched by stage name; if a second non-degrading stage ever
-/// appears, promote this to a field on `DiscoveryDiagnostic`.
-const GAME_ABSENT: &str = "game-absent";
-
-fn degrades_evidence(diagnostics: &[DiscoveryDiagnostic]) -> bool {
-    diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.stage != GAME_ABSENT)
-}
+// `GAME_ABSENT` and `degrades_evidence` started here, for Steam's paused
+// downloads. Every other provider turned out to need the same distinction, so
+// they now live in `super` - see `providers::GAME_ABSENT`.
+use super::{degrades_evidence, GAME_ABSENT};
 
 fn diagnostic(
     stage: &'static str,

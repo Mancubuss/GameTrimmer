@@ -16,8 +16,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
+    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const PUBLISHER: &str = "Blizzard Entertainment";
@@ -88,49 +88,80 @@ fn discover_battlenet() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             if publisher.trim() != PUBLISHER {
                 continue;
             }
+            // A missing `InstallLocation` is ordinary - the uninstall entry
+            // is for launcher infrastructure or a leftover record with
+            // nothing installed - and must not be conflated with a genuine
+            // read failure (permissions, a corrupt hive), which is the case
+            // that actually needs to keep degrading this provider's
+            // evidence.
+            let install_location = match subkey.get_value::<String, _>("InstallLocation") {
+                Ok(value) => Some(value),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    diagnostics.push(diagnostic("game-value-read", err));
+                    continue;
+                }
+            };
             let entry = RawUninstallEntry {
                 key_name: key_name.clone(),
                 display_name: subkey.get_value::<String, _>("DisplayName").ok(),
                 publisher: Some(publisher),
-                install_location: subkey.get_value::<String, _>("InstallLocation").ok(),
+                install_location,
             };
+            // Whatever `build_game_install` rejects at this point is already
+            // an ordinary case (no install location, an empty one, or the
+            // Battle.net client entry itself via `NON_GAME_NAMES`), not a
+            // failure worth diagnosing.
             let Some(game) = build_game_install(entry) else {
-                if !NON_GAME_NAMES
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(&key_name))
-                {
-                    diagnostics.push(diagnostic(
-                        "game-entry",
-                        format!("{key_name} has no usable InstallLocation"),
-                    ));
-                }
                 continue;
             };
-            if game.install_dir.is_dir() {
-                games.push(game);
-            } else {
-                diagnostics.push(DiscoveryDiagnostic {
+            // A directory that isn't there is ordinary - the uninstall entry
+            // survived a manual removal, or Battle.net left the registry
+            // record behind - and nothing absent can be mistaken for residue.
+            // A directory that could not be *examined* is the dangerous shape
+            // and stays diagnosed; `super::try_is_dir` explains why. For
+            // Battle.net that hazard is latent rather than live: orphan
+            // detection is wired to Steam, Xbox and itch only
+            // (`orphan_spec_for`). Splitting it here keeps the guarantee true
+            // ahead of that changing, and stops an ordinary uninstall from
+            // degrading the whole provider meanwhile.
+            match super::try_is_dir(&game.install_dir) {
+                Ok(true) => games.push(game),
+                // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
+                Ok(false) => diagnostics.push(DiscoveryDiagnostic {
+                    provider: "battlenet",
+                    stage: GAME_ABSENT,
+                    path: Some(game.install_dir),
+                    message: "uninstall entry present, install directory absent (uninstalled without cleanup)".into(),
+                }),
+                Err(err) => diagnostics.push(DiscoveryDiagnostic {
                     provider: "battlenet",
                     stage: "game-path",
                     path: Some(game.install_dir),
-                    message: "configured Battle.net install is unavailable".into(),
-                });
+                    message: err.to_string(),
+                }),
             }
         }
     }
     let games = super::dedupe_by_install_dir(games);
     let mut libraries = super::group_by_parent_dir("battlenet", games);
-    if diagnostics.is_empty() {
-        if libraries.is_empty() {
-            DiscoveryReport::not_installed(libraries)
-        } else {
-            DiscoveryReport::complete(libraries)
-        }
-    } else {
+    if degrades_evidence(&diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
         DiscoveryReport::degraded(libraries, diagnostics)
+    } else if libraries.is_empty() && diagnostics.is_empty() {
+        DiscoveryReport::not_installed(libraries)
+    } else {
+        // Complete, but not necessarily silent: a `GAME_ABSENT` note still
+        // travels so it reaches the log and `scan_diagnostics` - including
+        // the case where every entry found turned out absent and no library
+        // survived. `DiscoveryReport::complete`/`not_installed` would drop it.
+        DiscoveryReport {
+            data: libraries,
+            status: DiscoveryStatus::Complete,
+            diagnostics,
+        }
     }
 }
 
