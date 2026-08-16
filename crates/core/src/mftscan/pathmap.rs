@@ -289,6 +289,39 @@ mod tests {
         assert!(!identity.is_directory);
     }
 
+    /// The one disagreement a 50 000-file comparison against
+    /// `GetFileInformationByHandle` produced: NTFS had `0x42020` where Win32
+    /// reported `0x2020`. Bit `0x40000` is NTFS's own "has extended
+    /// attributes" marker, and leaving it in would have made roughly
+    /// fourteen findings per scan permanently undeletable with no
+    /// explanation.
+    #[test]
+    fn ntfs_internal_attribute_bits_never_reach_the_identity() {
+        let mut map = sample_map();
+        let mut record = file(101, "mono-2.0-bdwgc.dll", 500, Some(1_000));
+        record.mtime_nt = Some(1);
+        // Exactly the value the real file carried, plus the two directory
+        // markers Win32 does not report either.
+        record.nt_attributes = Some(0x4_2020 | 0x1000_0000 | 0x2000_0000);
+        map.insert(102, record);
+
+        let roots = vec![ScanRoot {
+            game_id: 1,
+            root_rel: "SteamLibrary\\HalfLife".to_string(),
+        }];
+        let entries = scan_frn_map(&map, &roots, Some(7))[0].1.clone();
+        let dll = entries
+            .iter()
+            .find(|entry| entry.rel_path == "mono-2.0-bdwgc.dll")
+            .expect("the file is under the root");
+
+        assert_eq!(
+            dll.mft_identity.expect("complete record").nt_attributes,
+            0x2020,
+            "what Win32 reported for this very file",
+        );
+    }
+
     /// Two ways to end up without an identity, and both must send the caller
     /// back to opening the file rather than leaving a half-filled one: a
     /// volume that would not report its serial, and a record missing a field

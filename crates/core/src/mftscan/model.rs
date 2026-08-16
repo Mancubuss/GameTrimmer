@@ -97,6 +97,23 @@ pub struct MftIdentity {
     pub nt_attributes: u32,
 }
 
+/// Attribute bits NTFS keeps for itself and Win32 never reports back.
+///
+/// Found by measurement, not by reading a specification: comparing 50 000
+/// real files against `GetFileInformationByHandle` turned up exactly one
+/// disagreement, `mft 0x42020` against `live 0x2020` on a Mono runtime DLL -
+/// bit `0x40000`, NTFS's marker for "this file has extended attributes".
+/// One file in fifty thousand is roughly fourteen findings in a full scan,
+/// each of which would have become quietly undeletable, so the bit has to
+/// come off before the value is compared with anything.
+///
+/// The other two have never been observed here because directories do not
+/// reach this code, and they are masked anyway rather than waiting to be
+/// discovered by a user: NTFS marks directories in `$FILE_NAME` with
+/// `0x10000000` and index views with `0x20000000`, and Win32 reports
+/// neither.
+const NTFS_INTERNAL_ATTRIBUTES: u32 = 0x0004_0000 | 0x1000_0000 | 0x2000_0000;
+
 impl MftRecord {
     /// Builds the identity this record states, or `None` when the record is
     /// missing a field identity needs. A partial identity is never returned:
@@ -109,7 +126,7 @@ impl MftRecord {
             is_directory: self.is_directory,
             size: self.size,
             last_write_time: self.mtime_nt?,
-            nt_attributes: self.nt_attributes?,
+            nt_attributes: self.nt_attributes? & !NTFS_INTERNAL_ATTRIBUTES,
         })
     }
 }
