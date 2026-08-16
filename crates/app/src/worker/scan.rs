@@ -78,6 +78,24 @@ fn scan_threads() -> usize {
     })
 }
 
+/// Size of the database's write-ahead log, or 0 when it is absent (the
+/// journal fell back to `DELETE` mode, or nothing has been written yet).
+fn wal_bytes(db_path: &Path) -> u64 {
+    let mut wal = db_path.as_os_str().to_owned();
+    wal.push("-wal");
+    std::fs::metadata(PathBuf::from(wal))
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    match bytes {
+        0..=1023 => format!("{bytes} B"),
+        1024..=1_048_575 => format!("{:.0} KB", bytes as f64 / 1024.0),
+        _ => format!("{:.1} MB", bytes as f64 / 1024.0 / 1024.0),
+    }
+}
+
 /// Describes what this scan will have to write over, for the environment
 /// line above.
 ///
@@ -243,6 +261,15 @@ fn run_scan(
             return;
         }
     };
+
+    // This connection writes a whole generation and checkpoints once, at the
+    // end (below, after the prune). Non-fatal: failing to set it costs the
+    // scan time, not correctness.
+    if let Err(err) = db::defer_wal_checkpoints(&conn) {
+        crate::logger::error(&format!(
+            "Could not defer WAL checkpoints for the scan: {err}"
+        ));
+    }
 
     // The conditions two runs of the same scan differ by. Without this line
     // a six-second gap between two otherwise identical runs has nothing to
@@ -678,6 +705,13 @@ fn run_scan(
         perf::report(),
         scan_threads()
     ));
+    // The writer is the only stage that is a single thread, so its total is
+    // wall clock rather than a per-thread sum, and it is the whole exposed
+    // tail once the `$MFT` read finishes. Split three ways because it has
+    // measured 17.6 s, 20.5 s and 26.3 s on identical work.
+    if let Some(breakdown) = perf::persist_breakdown() {
+        crate::logger::log(&breakdown);
+    }
     // Same numbers the bottom bar shows, kept past this session: "the scan
     // took 40 minutes" is otherwise unanswerable without asking the user to
     // sit through it again. Non-fatal - a scan that produced results must
@@ -728,11 +762,23 @@ fn run_scan(
     // largest thing this connection writes. Non-fatal by design - an
     // otherwise-successful scan must not be reported as failed just because
     // its final housekeeping checkpoint didn't take.
+    let wal_before = wal_bytes(db_path);
     if let Err(err) = db::checkpoint_truncate(&conn) {
         crate::logger::error(&format!(
             "Failed to checkpoint the WAL after the scan: {err}"
         ));
     }
+    // Both sizes, because deferring the checkpoints is a trade and this is
+    // the side of it that costs something: the WAL is allowed to grow for a
+    // whole scan instead of being folded back sixty-seven times. The second
+    // figure is the one to watch - `wal_checkpoint(TRUNCATE)` reports whether
+    // it was blocked in a row this helper discards, so a WAL that is still
+    // large here is the only signal that a reader held it off.
+    crate::logger::log(&format!(
+        "WAL {} before the final checkpoint, {} after",
+        format_bytes(wal_before),
+        format_bytes(wal_bytes(db_path))
+    ));
 }
 
 /// One game's outcome after scanning+classifying it, sent from a scan worker

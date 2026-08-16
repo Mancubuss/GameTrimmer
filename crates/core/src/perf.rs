@@ -42,11 +42,16 @@ pub enum Stage {
     Safety,
     /// The single writer thread's inserts.
     Persist,
+    /// Time [`Stage::Persist`] spent inside SQL: every `execute` the writer
+    /// issues, the per-file insert loop included, but not the commit.
+    PersistSql,
+    /// Time [`Stage::Persist`] spent committing a batch.
+    PersistCommit,
 }
 
 /// Every stage, in report order. Kept beside `Stage` so adding a variant
 /// without listing it here fails the exhaustiveness check in `name`.
-const ALL: [Stage; 10] = [
+const ALL: [Stage; 12] = [
     Stage::MftRead,
     Stage::MftParse,
     Stage::Tokenize,
@@ -57,7 +62,15 @@ const ALL: [Stage; 10] = [
     Stage::Grouping,
     Stage::Safety,
     Stage::Persist,
+    Stage::PersistSql,
+    Stage::PersistCommit,
 ];
+
+/// Stages that measure part of another stage rather than work of their own.
+/// [`report`] leaves them out: they are subsets of [`Stage::Persist`], and
+/// adding them to its sum would charge the same nanoseconds twice and skew
+/// every other stage's share. [`persist_breakdown`] reports them instead.
+const BREAKDOWN: [Stage; 2] = [Stage::PersistSql, Stage::PersistCommit];
 
 fn name(stage: Stage) -> &'static str {
     match stage {
@@ -71,6 +84,8 @@ fn name(stage: Stage) -> &'static str {
         Stage::Grouping => "grouping",
         Stage::Safety => "safety",
         Stage::Persist => "persist",
+        Stage::PersistSql => "persist_sql",
+        Stage::PersistCommit => "persist_commit",
     }
 }
 
@@ -131,6 +146,7 @@ pub fn mft_throughput() -> Option<f64> {
 pub fn report() -> String {
     let mut rows: Vec<(Stage, Duration)> = ALL
         .iter()
+        .filter(|stage| !BREAKDOWN.contains(stage))
         .map(|&stage| (stage, elapsed(stage)))
         .filter(|(_, spent)| !spent.is_zero())
         .collect();
@@ -161,6 +177,40 @@ pub fn report() -> String {
         sum,
         parts.join(", ")
     )
+}
+
+/// Splits the writer's total into the three things it is made of, so a
+/// number that has moved between 17.6 s and 26.3 s across runs can be
+/// attributed instead of guessed at.
+///
+/// `row building` is what is left after the SQL and the commit: constructing
+/// one `FindingRow` per finding (seven clones apiece, a `PathBuf` and a
+/// `LibraryOrigin` among them) and encoding two `FileIdentity` values into
+/// strings with `format!`. A Python replay of the same inserts against a copy
+/// of the real database took 11.4 s single-threaded, so the gap between that
+/// and what this thread charges is either this work or contention with the
+/// scan pool - and those need telling apart before either is worth fixing.
+///
+/// Returns `None` when the writer never ran.
+pub fn persist_breakdown() -> Option<String> {
+    let total = elapsed(Stage::Persist);
+    if total.is_zero() {
+        return None;
+    }
+    let sql = elapsed(Stage::PersistSql);
+    let commit = elapsed(Stage::PersistCommit);
+    let rest = total.saturating_sub(sql + commit);
+    let share = |part: Duration| (part.as_secs_f64() / total.as_secs_f64() * 100.0).round() as u64;
+    Some(format!(
+        "Writer breakdown ({:.1?} total): sql {:.1?} ({}%), commit {:.1?} ({}%),          row building {:.1?} ({}%)",
+        total,
+        sql,
+        share(sql),
+        commit,
+        share(commit),
+        rest,
+        share(rest)
+    ))
 }
 
 #[cfg(test)]

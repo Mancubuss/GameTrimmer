@@ -112,7 +112,9 @@ fn flush_batch(
         })?;
         pending_rows.append(&mut rows);
     }
+    let commit_started = std::time::Instant::now();
     db_tx.commit()?;
+    perf::add(perf::Stage::PersistCommit, commit_started.elapsed());
     perf::add(perf::Stage::Persist, write_started.elapsed());
     findings.append(&mut pending_rows);
     batch.clear();
@@ -318,6 +320,13 @@ pub(super) fn persist_prepared_game(
     prepared: &PreparedGame,
     scan_id: i64,
 ) -> CoreResult<Vec<FindingRow>> {
+    // Every span charged to `PersistSql` below is time inside SQLite. What is
+    // left of `Persist` after it and the commit is this function's own work:
+    // one `FindingRow` per finding and two `FileIdentity::encode` calls. See
+    // `perf::persist_breakdown` for why the three are being told apart.
+    let mut sql = std::time::Duration::ZERO;
+    let sql_started = std::time::Instant::now();
+
     // `findings.file_id` has no `ON DELETE CASCADE`, and `store_files_no_tx`
     // is about to delete this game's old `files` rows - drop their findings
     // first, while the old ids are still known.
@@ -325,6 +334,7 @@ pub(super) fn persist_prepared_game(
         "DELETE FROM findings WHERE file_id IN (SELECT id FROM files WHERE game_id = ?1)",
         params![prepared.game_id],
     )?;
+    sql += sql_started.elapsed();
 
     // Per-game totals cover the *whole* install - every file, flagged or not.
     // They are what the UI's occupancy figures are built from, so they are
@@ -359,6 +369,7 @@ pub(super) fn persist_prepared_game(
         .findings
         .iter()
         .map(|finding| &prepared.entries[finding.entry_index]);
+    let sql_started = std::time::Instant::now();
     let file_ids = store_files_no_tx(conn, scan_id, prepared.game_id, flagged)?;
     conn.execute(
         "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4 WHERE id = ?1",
@@ -369,12 +380,14 @@ pub(super) fn persist_prepared_game(
             stats.bytes_on_disk as i64
         ],
     )?;
+    sql += sql_started.elapsed();
 
     // One read serves two purposes: the path is this game's safety evidence,
     // and (vendor, path) together are the row's library attribution. Both are
     // read from `game_libraries` rather than from the in-memory
     // `DiscoveredLibrary`, so a later `worker::load` - which can only read this
     // table - reconstructs exactly the same attribution.
+    let sql_started = std::time::Instant::now();
     let (library_vendor, evidence_library_path): (String, String) = conn.query_row(
         "SELECT gl.vendor, gl.path FROM games g
          JOIN game_libraries gl ON gl.id = g.library_id
@@ -394,6 +407,7 @@ pub(super) fn persist_prepared_game(
             |row| row.get(0),
         )
         .ok();
+    sql += sql_started.elapsed();
     let evidence_block_reason = match evidence_status.as_deref() {
         None => Some("missing library discovery evidence".to_string()),
         Some("degraded") => Some("library discovery was degraded".to_string()),
@@ -431,6 +445,7 @@ pub(super) fn persist_prepared_game(
     for (position, finding) in prepared.findings.iter().enumerate() {
         let file_id = file_ids[position];
 
+        let sql_started = std::time::Instant::now();
         insert_finding.execute(params![
             file_id,
             source_key(finding.source),
@@ -443,27 +458,39 @@ pub(super) fn persist_prepared_game(
                 RuleProvenance::ImportedUntrusted => "imported_untrusted",
             },
         ])?;
+        sql += sql_started.elapsed();
 
         // Captured on the scan pool (see `PreparedFinding::safety`); the
         // writer only records the outcome.
         let deletion_block_reason = match &finding.safety {
             Ok(snapshot) => {
+                // Hoisted out of `params!` so the two `format!`s in `encode`
+                // and the two `to_string_lossy` calls are charged to this
+                // function rather than to SQLite - which is the whole
+                // question this instrumentation exists to answer.
+                let trusted_root = snapshot.trusted_root.to_string_lossy();
+                let rel_path = snapshot.rel_path.to_string_lossy();
+                let root_identity = snapshot.root_identity.encode();
+                let target_identity = snapshot.target_identity.encode();
+                let sql_started = std::time::Instant::now();
                 insert_safety.execute(params![
                     file_id,
                     scan_id,
                     &evidence_library_path,
-                    snapshot.trusted_root.to_string_lossy(),
-                    snapshot.rel_path.to_string_lossy(),
-                    snapshot.root_identity.encode(),
-                    snapshot.target_identity.encode(),
+                    trusted_root,
+                    rel_path,
+                    root_identity,
+                    target_identity,
                     snapshot.target_identity.kind.as_str(),
                     &snapshot.tree_fingerprint,
                     None::<String>,
                 ])?;
+                sql += sql_started.elapsed();
                 evidence_block_reason.clone()
             }
             Err(reason) => {
                 let reason = reason.clone();
+                let sql_started = std::time::Instant::now();
                 insert_safety.execute(params![
                     file_id,
                     scan_id,
@@ -476,6 +503,7 @@ pub(super) fn persist_prepared_game(
                     None::<String>,
                     &reason,
                 ])?;
+                sql += sql_started.elapsed();
                 Some(reason)
             }
         };
@@ -499,5 +527,6 @@ pub(super) fn persist_prepared_game(
         });
     }
 
+    perf::add(perf::Stage::PersistSql, sql);
     Ok(rows)
 }

@@ -774,6 +774,29 @@ pub fn with_foreign_keys_off<T>(
     }
 }
 
+/// Stops this connection folding the WAL back into the main file while it
+/// works, leaving that to whatever [`checkpoint_truncate`] the caller runs at
+/// the end.
+///
+/// For a connection that writes a whole scan generation, the default is the
+/// dominant cost of the run. SQLite checkpoints whenever a commit leaves the
+/// WAL past `wal_autocheckpoint` frames - 1000, about 4 MB - and one batch of
+/// this scan's writes is roughly that much. Measured with the writer split
+/// three ways: of 25.1 s, the inserts were 4.6 s and building the rows 1.3 s,
+/// while **19.1 s was commits** - about 285 ms each, sixty-seven times,
+/// scattering 4 MB of WAL frames back across a 760 MB file on a mechanical
+/// disk. None of that work has to happen mid-scan: the pages are rewritten
+/// again by the next batch, and the caller checkpoints once when the scan is
+/// over.
+///
+/// Scoped to one connection on purpose. The UI's connection keeps the default
+/// so ordinary use never grows an unbounded WAL; this one is expected to grow
+/// a large one and to truncate it itself.
+pub fn defer_wal_checkpoints(conn: &Connection) -> Result<()> {
+    conn.pragma_update(None, "wal_autocheckpoint", 0i64)?;
+    Ok(())
+}
+
 /// Folds the WAL back into the main database file and shrinks the WAL file
 /// itself to zero bytes. Cheap (no file rewrite) - safe to run unconditionally
 /// before deciding whether a full `compact` is worthwhile.
@@ -1542,6 +1565,26 @@ mod tests {
 
     /// After a full `compact`, the freelist is empty again - `VACUUM`
     /// rebuilds the file without the reclaimable pages.
+    /// The scan connection relies on this actually taking: if SQLite kept
+    /// checkpointing every 1000 frames the writer would go on paying 19 s of
+    /// commits per run with nothing in the log to say so.
+    #[test]
+    fn deferring_checkpoints_disables_the_autocheckpoint() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let conn = open(&dir.path().join("gametrimmer.db")).expect("open db");
+
+        let default: i64 = conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
+            .expect("read the default");
+        assert!(default > 0, "SQLite's default is a positive frame count");
+
+        defer_wal_checkpoints(&conn).expect("defer checkpoints");
+        let deferred: i64 = conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
+            .expect("read it back");
+        assert_eq!(deferred, 0, "0 disables the automatic checkpoint");
+    }
+
     #[test]
     fn free_page_fraction_drops_after_compact() {
         let dir = tempfile::tempdir().expect("create temp dir");
