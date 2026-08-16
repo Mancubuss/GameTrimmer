@@ -50,24 +50,33 @@ use persistence::persist_prepared_game;
 use persistence::{persist_libraries, run_writer};
 
 /// Worker threads used for scanning+classifying games in parallel.
-/// Deliberately a small constant rather than the machine's thread count.
 ///
-/// Widening it to `available_parallelism()` (12 here, on 16 threads) was
-/// tried on 2026-08-16 and measured: **70.7 s -> 136.8 s**, and the stage
-/// breakdown says exactly where it went. `safety` - one `CreateFileW` per
-/// flagged file, 720 k of them - went from 37.7 s to 617.0 s of thread time,
-/// 52 us per open to 857 us. It is not CPU work: it is random-access
-/// metadata IO against the same mechanical volume the `$MFT` was just read
-/// from, and twelve queues into one set of heads is a seek storm, not
-/// parallelism. Everything that *is* CPU (tokenize, rules, family) measured
-/// the same at either width, which is the tell.
+/// This was a constant 6 until the seeks came out of the pool. Widening it
+/// was tried on 2026-08-16 at 12 workers and measured **70.7 s -> 136.8 s**,
+/// with the whole loss in one stage: `safety` went from 37.7 s to 617.0 s of
+/// thread time, 52 us per open to 857 us. That was never CPU work - it was
+/// one `CreateFileW` per flagged file, 720 k random metadata reads against
+/// the same mechanical volume the `$MFT` had just been read from, and twelve
+/// queues into one set of heads is a seek storm rather than parallelism.
+/// Everything that *is* CPU measured the same at either width, which was the
+/// tell.
 ///
-/// So the number is not stale-because-IO-bound after all - it is small
-/// because a fifth of the analyze phase is still disk seeks. Raising it only
-/// becomes worth re-testing once those seeks are gone, i.e. after safety
-/// identity comes from the MFT records instead of from opening every file
-/// (audit item D2).
-const SCAN_THREADS: usize = 6;
+/// Those opens are gone: the leaf identity now comes from the `$MFT` record
+/// the scan already read (see `safety::stated_identity`), and `safety` fell
+/// to 10.1 s of thread time. What is left in the pool is arithmetic on
+/// strings, so it is worth the machine's full width again.
+///
+/// Resolved once per process: the sites below must agree on one number, and
+/// the run's own log line reports which one it got rather than leaving it to
+/// be assumed from the hardware.
+fn scan_threads() -> usize {
+    static WIDTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *WIDTH.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(6)
+    })
+}
 
 /// Describes what this scan will have to write over, for the environment
 /// line above.
@@ -373,13 +382,13 @@ fn run_scan(
     }
 
     // Scanning+classification (IO and CPU work, no DB) happens in parallel
-    // across `SCAN_THREADS` worker threads; only the DB writes are
+    // across `scan_threads()` worker threads; only the DB writes are
     // serialized, on a single writer thread that drains `result_rx` as
     // results arrive. This way scanning game N+1 never waits on game N's
     // write, and the write side never has more than one connection open.
     // See `crates/core/examples/scan_bench.rs` for the measurements that
     // motivated this over the previous fully-sequential loop.
-    let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<GameOutcome>(2 * SCAN_THREADS);
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<GameOutcome>(2 * scan_threads());
 
     // Shared count of games the writer has finished persisting. The writer
     // owns writing it; the scan workers only read it, to label the "started
@@ -680,7 +689,7 @@ fn run_scan(
     // why the sum exceeds the wall clock. The worker count rides along
     // because the whole line is per-thread sums, and dividing them by the
     // wrong number of threads is the easiest way to misread it.
-    crate::logger::log(&format!("{} across {SCAN_THREADS} workers", perf::report()));
+    crate::logger::log(&format!("{} across {} workers", perf::report(), scan_threads()));
     // Same numbers the bottom bar shows, kept past this session: "the scan
     // took 40 minutes" is otherwise unanswerable without asking the user to
     // sit through it again. Non-fatal - a scan that produced results must
@@ -884,7 +893,7 @@ fn dispatch_scans(
     result_tx: &SyncSender<GameOutcome>,
 ) -> MftPassOutcome {
     match rayon::ThreadPoolBuilder::new()
-        .num_threads(SCAN_THREADS.max(1))
+        .num_threads(scan_threads())
         .build()
     {
         Ok(pool) => pool.scope(|scope| {
