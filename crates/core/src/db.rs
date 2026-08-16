@@ -472,6 +472,10 @@ pub fn mark_scan_degraded(conn: &Connection, scan_id: i64) -> Result<()> {
 }
 
 /// Atomically makes a fully persisted generation visible to readers.
+///
+/// Moves the pointer and nothing else. The generation this one supersedes is
+/// marked but not deleted - see [`prune_superseded`], which the caller runs
+/// once the results are in front of the user.
 pub fn activate_scan(conn: &mut Connection, scan_id: i64) -> Result<()> {
     validate_scan_generation(conn, scan_id)?;
     let tx = conn.transaction()?;
@@ -521,13 +525,37 @@ pub fn activate_scan(conn: &mut Connection, scan_id: i64) -> Result<()> {
          ON CONFLICT(singleton) DO UPDATE SET active_scan_id = excluded.active_scan_id",
         [scan_id],
     )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Drops whatever generations activation left behind, in a transaction of
+/// its own.
+///
+/// Split out of [`activate_scan`] because it was three quarters of a rescan's
+/// housekeeping and none of it is work a reader waits for. Measured on a real
+/// library: activation took 13.1 s on a database that already held a
+/// generation against 1.0 s on an empty one, and taking it apart put ~1.5 s in
+/// the validation and foreign-key check, ~4.5 s in the deletes themselves and
+/// **~7.7 s in the commit** - writing back the pages freed by 2.16 M rows.
+///
+/// Nothing reads a superseded generation: `load_findings` and
+/// `occupied_by_library` both filter on `scan_state.active_scan_id`, which
+/// activation has already moved. So the only thing that transaction's
+/// atomicity bought was tidiness, at the price of holding the scan's
+/// completion for the whole commit.
+///
+/// Safe to skip, crash through, or never reach: a generation left in
+/// `superseded` is exactly what this deletes, so the next scan's activation
+/// hands it right back here. Call it after the results have been reported.
+pub fn prune_superseded(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
     prune_superseded_generations(&tx)?;
     tx.commit()?;
     Ok(())
 }
 
-/// Drops every generation the active pointer has moved past, in the same
-/// transaction that moved it.
+/// Drops every generation the active pointer has moved past.
 ///
 /// Nothing reads a superseded generation - `load_findings` and
 /// `occupied_by_library` both filter on `scan_state.active_scan_id` - so
@@ -1198,11 +1226,12 @@ mod tests {
     /// `scan_state.active_scan_id` - so leaving it behind would grow the
     /// database by a full copy of the scan on every single run, invisibly.
     #[test]
-    fn activating_a_generation_drops_the_one_it_supersedes() {
+    fn activating_then_pruning_drops_the_generation_it_supersedes() {
         let mut conn = open_in_memory().expect("in-memory db");
 
         let first = seed_generation(&mut conn, "D:/Library", "First");
         activate_scan(&mut conn, first).expect("activate first");
+        prune_superseded(&mut conn).expect("prune after first");
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM files"), 1);
 
         let second = seed_generation(&mut conn, "D:/Library", "Second");
@@ -1212,6 +1241,25 @@ mod tests {
             "both generations coexist while the second is staging"
         );
         activate_scan(&mut conn, second).expect("activate second");
+
+        // Activation moves the pointer and stops. This is the window the
+        // scan now reports its results in, so what a reader sees here is the
+        // whole point of the split.
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM files"),
+            2,
+            "activation alone leaves the superseded rows in place"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM files WHERE scan_id = {second}")
+            ),
+            1,
+            "and a reader filtering on the active generation sees only the new one"
+        );
+
+        prune_superseded(&mut conn).expect("prune after second");
 
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM files"), 1);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM games"), 1);
@@ -1247,6 +1295,39 @@ mod tests {
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM game_libraries"), 1);
     }
 
+    /// The prune no longer runs inside activation, so it can be missed: the
+    /// app can be killed, or the disk can refuse the write, between the two.
+    /// That must cost space until the next scan and nothing else - in
+    /// particular the next run must clean up both generations, not just its
+    /// own predecessor.
+    #[test]
+    fn a_prune_that_never_ran_is_caught_by_the_next_one() {
+        let mut conn = open_in_memory().expect("in-memory db");
+
+        let first = seed_generation(&mut conn, "D:/Library", "First");
+        activate_scan(&mut conn, first).expect("activate first");
+        let second = seed_generation(&mut conn, "D:/Library", "Second");
+        activate_scan(&mut conn, second).expect("activate second");
+        // The prune that belonged here never happened.
+
+        let third = seed_generation(&mut conn, "D:/Library", "Third");
+        activate_scan(&mut conn, third).expect("activate third");
+        prune_superseded(&mut conn).expect("prune after third");
+
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM files"),
+            1,
+            "the skipped generation is collected along with the one it preceded"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM files WHERE scan_id = {third}")
+            ),
+            1
+        );
+    }
+
     /// Pruning must not reach into a generation that is still being written.
     #[test]
     fn pruning_leaves_a_concurrently_staging_generation_alone() {
@@ -1254,9 +1335,11 @@ mod tests {
 
         let first = seed_generation(&mut conn, "D:/Library", "First");
         activate_scan(&mut conn, first).expect("activate first");
+        prune_superseded(&mut conn).expect("prune after first");
         let staging = seed_generation(&mut conn, "D:/Library", "Staging");
         let second = seed_generation(&mut conn, "D:/Library", "Second");
         activate_scan(&mut conn, second).expect("activate second");
+        prune_superseded(&mut conn).expect("prune after second");
 
         assert_eq!(
             count(

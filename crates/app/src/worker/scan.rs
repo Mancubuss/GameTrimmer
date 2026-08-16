@@ -600,12 +600,11 @@ fn run_scan(
         return;
     }
     // Timed on its own because it is the largest thing neither progress verb
-    // covers: activation validates the whole new generation, runs a
-    // database-wide foreign-key check, and deletes the superseded
-    // generation's rows, all in one transaction. A rescan pays for both
-    // generations at once; the first scan of an empty database pays for
-    // almost nothing, which is why the same machine reports wildly different
-    // totals for the same work.
+    // covers: activation validates the whole new generation and runs a
+    // database-wide foreign-key check before the pointer may move. Deleting
+    // the generation it supersedes used to happen here too, in the same
+    // transaction, and was three quarters of the cost; it now runs after the
+    // results are reported (see the prune below).
     let activate_started = Instant::now();
     if let Err(err) = generation.activate(&mut conn) {
         notifier.report_error(i18n::Reported::new(lang, |l| {
@@ -617,21 +616,6 @@ fn run_scan(
         "Generation activated in {:?}",
         activate_started.elapsed()
     ));
-
-    // Fold this connection's own WAL into the main file and truncate it
-    // before dropping the connection, rather than leaving a large,
-    // uncheckpointed `-wal` behind for whatever connection opens the
-    // database next (e.g. "Clear database"). This is what triggered the
-    // reported "database disk image is malformed" error: a big uncheckpointed
-    // WAL left after a completed scan put the next connection's WAL-recovery
-    // into an ambiguous state. Non-fatal by design - an otherwise-successful
-    // scan must not be reported as failed just because its final
-    // housekeeping checkpoint didn't take.
-    if let Err(err) = db::checkpoint_truncate(&conn) {
-        crate::logger::error(&format!(
-            "Failed to checkpoint the WAL after the scan: {err}"
-        ));
-    }
 
     let walked_reasons: Vec<scan_route::WalkdirReason> = mft_pass
         .walkdir_reasons
@@ -689,7 +673,11 @@ fn run_scan(
     // why the sum exceeds the wall clock. The worker count rides along
     // because the whole line is per-thread sums, and dividing them by the
     // wrong number of threads is the easiest way to misread it.
-    crate::logger::log(&format!("{} across {} workers", perf::report(), scan_threads()));
+    crate::logger::log(&format!(
+        "{} across {} workers",
+        perf::report(),
+        scan_threads()
+    ));
     // Same numbers the bottom bar shows, kept past this session: "the scan
     // took 40 minutes" is otherwise unanswerable without asking the user to
     // sit through it again. Non-fatal - a scan that produced results must
@@ -711,6 +699,40 @@ fn run_scan(
         timing: Some(timing),
         routing_breakdown,
     });
+
+    // Everything below happens with the results already on screen. Deleting
+    // the superseded generation was 12.1 s of a 13.5 s rescan housekeeping,
+    // and no reader was ever waiting for it - the active pointer moved above,
+    // and both `load_findings` and `occupied_by_library` filter on it. Timed
+    // and logged, because work that no longer shows up in `Scan done in` is
+    // work that quietly stops being measured. Non-fatal: the next scan's
+    // activation hands the same rows straight back here.
+    let prune_started = Instant::now();
+    match db::prune_superseded(&mut conn) {
+        Ok(()) => crate::logger::log(&format!(
+            "Superseded generation pruned in {:?} (after the results were reported)",
+            prune_started.elapsed()
+        )),
+        Err(err) => {
+            crate::logger::error(&format!("Failed to prune the superseded generation: {err}"))
+        }
+    }
+
+    // Fold this connection's own WAL into the main file and truncate it
+    // before dropping the connection, rather than leaving a large,
+    // uncheckpointed `-wal` behind for whatever connection opens the
+    // database next (e.g. "Clear database"). This is what triggered the
+    // reported "database disk image is malformed" error: a big uncheckpointed
+    // WAL left after a completed scan put the next connection's WAL-recovery
+    // into an ambiguous state. It runs *after* the prune, which is by far the
+    // largest thing this connection writes. Non-fatal by design - an
+    // otherwise-successful scan must not be reported as failed just because
+    // its final housekeeping checkpoint didn't take.
+    if let Err(err) = db::checkpoint_truncate(&conn) {
+        crate::logger::error(&format!(
+            "Failed to checkpoint the WAL after the scan: {err}"
+        ));
+    }
 }
 
 /// One game's outcome after scanning+classifying it, sent from a scan worker
