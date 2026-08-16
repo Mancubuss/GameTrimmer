@@ -186,6 +186,36 @@ mod tests {
 
     use crate::ui::harness::{UiTest, NARROW_VIEWPORT, STANDARD_VIEWPORT};
 
+    /// Reported from a real run: the bar read "Scan 32s · Analysis 1:03 ·
+    /// Total 1:04", which is three figures separated by dots that plainly do
+    /// not add up. They are not supposed to - the file table is read
+    /// underneath the classification, so the first span is contained in the
+    /// second - but nothing on screen said so, and the only thing anyone can
+    /// do with three dot-separated durations is try to add them.
+    ///
+    /// Pins the containment wording rather than the exact sentence, so it
+    /// survives rephrasing but not a silent return to a flat list.
+    #[test]
+    fn the_timing_readout_says_the_two_spans_overlap() {
+        let mut test = UiTest::with_size(show, STANDARD_VIEWPORT);
+        test.seed_findings();
+        test.app_mut().last_scan_timing = Some(crate::model::ScanTiming {
+            scan: std::time::Duration::from_secs(32),
+            analyze: std::time::Duration::from_secs(63),
+            total: std::time::Duration::from_secs(64),
+        });
+        test.run();
+
+        // The joining word is what stops the three figures reading as a sum;
+        // `strings()` is not used because this phrasing lives in
+        // `i18n::scan_timing_summary`, not in the string table.
+        let joiner = match test.app_mut().lang() {
+            crate::i18n::Lang::En => "within analysis",
+            crate::i18n::Lang::Uk => "у межах аналізу",
+        };
+        test.assert_label_containing(joiner);
+    }
+
     /// The bug this panel was rebuilt for. Measured before the
     /// fix at the standard 900x600 window: the delete button ran to x=924.8
     /// with no findings at all, and to x=954.0 with results - 25pt and 54pt

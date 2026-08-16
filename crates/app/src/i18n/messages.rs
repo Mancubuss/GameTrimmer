@@ -817,10 +817,17 @@ pub fn occupancy_summary(lang: Lang, total: &str, pct: f64) -> String {
 /// Persistent scan-timing summary shown in the bottom bar after a scan
 /// completes (see `crate::model::ScanTiming`, `crate::app::GameTrimmerApp::last_scan_timing`).
 /// `scan`/`analyze`/`total` are already formatted via `crate::model::format_duration`.
+///
+/// Worded as containment - "within" - rather than as a list of three
+/// independent figures. The file table is read underneath the classification
+/// now, so the first two spans overlap and do not sum to the total; printed
+/// side by side with separators, they read as arithmetic that does not work
+/// ("32s, 1:03, total 1:04") and the first thing anyone does with them is try
+/// to add them.
 pub fn scan_timing_summary(lang: Lang, scan: &str, analyze: &str, total: &str) -> String {
     match lang {
-        Lang::En => format!("Scan {scan} \u{b7} Analysis {analyze} \u{b7} Total {total}"),
-        Lang::Uk => format!("Сканування {scan} \u{b7} Аналіз {analyze} \u{b7} Разом {total}"),
+        Lang::En => format!("Scan {scan} within analysis {analyze} \u{b7} Total {total}"),
+        Lang::Uk => format!("Сканування {scan} у межах аналізу {analyze} \u{b7} Разом {total}"),
     }
 }
 
