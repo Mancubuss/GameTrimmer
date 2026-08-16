@@ -5,12 +5,9 @@
 //! and write. Errors are user-facing, already-localized strings - they end
 //! up directly in the warnings list.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use gametrimmer_core::packs::{self, MergeStats, PackKind};
-use gametrimmer_core::rules::RuleEngine;
-use rusqlite::{Connection, OpenFlags};
 
 use crate::i18n::{self, Lang};
 
@@ -134,11 +131,7 @@ pub struct PreparedRuleImport {
     pub preview: String,
 }
 
-pub fn prepare_pack_import(
-    lang: Lang,
-    files: &[PathBuf],
-    db_path: Option<&Path>,
-) -> Result<PreparedRuleImport, String> {
+pub fn prepare_pack_import(lang: Lang, files: &[PathBuf]) -> Result<PreparedRuleImport, String> {
     let mut incoming = Vec::with_capacity(files.len());
     for file in files {
         let metadata =
@@ -201,7 +194,6 @@ pub fn prepare_pack_import(
             }
         })
         .transpose()?;
-    let base_rules_text = rules_text.clone();
     let mut rules_stats: Option<MergeStats> = None;
     let mut lang_stats: Option<MergeStats> = None;
 
@@ -231,13 +223,7 @@ pub fn prepare_pack_import(
     }
 
     let summary = build_summary(lang, rules_stats, lang_stats);
-    let impact = preview_active_impact(
-        db_path,
-        base_rules_text.as_deref(),
-        rules_text.as_deref(),
-        needs_lang,
-    )?;
-    let preview = format_preview(lang, &summary, &impact);
+    let preview = format_preview(lang, &summary);
     let mut outputs = Vec::new();
     if let (Some(path), Some(text)) = (&rules_target, &rules_text) {
         outputs.push((path.clone(), text.clone()));
@@ -272,115 +258,40 @@ pub fn apply_prepared_import(lang: Lang, prepared: PreparedRuleImport) -> Result
     Ok(prepared.summary)
 }
 
-#[derive(Default)]
-struct ImportImpact {
-    files: usize,
-    bytes: u64,
-    categories: BTreeSet<String>,
-    examples: Vec<String>,
-    conservative: bool,
-}
-
-fn preview_active_impact(
-    db_path: Option<&Path>,
-    base_rules: Option<&str>,
-    merged_rules: Option<&str>,
-    localization_changed: bool,
-) -> Result<ImportImpact, String> {
-    let Some(db_path) = db_path.filter(|path| path.is_file()) else {
-        return Ok(ImportImpact::default());
-    };
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("cannot preview the active snapshot: {error}"))?;
-    let base = base_rules
-        .map(RuleEngine::from_json)
-        .transpose()
-        .map_err(|error| error.to_string())?;
-    let merged = merged_rules
-        .map(RuleEngine::from_json)
-        .transpose()
-        .map_err(|error| error.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT f.rel_path, COALESCE(f.size_on_disk, f.size), g.install_dir
-             FROM files f JOIN games g ON g.id = f.game_id
-             WHERE f.scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1)",
-        )
-        .map_err(|error| format!("cannot preview the active snapshot: {error}"))?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?.max(0) as u64,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|error| format!("cannot preview the active snapshot: {error}"))?;
-
-    let mut impact = ImportImpact {
-        conservative: localization_changed,
-        ..ImportImpact::default()
-    };
-    for row in rows {
-        let (rel_path, bytes, install_dir) =
-            row.map_err(|error| format!("cannot preview the active snapshot: {error}"))?;
-        let before = base.as_ref().and_then(|engine| engine.classify(&rel_path));
-        let after = merged
-            .as_ref()
-            .and_then(|engine| engine.classify(&rel_path));
-        if !localization_changed && before == after {
-            continue;
-        }
-        impact.files += 1;
-        impact.bytes = impact.bytes.saturating_add(bytes);
-        if localization_changed {
-            impact.categories.insert("localization".to_string());
-        }
-        if let Some(finding) = after {
-            impact
-                .categories
-                .insert(finding.category.as_str().to_string());
-        }
-        if impact.examples.len() < 5 {
-            impact.examples.push(
-                PathBuf::from(install_dir)
-                    .join(rel_path)
-                    .display()
-                    .to_string(),
-            );
-        }
-    }
-    Ok(impact)
-}
-
-fn format_preview(lang: Lang, summary: &str, impact: &ImportImpact) -> String {
-    let categories = if impact.categories.is_empty() {
-        "-".to_string()
-    } else {
-        impact
-            .categories
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let examples = if impact.examples.is_empty() {
-        "-".to_string()
-    } else {
-        impact.examples.join("\n")
-    };
+/// The dialog shown before an import is written.
+///
+/// It reports what the *rules* gain and lose, and says plainly that the
+/// effect on the library is only visible after a rescan.
+///
+/// It used to answer the stronger question - "how many files in the current
+/// snapshot would change verdict?" - by re-classifying the whole active
+/// inventory. Answering it without a rescan required `files` to hold a row
+/// for every file of every game: 4.9 million rows against 720 thousand
+/// findings on a real library. That inventory was this preview's only reader,
+/// and it cost roughly 8 s to write and 10 s to delete on every scan, plus
+/// some 700 MB of database - a permanent price on every run for a dialog
+/// shown when someone imports a rule pack. The owner's call was that the
+/// comparison was interesting but not worth the storage; importing now asks
+/// for a rescan instead.
+fn format_preview(lang: Lang, summary: &str) -> String {
     match lang {
         Lang::Uk => format!(
-            "Попередній перегляд імпорту\n\n{summary}\n\n{} файлів активного snapshot: {}\nБайти: {}\nКатегорії: {categories}\n\nПриклади:\n{examples}\n\nПродовжити?",
-            if impact.conservative { "Потенційно уражено" } else { "Уражено" },
-            impact.files,
-            impact.bytes,
+            "Попередній перегляд імпорту
+
+{summary}
+
+Щоб побачити, що це змінює у вашій бібліотеці, запустіть сканування після імпорту.
+
+Продовжити?"
         ),
         Lang::En => format!(
-            "Import preview\n\n{summary}\n\n{} active-snapshot files: {}\nBytes: {}\nCategories: {categories}\n\nExamples:\n{examples}\n\nContinue?",
-            if impact.conservative { "Potentially affected" } else { "Affected" },
-            impact.files,
-            impact.bytes,
+            "Import preview
+
+{summary}
+
+Run a scan after importing to see what this changes in your library.
+
+Continue?"
         ),
     }
 }
@@ -500,60 +411,6 @@ mod tests {
         );
         assert!(rules_only.contains("categories - 2 new, 1 updated"));
         assert!(!rules_only.contains("localization"));
-    }
-
-    #[test]
-    fn preview_counts_active_snapshot_rule_deltas_and_examples() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("preview.db");
-        let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
-        let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
-        conn.execute(
-            "INSERT INTO game_libraries (vendor, path) VALUES ('test', 'F:\\Games')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO games (scan_id, library_id, name, install_dir)
-             VALUES (?1, 1, 'Fixture', 'F:\\Games\\Fixture')",
-            [scan_id],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO files (scan_id, game_id, rel_path, size, size_on_disk)
-             VALUES (?1, 1, 'preview_fixture.tmp', 3000, 4096)",
-            [scan_id],
-        )
-        .unwrap();
-        gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
-        drop(conn);
-
-        let merged = r#"{"version":1,"rules":[
-            {"category":"dev_leftovers","pattern":"^preview_fixture\\.tmp$",
-             "desc":"Preview fixture","confidence":90}
-        ]}"#;
-        let empty = r#"{"version":1,"rules":[]}"#;
-        let impact = preview_active_impact(Some(&db_path), Some(empty), Some(merged), false)
-            .expect("preview succeeds");
-
-        assert_eq!(impact.files, 1);
-        assert_eq!(impact.bytes, 4096);
-        assert!(impact.categories.contains("dev_leftovers"));
-        assert!(impact.examples[0].contains("preview_fixture.tmp"));
-        assert!(!impact.conservative);
-    }
-
-    #[test]
-    fn localization_preview_is_explicitly_conservative() {
-        let preview = format_preview(
-            Lang::En,
-            "Localization pack: 1 new language",
-            &ImportImpact {
-                conservative: true,
-                ..ImportImpact::default()
-            },
-        );
-        assert!(preview.contains("Potentially affected"));
     }
 
     #[test]

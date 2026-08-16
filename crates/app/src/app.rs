@@ -844,7 +844,6 @@ impl GameTrimmerApp {
         let lang = self.lang();
         let s = i18n::strings(lang);
         let (title, filter_label) = (s.rules_import_dialog_title, s.rules_import_filter_label);
-        let db_path = self.db_path.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let picked = rfd::FileDialog::new()
@@ -853,28 +852,26 @@ impl GameTrimmerApp {
                 .pick_files();
 
             let (summary, error) = match picked {
-                Some(files) => {
-                    match worker::rules_io::prepare_pack_import(lang, &files, db_path.as_deref()) {
-                        Ok(prepared) => {
-                            let confirmed = rfd::MessageDialog::new()
-                                .set_title(title)
-                                .set_description(&prepared.preview)
-                                .set_level(rfd::MessageLevel::Warning)
-                                .set_buttons(rfd::MessageButtons::OkCancel)
-                                .show()
-                                == rfd::MessageDialogResult::Ok;
-                            if confirmed {
-                                match worker::rules_io::apply_prepared_import(lang, prepared) {
-                                    Ok(summary) => (Some(summary), None),
-                                    Err(err) => (None, Some(err)),
-                                }
-                            } else {
-                                (None, None)
+                Some(files) => match worker::rules_io::prepare_pack_import(lang, &files) {
+                    Ok(prepared) => {
+                        let confirmed = rfd::MessageDialog::new()
+                            .set_title(title)
+                            .set_description(&prepared.preview)
+                            .set_level(rfd::MessageLevel::Warning)
+                            .set_buttons(rfd::MessageButtons::OkCancel)
+                            .show()
+                            == rfd::MessageDialogResult::Ok;
+                        if confirmed {
+                            match worker::rules_io::apply_prepared_import(lang, prepared) {
+                                Ok(summary) => (Some(summary), None),
+                                Err(err) => (None, Some(err)),
                             }
+                        } else {
+                            (None, None)
                         }
-                        Err(err) => (None, Some(err)),
                     }
-                }
+                    Err(err) => (None, Some(err)),
+                },
                 None => (None, None),
             };
             let _ = tx.send(WorkerMsg::RulesImportDone { summary, error });
