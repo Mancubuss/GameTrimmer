@@ -282,14 +282,19 @@ pub fn l10n_rules_load_failed(lang: Lang, err: impl std::fmt::Display) -> String
     }
 }
 
-pub fn provider_failed(
+/// Attributes one line to the provider it came from. Named for what it does
+/// rather than for a failure: most of these lines are failures, but a
+/// `GAME_ABSENT` note is an ordinary state travelling the same route (see
+/// `scan::discovery`), and a function called `provider_failed` producing an
+/// INFO line would be the wrong label at the call site.
+pub fn provider_message(
     lang: Lang,
     name: impl std::fmt::Display,
-    err: impl std::fmt::Display,
+    detail: impl std::fmt::Display,
 ) -> String {
     match lang {
-        Lang::En => format!("Provider \"{name}\": {err}"),
-        Lang::Uk => format!("Провайдер \"{name}\": {err}"),
+        Lang::En => format!("Provider \"{name}\": {detail}"),
+        Lang::Uk => format!("Провайдер \"{name}\": {detail}"),
     }
 }
 

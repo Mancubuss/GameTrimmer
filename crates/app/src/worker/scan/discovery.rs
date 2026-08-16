@@ -46,6 +46,15 @@ pub(super) fn discover_libraries(
         // name tell whoever reads a bug report exactly what happened, and tell
         // the person at the window nothing they can act on. They go to the log
         // in full, and to `scan_diagnostics` for the diagnostic bundle.
+        //
+        // In full, but not all as failures. A `GAME_ABSENT` note says a game
+        // the launcher knows about is not on disk - a paused download, an
+        // uninstall the launcher has not caught up with. It has to be logged,
+        // because it is the only answer to "why is my game not in the list",
+        // and it must not be logged as ERROR, because a log where ordinary
+        // states are errors stops being usable for finding the real ones. The
+        // question is asked once, by `is_failure`, which is the same predicate
+        // that decides whether the library's evidence degrades.
         for diagnostic in &report.diagnostics {
             let detail = match &diagnostic.path {
                 Some(path) => format!(
@@ -56,15 +65,15 @@ pub(super) fn discover_libraries(
                 ),
                 None => format!("{} [{}]", diagnostic.message, diagnostic.stage),
             };
-            crate::logger::error(&i18n::provider_failed(
-                Lang::En,
-                diagnostic.provider,
-                detail,
-            ));
+            let line = i18n::provider_message(Lang::En, diagnostic.provider, detail);
+            match diagnostic_level(diagnostic) {
+                crate::logger::Level::Error => crate::logger::error(&line),
+                crate::logger::Level::Info => crate::logger::log(&line),
+            }
         }
         if report.status == DiscoveryStatus::Failed {
             return Err(i18n::Reported::new(lang, |l| {
-                i18n::provider_failed(
+                i18n::provider_message(
                     l,
                     provider.name(),
                     "discovery failed; the previous complete snapshot was preserved",
@@ -116,6 +125,18 @@ pub(super) fn discover_libraries(
     })
 }
 
+/// The level one provider diagnostic is logged at. A separate function only
+/// so the decision can be asserted directly: driving it through the loop
+/// would mean pointing the global logger at a file, and the logger's own
+/// tests already have to serialize on that.
+fn diagnostic_level(diagnostic: &DiscoveryDiagnostic) -> crate::logger::Level {
+    if diagnostic.is_failure() {
+        crate::logger::Level::Error
+    } else {
+        crate::logger::Level::Info
+    }
+}
+
 /// Drops any library whose root is in `excluded` (a list of
 /// [`providers::comparable_path`] keys - see `Settings::excluded_libraries`).
 ///
@@ -151,6 +172,44 @@ mod tests {
             path: PathBuf::from(path),
             games: Vec::new(),
             orphan_evidence: OrphanEvidence::Authoritative,
+        }
+    }
+
+    fn diagnostic(stage: &'static str) -> DiscoveryDiagnostic {
+        DiscoveryDiagnostic {
+            provider: "steam",
+            stage,
+            path: None,
+            message: "whatever the provider had to say".to_string(),
+        }
+    }
+
+    /// GT-134. A paused download is not a failure, and a log that stamps
+    /// ordinary states `ERROR` stops being usable for finding the real ones -
+    /// which was the complaint: one scan of a healthy library produced
+    /// exactly one `[ERROR]` line, and it was this.
+    ///
+    /// The note still has to be written. It is the only answer to "why is my
+    /// game not in the list", so the fix is the level, not silence.
+    #[test]
+    fn an_absent_game_is_logged_but_not_as_a_failure() {
+        assert_eq!(
+            diagnostic_level(&diagnostic(providers::GAME_ABSENT)),
+            crate::logger::Level::Info
+        );
+    }
+
+    /// The other half, and the one that matters for safety: a folder the scan
+    /// could not examine keeps its `ERROR`, because that is the case where a
+    /// live install can drop out of the managed set.
+    #[test]
+    fn an_unexaminable_install_dir_is_still_logged_as_a_failure() {
+        for stage in ["game-path", "manifest-read", "registry-open", "panic"] {
+            assert_eq!(
+                diagnostic_level(&diagnostic(stage)),
+                crate::logger::Level::Error,
+                "{stage} must stay a failure"
+            );
         }
     }
 

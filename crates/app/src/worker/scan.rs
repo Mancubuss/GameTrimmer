@@ -552,7 +552,7 @@ fn run_scan(
                 // Same as provider discovery: full detail to the log, nothing
                 // to the window. The user-visible consequence is already in
                 // the result - no leftovers are offered for this library.
-                crate::logger::error(&i18n::provider_failed(
+                crate::logger::error(&i18n::provider_message(
                     Lang::En,
                     issue.provider,
                     format!(

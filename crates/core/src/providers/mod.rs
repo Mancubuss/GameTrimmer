@@ -283,9 +283,20 @@ pub const GAME_ABSENT: &str = "game-absent";
 /// Whether this diagnostic set means the library's inventory can no longer be
 /// trusted for orphan detection. Everything except [`GAME_ABSENT`] does.
 pub fn degrades_evidence(diagnostics: &[DiscoveryDiagnostic]) -> bool {
-    diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.stage != GAME_ABSENT)
+    diagnostics.iter().any(DiscoveryDiagnostic::is_failure)
+}
+
+impl DiscoveryDiagnostic {
+    /// Whether this line reports something that actually went wrong.
+    ///
+    /// The per-diagnostic half of [`degrades_evidence`], and deliberately the
+    /// same question: a note that leaves a library authoritative is also one
+    /// that must not be stamped `ERROR` in the log. Keeping both answers in
+    /// one predicate is what stops the log and the orphan-evidence decision
+    /// from drifting into disagreeing about what counts as a failure.
+    pub fn is_failure(&self) -> bool {
+        self.stage != GAME_ABSENT
+    }
 }
 
 /// The [`try_is_dir`] contract for a regular file.

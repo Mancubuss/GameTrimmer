@@ -72,12 +72,12 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
                     None => format!("{message} [{stage}]"),
                 };
                 notifier.report_warning(i18n::Reported::new(lang, |l| {
-                    i18n::provider_failed(l, &provider, &detail)
+                    i18n::provider_message(l, &provider, &detail)
                 }));
             }
         }
         Err(err) => notifier.report_warning(i18n::Reported::new(lang, |l| {
-            i18n::provider_failed(l, "database", &err)
+            i18n::provider_message(l, "database", &err)
         })),
     }
 

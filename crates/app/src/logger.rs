@@ -37,8 +37,12 @@
 //! - **The offset** makes the timestamp reconcilable with the database,
 //!   which stores Unix seconds. A bare local wall clock is only
 //!   interpretable by someone who knows what time zone the machine was in.
-//! - **The level** is what lets the diagnostic bundle's `errors.txt` show
-//!   the failures instead of the whole tail.
+//! - **The level** is what lets a reader find the failures without reading
+//!   the whole tail. Nothing in the app reads it back: `Level` is never
+//!   matched outside this module, and the diagnostic bundle carries database
+//!   and scan facts rather than the log. It is a marker for the person
+//!   holding the file, and that is the whole of its job - which is exactly
+//!   why stamping an ordinary state `ERROR` costs something real.
 //! - **The scan generation** ties a line to its `scan_runs` row. Two scans
 //!   in one session were previously separated by nothing at all.
 //!
@@ -74,11 +78,18 @@ const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 /// Severity of one logged line.
 ///
-/// Deliberately two variants and not the usual five. The only consumer that
-/// needs to tell lines apart is the diagnostic bundle's `errors.txt`, and
-/// the only question it asks is "did something fail". A `WARN` tier would
-/// have to be assigned at 37 call sites by judgement, and every judgement
-/// call is a chance for two similar failures to land in different tiers.
+/// Deliberately two variants and not the usual five. The only question a
+/// reader of the file asks is "did something fail", and the only code that
+/// answers it is the caller choosing [`log`] or [`error`]. A `WARN` tier
+/// would have to be assigned at 37 call sites by judgement, and every
+/// judgement call is a chance for two similar failures to land in different
+/// tiers.
+///
+/// Provider diagnostics were the case that tested this and did not need a
+/// third tier: `scan::discovery` routes them by
+/// `DiscoveryDiagnostic::is_failure`, the same predicate that decides whether
+/// a library's evidence degrades, so an ordinary absence lands on [`log`]
+/// without anyone judging it line by line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Info,
@@ -761,8 +772,7 @@ mod tests {
     }
 
     /// The end of the chain for GT-124: a failure has to be findable in the
-    /// file without reading every line, which is what `errors.txt` in the
-    /// diagnostic bundle depends on.
+    /// file without reading every line.
     #[test]
     fn an_error_is_marked_in_the_file_and_an_info_is_not() {
         let _guard = lock_tests();
