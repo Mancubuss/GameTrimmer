@@ -281,8 +281,11 @@ pub fn counts(conn: &Connection) -> Result<(i64, i64, i64)> {
         [],
         |row| row.get(0),
     )?;
+    // Every file of every game, from the per-game totals - not
+    // `COUNT(*) FROM files`, which since the inventory was dropped counts only
+    // the flagged files and would report roughly a tenth of the real number.
     let files: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM files
+        "SELECT COALESCE(SUM(files), 0) FROM games
          WHERE scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1)",
         [],
         |row| row.get(0),

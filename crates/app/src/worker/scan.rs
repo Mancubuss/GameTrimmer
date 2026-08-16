@@ -28,7 +28,7 @@ use gametrimmer_core::providers::{
 };
 use gametrimmer_core::rules::{Finding, RuleEngine, RuleProvenance};
 use gametrimmer_core::safety::{SafetySnapshot, SnapshotCapture};
-use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry};
+use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry, ScanStats};
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang, Verb};
@@ -3213,6 +3213,79 @@ mod tests {
                 finding.rule_id
             );
         }
+    }
+
+    /// The inventory decision: `files` carries a row for a flagged file and
+    /// for nothing else, while the game's own totals still describe the whole
+    /// install.
+    ///
+    /// This is the shape that used to be inverted - a row per file of every
+    /// game, 4.9 million against 720 thousand findings - kept solely so the
+    /// rule-import preview could re-classify the inventory without a rescan.
+    /// Both halves matter and they pull opposite ways, which is why they are
+    /// asserted together: store less, but do not start under-reporting what a
+    /// game occupies.
+    #[test]
+    fn only_flagged_files_get_a_row_while_the_game_totals_cover_everything() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        // The real engine, so "flagged" means what it means in production:
+        // `manual.pdf` is documentation, `game.exe` and `data.bin` are not.
+        let engine = RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON)
+            .expect("builtin rules compile");
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("manual.pdf"), b"flagged");
+        write_file(&install_dir.path().join("game.exe"), b"not flagged at all");
+        write_file(&install_dir.path().join("data.bin"), b"nor this one");
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: PathBuf::from(r"D:\SteamLibrary"),
+            orphan_evidence: OrphanEvidence::Heuristic,
+            games: vec![GameInstall {
+                name: "Test Game".to_string(),
+                install_dir: install_dir.path().to_path_buf(),
+                app_id: None,
+            }],
+        };
+        let games =
+            persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
+        let (game_id, name, path) = &games[0];
+
+        let scanned =
+            scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path, 0)
+                .expect("scan game");
+        assert_eq!(scanned.len(), 1, "only manual.pdf should be a finding");
+
+        let stored: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT rel_path FROM files WHERE game_id = ?1 ORDER BY rel_path")
+                .expect("prepare");
+            stmt.query_map([game_id], |row| row.get(0))
+                .expect("query")
+                .collect::<rusqlite::Result<_>>()
+                .expect("collect")
+        };
+        assert_eq!(
+            stored,
+            vec!["manual.pdf".to_string()],
+            "the unflagged files must not get a row"
+        );
+
+        let (files, bytes): (i64, i64) = conn
+            .query_row(
+                "SELECT files, bytes FROM games WHERE id = ?1",
+                [game_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read game totals");
+        assert_eq!(files, 3, "the game's totals must count every file it has");
+        assert_eq!(
+            bytes,
+            (b"flagged".len() + b"not flagged at all".len() + b"nor this one".len()) as i64,
+            "occupancy must not shrink to just the flagged bytes"
+        );
     }
 
     /// GT-129, and the inverse of what this test used to assert.

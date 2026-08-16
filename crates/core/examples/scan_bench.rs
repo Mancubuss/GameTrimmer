@@ -560,17 +560,19 @@ fn write_batched(conn: &mut Connection, games: &[PreparedGame], batch_size: usiz
     for chunk in games.chunks(batch_size.max(1)) {
         let tx = conn.transaction().expect("begin batch transaction");
         for game in chunk {
-            let (_stats, file_ids) =
-                store_files_no_tx(&tx, BENCH_SCAN_ID, game.game_id, &game.entries)
-                    .expect("store_files_no_tx");
+            // Mirrors the real writer: only the flagged files get a row, handed
+            // over in finding order so `file_ids[i]` is finding `i`'s row.
+            let flagged = game.findings.iter().map(|f| &game.entries[f.entry_index]);
+            let file_ids = store_files_no_tx(&tx, BENCH_SCAN_ID, game.game_id, flagged)
+                .expect("store_files_no_tx");
 
             let mut insert_finding = tx
                 .prepare_cached(
                     "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
                 .expect("prepare finding insert");
-            for finding in &game.findings {
-                let file_id = file_ids[finding.entry_index];
+            for (position, finding) in game.findings.iter().enumerate() {
+                let file_id = file_ids[position];
                 insert_finding
                     .execute(params![
                         file_id,

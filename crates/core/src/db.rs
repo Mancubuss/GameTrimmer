@@ -887,13 +887,21 @@ pub fn free_page_fraction(conn: &Connection) -> Result<f64> {
 /// Libraries with no files (or no games) are simply absent from the map;
 /// callers treat an absent library as 0 bytes.
 pub fn occupied_by_library(conn: &Connection) -> Result<HashMap<i64, u64>> {
-    // On-disk allocation (allocated-size accounting), falling back to the logical size for rows
-    // indexed before `size_on_disk` existed - so occupancy matches the honest
-    // per-finding figures the tree sums, not the logical total.
+    // Summed from the per-game totals, not from `files`. `files` holds only
+    // the flagged files now, so summing it would report what the *findings*
+    // occupy - on a real library roughly a thirtieth of the truth - and the
+    // "selected frees N %" figure built on top of it would read ~100 %.
+    // `games.bytes_on_disk` covers every file of the install (see
+    // `scanner::ScanStats::of`), falling back to the logical size for rows
+    // written before `bytes_on_disk` existed.
+    //
+    // A game with no totals at all contributes nothing rather than 0, so a
+    // library whose games are all like that stays absent from the map - the
+    // distinction this function's callers rely on.
     let mut stmt = conn.prepare(
-        "SELECT g.library_id, SUM(COALESCE(f.size_on_disk, f.size)) FROM files f \
-         JOIN games g ON g.id = f.game_id \
-         WHERE f.scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1) \
+        "SELECT g.library_id, SUM(COALESCE(g.bytes_on_disk, g.bytes)) FROM games g \
+         WHERE g.scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1) \
+           AND COALESCE(g.bytes_on_disk, g.bytes) IS NOT NULL \
          GROUP BY g.library_id",
     )?;
     let mut by_library = HashMap::new();
@@ -2009,21 +2017,16 @@ mod tests {
         )
         .expect("insert game C");
 
-        conn.execute(
-            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (1, 'a1.bin', 100, NULL)",
-            [],
-        )
-        .expect("insert file a1");
-        conn.execute(
-            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (2, 'b1.bin', 200, NULL)",
-            [],
-        )
-        .expect("insert file b1");
-        conn.execute(
-            "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (3, 'c1.bin', 50, NULL)",
-            [],
-        )
-        .expect("insert file c1");
+        // Occupancy comes from the per-game totals, which is what a scan
+        // writes for the whole install - `files` only ever holds the flagged
+        // subset, so setting it here would describe a different quantity.
+        for (game_id, bytes) in [(1, 100), (2, 200), (3, 50)] {
+            conn.execute(
+                "UPDATE games SET files = 1, bytes = ?2, bytes_on_disk = ?2 WHERE id = ?1",
+                params![game_id, bytes],
+            )
+            .expect("set per-game totals");
+        }
 
         let by_library = occupied_by_library(&conn).expect("aggregate by library");
 
@@ -2036,6 +2039,46 @@ mod tests {
             by_library.get(&2),
             Some(&50u64),
             "library 2 must report its own game's files only"
+        );
+    }
+
+    /// Occupancy describes the whole install, not the flagged part of it.
+    ///
+    /// This is a shipped regression, pinned so it cannot come back: when
+    /// `files` was narrowed to hold only flagged files, this function was
+    /// still summing that table, so a 23 TB library reported 744 GB and the
+    /// "selected frees N %" line beneath it read 99.9 %. The fixture is built
+    /// the way a real scan leaves the database - per-game totals covering
+    /// every file, a `files` row only for the flagged one - so summing the
+    /// wrong table fails it.
+    #[test]
+    fn occupied_by_library_counts_unflagged_files_too() {
+        let conn = open_in_memory().expect("in-memory db should open");
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('steam', 'D:/SteamLibrary')",
+            [],
+        )
+        .expect("insert library");
+        // 1000 bytes on disk across three files; one of them is flagged.
+        conn.execute(
+            "INSERT INTO games (library_id, name, install_dir, files, bytes, bytes_on_disk) \
+             VALUES (1, 'Game A', 'D:/SteamLibrary/A', 3, 1000, 1000)",
+            [],
+        )
+        .expect("insert game");
+        conn.execute(
+            "INSERT INTO files (game_id, rel_path, size, size_on_disk, mtime) \
+             VALUES (1, 'manual.pdf', 40, 40, NULL)",
+            [],
+        )
+        .expect("insert the one flagged file");
+
+        let by_library = occupied_by_library(&conn).expect("aggregate by library");
+
+        assert_eq!(
+            by_library.get(&1),
+            Some(&1000u64),
+            "occupancy must be the whole install, not the 40 bytes that happen to be flagged"
         );
     }
 

@@ -321,21 +321,40 @@ pub(super) fn persist_prepared_game(
         params![prepared.game_id],
     )?;
 
-    // The stats come back from the insert loop that was going to run
-    // anyway, so keeping them is free - they were simply dropped before.
-    // Per-game file and byte counts are the natural unit for explaining a
-    // slow scan ("this one game holds 400 000 files"), which the totals
-    // alone never showed.
+    // Per-game totals cover the *whole* install - every file, flagged or not.
+    // They are what the UI's occupancy figures are built from, so they are
+    // computed from `entries` rather than from the rows written below, which
+    // are only the flagged subset. Per-game file and byte counts are also the
+    // natural unit for explaining a slow scan ("this one game holds 400 000
+    // files"), which the totals alone never showed.
+    let stats = ScanStats::of(&prepared.entries);
+
+    // Only the flagged files get a row. `files` used to hold every file of
+    // every game - 4.9 million rows against 720 thousand findings - and the
+    // only reader that ever looked at an unflagged one was the rule-import
+    // impact preview, which has been removed (importing rules now asks for a
+    // rescan). Everything else reaches this table through
+    // `JOIN files f ON f.id = fi.file_id`.
     //
-    // `file_ids` comes back from the same loop: `file_ids[i]` is the
-    // `files.id` of `prepared.entries[i]` (see `store_files_no_tx`). Every
-    // finding carries the index of the entry it was made from, so the
-    // `file_id` each one needs is a lookup by position. The alternative this
-    // replaced - selecting all of the rows just inserted back out and keying
-    // them by `rel_path` into a `HashMap` - cost 4.9 million owned strings
-    // and a measured 3.6 s per scan to rediscover ids the insert already
-    // reported.
-    let (stats, file_ids) = store_files_no_tx(conn, scan_id, prepared.game_id, &prepared.entries)?;
+    // The findings are in strictly ascending `entry_index` order, one per
+    // entry, because `classify_game` builds them by walking `entries` once -
+    // so handing their files over in that order makes `file_ids[i]` the id of
+    // `prepared.findings[i]`'s file. That positional contract is what replaced
+    // selecting every row back out and keying it by `rel_path` into a
+    // `HashMap`: 4.9 million owned strings and a measured 3.6 s per scan to
+    // rediscover ids the insert already reported.
+    debug_assert!(
+        prepared
+            .findings
+            .windows(2)
+            .all(|pair| pair[0].entry_index < pair[1].entry_index),
+        "findings must be in strictly ascending entry order for positional file ids"
+    );
+    let flagged = prepared
+        .findings
+        .iter()
+        .map(|finding| &prepared.entries[finding.entry_index]);
+    let file_ids = store_files_no_tx(conn, scan_id, prepared.game_id, flagged)?;
     conn.execute(
         "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4 WHERE id = ?1",
         params![
@@ -393,19 +412,19 @@ pub(super) fn persist_prepared_game(
     // not be found, plus a `scan_diagnostic` row explaining the gap - the
     // exact shape of "findings vanish between runs" when the lookup was a
     // `rel_path` string match against a map. Resolving by position removes
-    // the failure rather than reporting it: a finding's index came from
-    // `entries`, and `store_files_no_tx` returned exactly one id per entry
-    // in that order, so there is no longer a case in which a finding has no
-    // row. The `debug_assert` pins that invariant where it is established
+    // the failure rather than reporting it: the flagged files were handed to
+    // `store_files_no_tx` in finding order, and it returned exactly one id
+    // per row it inserted, so there is no longer a case in which a finding
+    // has no row. The `debug_assert` pins that invariant where it is set up
     // instead of re-checking it 720 000 times in release.
     debug_assert_eq!(
         file_ids.len(),
-        prepared.entries.len(),
-        "store_files_no_tx must return one id per entry, in entry order"
+        prepared.findings.len(),
+        "store_files_no_tx must return one id per finding, in finding order"
     );
 
-    for finding in &prepared.findings {
-        let file_id = file_ids[finding.entry_index];
+    for (position, finding) in prepared.findings.iter().enumerate() {
+        let file_id = file_ids[position];
 
         insert_finding.execute(params![
             file_id,

@@ -50,6 +50,25 @@ pub struct ScanStats {
     pub bytes_on_disk: u64,
 }
 
+impl ScanStats {
+    /// Totals over *every* file a game has, flagged or not.
+    ///
+    /// Deliberately separate from [`store_files_no_tx`], which only writes the
+    /// flagged subset: what a game occupies on disk is a fact about the whole
+    /// install, and the UI's occupancy figures would understate it badly - by
+    /// roughly 9 parts in 10 on a real library - if they only counted the
+    /// files that happened to match a rule.
+    pub fn of(entries: &[FileEntry]) -> Self {
+        let mut stats = Self::default();
+        for entry in entries {
+            stats.files += 1;
+            stats.bytes += entry.size;
+            stats.bytes_on_disk += entry.size_on_disk;
+        }
+        stats
+    }
+}
+
 /// How many items pass between polls of `cancel` inside
 /// [`collect_cancellable`]: frequent enough that a cancellation request
 /// lands within a small, bounded number of entries even on the largest game
@@ -204,65 +223,70 @@ where
 /// a 4.9-million-row library - to store a value the caller already held
 /// before the first insert.
 ///
-/// Returns the stats **and the id of every row inserted, positionally**:
-/// `ids[i]` is the `files.id` of `entries[i]`, so a caller holding an index
-/// into `entries` (which is how findings are carried; see
-/// `worker::scan::PreparedFinding::entry_index`) can resolve its `file_id`
-/// with no further queries. This is the contract that replaced reading all
-/// 4.9 million rows back into a `HashMap<rel_path, id>` - another 3.6 s per
-/// scan - to answer the same question. It holds because `last_insert_rowid()`
-/// is read immediately after each `execute`, on the same connection, inside
-/// the caller's transaction: nothing else can insert between the two.
-pub fn store_files_no_tx(
+/// Returns **the id of every row inserted, positionally**: `ids[i]` is the
+/// `files.id` of the `i`-th entry handed in, so a caller that passed its
+/// findings' files in order can resolve each `file_id` with no further
+/// queries. This is the contract that replaced reading every row back into a
+/// `HashMap<rel_path, id>` - 3.6 s per scan - to answer the same question. It
+/// holds because `last_insert_rowid()` is read immediately after each
+/// `execute`, on the same connection, inside the caller's transaction:
+/// nothing else can insert between the two.
+///
+/// `entries` is the *flagged* subset, not the whole install. `files` used to
+/// hold every file of every game - 4.9 million rows against 720 thousand
+/// findings - because the rule-import impact preview re-classified the whole
+/// inventory to answer "what would these rules change?" without a rescan.
+/// That preview is gone (importing rules now asks for a rescan), and with it
+/// the only reader that ever looked at an unflagged row: every other consumer
+/// reaches this table through `JOIN files f ON f.id = fi.file_id`. Writing
+/// the other 85 % cost about 8 s per scan, 10 s more to delete on the next
+/// one, and some 700 MB of database.
+///
+/// Per-game totals do **not** come from here - see [`ScanStats::of`].
+pub fn store_files_no_tx<'a>(
     conn: &Connection,
     scan_id: i64,
     game_id: i64,
-    entries: &[FileEntry],
-) -> Result<(ScanStats, Vec<i64>)> {
+    entries: impl IntoIterator<Item = &'a FileEntry>,
+) -> Result<Vec<i64>> {
     conn.execute("DELETE FROM files WHERE game_id = ?1", params![game_id])?;
 
-    let mut stats = ScanStats::default();
-    let mut ids = Vec::with_capacity(entries.len());
+    let mut ids = Vec::new();
     {
         let mut stmt = conn.prepare_cached(
             "INSERT INTO files (scan_id, game_id, rel_path, size, size_on_disk, mtime) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         for entry in entries {
-            let size_i64 = entry.size as i64;
-            let size_on_disk_i64 = entry.size_on_disk as i64;
             stmt.execute(params![
                 scan_id,
                 game_id,
                 entry.rel_path,
-                size_i64,
-                size_on_disk_i64,
+                entry.size as i64,
+                entry.size_on_disk as i64,
                 entry.mtime
             ])?;
             ids.push(conn.last_insert_rowid());
-            stats.files += 1;
-            stats.bytes += entry.size;
-            stats.bytes_on_disk += entry.size_on_disk;
         }
     }
 
-    Ok((stats, ids))
+    Ok(ids)
 }
 
 /// Replaces the indexed files of `game_id` with `entries` in its own,
 /// single-game transaction (delete + batch insert with a prepared
 /// statement). A thin wrapper around [`store_files_no_tx`] for callers that
 /// don't need to share a transaction across multiple games; it returns that
-/// function's stats and positional ids unchanged.
-pub fn store_files(
+/// function's positional ids unchanged.
+pub fn store_files<'a>(
     conn: &mut Connection,
     scan_id: i64,
     game_id: i64,
-    entries: &[FileEntry],
-) -> Result<(ScanStats, Vec<i64>)> {
+    entries: impl IntoIterator<Item = &'a FileEntry>,
+) -> Result<Vec<i64>> {
     let tx = conn.transaction()?;
-    let stored = store_files_no_tx(&tx, scan_id, game_id, entries)?;
+    let ids = store_files_no_tx(&tx, scan_id, game_id, entries)?;
     tx.commit()?;
-    Ok(stored)
+    Ok(ids)
 }
 
 /// Scans multiple game directories in parallel via rayon. The database
@@ -491,15 +515,15 @@ mod tests {
             FileEntry::logical_only("a.txt", 10, Some(100)),
             FileEntry::logical_only("b\\c.txt", 20, Some(200)),
         ];
-        let (stats, ids) =
-            store_files(&mut conn, 0, game_id, &first_batch).expect("store first batch");
+        let ids = store_files(&mut conn, 0, game_id, &first_batch).expect("store first batch");
+        let stats = ScanStats::of(&first_batch);
         assert_eq!(stats.files, 2);
         assert_eq!(stats.bytes, 30);
         assert_eq!(ids.len(), 2, "one id per entry, in entry order");
 
         let second_batch = vec![FileEntry::logical_only("only.txt", 42, None)];
-        let (stats, ids) =
-            store_files(&mut conn, 0, game_id, &second_batch).expect("store second batch");
+        let ids = store_files(&mut conn, 0, game_id, &second_batch).expect("store second batch");
+        let stats = ScanStats::of(&second_batch);
         assert_eq!(stats.files, 1);
         assert_eq!(stats.bytes, 42);
         assert_eq!(ids.len(), 1);
@@ -618,9 +642,8 @@ mod tests {
         let entries = vec![FileEntry::logical_only("a.txt", 10, Some(100))];
 
         let tx = conn.transaction().expect("begin transaction");
-        let (stats, _ids) =
-            store_files_no_tx(&tx, 0, game_id, &entries).expect("store within shared tx");
-        assert_eq!(stats.files, 1);
+        let _ids = store_files_no_tx(&tx, 0, game_id, &entries).expect("store within shared tx");
+        assert_eq!(ScanStats::of(&entries).files, 1);
         tx.commit().expect("commit shared tx");
 
         let count: i64 = conn
@@ -658,8 +681,7 @@ mod tests {
             FileEntry::logical_only(r"b\d.txt", 30, None),
         ];
 
-        let (_stats, ids) =
-            store_files(&mut conn, scan_id, game_id, &entries).expect("store entries");
+        let ids = store_files(&mut conn, scan_id, game_id, &entries).expect("store entries");
 
         assert_eq!(ids.len(), entries.len());
         for (entry, id) in entries.iter().zip(&ids) {
