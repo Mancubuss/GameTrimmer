@@ -101,6 +101,14 @@ pub struct ParsedRecord {
     /// `$STANDARD_INFORMATION`'s modification time, converted to Unix
     /// seconds, if this record carries that attribute.
     pub mtime: Option<i64>,
+    /// The same timestamp before conversion - see [`MftRecord::mtime_nt`].
+    pub mtime_nt: Option<u64>,
+    /// This record's own sequence number, from the header rather than from
+    /// any File Reference - see [`MftRecord::sequence`].
+    pub sequence: u16,
+    /// `$STANDARD_INFORMATION`'s file attribute bits - see
+    /// [`MftRecord::nt_attributes`].
+    pub nt_attributes: Option<u32>,
     /// Every non-DOS-only `$FILE_NAME` alias this record carries.
     pub aliases: Vec<NameAlias>,
 }
@@ -277,16 +285,25 @@ pub fn parse_record(buf: &mut [u8], frn: u64) -> Option<ParsedRecord> {
             unnamed_data_size: None,
             unnamed_alloc_size: None,
             mtime: None,
+            mtime_nt: None,
+            sequence: 0,
+            nt_attributes: None,
             aliases: Vec::new(),
         });
     }
 
     let first_attribute_offset = read_u16(buf, 20) as usize;
     let base_frn = read_frn48(buf, 32);
+    // Header offset 16, not the low half of a File Reference: this is the
+    // record's own sequence number, the counter Win32 returns in the high 16
+    // bits of `nFileIndexHigh`.
+    let sequence = read_u16(buf, 16);
 
     let mut unnamed_data_size = None;
     let mut unnamed_alloc_size = None;
     let mut mtime = None;
+    let mut mtime_nt = None;
+    let mut nt_attributes = None;
     let mut aliases = Vec::new();
 
     let mut offset = first_attribute_offset;
@@ -311,7 +328,14 @@ pub fn parse_record(buf: &mut [u8], frn: u64) -> Option<ParsedRecord> {
                 if let Some(value_off) = resident_value_offset(buf, offset, attr_length) {
                     let mtime_pos = value_off + 8;
                     if mtime_pos + 8 <= buf.len() {
-                        mtime = Some(nt_time_to_unix_secs(read_u64(buf, mtime_pos)));
+                        let raw = read_u64(buf, mtime_pos);
+                        mtime_nt = Some(raw);
+                        mtime = Some(nt_time_to_unix_secs(raw));
+                    }
+                    // File attributes follow the four timestamps.
+                    let attributes_pos = value_off + 32;
+                    if attributes_pos + 4 <= buf.len() {
+                        nt_attributes = Some(read_u32(buf, attributes_pos));
                     }
                 }
             }
@@ -367,6 +391,9 @@ pub fn parse_record(buf: &mut [u8], frn: u64) -> Option<ParsedRecord> {
         unnamed_data_size,
         unnamed_alloc_size,
         mtime,
+        mtime_nt,
+        sequence,
+        nt_attributes,
         aliases,
     })
 }
@@ -408,6 +435,9 @@ struct PartialRecord {
     size: Option<u64>,
     alloc_size: Option<u64>,
     mtime: Option<i64>,
+    mtime_nt: Option<u64>,
+    sequence: u16,
+    nt_attributes: Option<u32>,
     aliases: Vec<NameAlias>,
 }
 
@@ -449,6 +479,9 @@ impl FrnAccumulator {
         // meaningful for the logical file as a whole.
         if parsed.base_frn == 0 {
             entry.is_directory = parsed.is_directory;
+            // An extension record carries its own sequence number, which is
+            // not the logical file's; only the base record's counts.
+            entry.sequence = parsed.sequence;
         }
         if let Some(size) = parsed.unnamed_data_size {
             entry.size = Some(size);
@@ -458,6 +491,12 @@ impl FrnAccumulator {
         }
         if let Some(mtime) = parsed.mtime {
             entry.mtime = Some(mtime);
+        }
+        if let Some(raw) = parsed.mtime_nt {
+            entry.mtime_nt = Some(raw);
+        }
+        if let Some(attributes) = parsed.nt_attributes {
+            entry.nt_attributes = Some(attributes);
         }
         entry.aliases.extend(parsed.aliases);
     }
@@ -490,6 +529,9 @@ impl FrnAccumulator {
                         partial.alloc_size.unwrap_or(0)
                     },
                     mtime: partial.mtime,
+                    mtime_nt: partial.mtime_nt,
+                    sequence: partial.sequence,
+                    nt_attributes: partial.nt_attributes,
                     aliases: partial.aliases,
                 },
             );
@@ -581,7 +623,18 @@ mod tests {
             start
         }
 
-        fn add_standard_information(mut self, mtime_nt: u64) -> Self {
+        fn add_standard_information(self, mtime_nt: u64) -> Self {
+            self.add_standard_information_with_attributes(mtime_nt, 0)
+        }
+
+        /// `$STANDARD_INFORMATION` carrying file attribute bits as well as
+        /// the timestamp - the bits that say whether a file is a reparse
+        /// point live here, at value offset 32.
+        fn add_standard_information_with_attributes(
+            mut self,
+            mtime_nt: u64,
+            attributes: u32,
+        ) -> Self {
             const HEADER_LEN: u16 = 24;
             const VALUE_LEN: usize = 48;
             let attr_len = HEADER_LEN as usize + VALUE_LEN;
@@ -589,6 +642,15 @@ mod tests {
             let v = start + HEADER_LEN as usize;
             // creation_time @0, modification_time @8, mft_record_mod @16, access @24
             self.buf[v + 8..v + 16].copy_from_slice(&mtime_nt.to_le_bytes());
+            // file_attributes @32, after the four timestamps.
+            self.buf[v + 32..v + 36].copy_from_slice(&attributes.to_le_bytes());
+            self
+        }
+
+        /// Writes the record's own sequence number into the header (offset
+        /// 16), where NTFS keeps it.
+        fn set_sequence(mut self, sequence: u16) -> Self {
+            self.buf[16..18].copy_from_slice(&sequence.to_le_bytes());
             self
         }
 
@@ -897,6 +959,77 @@ mod tests {
 
         let parsed = parse_record(&mut buf, 33).expect("well-formed record parses");
         assert_eq!(parsed.mtime, Some(0));
+    }
+
+    /// The three fields the parser used to throw away, each of which is
+    /// needed to state a file's identity rather than merely describe it.
+    ///
+    /// The timestamp is kept unrounded because `safety::FileIdentity`
+    /// compares it exactly; the sequence number because a File Record Number
+    /// is reused after a delete and only the sequence tells the two files
+    /// apart; the attributes because that is where a reparse point declares
+    /// itself.
+    #[test]
+    fn identity_fields_survive_the_parser() {
+        // A time with sub-second precision: rounding it to whole seconds
+        // would lose the last seven digits, which is exactly the loss this
+        // field exists to prevent.
+        let mtime_nt = NT_TO_UNIX_INTERVALS as u64 + 1_234_567;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+        let mut buf = RecordBuilder::new(RECORD_SIZE)
+            .set_flags(true, false)
+            .set_sequence(7)
+            .add_standard_information_with_attributes(mtime_nt, FILE_ATTRIBUTE_REPARSE_POINT)
+            .add_file_name(5, "linked.dat", 1)
+            .finish();
+
+        let parsed = parse_record(&mut buf, 41).expect("well-formed record parses");
+
+        assert_eq!(parsed.mtime_nt, Some(mtime_nt), "raw NT timestamp");
+        assert_eq!(parsed.mtime, Some(0), "the rounded form still works");
+        assert_eq!(parsed.sequence, 7, "record header sequence number");
+        assert_eq!(
+            parsed.nt_attributes,
+            Some(FILE_ATTRIBUTE_REPARSE_POINT),
+            "reparse bit must reach the caller",
+        );
+
+        let map = {
+            let mut acc = FrnAccumulator::with_capacity(1);
+            acc.add(parsed);
+            acc.finish(16)
+        };
+        let record = map.get(&41).expect("record survives accumulation");
+        assert_eq!(record.sequence, 7);
+        assert_eq!(record.mtime_nt, Some(mtime_nt));
+        assert_eq!(record.nt_attributes, Some(FILE_ATTRIBUTE_REPARSE_POINT));
+    }
+
+    /// An extension record has a sequence number of its own, and it is not
+    /// the logical file's. Taking the wrong one would produce a file index
+    /// that matches nothing Win32 reports.
+    #[test]
+    fn the_base_records_sequence_wins_over_an_extension_records() {
+        let mut base_buf = RecordBuilder::new(RECORD_SIZE)
+            .set_flags(true, false)
+            .set_sequence(3)
+            .add_file_name(5, "huge.pak", 1)
+            .finish();
+        let mut ext_buf = RecordBuilder::new(RECORD_SIZE)
+            .set_flags(true, false)
+            .set_sequence(99)
+            .set_base_record(300)
+            .add_nonresident_data(4096)
+            .finish();
+
+        let mut acc = FrnAccumulator::with_capacity(2);
+        // Extension first, so a naive "last write wins" would take 99.
+        acc.add(parse_record(&mut ext_buf, 301).expect("extension parses"));
+        acc.add(parse_record(&mut base_buf, 300).expect("base parses"));
+        let map = acc.finish(16);
+
+        assert_eq!(map.get(&300).expect("merged record").sequence, 3);
     }
 
     #[test]

@@ -33,6 +33,31 @@ pub struct MftRecord {
     pub alloc_size: u64,
     /// Unix seconds of `$STANDARD_INFORMATION` modification time.
     pub mtime: Option<i64>,
+    /// The same modification time, unconverted: the raw 100-nanosecond NT
+    /// timestamp. `mtime` above is derived from it and rounds to whole
+    /// seconds, which is fine for display and useless for proving a file has
+    /// not changed - `safety::FileIdentity` compares `ftLastWriteTime`
+    /// exactly, and a second of slack there is a second in which a file may
+    /// be rewritten unnoticed.
+    pub mtime_nt: Option<u64>,
+    /// This record's own sequence number - the 16 bits NTFS increments every
+    /// time the record is reused for a different file.
+    ///
+    /// Kept because the File Record Number alone does **not** identify a
+    /// file: NTFS reuses record numbers, and it is the sequence number that
+    /// tells a live file from a deleted one whose slot was taken. Win32
+    /// reports the two together as one 64-bit index
+    /// (`nFileIndexHigh`/`nFileIndexLow`), and anything comparing identities
+    /// must do the same.
+    pub sequence: u16,
+    /// `$STANDARD_INFORMATION`'s file attribute bits, as NTFS stores them.
+    ///
+    /// **Not** interchangeable with Win32's `dwFileAttributes` without
+    /// checking: NTFS does not keep the directory bit here, and the two sets
+    /// have diverged before. The one bit worth having is
+    /// `FILE_ATTRIBUTE_REPARSE_POINT` - a junction or symlink must never be
+    /// treated as an ordinary deletable file.
+    pub nt_attributes: Option<u32>,
     /// All `$FILE_NAME` aliases for this record (usually one; more than one
     /// only for hard-linked files). The first alias is treated as the
     /// "primary" one when this record is used as an ancestor of another.

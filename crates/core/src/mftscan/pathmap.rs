@@ -195,6 +195,9 @@ mod tests {
             size: 0,
             alloc_size: 0,
             mtime: None,
+            mtime_nt: None,
+            sequence: 1,
+            nt_attributes: None,
             aliases: vec![NameAlias {
                 parent_frn: parent,
                 name: name.to_string(),
@@ -211,6 +214,9 @@ mod tests {
             // test makes them) stay predictable.
             alloc_size: size,
             mtime,
+            mtime_nt: mtime.map(|secs| secs as u64),
+            sequence: 1,
+            nt_attributes: None,
             aliases: vec![NameAlias {
                 parent_frn: parent,
                 name: name.to_string(),
