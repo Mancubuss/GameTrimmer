@@ -30,10 +30,17 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
         ui.horizontal(|ui| {
             // The running job first: it is the blocker the user has to wait
-            // out, and it outranks a gate they can clear in one click.
+            // out, and it outranks a gate they can clear in one click. A dead
+            // database ranks next, above the disclaimer: unlike the
+            // disclaimer there is no click that clears it - opening it failed
+            // at startup and nothing this window can do reopens it - so it is
+            // even less "one click away" than the gate it outranks, and
+            // naming it beats sending the user to accept a disclaimer that
+            // would not unblock anything anyway.
             let scan_blocked = app
                 .busy
                 .then_some(s.disabled_busy)
+                .or_else(|| app.blocked_by_database())
                 .or_else(|| app.blocked_by_disclaimer());
             if crate::ui::gated_button(ui, s.btn_scan_libraries, scan_blocked).clicked() {
                 app.start_scan();
@@ -195,6 +202,49 @@ mod tests {
         test.run();
 
         test.assert_label_containing("disk is full");
+    }
+
+    /// GT-74, half A. Before the fix, this same sentence could reach the
+    /// window twice: once as `db_error` (drawn permanently, below), and again
+    /// as `status_message` once a scan the button should have refused to
+    /// start reached the worker's own `db::open` failure. `count_labels_containing`
+    /// rather than `assert_label_containing` is what makes this a regression
+    /// test rather than a presence check - it fails the moment a second copy
+    /// shows up anywhere on screen, including one arriving via
+    /// `status_message`.
+    #[test]
+    fn a_dead_database_explains_itself_exactly_once() {
+        let mut test = UiTest::new(show);
+        test.app_mut().db_error = Some("gt_probe_db_dead".to_string());
+        test.run();
+
+        assert_eq!(
+            test.count_labels_containing("gt_probe_db_dead"),
+            1,
+            "the database error must appear exactly once, not duplicated",
+        );
+    }
+
+    /// GT-74, half B. A dead database has to grey out the scan button, not
+    /// just add a permanent label above it - otherwise the button still
+    /// invites the click that reaches the worker and produces half A's
+    /// duplicate. Also pins the gate ordering in `scan_blocked`: the
+    /// disclaimer is unaccepted here too (the default test fixture), but the
+    /// database is the reason reported, because accepting the disclaimer
+    /// would not unblock anything while the database stays dead.
+    #[test]
+    fn scan_button_is_disabled_and_blames_the_database() {
+        let mut test = UiTest::new(show);
+        test.app_mut().db_error = Some("gt_probe_db_dead".to_string());
+        test.run();
+        let s = test.strings();
+
+        test.hover(s.btn_scan_libraries);
+
+        assert!(
+            test.has_label(s.disabled_database),
+            "hovering the disabled scan button did not blame the database",
+        );
     }
 
     /// Idle: nothing to cancel, so no button.

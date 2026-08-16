@@ -129,6 +129,15 @@ impl FindingRow {
     pub fn display_category(&self) -> DisplayCategory {
         display_category(self.source)
     }
+
+    /// A row may be taken by *bulk* selection (select-all, profile
+    /// auto-select) only when nothing blocks its deletion and its safety
+    /// evidence came from this scan. `imported_untrusted` rows carry evidence
+    /// an older database supplied and this scan never re-checked, so they
+    /// must be ticked one at a time, deliberately.
+    pub fn bulk_selectable(&self) -> bool {
+        self.deletion_block_reason.is_none() && !self.imported_untrusted
+    }
 }
 
 /// A [`FindingRow`] plus UI-only state. Kept in a flat `Vec` so tree nodes
@@ -1348,10 +1357,12 @@ pub fn toggle_group(items: &mut [FindingItem], indices: &[usize]) {
 }
 
 /// Sets every item in `indices` to the given selection state. Used by the
-/// bulk-selection actions (select all on a disk, all of a category, ...).
+/// bulk-selection actions (select all on a disk, all of a category, ...), so
+/// selecting honours [`FindingRow::bulk_selectable`]. Deselecting never does:
+/// clearing a row is always allowed, whatever put it there.
 pub fn set_group_selection(items: &mut [FindingItem], indices: &[usize], selected: bool) {
     for &index in indices {
-        if !selected || items[index].row.deletion_block_reason.is_none() {
+        if !selected || items[index].row.bulk_selectable() {
             items[index].selected = selected;
         }
     }
@@ -1632,6 +1643,20 @@ mod tests {
                 DisplayCategory::Orphan
             );
         }
+    }
+
+    #[test]
+    fn bulk_selectable_excludes_blocked_and_untrusted_rows() {
+        let plain = item(1, "Game", FindingSource::Rule(Category::Bonus), 90, 10);
+        assert!(plain.row.bulk_selectable());
+
+        let mut blocked = item(1, "Game", FindingSource::Rule(Category::Bonus), 90, 10);
+        blocked.row.deletion_block_reason = Some("fresh scan required".to_string());
+        assert!(!blocked.row.bulk_selectable());
+
+        let mut untrusted = item(1, "Game", FindingSource::Rule(Category::Bonus), 90, 10);
+        untrusted.row.imported_untrusted = true;
+        assert!(!untrusted.row.bulk_selectable());
     }
 
     #[test]
@@ -2950,6 +2975,33 @@ mod tests {
         assert!(
             items.iter().all(|i| !i.selected),
             "toggling a fully selected group deselects all"
+        );
+    }
+
+    /// The tree's header rows are a bulk-selection path like any other, so an
+    /// `imported_untrusted` row inside a game, category or folder must survive
+    /// its header being toggled. Deselecting the same group still clears it -
+    /// a row the user ticked by hand is theirs to untick in bulk.
+    #[test]
+    fn group_selection_never_selects_imported_untrusted_rows() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 50, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 50, 10),
+        ];
+        items[0].selected = false;
+        items[1].selected = false;
+        items[1].row.imported_untrusted = true;
+        let indices = vec![0, 1];
+
+        toggle_group(&mut items, &indices);
+        assert!(items[0].selected);
+        assert!(!items[1].selected, "the untrusted row stays untouched");
+
+        items[1].selected = true;
+        set_group_selection(&mut items, &indices, false);
+        assert!(
+            items.iter().all(|i| !i.selected),
+            "deselecting a group clears the untrusted row too"
         );
     }
 

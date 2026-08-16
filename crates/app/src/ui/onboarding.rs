@@ -100,8 +100,14 @@ fn show_content(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     ui.add_space(14.0);
     // Directly under the gate it depends on, so "why is this grey" and the
-    // answer are one glance apart rather than one scroll.
-    let blocked = app.blocked_by_disclaimer();
+    // answer are one glance apart rather than one scroll. A dead database
+    // outranks the disclaimer here for the same reason it does in the top
+    // panel, and the ordering has to match: ticking the box would not unblock
+    // anything, so saying so first spares the user a wall they only find
+    // after clearing the one they can see.
+    let blocked = app
+        .blocked_by_database()
+        .or_else(|| app.blocked_by_disclaimer());
     if crate::ui::gated_button(ui, s.btn_scan_libraries, blocked).clicked() {
         app.start_scan();
     }
@@ -235,6 +241,25 @@ mod tests {
         ] {
             test.assert_label(line);
         }
+    }
+
+    /// GT-74: this screen carries the app's *other* scan button, and a gate
+    /// added to the top panel alone leaves it looking live. `start_scan`
+    /// refuses either way, but a button that accepts the click and does
+    /// nothing is the failure this ticket is about, one screen over.
+    #[test]
+    fn a_dead_database_greys_out_the_first_run_scan_button_too() {
+        let mut test = fresh_window();
+        test.app_mut().db_error = Some("gt_probe_db_dead".to_string());
+        test.run();
+        let s = test.strings();
+
+        test.hover(s.btn_scan_libraries);
+
+        assert!(
+            test.has_label(s.disabled_database),
+            "the first-run scan button did not blame the database",
+        );
     }
 
     /// The complaint this screen was shortened for: it was long enough that the

@@ -926,6 +926,15 @@ impl GameTrimmerApp {
             .then_some(i18n::strings(self.lang()).disabled_disclaimer)
     }
 
+    /// The reason scanning is unavailable when the database never opened, or
+    /// `None` once it did. Same shape as [`Self::blocked_by_disclaimer`]: the
+    /// button reads this to say why it is grey instead of merely being grey.
+    pub fn blocked_by_database(&self) -> Option<&'static str> {
+        self.db_error
+            .is_some()
+            .then_some(i18n::strings(self.lang()).disabled_database)
+    }
+
     pub fn start_scan(&mut self) {
         if self.busy {
             return;
@@ -934,6 +943,14 @@ impl GameTrimmerApp {
         // not only on the one control that happens to be greyed out. Both
         // entry points (top bar and the first-run screen) route here.
         if self.blocked_by_disclaimer().is_some() {
+            return;
+        }
+        // Same belt-and-braces reasoning for a database that never opened:
+        // `db_path` below is still `Some` in that case (see its assignment
+        // in `new_with`), so without this a scan would reach the worker and
+        // fail there too - the exact duplicate error this gate exists to
+        // prevent (GT-74).
+        if self.blocked_by_database().is_some() {
             return;
         }
         let Some(db_path) = self.db_path.clone() else {
@@ -1520,8 +1537,7 @@ impl GameTrimmerApp {
                 profile,
                 item.row.display_category(),
                 item.row.confidence,
-            ) && item.row.deletion_block_reason.is_none()
-                && !item.row.imported_untrusted;
+            ) && item.row.bulk_selectable();
         }
     }
 
@@ -1738,8 +1754,7 @@ impl GameTrimmerApp {
                             profile,
                             row.display_category(),
                             row.confidence,
-                        ) && row.deletion_block_reason.is_none()
-                            && !row.imported_untrusted;
+                        ) && row.bulk_selectable();
                         FindingItem {
                             row,
                             selected,
@@ -2305,6 +2320,41 @@ mod tests {
         assert!(
             contents.contains("Failed to open the database"),
             "the startup database error should be in the log: {contents}",
+        );
+    }
+
+    /// GT-74, half B. `db_path` is assigned unconditionally in `new_with`
+    /// regardless of whether `db::open` succeeded, so without the
+    /// `blocked_by_database` gate `start_scan` would happily hand a dead path
+    /// to the worker - reaching the worker's own `db::open` failure and
+    /// producing the exact duplicate the ticket is about.
+    #[test]
+    fn start_scan_does_nothing_when_the_database_never_opened() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // Same fixture as `a_failed_database_open_reaches_the_log`: a
+        // directory that does not exist, so SQLite cannot create the file.
+        let db_path = dir.path().join("no_such_directory").join("gametrimmer.db");
+        let mut app = GameTrimmerApp::new_with(
+            egui::Context::default(),
+            Some(db_path),
+            Some(dir.path().join("gametrimmer.ini")),
+            None,
+            false,
+        );
+        assert!(app.db_error.is_some(), "fixture must actually fail to open");
+        // Isolate the database gate from the disclaimer gate, which has its
+        // own test above.
+        app.accept_disclaimer();
+
+        app.start_scan();
+
+        assert!(
+            !app.busy,
+            "a scan started against a database that never opened",
+        );
+        assert!(
+            app._worker.is_none(),
+            "no worker should have been spawned for a dead database",
         );
     }
 

@@ -74,6 +74,7 @@ pub(super) const STRINGS: Strings = Strings {
     disabled_no_selection: "Nothing is selected",
     disabled_export_running: "An export is already running",
     disabled_disclaimer: "Read and accept the disclaimer on the start screen first",
+    disabled_database: "The database could not be opened",
 
     profile_label: "Profile:",
     profile_cautious: "Cautious",

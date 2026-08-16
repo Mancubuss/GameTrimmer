@@ -68,7 +68,7 @@ pub(crate) fn validate_batch(
 
 pub(crate) fn select_all(items: &mut [FindingItem]) {
     for item in items {
-        if !item.removed && item.row.deletion_block_reason.is_none() {
+        if !item.removed && item.row.bulk_selectable() {
             item.selected = true;
         }
     }
@@ -143,6 +143,25 @@ mod tests {
             item(2, Some("blocked"), false, false),
             item(3, None, false, true),
         ];
+
+        select_all(&mut items);
+
+        assert!(items[0].selected);
+        assert!(!items[1].selected);
+        assert!(!items[2].selected);
+    }
+
+    /// `imported_untrusted` rows carry safety evidence this scan never
+    /// re-verified - the user must tick them one at a time, so `select_all`
+    /// must skip them exactly like it skips blocked rows.
+    #[test]
+    fn select_all_never_selects_imported_untrusted_rows() {
+        let mut items = vec![
+            item(1, None, false, false),
+            item(2, None, false, false),
+            item(3, Some("fresh scan required"), false, false),
+        ];
+        items[1].row.imported_untrusted = true;
 
         select_all(&mut items);
 

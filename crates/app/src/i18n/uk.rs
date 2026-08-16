@@ -71,6 +71,7 @@ pub(super) const STRINGS: Strings = Strings {
     disabled_no_selection: "Нічого не вибрано",
     disabled_export_running: "Експорт уже виконується",
     disabled_disclaimer: "Спершу прочитайте й прийміть застереження на стартовому екрані",
+    disabled_database: "Не вдалося відкрити базу даних",
 
     profile_label: "Профіль:",
     profile_cautious: "Обережний",

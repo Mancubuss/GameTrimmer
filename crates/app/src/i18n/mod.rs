@@ -130,6 +130,11 @@ pub struct Strings {
     /// Why scanning and deleting are unavailable before the first-run
     /// disclaimer is accepted - see `GameTrimmerApp::blocked_by_disclaimer`.
     pub disabled_disclaimer: &'static str,
+    /// Why scanning is unavailable when the database never opened - see
+    /// `GameTrimmerApp::blocked_by_database`. Short on purpose: it is a
+    /// disabled-button tooltip, and the long explanation of *why* the
+    /// database failed already sits above it in the panel (`db_open_error_long`).
+    pub disabled_database: &'static str,
 
     /// Label preceding the selection-profile picker (selection profiles).
     pub profile_label: &'static str,
@@ -523,6 +528,7 @@ impl Strings {
             ("disabled_no_selection", self.disabled_no_selection),
             ("disabled_export_running", self.disabled_export_running),
             ("disabled_disclaimer", self.disabled_disclaimer),
+            ("disabled_database", self.disabled_database),
             ("elevation_heading", self.elevation_heading),
             ("elevation_body", self.elevation_body),
             ("elevation_when_asked", self.elevation_when_asked),

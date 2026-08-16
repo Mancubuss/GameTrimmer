@@ -220,8 +220,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         .map(|row| {
             let selected =
                 model::profile_auto_selects(profile, row.display_category(), row.confidence)
-                    && row.deletion_block_reason.is_none();
-            let selected = selected && !row.imported_untrusted;
+                    && row.bulk_selectable();
             FindingItem {
                 row,
                 selected,
