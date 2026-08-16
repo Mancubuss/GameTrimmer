@@ -1469,7 +1469,7 @@ fn classify_game(
         .map(|(index, combined)| {
             let entry = &entries[index];
             let safety = capture
-                .capture(install_dir, &entry.rel_path)
+                .capture(install_dir, &entry.rel_path, entry.mft_identity.as_ref())
                 .map_err(|reason| reason.to_string());
             PreparedFinding {
                 entry_index: index,

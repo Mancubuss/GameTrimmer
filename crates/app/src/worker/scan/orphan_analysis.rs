@@ -248,7 +248,11 @@ pub(super) fn persist_orphans(
             };
 
             let (install_dir, rel_path) = orphan_install_dir_and_name(&orphan.full_path);
-            let deletion_block_reason = match capture.capture(&install_dir, &rel_path) {
+            // An orphan is a leftover *directory*, found by comparing launcher
+            // manifests against what is on disk rather than by walking the
+            // `$MFT`, so there is no record here to quote and the capture
+            // opens it live.
+            let deletion_block_reason = match capture.capture(&install_dir, &rel_path, None) {
                 Ok(snapshot) => {
                     insert_safety.execute(params![
                         file_id,

@@ -6,10 +6,12 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::{CoreError, Result};
+use crate::mftscan::MftIdentity;
 
-// Both bits are read off `BY_HANDLE_FILE_INFORMATION.dwFileAttributes`, which
-// only the Windows `identity()` has.
-#[cfg(windows)]
+// The reparse bit is read off two sources that were proven to agree on it:
+// `BY_HANDLE_FILE_INFORMATION.dwFileAttributes`, which only the Windows
+// `identity()` has, and an `$MFT` record's `$STANDARD_INFORMATION` bits (see
+// [`stated_identity`]). The directory bit only ever comes from the former.
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 #[cfg(windows)]
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
@@ -343,6 +345,41 @@ fn identity(path: &Path) -> std::result::Result<FileIdentity, DeleteBlockReason>
     })
 }
 
+/// Builds the leaf's identity out of what the `$MFT` already said about it,
+/// instead of opening the file to ask again.
+///
+/// The scan reads every record on the volume in one linear pass; opening each
+/// finding afterwards asks the filesystem for facts that pass already
+/// collected, at the price of a random seek per finding - 39 us in the best
+/// measured layout and 17 798 us in the worst. `examples/mft_identity_check.rs`
+/// compared the two sources field by field on 50 000 real files: everything
+/// the deletion contract compares agreed, once the attribute bits NTFS keeps
+/// to itself were masked off (see `MftRecord::identity`).
+///
+/// The reparse check is not skipped, only re-sourced: the bit was among the
+/// fields that agreed, so a junction is refused here exactly as
+/// [`identity`] refuses it.
+///
+/// Applies to the finding's own leaf only. The trusted root and every
+/// directory above it are still opened, and so is the leaf when no record
+/// stated it - a walkdir-scanned game, or a record missing a field.
+fn stated_identity(
+    path: &Path,
+    stated: &MftIdentity,
+) -> std::result::Result<FileIdentity, DeleteBlockReason> {
+    if stated.nt_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(DeleteBlockReason::ReparsePoint(path.to_path_buf()));
+    }
+    Ok(FileIdentity {
+        volume_serial: stated.volume_serial,
+        file_index: stated.file_index,
+        kind: TargetKind::File,
+        size: stated.size,
+        last_write_time: stated.last_write_time,
+        attributes: stated.nt_attributes,
+    })
+}
+
 fn validate_chain(root: &Path, rel_path: &Path) -> std::result::Result<(), DeleteBlockReason> {
     // A missing *root* is not evidence about the target. An unplugged external
     // drive, a removed drive letter or an unmounted volume all report
@@ -432,10 +469,14 @@ impl SnapshotCapture {
         Self::default()
     }
 
+    /// `stated_leaf` is what the scan's `$MFT` pass already recorded about the
+    /// target, when there was one; see [`stated_identity`] for what it
+    /// replaces and what it deliberately does not.
     pub fn capture(
         &mut self,
         trusted_root: &Path,
         raw_rel_path: &str,
+        stated_leaf: Option<&MftIdentity>,
     ) -> std::result::Result<SafetySnapshot, DeleteBlockReason> {
         if !trusted_root.is_absolute() {
             return Err(DeleteBlockReason::InvalidRelativePath(
@@ -473,7 +514,14 @@ impl SnapshotCapture {
         if !target.starts_with(trusted_root) {
             return Err(DeleteBlockReason::OutsideTrustedRoot);
         }
-        let target_identity = identity(&target)?;
+        let target_identity = match stated_leaf {
+            // A directory target is read live regardless: its snapshot needs a
+            // `tree_fingerprint`, which walks the whole directory and opens
+            // every entry in it, so skipping the one open at its root saves
+            // nothing and would leave two ways to reach the same value.
+            Some(stated) if !stated.is_directory => stated_identity(&target, stated)?,
+            _ => identity(&target)?,
+        };
         let tree_fingerprint = (target_identity.kind == TargetKind::Directory)
             .then(|| tree_fingerprint(&target))
             .transpose()?;
@@ -749,7 +797,7 @@ mod tests {
 
         let mut capture = SnapshotCapture::new();
         for relative in relatives {
-            let cached = capture.capture(temp.path(), relative).unwrap();
+            let cached = capture.capture(temp.path(), relative, None).unwrap();
             let uncached = capture_safety_snapshot(temp.path(), relative).unwrap();
             assert_eq!(cached.trusted_root, uncached.trusted_root);
             assert_eq!(cached.rel_path, uncached.rel_path);
@@ -776,7 +824,7 @@ mod tests {
 
         let mut capture = SnapshotCapture::new();
         for relative in [r"linked\target.bin", r"linked\second.bin"] {
-            let result = capture.capture(&root, relative);
+            let result = capture.capture(&root, relative, None);
             assert!(
                 matches!(result, Err(DeleteBlockReason::ReparsePoint(_))),
                 "a cached chain must not launder a junction: {result:?}"
@@ -786,13 +834,97 @@ mod tests {
         fs::remove_dir(&junction).unwrap();
     }
 
+    /// A record that states the leaf replaces the open on the leaf, and on
+    /// nothing else: the chain above it is still walked and still proven.
+    #[cfg(windows)]
+    #[test]
+    fn a_stated_leaf_is_taken_from_the_record_and_the_chain_is_still_walked() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("Data");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("voice.pak"), b"one").unwrap();
+
+        // Deliberately unlike anything on disk: if the capture opened the file
+        // it would report the real values and this would not match.
+        let stated = MftIdentity {
+            volume_serial: 0xfeed_face,
+            file_index: 0x0007_0000_0000_002a,
+            is_directory: false,
+            size: 4096,
+            last_write_time: 132_000_000_000_000_000,
+            nt_attributes: 0x20,
+        };
+        let mut capture = SnapshotCapture::new();
+        let snapshot = capture
+            .capture(temp.path(), r"Data\voice.pak", Some(&stated))
+            .unwrap();
+
+        assert_eq!(snapshot.target_identity.volume_serial, 0xfeed_face);
+        assert_eq!(snapshot.target_identity.file_index, 0x0007_0000_0000_002a);
+        assert_eq!(snapshot.target_identity.size, 4096);
+        assert_eq!(snapshot.target_identity.kind, TargetKind::File);
+        assert_eq!(snapshot.target_identity.attributes, 0x20);
+
+        // The root came from the filesystem, not from the record.
+        let live_root = identity(temp.path()).unwrap();
+        assert_eq!(snapshot.root_identity, live_root);
+    }
+
+    /// The reparse check is re-sourced, not skipped: a record that says the
+    /// leaf is a junction blocks exactly as the live open would.
+    #[test]
+    fn a_stated_leaf_that_is_a_reparse_point_still_blocks() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("linked.bin"), b"data").unwrap();
+
+        let stated = MftIdentity {
+            volume_serial: 1,
+            file_index: 2,
+            is_directory: false,
+            size: 4,
+            last_write_time: 3,
+            nt_attributes: FILE_ATTRIBUTE_REPARSE_POINT,
+        };
+        let mut capture = SnapshotCapture::new();
+        let result = capture.capture(temp.path(), "linked.bin", Some(&stated));
+        assert!(
+            matches!(result, Err(DeleteBlockReason::ReparsePoint(_))),
+            "unexpected: {result:?}"
+        );
+    }
+
+    /// A directory target is read live even when a record states it, because
+    /// its `tree_fingerprint` opens the whole subtree anyway.
+    #[cfg(windows)]
+    #[test]
+    fn a_stated_directory_is_still_read_live() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("es");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("voice.pak"), b"one").unwrap();
+
+        let stated = MftIdentity {
+            volume_serial: 0xfeed_face,
+            file_index: 0x2a,
+            is_directory: true,
+            size: 0,
+            last_write_time: 1,
+            nt_attributes: 0x10,
+        };
+        let mut capture = SnapshotCapture::new();
+        let snapshot = capture.capture(temp.path(), "es", Some(&stated)).unwrap();
+
+        assert_eq!(snapshot.target_identity, identity(&nested).unwrap());
+        assert!(snapshot.tree_fingerprint.is_some());
+    }
+
     #[test]
     fn snapshot_capture_reports_an_unreachable_root_as_root_missing() {
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("gone");
 
         let mut capture = SnapshotCapture::new();
-        let result = capture.capture(&root, "target.bin");
+        let result = capture.capture(&root, "target.bin", None);
         assert!(
             matches!(result, Err(DeleteBlockReason::RootMissing)),
             "unexpected: {result:?}"

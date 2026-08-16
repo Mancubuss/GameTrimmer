@@ -134,7 +134,7 @@ fn main() {
     let mut capture = SnapshotCapture::new();
     let mut ok = 0usize;
     for relative in &files {
-        if capture.capture(&root, relative).is_ok() {
+        if capture.capture(&root, relative, None).is_ok() {
             ok += 1;
         }
     }
