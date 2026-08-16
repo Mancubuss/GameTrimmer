@@ -44,23 +44,72 @@ use gametrimmer_core::mftscan;
 use gametrimmer_core::safety::{current_identity, FileIdentity, TargetKind};
 use gametrimmer_core::scanner::FileEntry;
 
+/// Everything printed, kept so it can also be written to a file.
+///
+/// The whole point of this tool is to be read by someone who did not run it:
+/// it needs Administrator, so whoever is diagnosing the result is usually
+/// not the person at the keyboard. A report that exists only in a terminal's
+/// scrollback cannot be handed over - which is why the scan writes
+/// `gametrimmer.log` rather than trusting stdout, and why this does the
+/// same.
+#[derive(Default)]
+struct Report {
+    lines: Vec<String>,
+}
+
+impl Report {
+    fn say(&mut self, line: String) {
+        println!("{line}");
+        self.lines.push(line);
+    }
+
+    /// Writes the report beside the executable, so it can be picked up by
+    /// path rather than copied out of a console window. Failing to write it
+    /// is worth saying out loud but is not worth losing the run over.
+    fn write_to(&self, path: &Path) {
+        // CRLF: this is meant to be opened in Notepad as often as in an
+        // editor, and a report nobody can read is not a report.
+        match std::fs::write(path, self.lines.join("\r\n")) {
+            Ok(()) => println!("\nReport written to {}", path.display()),
+            Err(err) => eprintln!("\ncould not write {}: {err}", path.display()),
+        }
+    }
+}
+
 struct Args {
     dir: PathBuf,
     limit: usize,
+    out: PathBuf,
 }
 
 fn parse_args() -> Option<Args> {
     let mut dir = None;
     let mut limit = 5000usize;
+    let mut out = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--dir" => dir = args.next().map(PathBuf::from),
             "--limit" => limit = args.next()?.parse().ok()?,
+            "--out" => out = args.next().map(PathBuf::from),
             _ => return None,
         }
     }
-    Some(Args { dir: dir?, limit })
+    let out = out.unwrap_or_else(default_report_path);
+    Some(Args {
+        dir: dir?,
+        limit,
+        out,
+    })
+}
+
+/// Beside the executable, the same place `gametrimmer.log` lands.
+fn default_report_path() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("mft_identity_check.txt")
 }
 
 /// One field's verdict across every file compared. Counted rather than
@@ -147,10 +196,18 @@ fn main() {
         std::process::exit(2);
     };
 
-    println!("Reading {} through the MFT ...", args.dir.display());
+    let mut report = Report::default();
+    report.say(format!(
+        "Reading {} through the MFT ...",
+        args.dir.display()
+    ));
     let started = Instant::now();
     let entries = read_entries(&args.dir);
-    println!("{} files in {:.1?}\n", entries.len(), started.elapsed());
+    report.say(format!(
+        "{} files in {:.1?}\n",
+        entries.len(),
+        started.elapsed()
+    ));
 
     if entries.is_empty() {
         eprintln!("nothing to compare");
@@ -274,42 +331,60 @@ fn main() {
         );
     }
 
-    println!("compared {compared} files");
+    report.say(format!("compared {compared} files"));
     if without_identity > 0 {
-        println!("{without_identity} carried no MFT identity (would still be opened)");
+        report.say(format!(
+            "{without_identity} carried no MFT identity (would still be opened)"
+        ));
     }
     if unopenable > 0 {
-        println!("{unopenable} could not be opened live (nothing to compare against)");
+        report.say(format!(
+            "{unopenable} could not be opened live (nothing to compare against)"
+        ));
     }
     if compared > 0 {
-        println!(
+        report.say(format!(
             "live identity cost {:.1?} total, {:.0} us each\n",
             live_time,
             live_time.as_secs_f64() * 1e6 / compared as f64,
-        );
+        ));
     }
 
-    println!("{:<26} {:>9} {:>9}", "field", "agreed", "differed");
+    report.say(format!("{:<26} {:>9} {:>9}", "field", "agreed", "differed"));
     for (field, tally) in &tallies {
-        println!("{:<26} {:>9} {:>9}", field, tally.matched, tally.differed);
+        report.say(format!(
+            "{:<26} {:>9} {:>9}",
+            field, tally.matched, tally.differed
+        ));
     }
 
     let disagreeing: Vec<_> = tallies.iter().filter(|(_, t)| t.differed > 0).collect();
     if disagreeing.is_empty() {
-        println!("\nEvery field agreed on every file.");
+        report.say("\nEvery field agreed on every file.".to_string());
+        // Said out loud because a clean table invites a conclusion wider
+        // than the evidence: these entries are files, never directories
+        // (`scan_frn_map` emits none), so nothing here exercises the one
+        // field NTFS and Win32 are known to define differently.
+        report.say(format!(
+            "Sample: {compared} files, no directories. Point --dir at a whole \
+             library to widen it."
+        ));
+        report.write_to(&args.out);
         return;
     }
 
-    println!("\nDisagreements:");
+    report.say("\nDisagreements:".to_string());
     for (field, tally) in disagreeing {
         let verdict = if tally.matched == 0 {
             "systematic - this field cannot come from the MFT as it stands"
         } else {
             "occasional - look at what these files have in common"
         };
-        println!("  {field}: {verdict}");
+        report.say(format!("  {field}: {verdict}"));
         for example in &tally.examples {
-            println!("      {example}");
+            report.say(format!("      {example}"));
         }
     }
+
+    report.write_to(&args.out);
 }
