@@ -33,6 +33,15 @@
 //!     --dir "F:\SteamLibrary\steamapps\common\SomeGame" --limit 5000
 //! ```
 //!
+//! Keep `--limit` modest. This opens files one at a time, in `$MFT` order
+//! rather than directory order, which is the worst arrangement a mechanical
+//! volume can be asked for: measured at ~13 ms per file across a whole
+//! library, against 39 us for the same call inside a real scan, where six
+//! threads work through one game at a time on warm metadata. 50 000 files
+//! took a quarter of an hour. A few thousand answer the question just as
+//! well - what is being looked for is whether a field *ever* disagrees, and
+//! a systematic disagreement shows up in the first hundred.
+//!
 //! Read-only from first line to last: it opens the volume for reading,
 //! opens files for metadata, and writes nothing anywhere.
 
@@ -220,7 +229,24 @@ fn main() {
     let mut compared = 0usize;
     let mut live_time = std::time::Duration::ZERO;
 
-    for entry in entries.iter().take(args.limit) {
+    // A run over a whole library spends minutes here - one file open at a
+    // time against a mechanical volume, which is the very cost this tool
+    // exists to remove - and said nothing at all while it did. Silence for
+    // minutes reads as a hang, and the first person to hit it had to ask
+    // whether the thing was still alive.
+    let planned = entries.len().min(args.limit);
+    let progress_every = (planned / 20).max(1);
+
+    for (position, entry) in entries.iter().take(args.limit).enumerate() {
+        if position > 0 && position % progress_every == 0 {
+            let done = position as f64 / planned as f64;
+            let spent = started.elapsed().as_secs_f64();
+            println!(
+                "  {position}/{planned} ({:.0}%), ~{:.0}s left",
+                done * 100.0,
+                (spent / done - spent).max(0.0),
+            );
+        }
         let Some(mft) = entry.mft_identity else {
             without_identity += 1;
             continue;
