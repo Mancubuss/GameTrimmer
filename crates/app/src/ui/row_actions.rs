@@ -12,6 +12,10 @@
 use std::path::Path;
 use std::process::Command;
 
+use windows::core::PCWSTR;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
 /// `path` as a Windows-native string: forward slashes converted to
 /// backslashes, and a leading drive letter upper-cased.
 ///
@@ -69,6 +73,39 @@ pub fn open_with_args(path: &Path) -> (&'static str, Vec<String>) {
             windows_path_string(path),
         ],
     )
+}
+
+/// Opens `path` with its default Windows associated application via
+/// `ShellExecuteW` (e.g. default media player for video files, text editor
+/// for config/text files).
+pub fn open_file(path: &Path) -> Result<(), String> {
+    let win_path = windows_path_string(path);
+    let operation = to_wide("open");
+    let file = to_wide(&win_path);
+
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR::from_raw(operation.as_ptr()),
+            PCWSTR::from_raw(file.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    let code = result.0 as usize;
+    if code > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "ShellExecuteW failed with code {code} for path {win_path}"
+        ))
+    }
+}
+
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// Launches a fire-and-forget GUI helper, detached from this process. On
@@ -180,5 +217,11 @@ mod tests {
                 r"C:\Games\My Game\file.dll".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn open_file_reports_error_for_a_nonexistent_path() {
+        let p = PathBuf::from(r"C:\gametrimmer_non_existent_file_zzz.xyz");
+        assert!(open_file(&p).is_err());
     }
 }

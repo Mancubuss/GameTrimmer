@@ -35,6 +35,7 @@ pub enum FindingSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DisplayCategory {
     Redist,
+    Intro,
     Docs,
     Bonus,
     Loc,
@@ -165,10 +166,11 @@ pub struct FindingItem {
 /// Fixed display order for the top-level categories in the tree. `Orphan`
 /// lives last: it only ever appears under the synthetic orphan branch (see
 /// [`ORPHAN_GAME_ID`]), never inside a real game, so its position relative to
-/// the other five is immaterial - but it must still be listed so the settings
+/// the other six is immaterial - but it must still be listed so the settings
 /// dialog offers a checkbox for it and [`category_enabled`] can gate it.
-pub const CATEGORY_ORDER: [DisplayCategory; 6] = [
+pub const CATEGORY_ORDER: [DisplayCategory; 7] = [
     DisplayCategory::Redist,
+    DisplayCategory::Intro,
     DisplayCategory::Docs,
     DisplayCategory::Bonus,
     DisplayCategory::Loc,
@@ -280,6 +282,7 @@ pub fn display_category(source: FindingSource) -> DisplayCategory {
         }
         FindingSource::Rule(Category::Bonus) => DisplayCategory::Bonus,
         FindingSource::Rule(Category::DevLeftovers) => DisplayCategory::Other,
+        FindingSource::Rule(Category::Intro) => DisplayCategory::Intro,
         FindingSource::Loc(_) => DisplayCategory::Loc,
         FindingSource::Orphan(_) => DisplayCategory::Orphan,
     }
@@ -290,6 +293,7 @@ pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &
     let s = crate::i18n::strings(lang);
     match category {
         DisplayCategory::Redist => s.category_redist,
+        DisplayCategory::Intro => s.category_intro,
         DisplayCategory::Docs => s.category_docs,
         DisplayCategory::Bonus => s.category_bonus,
         DisplayCategory::Loc => s.category_loc,
@@ -311,6 +315,7 @@ pub fn source_key(source: FindingSource) -> &'static str {
         FindingSource::Rule(Category::DocsFile) => "docs_file",
         FindingSource::Rule(Category::Bonus) => "bonus",
         FindingSource::Rule(Category::DevLeftovers) => "dev_leftovers",
+        FindingSource::Rule(Category::Intro) => "intro",
         FindingSource::Loc(LangKind::Audio) => "loc_audio",
         FindingSource::Loc(LangKind::Text) => "loc_text",
         FindingSource::Loc(LangKind::Video) => "loc_video",
@@ -338,6 +343,7 @@ pub fn parse_source_key(key: &str) -> Option<FindingSource> {
         "docs_file" => Some(FindingSource::Rule(Category::DocsFile)),
         "bonus" => Some(FindingSource::Rule(Category::Bonus)),
         "dev_leftovers" => Some(FindingSource::Rule(Category::DevLeftovers)),
+        "intro" => Some(FindingSource::Rule(Category::Intro)),
         "loc_audio" => Some(FindingSource::Loc(LangKind::Audio)),
         "loc_text" => Some(FindingSource::Loc(LangKind::Text)),
         "loc_video" => Some(FindingSource::Loc(LangKind::Video)),
@@ -356,6 +362,7 @@ pub fn parse_source_key(key: &str) -> Option<FindingSource> {
 pub fn category_ui_key(category: DisplayCategory) -> &'static str {
     match category {
         DisplayCategory::Redist => "redist",
+        DisplayCategory::Intro => "intro",
         DisplayCategory::Docs => "docs",
         DisplayCategory::Bonus => "bonus",
         DisplayCategory::Loc => "loc",
@@ -421,10 +428,13 @@ pub fn profile_auto_selects(
     );
     match profile {
         SelectionProfile::Cautious => is_safe_category,
-        SelectionProfile::Balanced => is_safe_category || category == DisplayCategory::Loc,
+        SelectionProfile::Balanced => {
+            is_safe_category || category == DisplayCategory::Loc || category == DisplayCategory::Intro
+        }
         SelectionProfile::Aggressive => {
             is_safe_category
                 || category == DisplayCategory::Loc
+                || category == DisplayCategory::Intro
                 || confidence >= AGGRESSIVE_CONFIDENCE_FLOOR
         }
         SelectionProfile::Custom => default_selected(confidence),
@@ -457,7 +467,8 @@ pub fn category_risk(category: DisplayCategory) -> RiskLevel {
     match category {
         // Orphaned residue: the game is already uninstalled. Redist: MSVC/DX
         // installers a game re-runs or the store re-fetches on demand.
-        DisplayCategory::Orphan | DisplayCategory::Redist => RiskLevel::None,
+        // Intro: micro-stubs safely replace intro videos for instant launch.
+        DisplayCategory::Orphan | DisplayCategory::Redist | DisplayCategory::Intro => RiskLevel::None,
         DisplayCategory::Bonus | DisplayCategory::Docs | DisplayCategory::Loc => RiskLevel::Low,
         // Dev leftovers (PDBs, editor junk): almost always disposable, but the
         // one category where a false positive is plausible enough to flag.
@@ -1623,7 +1634,7 @@ mod tests {
     }
 
     #[test]
-    fn display_category_maps_every_source_to_the_five_top_level_categories() {
+    fn display_category_maps_every_source_to_its_top_level_category() {
         assert_eq!(
             display_category(FindingSource::Rule(Category::RedistFolder)),
             DisplayCategory::Redist
@@ -1647,6 +1658,10 @@ mod tests {
         assert_eq!(
             display_category(FindingSource::Rule(Category::DevLeftovers)),
             DisplayCategory::Other
+        );
+        assert_eq!(
+            display_category(FindingSource::Rule(Category::Intro)),
+            DisplayCategory::Intro
         );
         for kind in [
             LangKind::Audio,
@@ -1710,6 +1725,7 @@ mod tests {
             source_key(FindingSource::Rule(Category::DevLeftovers)),
             "dev_leftovers"
         );
+        assert_eq!(source_key(FindingSource::Rule(Category::Intro)), "intro");
         assert_eq!(source_key(FindingSource::Loc(LangKind::Audio)), "loc_audio");
         assert_eq!(source_key(FindingSource::Loc(LangKind::Text)), "loc_text");
         assert_eq!(source_key(FindingSource::Loc(LangKind::Video)), "loc_video");
@@ -1737,6 +1753,7 @@ mod tests {
             FindingSource::Rule(Category::DocsFile),
             FindingSource::Rule(Category::Bonus),
             FindingSource::Rule(Category::DevLeftovers),
+            FindingSource::Rule(Category::Intro),
             FindingSource::Loc(LangKind::Audio),
             FindingSource::Loc(LangKind::Text),
             FindingSource::Loc(LangKind::Video),
@@ -1766,7 +1783,7 @@ mod tests {
         let keys: Vec<&str> = CATEGORY_ORDER.iter().map(|&c| category_ui_key(c)).collect();
         assert_eq!(
             keys,
-            vec!["redist", "docs", "bonus", "loc", "other", "orphan"]
+            vec!["redist", "intro", "docs", "bonus", "loc", "other", "orphan"]
         );
     }
 
@@ -2727,7 +2744,7 @@ mod tests {
             ));
         }
         // Everything else is left unchecked, even at high confidence.
-        for category in [Loc, Redist, Other] {
+        for category in [Loc, Intro, Redist, Other] {
             assert!(!profile_auto_selects(
                 SelectionProfile::Cautious,
                 category,
@@ -2737,10 +2754,10 @@ mod tests {
     }
 
     #[test]
-    fn balanced_profile_adds_localization_to_cautious() {
+    fn balanced_profile_adds_localization_and_intro_to_cautious() {
         use DisplayCategory::*;
-        // Everything Cautious selects, plus Loc at any confidence.
-        for category in [Bonus, Docs, Orphan, Loc] {
+        // Everything Cautious selects, plus Loc and Intro at any confidence.
+        for category in [Bonus, Docs, Orphan, Loc, Intro] {
             assert!(profile_auto_selects(
                 SelectionProfile::Balanced,
                 category,
@@ -2759,8 +2776,8 @@ mod tests {
     #[test]
     fn aggressive_profile_adds_everything_at_or_above_the_floor() {
         use DisplayCategory::*;
-        // Safe categories and Loc still selected regardless of confidence.
-        for category in [Bonus, Docs, Orphan, Loc] {
+        // Safe categories, Loc and Intro still selected regardless of confidence.
+        for category in [Bonus, Docs, Orphan, Loc, Intro] {
             assert!(profile_auto_selects(
                 SelectionProfile::Aggressive,
                 category,
@@ -2789,7 +2806,7 @@ mod tests {
     fn custom_profile_is_the_plain_confidence_threshold() {
         use DisplayCategory::*;
         // Category-agnostic: matches default_selected exactly.
-        for category in [Bonus, Docs, Orphan, Loc, Redist, Other] {
+        for category in [Bonus, Docs, Orphan, Loc, Intro, Redist, Other] {
             assert_eq!(
                 profile_auto_selects(SelectionProfile::Custom, category, 85),
                 default_selected(85)
@@ -2846,6 +2863,7 @@ mod tests {
         use DisplayCategory::*;
         assert_eq!(category_risk(Orphan), RiskLevel::None);
         assert_eq!(category_risk(Redist), RiskLevel::None);
+        assert_eq!(category_risk(Intro), RiskLevel::None);
         assert_eq!(category_risk(Bonus), RiskLevel::Low);
         assert_eq!(category_risk(Docs), RiskLevel::Low);
         assert_eq!(category_risk(Loc), RiskLevel::Low);
@@ -3649,7 +3667,7 @@ mod tests {
         assert_eq!(
             branch_values(&tree),
             vec!["redist", "bonus", "loc"],
-            "CATEGORY_ORDER is redist, docs, bonus, loc, other, orphan",
+            "CATEGORY_ORDER is redist, intro, docs, bonus, loc, other, orphan",
         );
     }
 

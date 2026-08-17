@@ -1328,6 +1328,11 @@ pub fn hover_logical_size_suffix(lang: Lang, logical: &str) -> String {
     }
 }
 
+/// Tooltip suffix explaining that intro videos are replaced with micro-stubs on removal.
+pub fn hover_stub_suffix(lang: Lang) -> String {
+    format!("\n{}", strings(lang).hover_stub_note)
+}
+
 // -- ui::settings --
 
 /// Human-readable display name for a language code shown in the keep-list

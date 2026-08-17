@@ -346,8 +346,10 @@ pub struct Strings {
     /// while the one thing it decided - "this was not ticked for you, look at
     /// it" - is exactly what the mark now says.
     pub review_mark_hint: &'static str,
+    pub hover_stub_note: &'static str,
 
     // -- tree_view.rs: row right-click context menu --
+    pub ctx_open: &'static str,
     pub ctx_reveal_in_explorer: &'static str,
     pub ctx_open_with: &'static str,
     pub ctx_copy_path: &'static str,
@@ -407,6 +409,7 @@ pub struct Strings {
 
     // -- model.rs: category display names --
     pub category_redist: &'static str,
+    pub category_intro: &'static str,
     pub category_docs: &'static str,
     pub category_bonus: &'static str,
     pub category_loc: &'static str,
@@ -674,6 +677,8 @@ impl Strings {
             ("col_name", self.col_name),
             ("col_sort_hint", self.col_sort_hint),
             ("review_mark_hint", self.review_mark_hint),
+            ("hover_stub_note", self.hover_stub_note),
+            ("ctx_open", self.ctx_open),
             ("ctx_reveal_in_explorer", self.ctx_reveal_in_explorer),
             ("ctx_open_with", self.ctx_open_with),
             ("ctx_copy_path", self.ctx_copy_path),
@@ -721,6 +726,7 @@ impl Strings {
             ("verb_clear", self.verb_clear),
             ("verb_bundle", self.verb_bundle),
             ("category_redist", self.category_redist),
+            ("category_intro", self.category_intro),
             ("category_docs", self.category_docs),
             ("category_bonus", self.category_bonus),
             ("category_loc", self.category_loc),

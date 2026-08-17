@@ -249,7 +249,10 @@ pub(super) const STRINGS: Strings = Strings {
     review_mark_hint: "Застосунок менш упевнений щодо цього файла, тому не позначив його за \
          вас. Перевірте, що це — підказка на назві показує шлях і причину — перш ніж \
          видаляти.",
+    hover_stub_note:
+        "При видаленні замінюється на мікро-заглушку формату для швидкого запуску гри без збоїв.",
 
+    ctx_open: "Відкрити",
     ctx_reveal_in_explorer: "Відкрити в Провіднику",
     ctx_open_with: "Відкрити за допомогою\u{2026}",
     ctx_copy_path: "Копіювати шлях",
@@ -294,6 +297,7 @@ pub(super) const STRINGS: Strings = Strings {
     verb_bundle: "Збирання діагностики",
 
     category_redist: "Дистрибутиви",
+    category_intro: "Вступні ролики та логотипи",
     category_docs: "Документація і довідкові матеріали",
     category_bonus: "Бонусні матеріали",
     category_loc: "Файли локалізацій",

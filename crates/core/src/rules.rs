@@ -53,6 +53,7 @@ pub enum Category {
     DocsFile,
     Bonus,
     DevLeftovers,
+    Intro,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -105,6 +106,7 @@ impl Category {
             Category::DocsFile => "docs_file",
             Category::Bonus => "bonus",
             Category::DevLeftovers => "dev_leftovers",
+            Category::Intro => "intro",
         }
     }
 
@@ -113,7 +115,7 @@ impl Category {
     fn matches_folder_segments(self) -> bool {
         matches!(
             self,
-            Category::RedistFolder | Category::DocsFolder | Category::Bonus
+            Category::RedistFolder | Category::DocsFolder | Category::Bonus | Category::Intro
         )
     }
 
@@ -129,18 +131,19 @@ impl Category {
     /// Precedence when several rules match one file: the lowest rank wins
     /// regardless of confidence, and confidence only breaks ties within one
     /// rank. Ordered by how reliably the category is identified: redists are
-    /// exact installer/folder names, dev leftovers are exact file names,
-    /// bonus rules need both a telling folder name and a media-typed file
-    /// (an artbook PDF inside `Extras\` is bonus material, not standalone
-    /// documentation), and docs rules are the most generic (any PDF/RTF
-    /// anywhere). Localization is checked after all rule categories - see
-    /// `combine_finding` in the app's scan worker.
+    /// exact installer/folder names, intros are game startup/logo videos,
+    /// dev leftovers are exact file names, bonus rules need both a telling
+    /// folder name and a media-typed file (an artbook PDF inside `Extras\` is
+    /// bonus material, not standalone documentation), and docs rules are the
+    /// most generic (any PDF/RTF anywhere). Localization is checked after
+    /// all rule categories - see `combine_finding` in the app's scan worker.
     fn priority_rank(self) -> u8 {
         match self {
             Category::RedistFolder | Category::RedistFile => 0,
-            Category::DevLeftovers => 1,
-            Category::Bonus => 2,
-            Category::DocsFolder | Category::DocsFile => 3,
+            Category::Intro => 1,
+            Category::DevLeftovers => 2,
+            Category::Bonus => 3,
+            Category::DocsFolder | Category::DocsFile => 4,
         }
     }
 }
@@ -605,10 +608,17 @@ impl RuleEngine {
             }
 
             let is_match = if rule.category.matches_folder_segments() {
-                folder_segments.iter().enumerate().any(|(i, segment)| {
+                let folder_match = folder_segments.iter().enumerate().any(|(i, segment)| {
                     let depth = i + 1;
                     depth <= rule.max_depth && rule.regex.is_match(segment)
-                })
+                });
+                let file_match = if rule.category == Category::Intro {
+                    let file_depth = folder_segments.len() + 1;
+                    file_depth <= rule.max_depth && rule.regex.is_match(file_name)
+                } else {
+                    false
+                };
+                folder_match || file_match
             } else {
                 let file_depth = folder_segments.len() + 1;
                 file_depth <= rule.max_depth && rule.regex.is_match(file_name)
@@ -852,6 +862,67 @@ mod tests {
             None,
             "a program file is not bonus material even inside an extras folder"
         );
+    }
+
+    #[test]
+    fn classify_identifies_intro_and_logo_files_and_folders() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        // Logos folder with video
+        let logo_finding = engine
+            .classify(r"Content\Logos\publisher.mp4", None)
+            .flagged()
+            .expect("mp4 inside Logos folder should be classified as intro");
+        assert_eq!(logo_finding.category, Category::Intro);
+
+        // Specific boot sequence / splash in generic folders
+        let boot_file = engine
+            .classify(r"Data\Movies\boot_sequence.bik", None)
+            .flagged()
+            .expect("boot_sequence.bik should be classified as intro");
+        assert_eq!(boot_file.category, Category::Intro);
+
+        // Specific middleware logo files
+        let nvidia_file = engine
+            .classify(r"Engine\Binaries\nvidia_logo.bik", None)
+            .flagged()
+            .expect("nvidia_logo.bik should be classified as intro");
+        assert_eq!(nvidia_file.category, Category::Intro);
+        assert_eq!(nvidia_file.confidence, 95);
+
+        let unreal_file = engine
+            .classify(r"Movies\unreal_engine.webm", None)
+            .flagged()
+            .expect("unreal_engine.webm should be classified as intro");
+        assert_eq!(unreal_file.category, Category::Intro);
+        assert_eq!(unreal_file.confidence, 95);
+
+        // Game-specific rule with app_id (Prey 2017)
+        let prey_file = engine
+            .classify(r"Whiplash\GameSDK\Videos\LegalScreens.bk2", Some("480490"))
+            .flagged()
+            .expect("LegalScreens.bk2 for Prey should match game-specific rule");
+        assert_eq!(prey_file.category, Category::Intro);
+        assert_eq!(prey_file.confidence, 95);
+
+        // Crucial safety checks: credits and story cinematics are NOT intro videos
+        let credits_file = engine.classify(r"Movies\credits.bk2", None).flagged();
+        assert!(credits_file.is_none() || credits_file.unwrap().category != Category::Intro);
+
+        let opening_story = engine.classify(r"Movies\opening_cinematic.mp4", None).flagged();
+        assert!(opening_story.is_none() || opening_story.unwrap().category != Category::Intro);
+    }
+
+    #[test]
+    fn intro_category_outranks_bonus_video_rules() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        // An intro logo video inside Extras folder: Intro category has priority rank 1 vs Bonus rank 3
+        let finding = engine
+            .classify(r"Extras\nvidia_logo.bik", None)
+            .flagged()
+            .expect("nvidia_logo inside Extras should be classified as intro rather than bonus");
+        assert_eq!(finding.category, Category::Intro);
     }
 
     #[test]

@@ -1644,6 +1644,13 @@ fn shell_actions(ui: &mut egui::Ui, lang: Lang, target: &ShellTarget) {
         ui.close();
     }
 
+    if matches!(target, ShellTarget::File(_)) && ui.button(s.ctx_open).clicked() {
+        if let Err(err) = row_actions::open_file(path) {
+            crate::logger::error(&format!("Failed to open file: {err}"));
+        }
+        ui.close();
+    }
+
     if matches!(target, ShellTarget::File(_)) && ui.button(s.ctx_open_with).clicked() {
         let (program, args) = row_actions::open_with_args(path);
         if let Err(err) = row_actions::launch(program, &args) {
@@ -1808,6 +1815,9 @@ fn show_file_row(
     let mut hover = i18n::hover_reason(lang, &abs_path, &reason, item.row.confidence);
     if let Some(lang_tag) = &item.row.lang_tag {
         hover.push_str(&i18n::hover_lang_suffix(lang, lang_tag));
+    }
+    if item.row.display_category() == DisplayCategory::Intro {
+        hover.push_str(&i18n::hover_stub_suffix(lang));
     }
     // The row shows the on-disk allocated size as primary (allocated-size accounting); when the
     // logical size differs (cluster slack, NTFS compression), spell it out in
@@ -2938,5 +2948,45 @@ mod tests {
             .set_category_filter(Some(DisplayCategory::Loc));
         test.run();
         test.assert_label(&first);
+    }
+
+    /// `DisplayCategory::Intro` renders under its category header, filters
+    /// correctly with the category selector, and appends the micro-stub
+    /// explanation to its file row hover tooltip.
+    #[test]
+    fn intro_category_renders_tree_node_category_filter_and_hover_stub_text() {
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+        let intro_heading = category_display(lang, DisplayCategory::Intro);
+
+        let mut intro_finding = test.app().findings[0].clone();
+        intro_finding.row.file_id = 42;
+        intro_finding.row.rel_path = "movies/intro_logo.bik".to_string();
+        intro_finding.row.source =
+            model::FindingSource::Rule(gametrimmer_core::rules::Category::Intro);
+        intro_finding.row.rule_desc = "Intro splash video".to_string();
+        intro_finding.row.lang_tag = None;
+        test.app_mut().findings.push(intro_finding);
+        test.app_mut().rebuild_tree();
+        test.app_mut().clear_search();
+        open_every_branch(&mut test);
+
+        test.assert_label(intro_heading);
+        test.assert_label("movies/intro_logo.bik");
+
+        test.hover("movies/intro_logo.bik");
+        test.assert_label_containing(test.strings().hover_stub_note);
+
+        test.app_mut()
+            .set_category_filter(Some(DisplayCategory::Intro));
+        test.run();
+        test.assert_label("movies/intro_logo.bik");
+        test.assert_no_label(SEEDED_FILE_NAME);
+
+        test.app_mut()
+            .set_category_filter(Some(DisplayCategory::Loc));
+        test.run();
+        test.assert_label(SEEDED_FILE_NAME);
+        test.assert_no_label("movies/intro_logo.bik");
     }
 }

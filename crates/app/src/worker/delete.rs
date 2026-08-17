@@ -64,6 +64,21 @@ fn run_delete(
     };
 
     let file_ids: Vec<i64> = items.iter().map(|item| item.file_id).collect();
+    let intro_file_ids: HashSet<i64> = {
+        let mut set = HashSet::new();
+        if let Ok(mut stmt) = conn.prepare("SELECT file_id FROM findings WHERE category = 'intro'") {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i64>(0)) {
+                let batch_set: HashSet<i64> = file_ids.iter().copied().collect();
+                for id in rows.flatten() {
+                    if batch_set.contains(&id) {
+                        set.insert(id);
+                    }
+                }
+            }
+        }
+        set
+    };
+
     let plans = match prepare_delete_plans(&conn, &file_ids, remover.action()) {
         Ok(plans) if plans.len() == items.len() => plans,
         Ok(_) => {
@@ -99,6 +114,17 @@ fn run_delete(
             });
         },
         |index, outcome| {
+            if outcome.status == FsOutcome::Removed {
+                let file_id = items[index].file_id;
+                if intro_file_ids.contains(&file_id) {
+                    if let Err(err) = gametrimmer_core::stub::write_stub(&outcome.path) {
+                        crate::logger::error(&format!(
+                            "Failed to write micro-stub for intro file {}: {err}",
+                            outcome.path.display()
+                        ));
+                    }
+                }
+            }
             // Stream success back to the UI immediately so the findings tree
             // can drop the file mid-batch instead of waiting for the whole
             // delete to finish - failures are only reported once at the end
@@ -518,5 +544,119 @@ mod tests {
             space_tally(DeleteMethod::Permanent, &[]),
             SpaceTally::default()
         );
+    }
+
+    fn insert_test_finding(
+        conn: &rusqlite::Connection,
+        scan_id: i64,
+        root: &Path,
+        rel_path: &str,
+        category: &str,
+    ) -> i64 {
+        conn.execute(
+            "INSERT OR IGNORE INTO game_libraries (vendor, path) VALUES ('steam', ?1)",
+            [root.to_string_lossy()],
+        )
+        .unwrap();
+        let lib_id: i64 = conn
+            .query_row(
+                "SELECT id FROM game_libraries WHERE path = ?1",
+                [root.to_string_lossy()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO games (scan_id, library_id, app_id, name, install_dir) \
+             VALUES (?1, ?2, 'app', 'Test Game', ?3)",
+            rusqlite::params![scan_id, lib_id, root.to_string_lossy()],
+        )
+        .unwrap();
+        let game_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO files (scan_id, game_id, rel_path, size) VALUES (?1, ?2, ?3, 1000)",
+            rusqlite::params![scan_id, game_id, rel_path],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO findings (file_id, category, confidence) VALUES (?1, ?2, 90)",
+            rusqlite::params![file_id, category],
+        )
+        .unwrap();
+        let snapshot = gametrimmer_core::safety::capture_safety_snapshot(root, rel_path).unwrap();
+        conn.execute(
+            "INSERT INTO file_safety \
+             (file_id, scan_id, trusted_root, rel_path, root_identity, \
+              target_identity, target_kind, tree_fingerprint) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                file_id,
+                scan_id,
+                snapshot.trusted_root.to_string_lossy(),
+                snapshot.rel_path.to_string_lossy(),
+                snapshot.root_identity.encode(),
+                snapshot.target_identity.encode(),
+                snapshot.target_identity.kind.as_str(),
+                snapshot.tree_fingerprint,
+            ],
+        )
+        .unwrap();
+        gametrimmer_core::db::record_scan_library_evidence(conn, scan_id, root, "test", "complete").unwrap();
+        file_id
+    }
+
+    #[test]
+    fn deleting_intro_finding_creates_micro_stub_while_docs_finding_does_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let intro_path = temp.path().join("intro.bik");
+        let docs_path = temp.path().join("manual.pdf");
+
+        std::fs::write(&intro_path, b"ORIGINAL BIK VIDEO WITH LOTS OF BYTES 1234567890").unwrap();
+        std::fs::write(&docs_path, b"ORIGINAL PDF MANUAL DOCUMENTATION 1234567890").unwrap();
+
+        let db_path = temp.path().join("test.db");
+        let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
+        let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
+        let intro_file_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.bik", "intro");
+        let docs_file_id = insert_test_finding(&conn, scan_id, temp.path(), "manual.pdf", "docs_file");
+        gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
+        drop(conn);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notifier = Notifier::new(tx, egui::Context::default());
+
+        let items = vec![
+            DeleteItem {
+                file_id: intro_file_id,
+                size_on_disk: 1000,
+            },
+            DeleteItem {
+                file_id: docs_file_id,
+                size_on_disk: 1000,
+            },
+        ];
+
+        run_delete(&db_path, items, DeleteMethod::Permanent, &notifier, Lang::En);
+
+        let mut done = false;
+        for msg in rx {
+            if let WorkerMsg::RemoveDone { outcomes, .. } = msg {
+                assert_eq!(outcomes.len(), 2);
+                assert!(outcomes[0].purged);
+                assert!(outcomes[1].purged);
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "run_delete must emit RemoveDone");
+
+        // The intro file should exist and contain the BIK micro-stub
+        assert!(intro_path.exists(), "intro file should be replaced with micro-stub");
+        let intro_content = std::fs::read(&intro_path).unwrap();
+        assert_eq!(&intro_content[0..4], b"BIKi", "intro stub should have BIK magic bytes");
+        assert_ne!(intro_content, b"ORIGINAL BIK VIDEO WITH LOTS OF BYTES 1234567890");
+
+        // The docs file should be completely removed (not stubbed)
+        assert!(!docs_path.exists(), "docs file should be deleted without stub");
     }
 }

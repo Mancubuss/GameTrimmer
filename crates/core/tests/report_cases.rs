@@ -271,7 +271,7 @@ fn games() -> Vec<(&'static str, Vec<Case>)> {
                 c("build\\pc\\cache\\M06_CS_05.bik", Nothing),
                 c("build\\pc\\cache\\M13_CS_14_MO_WBarge.bik", Nothing),
                 c("build\\pc\\cache\\Q01_CS_04.bik", Nothing),
-                c("build\\pc\\cache\\legal_hd_no_esrb.bik", Nothing),
+                c("build\\pc\\cache\\legal_hd_no_esrb.bik", Rule(Category::Intro)),
                 c("build\\pc\\cache\\RF4_MainMenuBG.bik", Nothing),
                 c("build\\dlc04\\pc\\cache\\dlc04_voices_AR.vpp_pc", LocAny),
                 c("build\\dlc04\\pc\\cache\\dlc04_voices_DE.vpp_pc", Loc("de")),

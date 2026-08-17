@@ -275,6 +275,7 @@ fn category_label(category: Category) -> &'static str {
         Category::DocsFile => "docs_file",
         Category::Bonus => "bonus",
         Category::DevLeftovers => "dev_leftovers",
+        Category::Intro => "intro",
     }
 }
 

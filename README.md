@@ -80,12 +80,27 @@ The names are the same ones you see in the findings tree:
 |---|---|---|
 | Orphaned | Leftovers of games the launcher no longer knows about | none — the game is already gone |
 | Redistributables | vcredist, DirectX, PhysX and similar installers | none — trivially restored |
+| Intro and startup videos | Publisher logos, engine splashes, startup intros | none — replaced with micro-stubs for instant launch |
 | Documentation and reference material | Manuals, licenses, help files | low — re-downloadable from the store |
 | Bonus material | Soundtracks, wallpapers, concept art, artbooks | low — same |
 | Localization files | Voice-over and text for languages outside your keep-list | low — same |
 | Other | Developer residue: debug symbols, logs, test data | medium — worth a look before bulk deletion |
 
 The language keep-list is configurable; languages on it are never flagged.
+
+### Format-aware micro-stubs for intro videos
+
+Many game engines load publisher logos, engine splashes, and intro cinematics
+at launch. If these files are simply deleted or zeroed out (0 bytes), game engines
+often crash or hang because they expect valid media container headers.
+
+When you delete files in the **Intro and startup videos** category, GameTrimmer
+replaces them with minimal, format-aware **micro-stubs** (valid 1-frame black
+video or minimal container headers). Formats supported include Bink 1 (`.bik`),
+Bink 2 (`.bk2`), MP4 (`.mp4`, `.m4v`), WebM/MKV (`.webm`, `.mkv`), Ogg Theora
+(`.ogv`, `.ogg`), WMV (`.wmv`), AVI (`.avi`), and CRI Sofdec (`.usm`). Games
+skip the intro sequence instantly and launch straight to the main menu without
+crashing.
 
 ## Profiles and the ⚠ mark
 
@@ -96,7 +111,8 @@ under its own switch.
 
 - **Cautious** — only what the launcher will not bring back on its own:
   leftovers of deleted games, bonus material, documentation.
-- **Balanced** — the same plus localizations outside the keep-list.
+- **Balanced** — the same plus localizations outside the keep-list and intro &
+  startup videos.
 - **Aggressive** — the same plus everything else the engine is fairly
   confident about, including redistributables and installer residue.
 - **Custom** — not by category, but purely by the engine's confidence in a
@@ -121,9 +137,9 @@ placed at any level and propagates to everything below it.
   ticked, and it resets after a new scan.
 - **Category filter** — a separate axis from search; both work together.
 - **Right-click any row** — reveal in Explorer, copy path, and for a file also
-  "Open with". A disk row opens the root of the disk, a game row its install
-  directory. This is how you check a questionable finding with your own eyes
-  without leaving the app.
+  "Open" (with the default associated program) or "Open with...". A disk row
+  opens the root of the disk, a game row its install directory. This is how you
+  check a questionable finding with your own eyes without leaving the app.
 - **From the keyboard:** ↑/↓ — row, PageUp/PageDown and Home/End — page and
   end of list, →/← — expand and collapse a branch, Space or Enter — toggle the
   tick.

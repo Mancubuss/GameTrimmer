@@ -38,6 +38,21 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Imported rule packs are bounded and validated before use (pack size, rule
   count, pattern length, nesting depth), carry their origin, and their findings
   are never auto-selected by a selection profile.
+- Intro and startup video detection (`Category::Intro`, `DisplayCategory::Intro`)
+  with pattern-matching rules for splash screens, logos, engine & middleware
+  intro videos (Bink, Unreal, NVIDIA, AMD, Havok, etc.), and startup video directories.
+- Format-aware micro-stub engine (`gametrimmer_core::stub`) providing minimal, 100%
+  valid 1-frame video containers or valid headers for Bink 1 (`.bik`), Bink 2 (`.bk2`),
+  MP4 (`.mp4`, `.m4v`), WebM/MKV (`.webm`, `.mkv`), Ogg Theora (`.ogv`, `.ogg`),
+  WMV (`.wmv`), AVI (`.avi`), and CRI Sofdec (`.usm`), safely preventing game engine
+  hangs or crashes upon startup when intro videos are trimmed.
+- Deletion worker integration that replaces removed intro video files with
+  format-aware micro-stubs on the fly.
+- Direct "Open" action in the findings tree context menu via Windows `ShellExecuteW`
+  alongside "Open with...", allowing immediate preview of videos, audio and other
+  files with their default system player.
+- Selection profiles updated: `Balanced` and `Aggressive` profiles now pre-select
+  intro and startup videos by default.
 
 ### Changed
 

@@ -374,6 +374,92 @@
         "uk": "Символи налагодження (PDB), залишок збірки розробника"
       },
       "confidence": 75
+    },
+    {
+      "category": "intro",
+      "pattern": "^(amd.*|nvidia.*|intel.*|geforce.*|radeon.*|ryzen.*|bink.*|havok.*|dolby.*|dts.*|unreal.*|crytek.*|cryengine.*|unity.*|autodesk.*|speedtree.*|wwise.*|fmod.*|cri_?.*|scaleform.*|ignite.*|radvideo.*|physx.*|apex.*)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "desc": {
+        "en": "Engine, middleware or hardware vendor logo video (NVIDIA, AMD, Bink, Unreal, Havok, etc.)",
+        "uk": "Відео логотипу рушія, технологій або обладнання (NVIDIA, AMD, Bink, Unreal, Havok тощо)"
+      },
+      "confidence": 95
+    },
+    {
+      "category": "intro",
+      "pattern": "^(2k|ea|bethesda|ubisoft|ubi|activision|blizzard|capcom|konami|sega|bandai|namco|wb|warner|rockstar|sony|playstation|xbox|microsoft|cdpr|cdprojekt)_?logo.*\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "desc": {
+        "en": "Publisher startup logo video (Ubisoft, EA, Bethesda, Sony, 2K, etc.)",
+        "uk": "Відео стартового логотипу видавця (Ubisoft, EA, Bethesda, Sony, 2K тощо)"
+      },
+      "confidence": 95
+    },
+    {
+      "category": "intro",
+      "pattern": "^(gearbox|arkane|bioware|bw|dice|rebellion|remedy|techland|paradox|eidos|square|monolith|3do)_?logo.*\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "desc": {
+        "en": "Development studio startup logo video",
+        "uk": "Відео стартового логотипу студії розробника"
+      },
+      "confidence": 95
+    },
+    {
+      "category": "intro",
+      "pattern": "^(marvel_intro|columbia_intro|fox_ident|ca_ident|loading_ident)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "desc": {
+        "en": "Partner studio startup ident video",
+        "uk": "Відео стартового логотипу партнерів"
+      },
+      "confidence": 95
+    },
+    {
+      "category": "intro",
+      "pattern": "^(.*_logos?|logos?)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "desc": {
+        "en": "Startup logo video file",
+        "uk": "Відеофайл логотипу заставки"
+      },
+      "confidence": 95
+    },
+    {
+      "category": "intro",
+      "pattern": "^(legal.*|legalscreens?.*|disclaimer.*|warning.*|warning_?epilepsy.*|epilepsy.*|health_?safety.*|esrb.*|pegi.*|cero.*|usk.*|rating.*|ratingscreens?.*|autosave_?warning.*)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "desc": {
+        "en": "Legal disclaimer, health & safety, or age rating video screen",
+        "uk": "Юридичні дисклеймери, застереження про здоров'я або вікові рейтинги"
+      },
+      "confidence": 95
+    },
+    {
+      "category": "intro",
+      "pattern": "^(boot_sequence|boot_logo|splash_screen|splash_pc|startup_logo|stinger|stinger_wide|bumpers?)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "desc": {
+        "en": "Startup splash screen, bumper, stinger or boot sequence video",
+        "uk": "Стартова заставка, бампер або ролик послідовності завантаження"
+      },
+      "confidence": 90
+    },
+    {
+      "category": "intro",
+      "pattern": "^(logos?|splashes|legal)$",
+      "desc": {
+        "en": "Dedicated startup logos, splashes or legal videos folder",
+        "uk": "Тека стартових логотипів, заставок або юридичних дисклеймерів"
+      },
+      "confidence": 85,
+      "extensions": [
+        "bik",
+        "bk2",
+        "mp4",
+        "webm",
+        "ogv",
+        "ogg",
+        "wmv",
+        "avi",
+        "usm",
+        "mkv",
+        "m4v",
+        "mov"
+      ]
     }
   ]
 }

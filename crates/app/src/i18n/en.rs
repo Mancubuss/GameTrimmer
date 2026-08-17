@@ -246,7 +246,10 @@ pub(super) const STRINGS: Strings = Strings {
     review_mark_hint: "The app is less sure about this file, so it was not ticked for you. \
          Check what it is - the tooltip on its name gives the path and the reason - before \
          you delete it.",
+    hover_stub_note:
+        "Replaced with a format-aware micro-stub on removal for crash-free instant game launch.",
 
+    ctx_open: "Open",
     ctx_reveal_in_explorer: "Reveal in Explorer",
     ctx_open_with: "Open with\u{2026}",
     ctx_copy_path: "Copy path",
@@ -291,6 +294,7 @@ pub(super) const STRINGS: Strings = Strings {
     verb_bundle: "Collecting diagnostics",
 
     category_redist: "Redistributables",
+    category_intro: "Intro and startup videos",
     category_docs: "Documentation and reference material",
     category_bonus: "Bonus content",
     category_loc: "Localization files",
