@@ -437,6 +437,174 @@ pub fn manifest_states(library_root: &Path) -> Result<Vec<ManifestState>> {
     Ok(states)
 }
 
+/// One depot's `(depot_id, manifest_id)` pair as declared by an installed
+/// app's `InstalledDepots` block - together the exact stem of the cache
+/// filename Steam expects under `depotcache/`: `<depot_id>_<manifest_id>.manifest`.
+///
+/// Confirmed against a real installed game on this machine (Portal 2, appid
+/// 620): its `appmanifest_620.acf` declared depot `621` at manifest
+/// `9122696443005314333`, and `depotcache/621_9122696443005314333.manifest`
+/// existed - in *both* of this machine's two Steam library roots, not only
+/// the one Portal 2 is actually installed in (see
+/// [`installed_depots_for_library`] for why that forces the orphan check to
+/// be global across every library rather than per-library).
+///
+/// Parses the whole `InstalledDepots` block regardless of how many depot
+/// sub-blocks it has; a sub-block with no readable `"manifest"` field is
+/// skipped rather than guessed at - GT-23's orphan check for `depotcache/`
+/// only ever proves a file is *needed*, so an unparseable depot entry just
+/// contributes nothing to that proof (it never marks anything as orphaned).
+pub fn parse_installed_depots(acf: &str) -> Vec<(String, String)> {
+    let root = parse_vdf(acf);
+    let VdfValue::Obj(entries) = &root else {
+        return Vec::new();
+    };
+
+    let Some(app_state) = entries.iter().find_map(|(key, val)| {
+        if key.eq_ignore_ascii_case("AppState") {
+            match val {
+                VdfValue::Obj(fields) => Some(fields),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }) else {
+        return Vec::new();
+    };
+
+    let Some(installed_depots) = app_state.iter().find_map(|(key, val)| {
+        if key.eq_ignore_ascii_case("InstalledDepots") {
+            match val {
+                VdfValue::Obj(fields) => Some(fields),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }) else {
+        return Vec::new();
+    };
+
+    installed_depots
+        .iter()
+        .filter_map(|(depot_id, val)| {
+            let VdfValue::Obj(fields) = val else {
+                return None;
+            };
+            let manifest_id = fields.iter().find_map(|(key, val)| {
+                if key.eq_ignore_ascii_case("manifest") {
+                    match val {
+                        VdfValue::Str(s) if !s.trim().is_empty() => Some(s.clone()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            })?;
+            Some((depot_id.clone(), manifest_id))
+        })
+        .collect()
+}
+
+/// Collects every `(depot_id, manifest_id)` pair declared by the installed
+/// games of one Steam library - the proof-of-need set GT-23's `depotcache/`
+/// orphan check uses.
+///
+/// Real evidence from this machine changed the design here: a depot manifest
+/// currently needed by a game installed on `F:\SteamLibrary` was *also*
+/// cached in the other library's `depotcache/` (`D:\...\Steam\depotcache`,
+/// the primary Steam install root) - almost certainly left behind from before
+/// the game moved drives, but still bearing the exact manifest id the game
+/// currently needs. So a manifest sitting in one library's `depotcache/` is
+/// not proven safe to delete by that library's own installed games alone;
+/// the caller must union this function's result across *every* discovered
+/// Steam library before checking any single one's cache files.
+///
+/// Unreadable or malformed evidence is an error, not a partial result -
+/// mirrors [`manifest_states`]'s stance for the same reason: silently
+/// skipping one manifest here would understate what is needed and risk
+/// flagging a depot cache file some other installed game still depends on.
+pub fn installed_depots_for_library(library_root: &Path) -> Result<Vec<(String, String)>> {
+    let steamapps = library_root.join("steamapps");
+    let entries = std::fs::read_dir(&steamapps)?;
+    let mut pairs = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !is_appmanifest(&path) {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&path)?;
+        if !vdf_well_formed(&contents) {
+            return Err(crate::error::CoreError::Other(format!(
+                "malformed Steam manifest: {}",
+                path.display()
+            )));
+        }
+        pairs.extend(parse_installed_depots(&contents));
+    }
+    Ok(pairs)
+}
+
+/// The set of Steam Workshop published-file ids one `appworkshop_<appid>.acf`
+/// currently lists under `WorkshopItemsInstalled` - the only place Steam
+/// records "this item is a live subscription for this appid", and it is
+/// authoritative independent of whether the appid's own game is still
+/// installed (see `orphans` module docs and `orphan_analysis` for why that
+/// matters: a game can be uninstalled while its Workshop subscriptions and
+/// this state file both survive).
+///
+/// Confirmed against a real `appworkshop_217140.acf` on this machine: it
+/// listed 78 ids under `WorkshopItemsInstalled`, of which only 39 had a
+/// matching folder under `workshop/content/217140/` on disk - every folder
+/// that *was* on disk was also in this list (nothing orphaned on this
+/// machine), and the other 39 are subscriptions Steam has not (or no longer)
+/// materialized locally. That is the direction the check runs in: a folder on
+/// disk is only proven live by appearing in this set; an id in this set with
+/// no folder on disk is not this module's concern (it is not residue - there
+/// is nothing on disk to flag).
+///
+/// Returns `None` when the text cannot be trusted as this app's Workshop
+/// state at all: not a VDF object, no `AppWorkshop` block, or no
+/// `WorkshopItemsInstalled` key. The last case is deliberately not treated as
+/// "confidently zero items" - this machine's real files never exercised that
+/// shape, so nothing here proves an absent key means zero rather than
+/// unwritten/older-format state, and GT-23's fail-closed rule is to leave
+/// content alone rather than guess. An explicit-but-empty
+/// `"WorkshopItemsInstalled" { }` block, by contrast, *is* trusted as zero -
+/// Steam wrote the key, it is just empty.
+pub fn parse_workshop_installed_items(acf: &str) -> Option<HashSet<String>> {
+    let root = parse_vdf(acf);
+    let VdfValue::Obj(entries) = &root else {
+        return None;
+    };
+
+    let app_workshop = entries.iter().find_map(|(key, val)| {
+        if key.eq_ignore_ascii_case("AppWorkshop") {
+            match val {
+                VdfValue::Obj(fields) => Some(fields),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })?;
+
+    let installed = app_workshop.iter().find_map(|(key, val)| {
+        if key.eq_ignore_ascii_case("WorkshopItemsInstalled") {
+            match val {
+                VdfValue::Obj(fields) => Some(fields),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })?;
+
+    Some(installed.iter().map(|(id, _)| id.clone()).collect())
+}
+
 /// A minimal in-memory representation of Valve's KeyValues (VDF) text format:
 /// either a leaf string, or an object holding an ordered list of key/value pairs
 /// (values may themselves be nested objects).
@@ -913,5 +1081,216 @@ mod tests {
 }
 "#;
         assert!(parse_appmanifest(acf, Path::new(r"F:\SteamLibrary")).is_none());
+    }
+
+    // -- GT-23: InstalledDepots (depotcache proof-of-need) --
+
+    #[test]
+    fn parse_installed_depots_reads_every_depot_manifest_pair() {
+        // Shaped after the real appmanifest_620.acf read on this machine.
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"name"		"Portal 2"
+	"installdir"		"Portal 2"
+	"InstalledDepots"
+	{
+		"621"
+		{
+			"manifest"		"9122696443005314333"
+			"size"		"12674356162"
+		}
+		"622"
+		{
+			"manifest"		"916560128540961379"
+		}
+	}
+}
+"#;
+        let mut depots = parse_installed_depots(acf);
+        depots.sort();
+        assert_eq!(
+            depots,
+            vec![
+                ("621".to_string(), "9122696443005314333".to_string()),
+                ("622".to_string(), "916560128540961379".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_installed_depots_is_empty_without_the_block() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+}
+"#;
+        assert!(parse_installed_depots(acf).is_empty());
+        assert!(parse_installed_depots("not a vdf file at all").is_empty());
+    }
+
+    #[test]
+    fn parse_installed_depots_skips_a_depot_with_no_manifest_field() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"InstalledDepots"
+	{
+		"621"
+		{
+			"size"		"12674356162"
+		}
+	}
+}
+"#;
+        assert!(
+            parse_installed_depots(acf).is_empty(),
+            "a depot entry the parser cannot read proves nothing needed - it \
+             must not silently vanish from the needed set as if it were read \
+             and found empty"
+        );
+    }
+
+    #[test]
+    fn installed_depots_for_library_unions_every_manifest_in_the_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let steamapps = dir.path().join("steamapps");
+        std::fs::create_dir(&steamapps).unwrap();
+        std::fs::write(
+            steamapps.join("appmanifest_620.acf"),
+            r#"
+"AppState"
+{
+	"appid"		"620"
+	"InstalledDepots"
+	{
+		"621"
+		{
+			"manifest"		"999"
+		}
+	}
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            steamapps.join("appmanifest_730.acf"),
+            r#"
+"AppState"
+{
+	"appid"		"730"
+	"InstalledDepots"
+	{
+		"731"
+		{
+			"manifest"		"111"
+		}
+	}
+}
+"#,
+        )
+        .unwrap();
+
+        let mut pairs = installed_depots_for_library(dir.path()).unwrap();
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                ("621".to_string(), "999".to_string()),
+                ("731".to_string(), "111".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn installed_depots_for_library_errs_on_a_malformed_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let steamapps = dir.path().join("steamapps");
+        std::fs::create_dir(&steamapps).unwrap();
+        std::fs::write(steamapps.join("appmanifest_620.acf"), "\"AppState\" {").unwrap();
+
+        assert!(
+            installed_depots_for_library(dir.path()).is_err(),
+            "an unreadable manifest must fail the whole read, never be \
+             skipped as if it needed nothing"
+        );
+    }
+
+    #[test]
+    fn installed_depots_for_library_errs_on_a_missing_steamapps_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(installed_depots_for_library(dir.path()).is_err());
+    }
+
+    // -- GT-23: WorkshopItemsInstalled (workshop proof-of-liveness) --
+
+    #[test]
+    fn parse_workshop_installed_items_reads_the_id_set() {
+        // Shaped after the real appworkshop_217140.acf read on this machine.
+        let acf = r#"
+"AppWorkshop"
+{
+	"appid"		"217140"
+	"SizeOnDisk"		"1710646703"
+	"WorkshopItemsInstalled"
+	{
+		"314615005"
+		{
+			"size"		"53915155"
+			"manifest"		"-1"
+		}
+		"321449983"
+		{
+			"size"		"18948098"
+			"manifest"		"-1"
+		}
+	}
+}
+"#;
+        let items = parse_workshop_installed_items(acf).expect("expected a parsed item set");
+        let expected: HashSet<String> = ["314615005".to_string(), "321449983".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(items, expected);
+    }
+
+    #[test]
+    fn parse_workshop_installed_items_trusts_an_explicit_empty_block_as_zero() {
+        let acf = r#"
+"AppWorkshop"
+{
+	"appid"		"217140"
+	"WorkshopItemsInstalled"
+	{
+	}
+}
+"#;
+        assert_eq!(
+            parse_workshop_installed_items(acf),
+            Some(HashSet::new()),
+            "Steam wrote the key - it is just empty - so zero items is trusted"
+        );
+    }
+
+    #[test]
+    fn parse_workshop_installed_items_is_none_without_the_installed_key() {
+        // No real file on this machine ever showed this shape; treat it as
+        // unproven rather than "confidently zero" (fail-closed).
+        let acf = r#"
+"AppWorkshop"
+{
+	"appid"		"217140"
+}
+"#;
+        assert!(parse_workshop_installed_items(acf).is_none());
+    }
+
+    #[test]
+    fn parse_workshop_installed_items_is_none_on_garbage_input() {
+        assert!(parse_workshop_installed_items("not a vdf file at all").is_none());
+        assert!(parse_workshop_installed_items("").is_none());
     }
 }

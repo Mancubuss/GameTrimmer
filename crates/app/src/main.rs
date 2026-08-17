@@ -8,7 +8,9 @@ mod export;
 mod i18n;
 mod logger;
 mod model;
+mod path_normalize;
 mod search;
+mod single_instance;
 mod ui;
 mod worker;
 
@@ -50,6 +52,18 @@ fn main() -> eframe::Result {
     logger::install_panic_hook();
     open_log_from_saved_preference();
 
+    // GT-75: two copies of this portable exe running from the same folder
+    // both target the same `gametrimmer.db` (see `worker::exe_dir` /
+    // `worker::db_path`), with nothing else telling the two processes
+    // apart - a long scan in one blocks writes in the other, and both can
+    // offer to delete the same file from two different snapshots of state.
+    // This has to run before `cli::run_from_env` too: the headless mode
+    // (behind the `headless` feature, off by default) touches the same
+    // database, so it needs the same guard, not just the GUI path. Bound to
+    // `_guard` rather than discarded so it lives for the rest of `main` -
+    // dropping it here would release the lock while the process still runs.
+    let _single_instance_guard = acquire_single_instance_guard();
+
     // Headless (CLI) mode, switched off in the v1 release build (see
     // `cli::args::HEADLESS_ENABLED`). With no argument this returns `LaunchGui`
     // in every build and the graphical app starts exactly as before; with an
@@ -62,6 +76,57 @@ fn main() -> eframe::Result {
     }
 
     run_gui()
+}
+
+/// Acquires the single-instance guard for this exe's directory (GT-75), or
+/// exits the process before it ever reaches `cli::run_from_env` or a window
+/// if another copy already holds it.
+///
+/// Returns `None` - rather than failing startup - when the guard could not
+/// be verified at all: `worker::exe_dir` failing to resolve, or
+/// `single_instance::acquire` reporting `CouldNotVerify`. Neither of those
+/// means another copy is actually running, so neither should block a
+/// legitimate solo launch over what is, at that point, an unrelated Win32 or
+/// filesystem hiccup - see `single_instance::AcquireError`.
+fn acquire_single_instance_guard() -> Option<single_instance::Guard> {
+    let dir = match worker::exe_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            logger::error(&format!(
+                "single-instance: could not resolve the executable's directory, \
+                 continuing unprotected: {err}"
+            ));
+            return None;
+        }
+    };
+
+    match single_instance::acquire(&dir) {
+        Ok(guard) => Some(guard),
+        Err(single_instance::AcquireError::AlreadyRunning) => {
+            single_instance::notify_already_running(startup_lang());
+            std::process::exit(0);
+        }
+        Err(single_instance::AcquireError::CouldNotVerify(err)) => {
+            logger::error(&format!(
+                "single-instance: could not verify no other copy is running, \
+                 continuing unprotected: {err}"
+            ));
+            None
+        }
+    }
+}
+
+/// The UI language to use for anything shown before settings are fully
+/// loaded, such as the single-instance dialog (GT-75) - the same
+/// computation `GameTrimmerApp::new_with` uses for its own pre-database
+/// errors: the system's preferred language, filtered through the *default*
+/// app-language preference ("follow Windows"), since the real saved
+/// preference lives in an ini this point in startup has not read yet.
+fn startup_lang() -> gametrimmer_core::settings::Lang {
+    let system_lang = i18n::detect_system_language();
+    gametrimmer_core::settings::Settings::default()
+        .app_language
+        .resolve(system_lang)
 }
 
 /// Opens `gametrimmer.log` before anything else runs, if the saved

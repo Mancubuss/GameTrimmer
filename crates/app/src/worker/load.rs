@@ -36,8 +36,11 @@ pub fn spawn_load(
 }
 
 fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
-    let mut conn = match db::open(db_path) {
-        Ok(conn) => conn,
+    // `open_reconciling` rather than `open`: every open now settles delete
+    // intents left pending by a crash, but this is the one path with a user
+    // watching, so it is also the one that says what was settled.
+    let (mut conn, reconciliation) = match db::open_reconciling(db_path) {
+        Ok(opened) => opened,
         Err(err) => {
             notifier.report_error(i18n::Reported::new(lang, |l| {
                 i18n::db_open_error_short(l, &err)
@@ -52,16 +55,16 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
         }));
     }
 
-    match gametrimmer_core::ops::reconcile_pending_operations(&mut conn) {
-        Ok(reconciled) if !reconciled.is_empty() => {
-            notifier.report_warning(i18n::Reported::new(lang, |l| {
-                i18n::pending_delete_reconciled(l, reconciled.len())
-            }));
-        }
-        Ok(_) => {}
-        Err(err) => notifier.report_warning(i18n::Reported::new(lang, |l| {
+    if !reconciliation.reconciled.is_empty() {
+        let count = reconciliation.reconciled.len();
+        notifier.report_warning(i18n::Reported::new(lang, move |l| {
+            i18n::pending_delete_reconciled(l, count)
+        }));
+    }
+    if let Some(err) = reconciliation.error {
+        notifier.report_warning(i18n::Reported::new(lang, move |l| {
             i18n::db_update_after_delete_failed(l, &err)
-        })),
+        }));
     }
 
     match load_scan_diagnostics(&conn) {
@@ -170,14 +173,11 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                   WHEN fs.block_reason IS NOT NULL THEN fs.block_reason \
                   WHEN fs.root_identity IS NULL OR fs.target_identity IS NULL \
                     THEN 'missing filesystem identity' \
-                  WHEN sle.status IS NULL THEN 'missing library discovery evidence' \
-                  WHEN sle.status = 'degraded' THEN 'library discovery was degraded' \
-                  WHEN f.game_id IS NULL AND sle.status <> 'complete' \
-                    THEN 'orphan inventory is not authoritative' \
                   ELSE NULL \
                 END, COALESCE(fi.provenance, 'builtin'), \
                 COALESCE(gl.vendor, glo.vendor), \
-                COALESCE(gl.path, fs.evidence_library_path) \
+                COALESCE(gl.path, fs.evidence_library_path), \
+                sle.status, f.game_id IS NULL, g.app_id \
          FROM findings fi \
          JOIN files f ON f.id = fi.file_id \
          LEFT JOIN games g ON g.id = f.game_id \
@@ -208,7 +208,23 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         let confidence = row.get::<_, i64>(8)? as u8;
         let lang_tag: Option<String> = row.get(9)?;
         let size_on_disk = row.get::<_, i64>(11)? as u64;
-        let deletion_block_reason: Option<String> = row.get(12)?;
+        // The filesystem-evidence half of the verdict is still decided in SQL
+        // (it reads columns and nothing else). The launcher-discovery half is
+        // decided here instead, by the same function the scan's persistence
+        // path and the delete preflight use, so the three can no longer drift
+        // apart - which they had, the SQL `CASE` being the most permissive of
+        // the three. SQL wins when both have something to say: a legacy
+        // snapshot or missing identity is the more fundamental problem.
+        let evidence_status: Option<String> = row.get(16)?;
+        let is_orphan_row: bool = row.get(17)?;
+        let deletion_block_reason: Option<String> =
+            row.get::<_, Option<String>>(12)?.or_else(|| {
+                gametrimmer_core::safety::discovery_block_reason(
+                    !is_orphan_row,
+                    evidence_status.as_deref(),
+                )
+                .map(str::to_string)
+            });
         let imported_untrusted = row.get::<_, String>(13)? == "imported_untrusted";
         // A game row is attributed through its `games.library_id`; an orphan
         // row has no game, so its root comes from the library path the scan
@@ -232,6 +248,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                 file_id,
                 game_id: ORPHAN_GAME_ID,
                 game_name: String::new(),
+                app_id: None,
                 install_dir,
                 rel_path: name,
                 size,
@@ -261,6 +278,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
             file_id,
             game_id,
             game_name: row.get(1)?,
+            app_id: row.get(18)?,
             install_dir: PathBuf::from(install_dir),
             rel_path,
             size,

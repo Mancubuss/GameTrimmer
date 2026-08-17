@@ -51,11 +51,25 @@ pub fn detect_pack_kind(json: &str) -> Result<PackKind> {
     ))
 }
 
+/// Whether two rules are the same rule for merge purposes.
+///
+/// Identity is `(polarity, category, scope, pattern)`. The first three joined
+/// the key when exceptions did: a keep rule and a deleting rule over the same
+/// pattern are opposites, not versions of each other, and the same pattern
+/// scoped to two different games is two different rules - collapsing either
+/// pair would silently drop one of them on the next import.
+fn same_rule(a: &Rule, b: &Rule) -> bool {
+    a.polarity == b.polarity
+        && a.category == b.category
+        && a.app_id == b.app_id
+        && a.pattern == b.pattern
+}
+
 /// Merges an incoming rules.json on top of the current one. Rules are keyed
-/// by `(category, pattern)`: a match replaces the existing rule (so a pack
-/// can retune confidence or depth), anything else is appended. The incoming
-/// file is fully validated first - including regex compilation - so a broken
-/// pack is rejected before it can reach disk.
+/// by [`same_rule`]: a match replaces the existing rule (so a pack can retune
+/// confidence or depth), anything else is appended. The incoming file is fully
+/// validated first - including regex compilation - so a broken pack is
+/// rejected before it can reach disk.
 pub fn merge_category_rules(base_json: &str, incoming_json: &str) -> Result<(String, MergeStats)> {
     RuleEngine::from_json(incoming_json)?;
     let base = parse_rule_list(base_json)?;
@@ -68,7 +82,7 @@ pub fn merge_category_rules(base_json: &str, incoming_json: &str) -> Result<(Str
         rule.provenance = RuleProvenance::ImportedUntrusted;
         match merged
             .iter_mut()
-            .find(|existing| existing.category == rule.category && existing.pattern == rule.pattern)
+            .find(|existing| same_rule(existing, &rule))
         {
             Some(existing) => {
                 *existing = rule;
@@ -84,6 +98,29 @@ pub fn merge_category_rules(base_json: &str, incoming_json: &str) -> Result<(Str
     let json = serialize_rule_list(&merged)?;
     RuleEngine::from_json(&json)?;
     Ok((json, MergeStats { added, updated }))
+}
+
+/// Adds one rule to a pack, unless the pack already holds it.
+///
+/// This is how the personal exception pack grows: the app reads the file,
+/// calls this, and writes the result back. `false` means the rule was already
+/// there - the caller says "already kept" rather than writing an identical
+/// second copy, which is what right-clicking the same file twice would
+/// otherwise produce.
+///
+/// The result is validated by compiling it, exactly as an import is: a
+/// personal pack that no longer parses would take the *scan's* whole rule set
+/// down with it (see `worker::scan::run_scan`), so it must never be written
+/// broken in the first place.
+pub fn add_rule(base_json: &str, rule: Rule) -> Result<(String, bool)> {
+    let mut rules = parse_rule_list(base_json)?;
+    if rules.iter().any(|existing| same_rule(existing, &rule)) {
+        return Ok((serialize_rule_list(&rules)?, false));
+    }
+    rules.push(rule);
+    let json = serialize_rule_list(&rules)?;
+    RuleEngine::from_json(&json)?;
+    Ok((json, true))
 }
 
 /// Merges an incoming l10n_rules.json on top of the current one (see
@@ -164,7 +201,7 @@ mod tests {
         assert_eq!(merged.len(), 3);
         // The replaced rule keeps its position and takes the new tuning.
         assert_eq!(merged[1].desc.get("en"), "Bonus retuned");
-        assert_eq!(merged[1].confidence, 85);
+        assert_eq!(merged[1].confidence, Some(85));
         assert_eq!(merged[1].provenance, RuleProvenance::ImportedUntrusted);
         assert_eq!(merged[2].desc.get("en"), "Manuals");
         assert_eq!(merged[2].provenance, RuleProvenance::ImportedUntrusted);
@@ -206,6 +243,40 @@ mod tests {
         // Absent optional fields stay absent in the rewritten JSON rather
         // than serializing as nulls.
         assert!(!json.contains("null"));
+    }
+
+    /// Right-clicking the same file twice must not grow the pack twice, and
+    /// the caller has to be able to tell the user which of the two happened.
+    #[test]
+    fn adding_the_same_exception_twice_changes_nothing_the_second_time() {
+        let rule = keep_rule("620", r"Support\ru\voices.pak", "Kept by me");
+
+        let (once, added) = add_rule(&pack("[]"), rule.clone()).expect("the first add succeeds");
+        assert!(added);
+        assert_eq!(parse_rule_list(&once).unwrap().len(), 1);
+
+        let (twice, added) = add_rule(&once, rule).expect("the second add succeeds");
+        assert!(!added, "an identical exception must not be appended again");
+        assert_eq!(parse_rule_list(&twice).unwrap().len(), 1);
+    }
+
+    /// The scope is part of a rule's identity: the same path kept in two games
+    /// is two exceptions, and merging them into one would silently unprotect
+    /// one of the games.
+    #[test]
+    fn the_same_path_kept_in_two_games_stays_two_rules() {
+        let path = r"Support\ru\voices.pak";
+        let (first, _) = add_rule(&pack("[]"), keep_rule("620", path, "Kept in one")).unwrap();
+        let (both, added) = add_rule(&first, keep_rule("730", path, "Kept in the other")).unwrap();
+
+        assert!(added);
+        assert_eq!(parse_rule_list(&both).unwrap().len(), 2);
+    }
+
+    /// Spelled out rather than imported under a short name so the test reads
+    /// as what it is: the constructor the UI's "never touch this" writes with.
+    fn keep_rule(app_id: &str, rel_path: &str, desc: &str) -> Rule {
+        Rule::keep_file(app_id, rel_path, desc.into())
     }
 
     #[test]

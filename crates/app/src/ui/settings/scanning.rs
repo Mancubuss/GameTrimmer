@@ -86,6 +86,8 @@ fn show_libraries(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     if app.folder_picker_active {
         ui.label(s.picking_folder);
     }
+
+    show_standalone_candidates(app, ui);
     ui.add_space(4.0);
 
     if app.libraries.is_empty() {
@@ -140,6 +142,80 @@ fn show_libraries(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     }
     if let Some(library_id) = to_remove {
         app.remove_manual_library(library_id);
+    }
+}
+
+/// Games installed by their own installer, past every launcher - offered as
+/// folders to add by hand, never added automatically.
+///
+/// Behind a button rather than run on open: this sweeps the whole Windows
+/// uninstall registry, which is far too much work to repeat every frame, and
+/// the answer only changes when the user installs something.
+///
+/// It lives here, under the library list, because that is what the answer *is*
+/// - a suggestion of libraries to register. It is not a new panel: the
+/// interface is already dense, and a separate screen for "here are some
+/// folders" would be out of proportion to what it does.
+///
+/// The wording never claims these are games. This cannot tell a game from a
+/// driver, and pretending otherwise in a tool that deletes files would be the
+/// expensive kind of wrong - so it says where they are and lets the user
+/// decide. See `gametrimmer_core::standalone`.
+fn show_standalone_candidates(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
+    let lang = app.lang();
+    let s = i18n::strings(lang);
+
+    if ui
+        .add_enabled(!app.busy, egui::Button::new(s.btn_find_standalone))
+        .on_hover_text(s.find_standalone_hint)
+        .clicked()
+    {
+        let known: Vec<std::path::PathBuf> = app
+            .libraries
+            .iter()
+            .map(|library| std::path::PathBuf::from(&library.path))
+            .collect();
+        app.standalone_candidates = Some(gametrimmer_core::standalone::find_candidates(&known));
+    }
+
+    let Some(candidates) = app.standalone_candidates.clone() else {
+        return;
+    };
+
+    ui.add_space(4.0);
+    if candidates.is_empty() {
+        // Said out loud rather than left blank: silence here reads as "the
+        // search is broken", not as "there is nothing outside your launchers".
+        ui.label(s.no_standalone_candidates);
+        return;
+    }
+
+    ui.label(s.standalone_candidates_header);
+    let mut to_add = None;
+    for candidate in &candidates {
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!app.busy, egui::Button::new(s.btn_add_folder))
+                .clicked()
+            {
+                to_add = Some(candidate.install_dir.clone());
+            }
+            let label = match &candidate.publisher {
+                Some(publisher) if !publisher.trim().is_empty() => {
+                    format!("{} - {}", candidate.name, publisher)
+                }
+                _ => candidate.name.clone(),
+            };
+            ui.label(label)
+                .on_hover_text(candidate.install_dir.display().to_string());
+        });
+    }
+    if let Some(path) = to_add {
+        app.add_library_path(path);
+        // The list is now stale in exactly one row; re-running the sweep would
+        // cost another full registry pass, so drop the offer instead - the
+        // added folder is in the library list above, which is the answer.
+        app.standalone_candidates = None;
     }
 }
 

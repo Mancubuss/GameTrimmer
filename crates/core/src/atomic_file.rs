@@ -41,7 +41,15 @@ fn replace(from: &Path, to: &Path) -> Result<()> {
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     }
-    .map_err(|_| Error::last_os_error())
+    // `windows::core::Error` already captured this call's own `GetLastError`
+    // as an `HRESULT` (`Error::from_win32` folds a Win32 code into one via
+    // `(code & 0xFFFF) | 0x80070000` - the standard `HRESULT_CODE` encoding,
+    // reversed below). `Error::last_os_error()` instead re-reads the
+    // thread-local last-error slot *now*, after this call already returned -
+    // any other fallible call executed by anything on this thread in between
+    // (including inside `windows`/`std` internals) can have overwritten it,
+    // so the previous code risked reporting the wrong failure entirely.
+    .map_err(|error| Error::from_raw_os_error((error.code().0 as u32 & 0xFFFF) as i32))
 }
 
 #[cfg(not(windows))]
@@ -106,22 +114,62 @@ pub fn atomic_write_batch_with_backup(
     })();
 
     if let Err(commit_error) = commit_result {
+        // Every step here used to be `let _ = ...`: a failed rollback was
+        // indistinguishable from a successful one, so a caller who saw only
+        // `commit_error` would believe the target still held its original
+        // content when a copy, sync, or replace mid-rollback had actually
+        // left it holding the NEW content instead. Collecting failures
+        // instead of discarding them turns that into a reported condition.
+        let mut rollback_failures: Vec<String> = Vec::new();
         for (target, _, backup, existed) in staged.iter().take(replaced).rev() {
-            if *existed {
+            let restore_result = if *existed {
                 let rollback = sibling(target, ".rollback-tmp");
-                if fs::copy(backup, &rollback).is_ok() {
-                    let _ = OpenOptions::new()
-                        .write(true)
-                        .open(&rollback)
-                        .and_then(|file| file.sync_all());
-                    let _ = replace(&rollback, target);
-                }
+                fs::copy(backup, &rollback)
+                    .and_then(|_| OpenOptions::new().write(true).open(&rollback)?.sync_all())
+                    .and_then(|_| replace(&rollback, target))
             } else {
-                let _ = fs::remove_file(target);
+                // Nothing existed at this target before the batch started,
+                // so removing what the batch wrote *is* the rollback here.
+                // Already gone counts as success - there is nothing left to
+                // roll back.
+                match fs::remove_file(target) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(error),
+                }
+            };
+            if let Err(error) = restore_result {
+                rollback_failures.push(format!("{}: {error}", target.display()));
             }
         }
         cleanup_temps(&staged);
-        return Err(commit_error);
+        if rollback_failures.is_empty() {
+            return Err(commit_error);
+        }
+        return Err(Error::new(
+            commit_error.kind(),
+            format!(
+                "{commit_error} (additionally, rollback failed and left the new content in \
+                 place for: {})",
+                rollback_failures.join(", ")
+            ),
+        ));
+    }
+    // Every target committed and reopened clean, so none of the backups
+    // just made will ever be needed for recovery. Leaving them behind is
+    // exactly what turns a portable build's rules.json/settings directory
+    // into an ever-growing pile of `.bak` copies next to the exe. This is
+    // best-effort and silent on failure: the commit already succeeded and
+    // must be reported as success either way, and this module has no
+    // logging channel of its own to surface a removal failure through (the
+    // app crate's logger sits above it) - a leftover `.bak` from a failed
+    // cleanup is a minor, self-correcting nuisance (the next successful
+    // write's own cleanup removes it), not a correctness problem worth
+    // failing an otherwise-successful write over.
+    for (_, _, backup, existed) in &staged {
+        if *existed {
+            let _ = fs::remove_file(backup);
+        }
     }
     Ok(())
 }
@@ -160,6 +208,14 @@ pub fn replace_staged_with_backup(
             let _ = fs::remove_file(target);
         }
         return Err(error);
+    }
+    // See the matching comment in `atomic_write_batch_with_backup`: the
+    // commit already succeeded, so a stale backup left behind by a failed
+    // removal here is a self-correcting nuisance, not a reason to fail an
+    // otherwise-successful write, and this module has no logging channel to
+    // report the removal failure through anyway.
+    if existed {
+        let _ = fs::remove_file(backup);
     }
     Ok(())
 }
@@ -213,5 +269,88 @@ mod tests {
         assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
         assert_eq!(fs::read(&target).unwrap(), b"old");
         assert!(!sibling(&target, ".replace-tmp").exists());
+    }
+
+    /// The two existing tests above only ever exercise the failure paths,
+    /// which is exactly where a `.bak` earns its keep. A successful write
+    /// has nothing left to recover from, so the backup it made along the way
+    /// must not linger - see the comment above the cleanup loop in
+    /// `atomic_write_batch_with_backup` for why a portable build cares.
+    #[test]
+    fn a_successful_batch_write_removes_the_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("rules.json");
+        fs::write(&target, b"old").unwrap();
+
+        atomic_write_with_backup(&target, b"new", |_path, _bytes| Ok(())).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(
+            !sibling(&target, ".bak").exists(),
+            "a successful commit must not leave a stale .bak behind"
+        );
+    }
+
+    /// Same defect, same fix, in `replace_staged_with_backup` - its callers
+    /// (SQLite plus sidecars) pick their own backup path instead of using
+    /// `sibling`, so this exercises that function directly.
+    #[test]
+    fn a_successful_staged_replace_removes_the_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("gametrimmer.db");
+        let staged = dir.path().join("gametrimmer.db.staged");
+        let backup = dir.path().join("gametrimmer.db.bak");
+        fs::write(&target, b"old").unwrap();
+        fs::write(&staged, b"new").unwrap();
+
+        replace_staged_with_backup(&staged, &target, &backup, |_path| Ok(())).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(
+            !backup.exists(),
+            "a successful commit must not leave a stale backup behind"
+        );
+    }
+
+    /// Rollback used to run entirely under `let _ = ...`: a failed copy,
+    /// sync, or replace mid-rollback vanished silently and the caller would
+    /// see only the original commit error, as if the target still held its
+    /// original content - when it actually now holds the NEW content. This
+    /// deletes the backup from inside the validation closure, right before
+    /// the injected failure that triggers rollback, so the rollback's own
+    /// `fs::copy` has nothing to read and fails in turn.
+    #[test]
+    fn a_rollback_failure_is_reported_not_swallowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("rules.json");
+        fs::write(&target, b"old").unwrap();
+        let calls = Cell::new(0usize);
+
+        let result = atomic_write_with_backup(&target, b"new", |path, _bytes| {
+            let call = calls.get() + 1;
+            calls.set(call);
+            if call == 2 {
+                // The reopen-validate call: fail it, but first remove the
+                // backup rollback is about to need.
+                fs::remove_file(sibling(path, ".bak")).unwrap();
+                Err(Error::new(ErrorKind::InvalidData, "fault injection"))
+            } else {
+                Ok(())
+            }
+        });
+
+        let error = result.unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("fault injection"),
+            "the original commit error must still be visible: {message}"
+        );
+        assert!(
+            message.to_lowercase().contains("rollback"),
+            "the rollback failure must be reported too: {message}"
+        );
+        // The exact situation the caller must be told about: rollback did
+        // not restore the original, so the target holds the NEW content.
+        assert_eq!(fs::read(&target).unwrap(), b"new");
     }
 }

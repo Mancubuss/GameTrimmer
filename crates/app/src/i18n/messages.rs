@@ -85,6 +85,49 @@ pub fn walkdir_breakdown(lang: Lang, walked: usize, total: usize, parts: &str) -
     }
 }
 
+/// Body of the native message box `single_instance::notify_already_running`
+/// shows when a second launch from the same portable directory finds the
+/// first one still running (GT-75). Two variants rather than one generic
+/// line: `raised` tells the reader whether this dialog already brought the
+/// running window forward for them (so "switch to it" would be redundant
+/// and slightly confusing - it is already in front) or could not find it
+/// (so they need to be told to look for it themselves, e.g. on another
+/// virtual desktop or minimized to the taskbar).
+pub fn already_running_body(lang: Lang, raised: bool) -> String {
+    match (lang, raised) {
+        (Lang::En, true) => "GameTrimmer is already running from this folder. \
+            Its window has been brought to the front."
+            .to_string(),
+        (Lang::En, false) => "GameTrimmer is already running from this folder. \
+            Switch to its window - it may be minimized or on another desktop."
+            .to_string(),
+        (Lang::Uk, true) => "GameTrimmer уже запущено з цієї теки. \
+            Його вікно виведено на передній план."
+            .to_string(),
+        (Lang::Uk, false) => "GameTrimmer уже запущено з цієї теки. \
+            Перейдіть до його вікна - можливо, воно згорнуте або на іншому робочому столі."
+            .to_string(),
+    }
+}
+
+/// The `desc` written into a personal exception rule.
+///
+/// Written for someone reading the pack file by hand months later, because
+/// that is currently the only way to undo one: it has to say which game and
+/// which file, not just "kept". Both languages are stored at once (see the
+/// call site in `ui::tree_view`) - the pack outlives the interface language it
+/// was created under.
+pub fn exception_desc(
+    lang: Lang,
+    game_name: impl std::fmt::Display,
+    rel_path: impl std::fmt::Display,
+) -> String {
+    match lang {
+        Lang::En => format!("Kept by hand: {rel_path} in {game_name}"),
+        Lang::Uk => format!("Збережено вручну: {rel_path} у грі {game_name}"),
+    }
+}
+
 /// The risk word on its own, for a table that already has a "Risk" column
 /// heading. [`plan_risk_label`] prefixes it, which reads as a stutter once
 /// the column says so too.
@@ -271,6 +314,55 @@ pub fn builtin_rules_corrupted(lang: Lang, err: impl std::fmt::Display) -> Strin
     }
 }
 
+/// A personal exception pack that could not be read or compiled.
+///
+/// Says what was lost, not just what failed: the visible symptom is files the
+/// user kept being proposed again, and without this line that is
+/// indistinguishable from the app having ignored them all along.
+pub fn personal_rules_load_failed(lang: Lang, err: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => format!(
+            "Failed to load personal_rules.json: {err} - scanning without your personal \
+             exceptions, so files you kept may be proposed again."
+        ),
+        Lang::Uk => format!(
+            "Помилка завантаження personal_rules.json: {err} - сканую без ваших особистих \
+             винятків, тож збережені файли можуть запропонуватися знову."
+        ),
+    }
+}
+
+/// The clause appended to the scan summary when exceptions actually vetoed
+/// something - the answer to "why is that finding gone?".
+pub fn kept_by_exceptions(lang: Lang, kept: usize) -> String {
+    match lang {
+        Lang::En => format!("Your exceptions kept {kept} file(s) out of the results."),
+        Lang::Uk => format!("Ваші винятки лишили поза результатами файлів: {kept}."),
+    }
+}
+
+/// Confirmation that a "never touch this" click landed, naming the file so
+/// the sentence is checkable against what was right-clicked.
+pub fn exception_kept(lang: Lang, rel_path: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => {
+            format!("Never touching {rel_path} in this game again - it is off the list from now on.")
+        }
+        Lang::Uk => format!(
+            "Більше не чіпаю {rel_path} у цій грі - відтепер цей файл поза списком."
+        ),
+    }
+}
+
+/// The same click on a file that already has an exception. Says so plainly
+/// rather than reporting a second success for a file nothing happened to.
+pub fn exception_already_kept(lang: Lang, rel_path: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En => format!("{rel_path} was already on your never-touch list."),
+        Lang::Uk => format!("{rel_path} уже був у вашому списку недоторканних."),
+    }
+}
+
 pub fn l10n_rules_load_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En => {
@@ -350,12 +442,21 @@ pub fn orphan_reason(lang: Lang, kind: gametrimmer_core::orphans::OrphanKind) ->
         (Lang::En, OrphanKind::ServiceFolder) => {
             "Launcher download/cache scratch folder (aborted or partial downloads)".to_string()
         }
+        (Lang::En, OrphanKind::UnreferencedFile) => {
+            "Cached file no installed app still references (e.g. an old Steam depot manifest)"
+                .to_string()
+        }
         (Lang::Uk, OrphanKind::UnmanagedFolder) => {
             "Тека в бібліотеці без відповідного маніфесту лаунчера (осиротіла інсталяція)"
                 .to_string()
         }
         (Lang::Uk, OrphanKind::ServiceFolder) => {
             "Службова тека завантажень лаунчера (незавершені або часткові завантаження)".to_string()
+        }
+        (Lang::Uk, OrphanKind::UnreferencedFile) => {
+            "Кешований файл, на який жоден встановлений застосунок більше не посилається \
+             (наприклад, застарілий маніфест депо Steam)"
+                .to_string()
         }
     }
 }
@@ -399,9 +500,17 @@ pub fn deletion_block_reason(lang: Lang, reason: &str) -> String {
     if reason.starts_with("invalid relative path:") {
         return "Недійсний відносний шлях у знімку сканування".to_string();
     }
-    if reason.starts_with("reparse point is not deletable:") {
-        return "Шлях містить symlink, junction, mount point або іншу точку повторної обробки"
-            .to_string();
+    // The English side names the exact nested path that made the folder
+    // undeletable (`DeleteBlockReason::ReparsePoint` carries it). This used to
+    // replace the whole thing with a generic sentence, and since this string
+    // is what the tree's tooltip shows, the Ukrainian user was told their
+    // folder is permanently blocked without being told which link inside it is
+    // responsible - i.e. with no way to act on it. Keep the path.
+    if let Some(path) = reason.strip_prefix("reparse point is not deletable:") {
+        return format!(
+            "Шлях містить symlink, junction, mount point або іншу точку \
+             повторної обробки:{path}"
+        );
     }
     if reason.starts_with("filesystem state could not be verified:") {
         return "Не вдалося перевірити поточний стан файлової системи".to_string();
@@ -621,6 +730,28 @@ pub fn rules_restored(lang: Lang, path: impl std::fmt::Display) -> String {
         Lang::Uk => format!(
             "Вбудовані правила відновлено ({path}); попередній файл збережено як *.bak. \
              Зміни діятимуть з наступного сканування."
+        ),
+    }
+}
+
+/// The restore succeeded but the displaced pack could not be parked beside it.
+/// Said out loud rather than folded into [`rules_restored`]: that message
+/// promises a `.bak` the user may be counting on to recover a hand edit, and
+/// silently not delivering it is how someone loses work they were told was
+/// safe.
+pub fn rules_restored_without_backup(
+    lang: Lang,
+    path: impl std::fmt::Display,
+    error: impl std::fmt::Display,
+) -> String {
+    match lang {
+        Lang::En => format!(
+            "Built-in rules restored ({path}), but the previous file could NOT be kept \
+             as *.bak: {error}. Changes take effect from the next scan."
+        ),
+        Lang::Uk => format!(
+            "Вбудовані правила відновлено ({path}), але попередній файл НЕ вдалося \
+             зберегти як *.bak: {error}. Зміни діятимуть з наступного сканування."
         ),
     }
 }
@@ -865,6 +996,7 @@ pub fn launcher_label(lang: Lang, vendor: &str) -> String {
         "riot" => "Riot Games",
         "amazon" => "Amazon Games",
         "humble" => "Humble",
+        "paradox" => "Paradox",
         "itch" => "itch.io",
         "xbox" => "Xbox",
         // The one vendor with no launcher behind it: a folder the user pointed
@@ -1255,5 +1387,35 @@ pub fn csv_header(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Disk;Category;Game;Group folder;Path;Size (bytes);Size;Confidence;Source;Rule/reason;Language;Selected",
         Lang::Uk => "Диск;Категорія;Гра;Тека групи;Шлях;Розмір (байт);Розмір;Впевненість;Джерело;Правило/причина;Мова;Вибрано",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A translation may reword a reason; it may not delete the evidence in
+    /// it. The reparse-point block is permanent and fail-closed, so the only
+    /// thing the user can act on is *which* nested link caused it - and the
+    /// Ukrainian string is what the tree's tooltip shows.
+    #[test]
+    fn the_reparse_point_translation_keeps_the_offending_path() {
+        let reason = gametrimmer_core::safety::DeleteBlockReason::ReparsePoint(
+            std::path::PathBuf::from(r"D:\Games\Some Game\mods\link"),
+        )
+        .to_string();
+
+        let english = deletion_block_reason(Lang::En, &reason);
+        let ukrainian = deletion_block_reason(Lang::Uk, &reason);
+
+        assert!(english.contains(r"D:\Games\Some Game\mods\link"));
+        assert!(
+            ukrainian.contains(r"D:\Games\Some Game\mods\link"),
+            "the Ukrainian reason dropped the path: {ukrainian}"
+        );
+        assert_ne!(
+            ukrainian, english,
+            "it should still be translated, not passed through"
+        );
     }
 }

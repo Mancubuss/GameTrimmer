@@ -17,6 +17,7 @@ pub mod rules;
 pub mod safety;
 pub mod scanner;
 pub mod settings;
+pub mod standalone;
 pub mod sysinfo;
 
 #[cfg(test)]

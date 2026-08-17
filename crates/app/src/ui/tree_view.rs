@@ -242,6 +242,8 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     // `drain_messages`, outside this window, so they cannot be mistaken for a
     // hand-edit.
     let selection_before = model::selection_fingerprint(&app.findings);
+    // Outlives the row pass on purpose - see `RowCtx::keep_request`.
+    let keep_request = std::cell::Cell::new(None);
 
     egui::CentralPanel::default().show(ui, |ui| {
         // Before the first scan - and before the disclaimer is accepted -
@@ -346,6 +348,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             lang,
             descriptions: &app.descriptions,
             query: app.tree_search_index.query(),
+            keep_request: &keep_request,
         };
 
         // Keep the scrollbar drawn even when the content happens to fit, so the
@@ -381,6 +384,14 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     // has hand-edited any of it, only "Custom" is still true.
     if model::selection_fingerprint(&app.findings) != selection_before {
         app.mark_selection_custom();
+    }
+
+    // After the fingerprint check, not before: dropping the kept row clears
+    // its own selection, and that is a consequence of the exception rather
+    // than a hand edit of the profile - crediting it to the user would flip
+    // the profile picker to "Custom" for a click that never touched a box.
+    if let Some(index) = keep_request.take() {
+        apply_keep_request(app, index);
     }
 }
 
@@ -1080,6 +1091,15 @@ struct RowCtx<'a> {
     /// Folded exactly as [`SearchIndex`] folded it, or `""` when no search is
     /// in effect.
     query: &'a str,
+    /// Where a "never touch this" click parks the row index it was made on.
+    ///
+    /// A `Cell` because the row pass holds `&mut app.findings` for the whole
+    /// scroll area, so the menu cannot reach `app` to do the write itself -
+    /// and must not, since writing the pack mid-pass would mutate the very
+    /// list being iterated. The click records; [`show`] acts once every
+    /// borrow is released. Last click of a frame wins, which is the only
+    /// thing that can happen anyway: the menu closes on click.
+    keep_request: &'a std::cell::Cell<Option<usize>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1252,21 +1272,25 @@ fn show_game_row(
     // off the sentinel id, so it follows the current UI language even though
     // the stored `game_name` is empty.
     let label = game_branch_label(lang, game);
+    let unclaimed = !is_orphan_branch(game.game_id)
+        && !game_has_launcher_id(findings, &game.all_indices);
     let name = if is_orphan_branch(game.game_id) {
         // A UI string, not a name the search index holds: drawn as decoration
         // so a query that happens to occur in it tints nothing.
         highlight::strong_name(ui, &[Part::decoration(label.as_str())], ctx.query)
     } else {
         let (open, close) = i18n::quote_marks(lang);
-        highlight::strong_name(
-            ui,
-            &[
-                Part::decoration(open),
-                Part::searched(label.as_str()),
-                Part::decoration(close),
-            ],
-            ctx.query,
-        )
+        let mut parts = vec![
+            Part::decoration(open),
+            Part::searched(label.as_str()),
+            Part::decoration(close),
+        ];
+        if unclaimed {
+            // Decoration, not searched text: a query matching the marker must
+            // not tint anything, and the marker is not part of the name.
+            parts.push(Part::decoration(" ◇"));
+        }
+        highlight::strong_name(ui, &parts, ctx.query)
     };
     let response = show_header_row(
         ui,
@@ -1293,6 +1317,17 @@ fn show_game_row(
     let response = match &target {
         Some(target) => response.on_hover_text(target.path().to_string()),
         None => response,
+    };
+    // A game no launcher claims is not the same kind of row as the rest, and
+    // the difference is not cosmetic: without a vendor id, everything keyed to
+    // a launcher manifest is unavailable for it - and, since GT-21, so is
+    // "never touch this file in this game", whose whole scope *is* the app id.
+    // Marked rather than left to look identical: a feature that silently is
+    // not there for some rows is indistinguishable from one that is broken.
+    let response = if unclaimed {
+        response.on_hover_text(i18n::strings(lang).game_without_launcher_id)
+    } else {
+        response
     };
 
     // Under the category axis this row holds one category's worth of the game,
@@ -1657,6 +1692,18 @@ fn disk_root_path(disk: &str) -> String {
 
 /// The install directory shared by `indices` (every finding of one game lives
 /// under the same one), in Windows-native form. `None` when the group is empty.
+/// Whether the launcher that owns this game gave it an id.
+///
+/// `None` means no launcher told us about this game at all: it was found by
+/// the heuristic folder scan, or the user added its folder by hand. Every row
+/// of one game carries the same `app_id`, so the first is enough - the same
+/// reasoning as [`install_dir_of`] directly below.
+fn game_has_launcher_id(findings: &[FindingItem], indices: &[usize]) -> bool {
+    indices
+        .first()
+        .is_some_and(|&first| findings[first].row.app_id.is_some())
+}
+
 fn install_dir_of(findings: &[FindingItem], indices: &[usize]) -> Option<String> {
     let &first = indices.first()?;
     Some(row_actions::windows_path_string(
@@ -1802,10 +1849,101 @@ fn show_file_row(
                 &response,
                 lang,
                 Some(ShellTarget::File(abs_path.clone())),
-                |_ui| {},
+                |ui| never_touch_entry(ui, lang, item, ctx.keep_request, index),
             );
         },
     );
+}
+
+/// The file row's own context-menu action: "never touch this file in this
+/// game", which writes a personal exception (a keep rule scoped to the game -
+/// see `gametrimmer_core::rules::RulePolarity`) so the file stops being
+/// proposed by every future scan.
+///
+/// It lives here, in the row's right-click menu, and not in a panel of its
+/// own: the decision is about *this* row, it is taken while looking at this
+/// row, and the interface has no room for another panel.
+///
+/// Nothing is written from inside the menu. The click only records the row's
+/// index; the write, the row's removal and the status line all happen in
+/// [`show`] once the tree's borrows are released - the same shape the
+/// selection fingerprint already uses to get a verdict out of this pass.
+///
+/// A game with no launcher id cannot be the scope of an exception, so the
+/// entry is shown disabled with the reason on hover rather than hidden: an
+/// action that silently is not there for some rows is indistinguishable from
+/// one that is broken.
+fn never_touch_entry(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    item: &FindingItem,
+    keep_request: &std::cell::Cell<Option<usize>>,
+    index: usize,
+) {
+    let s = i18n::strings(lang);
+    let can_scope = item.row.app_id.is_some();
+    let button = ui.add_enabled(can_scope, egui::Button::new(s.ctx_never_touch));
+    if !can_scope {
+        button.on_disabled_hover_text(s.ctx_never_touch_needs_app_id);
+        return;
+    }
+    if button.clicked() {
+        keep_request.set(Some(index));
+        ui.close();
+    }
+}
+
+/// Carries out the "never touch this" click recorded by
+/// [`never_touch_entry`]: writes the exception, drops the row from the tree,
+/// and says which of the two happened in the status line.
+///
+/// The row leaves immediately rather than at the next scan. A rule only takes
+/// effect when the scanner next runs, but leaving the row sitting in the plan
+/// after the user has said "never touch this" would be the app arguing with
+/// them; dropping it is the same `removed` flag a deleted file uses, so the
+/// database is untouched and the next scan is what makes it stick.
+fn apply_keep_request(app: &mut GameTrimmerApp, index: usize) {
+    let lang = app.lang();
+    let Some(item) = app.findings.get(index) else {
+        return;
+    };
+    let Some(app_id) = item.row.app_id.clone() else {
+        return;
+    };
+    let rel_path = item.row.rel_path.clone();
+    // Written in both languages at once, because the pack outlives the
+    // interface language it was written under - the same reason rule packs
+    // carry a per-language `desc` at all. The game's name is in there so the
+    // file can be read and pruned by hand later, which is the only way to
+    // undo an exception for now.
+    let desc = gametrimmer_core::localized::LocalizedText::PerLanguage(
+        [
+            (
+                "en".to_string(),
+                i18n::exception_desc(Lang::En, &item.row.game_name, &rel_path),
+            ),
+            (
+                "uk".to_string(),
+                i18n::exception_desc(Lang::Uk, &item.row.game_name, &rel_path),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    app.status_message = match crate::worker::rules_io::add_personal_exception(
+        lang, &app_id, &rel_path, desc,
+    ) {
+        Ok(message) => {
+            if let Some(item) = app.findings.get_mut(index) {
+                item.removed = true;
+                item.selected = false;
+            }
+            app.tree_dirty = true;
+            message
+        }
+        Err(error) => i18n::error_prefixed(lang, error),
+    };
 }
 
 #[cfg(test)]
@@ -1889,6 +2027,27 @@ mod tests {
             i18n::quoted(lang, game),
             i18n::FLAT_ROW_SEPARATOR,
         )
+    }
+
+    /// GT-38: a game no launcher lists is marked, and one that a launcher
+    /// lists is not. Both halves matter - a marker on every row says nothing.
+    #[test]
+    fn a_game_no_launcher_lists_is_marked_in_the_tree() {
+        let mut test = UiTest::new(show);
+        test.seed_findings();
+        // The seeded games carry a launcher id; take it away from the first
+        // only, so the two rows differ in exactly the thing under test.
+        test.app_mut().findings[0].row.app_id = None;
+        test.app_mut().rebuild_tree();
+        test.run();
+
+        let lang = test.app().lang();
+        let marked = format!("{} ◇", i18n::quoted(lang, "Test Game 0"));
+        test.assert_label(&marked);
+
+        // The launcher-known one keeps its plain quoted name.
+        test.assert_label(&i18n::quoted(lang, "Test Game 1"));
+        test.assert_no_label(&format!("{} ◇", i18n::quoted(lang, "Test Game 1")));
     }
 
     /// The two seeded games, in the order `UiTest::seed_findings` creates

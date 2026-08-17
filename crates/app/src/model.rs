@@ -73,6 +73,16 @@ pub struct FindingRow {
     /// the orphan branch with a localized label keyed off [`ORPHAN_GAME_ID`]
     /// instead (see `ui::tree_view`).
     pub game_name: String,
+    /// The owning game's vendor id (`games.app_id`) - a Steam appid, a GOG
+    /// product id, ... `None` for a game no launcher gave one (a folder-scan
+    /// or manual library) and for orphaned residue.
+    ///
+    /// Carried on the row purely so the tree's "never touch this" action can
+    /// bind a personal exception to the game (see
+    /// `gametrimmer_core::rules::Rule::app_id`): `game_id` cannot do it, being
+    /// a per-scan row id that changes with every generation, while the vendor
+    /// id is the one identifier that survives a rescan.
+    pub app_id: Option<String>,
     pub install_dir: PathBuf,
     pub rel_path: String,
     /// Logical size (bytes) - shown as a secondary figure (tooltip) since it
@@ -216,11 +226,22 @@ pub const ORPHAN_UNMANAGED_CONFIDENCE: u8 = 60;
 /// the whole orphan category stays out of the default selection.
 pub const ORPHAN_SERVICE_CONFIDENCE: u8 = 80;
 
+/// Default confidence for an [`OrphanKind::UnreferencedFile`] finding (e.g.
+/// Steam's `depotcache/*.manifest` - GT-23): a single file proven
+/// unreferenced by an explicit per-item cross-check (every installed app's
+/// own declared dependencies), stronger evidence than the plain
+/// existence-only [`OrphanKind::ServiceFolder`] sweep. Still kept below
+/// [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] - the whole orphan category stays out
+/// of the default selection regardless of how the evidence for one kind was
+/// gathered.
+pub const ORPHAN_UNREFERENCED_FILE_CONFIDENCE: u8 = 75;
+
 /// The confidence [`FindingSource::Orphan`] carries for a given kind.
 pub fn orphan_confidence(kind: OrphanKind) -> u8 {
     match kind {
         OrphanKind::UnmanagedFolder => ORPHAN_UNMANAGED_CONFIDENCE,
         OrphanKind::ServiceFolder => ORPHAN_SERVICE_CONFIDENCE,
+        OrphanKind::UnreferencedFile => ORPHAN_UNREFERENCED_FILE_CONFIDENCE,
     }
 }
 
@@ -298,6 +319,7 @@ pub fn source_key(source: FindingSource) -> &'static str {
         FindingSource::Loc(LangKind::Unknown) => "loc_unknown",
         FindingSource::Orphan(OrphanKind::UnmanagedFolder) => "orphan_folder",
         FindingSource::Orphan(OrphanKind::ServiceFolder) => "orphan_service",
+        FindingSource::Orphan(OrphanKind::UnreferencedFile) => "orphan_unreferenced_file",
     }
 }
 
@@ -324,6 +346,7 @@ pub fn parse_source_key(key: &str) -> Option<FindingSource> {
         "loc_unknown" => Some(FindingSource::Loc(LangKind::Unknown)),
         "orphan_folder" => Some(FindingSource::Orphan(OrphanKind::UnmanagedFolder)),
         "orphan_service" => Some(FindingSource::Orphan(OrphanKind::ServiceFolder)),
+        "orphan_unreferenced_file" => Some(FindingSource::Orphan(OrphanKind::UnreferencedFile)),
         _ => None,
     }
 }
@@ -1522,6 +1545,7 @@ mod tests {
                 file_id: 0,
                 game_id,
                 game_name: game_name.to_string(),
+                app_id: None,
                 install_dir: PathBuf::from(install_dir),
                 rel_path: rel_path.to_string(),
                 size,
@@ -1637,7 +1661,11 @@ mod tests {
                 DisplayCategory::Loc
             );
         }
-        for kind in [OrphanKind::UnmanagedFolder, OrphanKind::ServiceFolder] {
+        for kind in [
+            OrphanKind::UnmanagedFolder,
+            OrphanKind::ServiceFolder,
+            OrphanKind::UnreferencedFile,
+        ] {
             assert_eq!(
                 display_category(FindingSource::Orphan(kind)),
                 DisplayCategory::Orphan
@@ -2576,18 +2604,18 @@ mod tests {
     }
 
     #[test]
-    fn orphan_confidence_is_below_auto_select_threshold_for_both_kinds() {
+    fn orphan_confidence_is_below_auto_select_threshold_for_every_kind() {
         // The orphan-residue safety contract: orphaned residue is shown but never
         // auto-selected, so a game installed past the launcher can't be
         // pre-checked for deletion. Enforced purely through confidence.
-        assert!(orphan_confidence(OrphanKind::UnmanagedFolder) < AUTO_SELECT_CONFIDENCE_THRESHOLD);
-        assert!(orphan_confidence(OrphanKind::ServiceFolder) < AUTO_SELECT_CONFIDENCE_THRESHOLD);
-        assert!(!default_selected(orphan_confidence(
-            OrphanKind::UnmanagedFolder
-        )));
-        assert!(!default_selected(orphan_confidence(
-            OrphanKind::ServiceFolder
-        )));
+        for kind in [
+            OrphanKind::UnmanagedFolder,
+            OrphanKind::ServiceFolder,
+            OrphanKind::UnreferencedFile,
+        ] {
+            assert!(orphan_confidence(kind) < AUTO_SELECT_CONFIDENCE_THRESHOLD);
+            assert!(!default_selected(orphan_confidence(kind)));
+        }
     }
 
     #[test]

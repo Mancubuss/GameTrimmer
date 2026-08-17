@@ -13,6 +13,7 @@ pub mod folderscan;
 pub mod gog;
 pub mod humble;
 pub mod itch;
+pub mod paradox;
 pub mod riot;
 pub mod rockstar;
 pub mod steam;
@@ -157,6 +158,7 @@ pub fn all() -> Vec<Box<dyn LibraryProvider>> {
         Box::new(riot::RiotProvider),
         Box::new(itch::ItchProvider),
         Box::new(humble::HumbleProvider),
+        Box::new(paradox::ParadoxProvider),
         Box::new(xbox::XboxProvider),
         // Last on purpose: the heuristic folder scan re-finds libraries the
         // metadata providers already know about; merge_libraries_by_path
@@ -165,7 +167,7 @@ pub fn all() -> Vec<Box<dyn LibraryProvider>> {
     ]
 }
 
-/// How many directory levels below the probed folder [`holds_installed_files`]
+/// How many directory levels below the probed folder [`try_holds_installed_files`]
 /// descends before giving up. Covers every realistic layout
 /// (`Game\bin\x64\game.exe` is found at depth 2) while keeping the probe
 /// bounded - an unbounded walk here would run on every drive root at every
@@ -195,10 +197,15 @@ const INSTALL_PROBE_DEPTH: u32 = 3;
 /// (content), or it resolves to nothing (no evidence either way - skip).
 /// Cycles are safe because [`INSTALL_PROBE_DEPTH`] bounds the descent, not
 /// because links go unfollowed.
-pub fn holds_installed_files(dir: &Path) -> bool {
-    try_holds_installed_files(dir).unwrap_or(false)
-}
-
+///
+/// Errors (a permission denial, a missing path) are handed to the caller
+/// rather than folded into `false` - a fail-open answer here would read an
+/// unreadable but still-installed game as residue. This used to be wrapped
+/// in a `holds_installed_files(dir) -> bool` convenience that did exactly
+/// that with `.unwrap_or(false)`; every production caller (`folderscan.rs`,
+/// `manual.rs`) already called this `try_` form directly and turned `Err`
+/// into a discovery diagnostic, so the fail-open wrapper had no real callers
+/// left and was deleted rather than kept around as a trap for the next one.
 pub fn try_holds_installed_files(dir: &Path) -> std::io::Result<bool> {
     let mut pending = vec![(dir.to_path_buf(), 0u32)];
 
@@ -617,7 +624,7 @@ mod tests {
     #[test]
     fn holds_installed_files_rejects_an_empty_folder() {
         let temp = tempfile::tempdir().unwrap();
-        assert!(!holds_installed_files(temp.path()));
+        assert!(!try_holds_installed_files(temp.path()).unwrap());
     }
 
     /// The realistic shape of the residue this exists to reject: a removed
@@ -629,7 +636,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join(r"bin\x64")).unwrap();
         std::fs::create_dir_all(temp.path().join("data")).unwrap();
 
-        assert!(!holds_installed_files(temp.path()));
+        assert!(!try_holds_installed_files(temp.path()).unwrap());
     }
 
     #[test]
@@ -637,7 +644,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("readme.txt"), b"hi").unwrap();
 
-        assert!(holds_installed_files(temp.path()));
+        assert!(try_holds_installed_files(temp.path()).unwrap());
     }
 
     /// A game whose top level is only folders is still a game - the probe has
@@ -649,7 +656,7 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::write(deep.join("game.exe"), b"MZ").unwrap();
 
-        assert!(holds_installed_files(temp.path()));
+        assert!(try_holds_installed_files(temp.path()).unwrap());
     }
 
     /// Creates a directory junction, or returns `false` when this machine
@@ -683,7 +690,7 @@ mod tests {
             return;
         }
 
-        assert!(!holds_installed_files(&residue));
+        assert!(!try_holds_installed_files(&residue).unwrap());
     }
 
     /// The other side of following the link: a game really can be installed
@@ -705,14 +712,16 @@ mod tests {
             return;
         }
 
-        assert!(holds_installed_files(&install));
+        assert!(try_holds_installed_files(&install).unwrap());
     }
 
+    /// A missing directory is a `NotFound` `Err`, not a silent `false`: this
+    /// is exactly the distinction the old `holds_installed_files` wrapper's
+    /// `.unwrap_or(false)` erased, and production callers rely on getting the
+    /// error so they can record a diagnostic instead of guessing "no files".
     #[test]
-    fn holds_installed_files_is_false_for_a_path_that_does_not_exist() {
-        assert!(!holds_installed_files(Path::new(
-            r"Z:\definitely\not\a\folder"
-        )));
+    fn holds_installed_files_errs_for_a_path_that_does_not_exist() {
+        assert!(try_holds_installed_files(Path::new(r"Z:\definitely\not\a\folder")).is_err());
     }
 
     #[test]

@@ -31,6 +31,18 @@
 //! whole category is designed to carry low confidence and stay out of the
 //! default selection (enforced by the pipeline that consumes these candidates,
 //! not here).
+//!
+//! That precondition - the launcher created the container and only its own
+//! content lives there - was checked against a real Steam installation before
+//! GT-23 extended detection to `steamapps/workshop` and `depotcache`. Both
+//! hold: `workshop/content/<appid>/<publishedfileid>` is written by the Steam
+//! client alone (never a user-chosen or shared path), and `depotcache/` on
+//! both real library roots inspected held nothing but `.manifest` cache
+//! files - no subfolders, no foreign content. `depotcache` turned out **not**
+//! to live under `steamapps` as GT-23 first assumed (it is a sibling of
+//! `steamapps`, directly under the library root - see
+//! [`steam_depotcache_dir`]), which changes *where* the container is, not
+//! whether the precondition holds.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -45,6 +57,14 @@ pub enum OrphanKind {
     /// A launcher's fixed download/cache scratch folder (aborted or partial
     /// downloads, depot cache, ...): residue regardless of what is installed.
     ServiceFolder,
+    /// A single leftover *file* inside a launcher's own cache/service area,
+    /// proven unreferenced by explicit per-item evidence rather than by the
+    /// area merely existing - contrast [`OrphanKind::ServiceFolder`], which
+    /// flags a whole scratch folder on existence alone with no per-item
+    /// check. Steam's `depotcache/<depotid>_<manifestid>.manifest` is the
+    /// first user (GT-23): a manifest no installed app's `InstalledDepots`
+    /// still names, across every discovered Steam library.
+    UnreferencedFile,
 }
 
 /// One detected piece of orphaned residue on disk.
@@ -140,6 +160,28 @@ pub fn list_subdirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(subdirs)
 }
 
+/// Lists the immediate *files* (not subdirectories) of `dir` - the file-typed
+/// counterpart to [`list_subdirs`], needed for `depotcache/`'s flat manifest
+/// files (Steam never nests it, and neither did the real installs this was
+/// checked against). Same contract: a missing directory is an empty result,
+/// any other enumeration or metadata error is returned rather than silently
+/// dropped.
+pub fn list_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            files.push(entry.path());
+        }
+    }
+    Ok(files)
+}
+
 /// True when `candidate` may be reported as an unmanaged-folder orphan under
 /// `markers`: either no marker is required (`markers` empty - a structurally
 /// launcher-exclusive container), or the candidate contains at least one marker
@@ -223,11 +265,16 @@ where
 ///
 /// Container is `<root>/steamapps/common` - where every Steam game's
 /// `installdir` lives (see `providers::steam::parse_appmanifest`). Service
-/// folders are limited, for now, to `steamapps/downloading` (aborted/partial
-/// depot downloads): the single unambiguously-safe scratch location. Broader
-/// residue (`depotcache`, orphaned `workshop` content of uninstalled games)
-/// is deferred - those need per-item reasoning about what is still referenced,
-/// which requires service-specific authoritative evidence, not a fixed-folder sweep.
+/// folders are limited to `steamapps/downloading` (aborted/partial depot
+/// downloads): the single scratch location safe to sweep on existence alone.
+///
+/// Workshop content (`steamapps/workshop`) and the depot manifest cache
+/// (`depotcache`) are deliberately **not** folded into this spec (GT-23):
+/// both need a per-item "is anything still referencing this?" check against
+/// evidence a single [`OrphanScanSpec`] can't express - a separate small state
+/// file per Workshop appid, and cross-*library* evidence for depotcache. See
+/// [`workshop_item_orphans`] and [`depotcache_orphans`], and their call sites
+/// in `orphan_analysis::collect_steam_service_area_orphans`.
 pub fn steam_spec(library_root: &Path) -> OrphanScanSpec {
     let steamapps = library_root.join("steamapps");
     OrphanScanSpec {
@@ -237,6 +284,119 @@ pub fn steam_spec(library_root: &Path) -> OrphanScanSpec {
         // structurally exclusive, so no per-folder ownership marker is needed.
         ownership_markers: Vec::new(),
     }
+}
+
+/// GT-23's Steam Workshop content root for one discovered library: every
+/// installed item lives at
+/// `<library_root>/steamapps/workshop/content/<appid>/<publishedfileid>`.
+/// Confirmed against a real Steam installation on this machine.
+pub fn steam_workshop_content_dir(library_root: &Path) -> PathBuf {
+    library_root
+        .join("steamapps")
+        .join("workshop")
+        .join("content")
+}
+
+/// Where Steam records one appid's Workshop live-subscription state:
+/// `<library_root>/steamapps/workshop/appworkshop_<appid>.acf`. See
+/// `providers::steam::parse_workshop_installed_items` for what it contains
+/// and how it was verified against real data.
+pub fn steam_workshop_state_path(library_root: &Path, appid: &str) -> PathBuf {
+    library_root
+        .join("steamapps")
+        .join("workshop")
+        .join(format!("appworkshop_{appid}.acf"))
+}
+
+/// GT-23's Steam depot manifest cache for one discovered library root.
+///
+/// **Not** nested under `steamapps` - this is the one place the card's
+/// starting assumption (`steamapps/depotcache`) did not match a real
+/// installation. On this machine `depotcache` sits directly under every
+/// library root, a sibling of `steamapps`: `F:\SteamLibrary\depotcache` and
+/// `D:\...\Steam\depotcache` (the primary install) both exist there, not
+/// inside `steamapps`. Steam creates the folder itself at every library root
+/// and both real instances held only `.manifest` cache files - no
+/// subfolders, nothing foreign - so it is structurally exclusive exactly like
+/// `steamapps/common`, just at a different path.
+pub fn steam_depotcache_dir(library_root: &Path) -> PathBuf {
+    library_root.join("depotcache")
+}
+
+/// Every `workshop/content/<appid>/<publishedfileid>` subfolder of
+/// `appid_dir` whose id is not in `live_items` - Steam's own
+/// `WorkshopItemsInstalled` record for that appid, the only evidence that
+/// proves a Workshop item is still a live subscription (see
+/// `providers::steam::parse_workshop_installed_items`). Reuses
+/// [`unmanaged_subdirs`]'s case-insensitive, disk-order-preserving diff by
+/// building the "managed" set from the live ids' full paths under
+/// `appid_dir`.
+///
+/// The caller decides what `live_items` is when evidence is missing or
+/// unreadable; this function has no fail-closed logic of its own; it is pure
+/// diff-against-what-you-hand-it, same as [`find_orphans`]'s managed set.
+pub fn workshop_item_orphans(
+    appid_dir: &Path,
+    live_items: &HashSet<String>,
+) -> std::io::Result<Vec<OrphanCandidate>> {
+    let live_paths: Vec<PathBuf> = live_items.iter().map(|id| appid_dir.join(id)).collect();
+    let managed = managed_dir_set(live_paths.iter().map(PathBuf::as_path));
+    let subdirs = list_subdirs(appid_dir)?;
+    Ok(unmanaged_subdirs(&subdirs, &managed)
+        .into_iter()
+        .map(|path| OrphanCandidate {
+            path,
+            kind: OrphanKind::UnmanagedFolder,
+        })
+        .collect())
+}
+
+/// Steam's on-disk depot manifest filename shape:
+/// `<depotid>_<manifestid>.manifest`, both purely numeric on every real
+/// manifest inspected on this machine. A file that doesn't match this shape
+/// is left alone entirely, never flagged either way - this check has no
+/// evidence about what it is, so like every other unproven case in this
+/// module it stays untouched.
+fn depot_manifest_filename_is_well_formed(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".manifest") else {
+        return false;
+    };
+    let Some((depot_id, manifest_id)) = stem.split_once('_') else {
+        return false;
+    };
+    !depot_id.is_empty()
+        && !manifest_id.is_empty()
+        && depot_id.bytes().all(|b| b.is_ascii_digit())
+        && manifest_id.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Every `depotcache/<depotid>_<manifestid>.manifest` in `depotcache_dir`
+/// whose filename (compared case-insensitively) is not in `needed_files`.
+///
+/// `needed_files` must be built by the caller from *every* discovered Steam
+/// library's installed depots, not just the one this `depotcache_dir` belongs
+/// to - see `providers::steam::installed_depots_for_library` for the real
+/// cross-library evidence that makes a per-library set unsafe here.
+pub fn depotcache_orphans(
+    depotcache_dir: &Path,
+    needed_files: &HashSet<String>,
+) -> std::io::Result<Vec<OrphanCandidate>> {
+    let files = list_files(depotcache_dir)?;
+    Ok(files
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    depot_manifest_filename_is_well_formed(name)
+                        && !needed_files.contains(&name.to_lowercase())
+                })
+        })
+        .map(|path| OrphanCandidate {
+            path,
+            kind: OrphanKind::UnreferencedFile,
+        })
+        .collect())
 }
 
 /// The Xbox / Microsoft Store (Game Pass) orphan-scan spec for one discovered
@@ -545,5 +705,127 @@ mod tests {
         // Empty marker list = structurally exclusive container: every candidate
         // qualifies (the managed-set diff is the only gate).
         assert!(has_ownership_marker(Path::new(r"F:\anything"), &[]).unwrap());
+    }
+
+    // -- GT-23: Workshop content --
+
+    #[test]
+    fn workshop_item_orphans_flags_an_id_not_listed_as_live() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let appid_dir = dir.path().join("217140");
+        std::fs::create_dir_all(appid_dir.join("111")).expect("live item folder");
+        std::fs::create_dir_all(appid_dir.join("999")).expect("leftover item folder");
+
+        let live: HashSet<String> = ["111".to_string()].into_iter().collect();
+        let orphans = workshop_item_orphans(&appid_dir, &live).unwrap();
+
+        assert_eq!(
+            orphans,
+            vec![OrphanCandidate {
+                path: appid_dir.join("999"),
+                kind: OrphanKind::UnmanagedFolder,
+            }],
+            "only the id absent from the live set is residue"
+        );
+    }
+
+    #[test]
+    fn workshop_item_orphans_spares_every_id_still_listed_as_live() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let appid_dir = dir.path().join("217140");
+        std::fs::create_dir_all(appid_dir.join("111")).expect("live item folder");
+
+        let live: HashSet<String> = ["111".to_string()].into_iter().collect();
+        assert!(
+            workshop_item_orphans(&appid_dir, &live).unwrap().is_empty(),
+            "a live subscription must never be flagged"
+        );
+    }
+
+    #[test]
+    fn workshop_item_orphans_on_a_missing_appid_dir_is_empty_not_an_error() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let missing = dir.path().join("no-such-appid");
+        assert!(workshop_item_orphans(&missing, &HashSet::new())
+            .unwrap()
+            .is_empty());
+    }
+
+    // -- GT-23: depotcache --
+
+    #[test]
+    fn depotcache_orphans_flags_a_manifest_no_installed_app_names() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(dir.path().join("621_999888777.manifest"), b"stale").unwrap();
+        std::fs::write(dir.path().join("621_111222333.manifest"), b"needed").unwrap();
+
+        let needed: HashSet<String> = ["621_111222333.manifest".to_string()].into_iter().collect();
+        let orphans = depotcache_orphans(dir.path(), &needed).unwrap();
+
+        assert_eq!(
+            orphans,
+            vec![OrphanCandidate {
+                path: dir.path().join("621_999888777.manifest"),
+                kind: OrphanKind::UnreferencedFile,
+            }]
+        );
+    }
+
+    #[test]
+    fn depotcache_orphans_matches_needed_filenames_case_insensitively() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(dir.path().join("621_999.MANIFEST"), b"needed").unwrap();
+
+        let needed: HashSet<String> = ["621_999.manifest".to_string()].into_iter().collect();
+        assert!(
+            depotcache_orphans(dir.path(), &needed).unwrap().is_empty(),
+            "case-only differences must not make a needed manifest look orphaned"
+        );
+    }
+
+    #[test]
+    fn depotcache_orphans_ignores_a_filename_that_does_not_match_the_manifest_shape() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(dir.path().join("readme.txt"), b"not a manifest").unwrap();
+        std::fs::write(dir.path().join("config.vdf"), b"not a manifest either").unwrap();
+
+        assert!(
+            depotcache_orphans(dir.path(), &HashSet::new())
+                .unwrap()
+                .is_empty(),
+            "a file this check cannot positively identify must be left alone"
+        );
+    }
+
+    #[test]
+    fn depotcache_orphans_on_a_missing_dir_is_empty_not_an_error() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let missing = dir.path().join("no-such-depotcache");
+        assert!(depotcache_orphans(&missing, &HashSet::new())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn steam_workshop_content_dir_and_state_path_are_nested_under_steamapps_workshop() {
+        let root = Path::new(r"F:\SteamLibrary");
+        assert_eq!(
+            steam_workshop_content_dir(root),
+            PathBuf::from(r"F:\SteamLibrary\steamapps\workshop\content")
+        );
+        assert_eq!(
+            steam_workshop_state_path(root, "217140"),
+            PathBuf::from(r"F:\SteamLibrary\steamapps\workshop\appworkshop_217140.acf")
+        );
+    }
+
+    #[test]
+    fn steam_depotcache_dir_is_a_sibling_of_steamapps_not_nested_inside_it() {
+        // The one place real Steam data contradicted this card's starting
+        // assumption - see the module doc comment.
+        assert_eq!(
+            steam_depotcache_dir(Path::new(r"F:\SteamLibrary")),
+            PathBuf::from(r"F:\SteamLibrary\depotcache")
+        );
     }
 }

@@ -420,7 +420,7 @@ fn classify_one(
 
     let mut findings = Vec::with_capacity(game.entries.len());
     for (index, entry) in game.entries.iter().enumerate() {
-        let rule_finding = engine.classify(&entry.rel_path);
+        let rule_finding = engine.classify(&entry.rel_path, None).flagged();
         let lang_finding = lang_findings.get(&index);
         let Some((category, rule_desc, confidence, lang_tag)) = combine(rule_finding, lang_finding)
         else {

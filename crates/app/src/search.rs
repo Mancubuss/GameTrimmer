@@ -236,6 +236,7 @@ mod tests {
                 file_id: 1,
                 game_id,
                 game_name: game_name.to_string(),
+                app_id: None,
                 install_dir: PathBuf::from(r"F:\Games\Game"),
                 rel_path: rel_path.to_string(),
                 size: 1,

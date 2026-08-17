@@ -41,7 +41,15 @@ impl TargetKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileIdentity {
-    pub volume_serial: u32,
+    /// `u64` rather than the `u32` a Windows volume serial number actually
+    /// is, because this field also carries `st_dev` on the non-Windows
+    /// `identity()` used by tests run off-Windows - and `st_dev` is a `u64`
+    /// on every platform `std::os::unix::fs::MetadataExt` supports. A `u32`
+    /// field would force a truncating cast there, which is exactly the
+    /// narrowing this type exists to avoid: two different devices could
+    /// collide onto the same stored value and `same_object` would call them
+    /// the same volume.
+    pub volume_serial: u64,
     pub file_index: u64,
     pub kind: TargetKind,
     pub size: u64,
@@ -68,8 +76,7 @@ impl FileIdentity {
             part.and_then(|raw| raw.parse().ok())
                 .ok_or_else(|| CoreError::Other(format!("invalid {name} in filesystem identity")))
         };
-        let volume_serial = u32::try_from(parse(parts.next(), "volume serial")?)
-            .map_err(|_| CoreError::Other("volume serial exceeds u32".into()))?;
+        let volume_serial = parse(parts.next(), "volume serial")?;
         let file_index = parse(parts.next(), "file index")?;
         let kind = parts
             .next()
@@ -98,6 +105,44 @@ impl FileIdentity {
         self.volume_serial == other.volume_serial
             && self.file_index == other.file_index
             && self.kind == other.kind
+    }
+}
+
+/// Whether a finding's launcher-discovery evidence is good enough to allow a
+/// deletion, and if not, why. `None` means allowed.
+///
+/// This is the single copy of a policy that used to exist three times, in two
+/// languages, with three different answers:
+///
+/// - the scan's persistence path blocked only on missing or `degraded`
+///   evidence (`worker::scan::persistence`),
+/// - the load query's SQL `CASE` blocked on missing, `degraded`, or a
+///   non-`complete` status for an *orphan* row (`worker::load::load_findings`),
+/// - the delete preflight below allowed only `complete`, plus `heuristic` for a
+///   game-bound row, and rejected everything else (`crate::ops`).
+///
+/// Only three statuses are written today, so the disagreement was unreachable -
+/// but "unreachable" is a property of the writer, not of the policy, and the
+/// next status added would have silently taken three different paths. The
+/// strictest of the three wins here, because this gates deletion: an evidence
+/// status this build does not recognise is not evidence.
+///
+/// `game_bound` is true for a finding inside a known game, false for an orphan
+/// candidate. The distinction is the whole reason `heuristic` is conditional:
+/// folder heuristics can prove a directory holds a game, never that a launcher
+/// has stopped managing it, so they are enough to delete *inside* a game and
+/// never enough to call a folder abandoned.
+pub fn discovery_block_reason(
+    game_bound: bool,
+    evidence_status: Option<&str>,
+) -> Option<&'static str> {
+    match evidence_status {
+        None => Some("missing library discovery evidence"),
+        Some("complete") => None,
+        Some("degraded") => Some("library discovery was degraded"),
+        Some("heuristic") if game_bound => None,
+        Some(_) if !game_bound => Some("orphan inventory is not authoritative"),
+        Some(_) => Some("library discovery is not authoritative"),
     }
 }
 
@@ -171,9 +216,18 @@ pub fn normalize_relative_path(raw: &str) -> std::result::Result<PathBuf, Delete
             "rooted or empty path components are forbidden".into(),
         ));
     }
+    // Win32 silently strips trailing dots and spaces off a path component
+    // when it resolves the name (a legacy DOS 8.3 compatibility quirk), so
+    // `root\foo   ` and `root\foo` name the same object on disk even though
+    // they compare unequal as strings. Rejecting `"."`/`".."` outright but
+    // letting `"foo."` or `"foo "` through would leave that stripping as an
+    // unaudited path from a snapshot's `rel_path` to a *different* file than
+    // the one it was captured against - still inside the trusted root, so
+    // `OutsideTrustedRoot` would never catch it, but the wrong object all the
+    // same. `ends_with('.')` alone already covers the bare `"."`/`".."` cases.
     if raw
         .split(['\\', '/'])
-        .any(|part| part.is_empty() || part == "." || part == "..")
+        .any(|part| part.is_empty() || part.ends_with('.') || part.ends_with(' '))
     {
         return Err(DeleteBlockReason::InvalidRelativePath(
             "only non-empty normal components are allowed".into(),
@@ -256,6 +310,17 @@ fn identity(path: &Path) -> std::result::Result<FileIdentity, DeleteBlockReason>
     // first only bought a second trip through the filesystem on a path this
     // scan walks 720 000 times.
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 buffer that outlives this call
+    // (it is not dropped until after `CreateFileW` returns), so the `PCWSTR`
+    // built from its pointer stays valid for the whole call. `None` is passed
+    // for both the security-attributes and template-handle parameters, which
+    // Win32 accepts as "use defaults" for `CreateFileW`. The flags requested
+    // (`FILE_READ_ATTRIBUTES`, share-everything, `OPEN_EXISTING`,
+    // backup-semantics plus open-reparse-point) only ever read metadata and
+    // never require the caller to hold any other resource alive. On success
+    // the returned `HANDLE` is a freshly opened, uniquely owned handle; it is
+    // moved into a `File` immediately below, which becomes solely responsible
+    // for closing it.
     let handle = unsafe {
         CreateFileW(
             PCWSTR::from_raw(wide.as_ptr()),
@@ -299,7 +364,7 @@ fn identity(path: &Path) -> std::result::Result<FileIdentity, DeleteBlockReason>
         | u64::from(info.ftLastWriteTime.dwLowDateTime);
     let file_size = (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow);
     Ok(FileIdentity {
-        volume_serial: info.dwVolumeSerialNumber,
+        volume_serial: u64::from(info.dwVolumeSerialNumber),
         file_index,
         kind,
         size: file_size,
@@ -336,7 +401,7 @@ fn identity(path: &Path) -> std::result::Result<FileIdentity, DeleteBlockReason>
         ));
     };
     Ok(FileIdentity {
-        volume_serial: metadata.dev() as u32,
+        volume_serial: metadata.dev(),
         file_index: metadata.ino(),
         kind,
         size: metadata.size(),
@@ -371,7 +436,7 @@ fn stated_identity(
         return Err(DeleteBlockReason::ReparsePoint(path.to_path_buf()));
     }
     Ok(FileIdentity {
-        volume_serial: stated.volume_serial,
+        volume_serial: u64::from(stated.volume_serial),
         file_index: stated.file_index,
         kind: TargetKind::File,
         size: stated.size,
@@ -411,7 +476,10 @@ fn fnv1a_update(hash: &mut u64, bytes: &[u8]) {
     }
 }
 
-fn tree_fingerprint(root: &Path) -> std::result::Result<String, DeleteBlockReason> {
+/// `pub(crate)` for reconciliation, which re-walks a directory that survived a
+/// crash to tell a half-finished delete from one that never started (see
+/// [`crate::ops::reconcile_pending_operations`]).
+pub(crate) fn tree_fingerprint(root: &Path) -> std::result::Result<String, DeleteBlockReason> {
     let mut pending = vec![root.to_path_buf()];
     let mut rows = Vec::new();
     while let Some(directory) = pending.pop() {
@@ -579,6 +647,301 @@ pub fn capture_safety_snapshot(
     })
 }
 
+/// A target that has been proven to be the object the plan named, and is being
+/// *held open* so it cannot become a different object before it is removed.
+///
+/// [`validate_delete_plan`] proves identity through a handle, closes it, and
+/// returns a path; whoever removes that path resolves the name a second time.
+/// Between those two resolutions the name can be made to point somewhere else.
+/// Escaping the trusted root that way is still impossible - the root's own
+/// identity is re-checked and the relative path is normalized - but deleting a
+/// *different object inside the root* was not, and for a tool whose whole
+/// contract is "we only remove what we showed you", that gap is the contract.
+///
+/// This closes it by never letting go: the handle opened to prove identity is
+/// the same handle the removal acts on, and its share mode denies other
+/// openers the DELETE access that renaming or replacing the object would need.
+/// There is no second name resolution to race.
+#[cfg(windows)]
+pub struct VerifiedTarget {
+    /// Owns the open handle; dropping it closes the handle.
+    file: fs::File,
+    path: PathBuf,
+    kind: TargetKind,
+}
+
+/// The non-Windows stand-in. This platform is only ever exercised by tests
+/// (the product ships for Windows), and it deliberately does **not** claim to
+/// close the window: there is no portable equivalent of holding a name pinned,
+/// and pretending otherwise in a type named "verified" would be worse than
+/// saying so.
+#[cfg(not(windows))]
+pub struct VerifiedTarget {
+    path: PathBuf,
+    kind: TargetKind,
+}
+
+impl VerifiedTarget {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn kind(&self) -> TargetKind {
+        self.kind
+    }
+
+    /// Releases the handle and hands back the path, for removers that can only
+    /// work by name.
+    ///
+    /// The Recycle Bin is the one that needs this: it goes through the shell's
+    /// `IFileOperation`, which takes a path and offers no way to pass a handle
+    /// in, so recycling cannot be made handle-based at all. Recycling therefore
+    /// keeps the original window, knowingly - and it is the *safer* of the two
+    /// modes to keep it in, because the object it might race onto is moved to
+    /// the bin rather than destroyed. Making the trade-off explicit here, in
+    /// the type, rather than leaving it as an unremarked difference between two
+    /// call sites.
+    pub fn into_path(self) -> PathBuf {
+        self.path
+    }
+}
+
+#[cfg(windows)]
+impl VerifiedTarget {
+    /// Removes the target through the handle that proved it, with no second
+    /// name resolution.
+    ///
+    /// Files are deleted by setting the disposition on the handle itself.
+    /// Directories cannot be: Windows only accepts a delete disposition on an
+    /// *empty* directory, so their contents still have to be removed by path.
+    /// Holding this handle throughout is what makes that safe - the directory
+    /// the paths are relative to cannot be swapped for another while the walk
+    /// is running, because this handle's share mode denies the DELETE access a
+    /// rename would require.
+    pub fn delete(self) -> std::result::Result<(), std::io::Error> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{
+            SetFileInformationByHandle, FileDispositionInfo, FileDispositionInfoEx,
+            FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_DISPOSITION_FLAG_DELETE,
+            FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        };
+
+        if self.kind == TargetKind::Directory {
+            // Empty it first; the handle above keeps the directory itself
+            // pinned while this runs.
+            remove_dir_contents(&self.path)?;
+        }
+
+        let handle = HANDLE(self.file.as_raw_handle() as *mut _);
+
+        // POSIX semantics unlinks the name immediately instead of deferring
+        // until the last handle closes, so the name is free the moment this
+        // returns - which is what the caller's "removed" report claims.
+        let mut ex = FILE_DISPOSITION_INFO_EX {
+            // The generated newtype has no `BitOr`, so the flags are combined
+            // on the underlying bits and wrapped back up.
+            Flags: windows::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO_EX_FLAGS(
+                FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0,
+            ),
+        };
+        // SAFETY: `handle` is the live handle owned by `self.file`, which is
+        // alive for this whole call; `ex` is a fully initialized structure of
+        // exactly the size passed, and matches the class requested.
+        let posix = unsafe {
+            SetFileInformationByHandle(
+                handle,
+                FileDispositionInfoEx,
+                &mut ex as *mut _ as *const std::ffi::c_void,
+                std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+            )
+        };
+        if posix.is_ok() {
+            return Ok(());
+        }
+
+        // `FileDispositionInfoEx` needs Windows 10 1709 and a filesystem that
+        // implements it; older builds and non-NTFS volumes (a FAT32 flash
+        // drive holding a portable install) answer with an error rather than
+        // ignoring the request. Fall back to the classic class, which every
+        // supported Windows has: same effect, except the name survives until
+        // this handle closes - which is immediately after, when `self` drops.
+        let mut classic = FILE_DISPOSITION_INFO {
+            DeleteFile: true.into(),
+        };
+        // SAFETY: as above, for the classic information class.
+        unsafe {
+            SetFileInformationByHandle(
+                handle,
+                FileDispositionInfo,
+                &mut classic as *mut _ as *const std::ffi::c_void,
+                std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        }
+        .map_err(std::io::Error::other)
+    }
+}
+
+#[cfg(not(windows))]
+impl VerifiedTarget {
+    pub fn delete(self) -> std::result::Result<(), std::io::Error> {
+        if self.kind == TargetKind::Directory {
+            fs::remove_dir_all(&self.path)
+        } else {
+            fs::remove_file(&self.path)
+        }
+    }
+}
+
+/// Empties a directory without removing the directory itself.
+///
+/// `symlink_metadata`, never `metadata`: a link inside the tree is removed as
+/// the link, never followed into whatever it points at. This mirrors what
+/// `PermanentDelete` already does for a top-level target.
+#[cfg(windows)]
+fn remove_dir_contents(dir: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            fs::remove_dir_all(&path)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// The path checks shared by [`validate_delete_plan`] and
+/// [`open_verified_for_delete`]: normalize, refuse to leave the trusted root,
+/// and prove the root is still the root the scan saw.
+fn validated_target_path(plan: &DeletePlan) -> std::result::Result<PathBuf, DeleteBlockReason> {
+    let raw = plan.snapshot.rel_path.to_string_lossy();
+    let rel_path = normalize_relative_path(&raw)?;
+    validate_chain(&plan.snapshot.trusted_root, &rel_path)?;
+    let target = plan.snapshot.trusted_root.join(&rel_path);
+    if !target.starts_with(&plan.snapshot.trusted_root) {
+        return Err(DeleteBlockReason::OutsideTrustedRoot);
+    }
+    if !identity(&plan.snapshot.trusted_root)?.same_object(&plan.snapshot.root_identity) {
+        return Err(DeleteBlockReason::RootChanged);
+    }
+    Ok(target)
+}
+
+/// Proves the plan's target is still the object the scan saw, and returns it
+/// still open - see [`VerifiedTarget`] for why that matters.
+///
+/// Every check [`validate_delete_plan`] makes is made here too, with the one
+/// difference that identity is read from the handle that is kept, not from a
+/// handle that is thrown away.
+pub fn open_verified_for_delete(
+    plan: &DeletePlan,
+) -> std::result::Result<VerifiedTarget, DeleteBlockReason> {
+    let target = validated_target_path(plan)?;
+    open_verified_at(&target, plan)
+}
+
+#[cfg(windows)]
+fn open_verified_at(
+    target: &Path,
+    plan: &DeletePlan,
+) -> std::result::Result<VerifiedTarget, DeleteBlockReason> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 buffer alive across the call,
+    // so the `PCWSTR` from its pointer stays valid. `None` for the
+    // security-attributes and template-handle parameters is Win32's "use
+    // defaults". The share mode deliberately omits `FILE_SHARE_DELETE`: that
+    // is the whole mechanism - while this handle lives, nobody else can obtain
+    // the DELETE access that renaming or deleting this object requires, so the
+    // name cannot be re-pointed between the identity check below and the
+    // removal. On success the returned `HANDLE` is uniquely owned and is moved
+    // into a `File` immediately, which becomes solely responsible for closing
+    // it.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR::from_raw(wide.as_ptr()),
+            DELETE.0 | FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+    }
+    .map_err(|error| classify_open_failure(target, &error))?;
+    // SAFETY: ownership of the valid handle is moved into File, which closes
+    // it exactly once.
+    let file = unsafe { fs::File::from_raw_handle(handle.0 as *mut _) };
+
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` owns a live handle for the duration of the call and
+    // `info` is a valid, fully initialized out-parameter.
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle() as *mut _), &mut info) }
+        .map_err(|error| DeleteBlockReason::Metadata(error.to_string()))?;
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(DeleteBlockReason::ReparsePoint(target.to_path_buf()));
+    }
+    let kind = if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        TargetKind::Directory
+    } else {
+        TargetKind::File
+    };
+    let current = FileIdentity {
+        volume_serial: u64::from(info.dwVolumeSerialNumber),
+        file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        kind,
+        size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
+        last_write_time: (u64::from(info.ftLastWriteTime.dwHighDateTime) << 32)
+            | u64::from(info.ftLastWriteTime.dwLowDateTime),
+        attributes: info.dwFileAttributes,
+    };
+    if current != plan.snapshot.target_identity {
+        return Err(DeleteBlockReason::TargetChanged);
+    }
+    if let Some(expected) = &plan.snapshot.tree_fingerprint {
+        if &tree_fingerprint(target)? != expected {
+            return Err(DeleteBlockReason::TreeChanged);
+        }
+    }
+    Ok(VerifiedTarget {
+        file,
+        path: target.to_path_buf(),
+        kind,
+    })
+}
+
+#[cfg(not(windows))]
+fn open_verified_at(
+    target: &Path,
+    plan: &DeletePlan,
+) -> std::result::Result<VerifiedTarget, DeleteBlockReason> {
+    let current = identity(target)?;
+    if current != plan.snapshot.target_identity {
+        return Err(DeleteBlockReason::TargetChanged);
+    }
+    if let Some(expected) = &plan.snapshot.tree_fingerprint {
+        if &tree_fingerprint(target)? != expected {
+            return Err(DeleteBlockReason::TreeChanged);
+        }
+    }
+    Ok(VerifiedTarget {
+        path: target.to_path_buf(),
+        kind: current.kind,
+    })
+}
+
 pub fn validate_delete_plan(plan: &DeletePlan) -> std::result::Result<PathBuf, DeleteBlockReason> {
     let raw = plan.snapshot.rel_path.to_string_lossy();
     let rel_path = normalize_relative_path(&raw)?;
@@ -606,6 +969,152 @@ pub fn validate_delete_plan(plan: &DeletePlan) -> std::result::Result<PathBuf, D
 mod tests {
     use super::*;
 
+    fn plan_for(root: &Path, rel_path: &str) -> DeletePlan {
+        DeletePlan {
+            file_id: 1,
+            scan_id: 1,
+            action: "delete".to_string(),
+            snapshot: capture_safety_snapshot(root, rel_path).expect("capture snapshot"),
+        }
+    }
+
+    /// The ordinary case, exercised for real rather than through a stub
+    /// remover: a file is removed through the handle that proved it.
+    #[test]
+    fn a_verified_file_is_deleted_through_its_own_handle() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("library");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("redist.exe");
+        std::fs::write(&target, b"MZ").unwrap();
+
+        let plan = plan_for(&root, "redist.exe");
+        open_verified_for_delete(&plan)
+            .expect("the unchanged file must verify")
+            .delete()
+            .expect("delete through the handle must succeed");
+
+        assert!(!target.exists(), "the file should be gone");
+    }
+
+    /// Directories cannot be disposed of while non-empty, so their contents
+    /// still go by path - the handle is what keeps the directory those paths
+    /// are relative to from being swapped mid-walk.
+    #[test]
+    fn a_verified_directory_is_emptied_and_removed() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("library");
+        let target = root.join("bonus");
+        std::fs::create_dir_all(target.join("nested")).unwrap();
+        std::fs::write(target.join("art.pdf"), b"pdf").unwrap();
+        std::fs::write(target.join("nested").join("track.flac"), b"flac").unwrap();
+
+        let plan = plan_for(&root, "bonus");
+        open_verified_for_delete(&plan)
+            .expect("the unchanged directory must verify")
+            .delete()
+            .expect("delete through the handle must succeed");
+
+        assert!(!target.exists(), "the directory should be gone");
+        assert!(root.exists(), "the trusted root must be left alone");
+    }
+
+    /// The failure this whole mechanism exists for, in its observable form: if
+    /// the name now points at a different object than the scan recorded, the
+    /// delete is refused rather than carried out on the impostor.
+    #[test]
+    fn a_target_swapped_for_another_object_is_refused() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("library");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("redist.exe");
+        std::fs::write(&target, b"original").unwrap();
+
+        let plan = plan_for(&root, "redist.exe");
+
+        // Someone replaces the file between the scan and the delete. The name
+        // is the same; the object behind it is not.
+        std::fs::remove_file(&target).unwrap();
+        std::fs::write(&target, b"substituted").unwrap();
+
+        match open_verified_for_delete(&plan) {
+            Err(DeleteBlockReason::TargetChanged) => {}
+            Err(other) => panic!("a substituted target must be refused, got {other:?}"),
+            Ok(_) => panic!("a substituted target must not verify"),
+        }
+        assert!(
+            target.exists(),
+            "the substituted object must be left untouched"
+        );
+    }
+
+    /// The mechanism itself, asserted directly rather than inferred: while the
+    /// verified handle is held, the object cannot be renamed out from under
+    /// it. That is what removes the window - not the identity check, which
+    /// only proves what was true a moment ago.
+    #[cfg(windows)]
+    #[test]
+    fn a_held_target_cannot_be_renamed_away_before_it_is_deleted() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("library");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("redist.exe");
+        std::fs::write(&target, b"MZ").unwrap();
+
+        let plan = plan_for(&root, "redist.exe");
+        let held = open_verified_for_delete(&plan).expect("verify");
+
+        let rename = std::fs::rename(&target, root.join("moved.exe"));
+        assert!(
+            rename.is_err(),
+            "the held handle must deny the DELETE access a rename needs, \
+             otherwise the name could still be re-pointed before the removal"
+        );
+
+        held.delete().expect("delete through the handle");
+        assert!(!target.exists());
+    }
+
+    /// The three statuses the scan actually writes today. Both callers agreed
+    /// on these already; the test exists so that agreement is pinned rather
+    /// than coincidental.
+    #[test]
+    fn discovery_policy_allows_exactly_complete_and_game_bound_heuristic() {
+        assert_eq!(discovery_block_reason(true, Some("complete")), None);
+        assert_eq!(discovery_block_reason(false, Some("complete")), None);
+        assert_eq!(discovery_block_reason(true, Some("heuristic")), None);
+
+        // Heuristic evidence can show a folder holds a game; it can never show
+        // a launcher has stopped managing one, so it cannot authorize calling
+        // a folder orphaned.
+        assert!(discovery_block_reason(false, Some("heuristic")).is_some());
+        assert!(discovery_block_reason(true, Some("degraded")).is_some());
+        assert!(discovery_block_reason(false, Some("degraded")).is_some());
+        assert!(discovery_block_reason(true, None).is_some());
+        assert!(discovery_block_reason(false, None).is_some());
+    }
+
+    /// The case the three copies of this policy disagreed about, and the
+    /// reason they were merged. A status this build has never heard of used to
+    /// be *allowed* by the load query's SQL and by the scan's persistence path
+    /// (both only looked for `NULL` and `degraded`) while the delete preflight
+    /// refused it. Unreachable while only three statuses are ever written -
+    /// which is a fact about today's writer, not about the policy. Whatever
+    /// gets added next must fail closed on all three paths by default.
+    #[test]
+    fn an_unrecognised_discovery_status_blocks_rather_than_being_waved_through() {
+        for status in ["failed", "partial", "", "COMPLETE"] {
+            assert!(
+                discovery_block_reason(true, Some(status)).is_some(),
+                "game-bound finding must be blocked by unknown status {status:?}"
+            );
+            assert!(
+                discovery_block_reason(false, Some(status)).is_some(),
+                "orphan candidate must be blocked by unknown status {status:?}"
+            );
+        }
+    }
+
     #[test]
     fn rejects_unsafe_relative_paths() {
         for path in [
@@ -617,6 +1126,14 @@ mod tests {
             "file:stream",
             "a\\\\b",
             "a\\",
+            // Win32 strips trailing dots and spaces when resolving a
+            // component, so these name the same object as "dir\\foo" despite
+            // comparing unequal as strings - accepting them would let a
+            // snapshot's rel_path silently drift onto a different file.
+            "dir\\foo.",
+            "dir\\foo..",
+            "dir\\foo ",
+            "dir\\foo.  ",
         ] {
             assert!(normalize_relative_path(path).is_err(), "accepted {path:?}");
         }
@@ -626,11 +1143,32 @@ mod tests {
         );
     }
 
+    /// `attributes` is still stored as a narrower `u32` after decode, so it
+    /// keeps its overflow check. `volume_serial` used to share this same
+    /// ceiling but no longer does - see the next test.
     #[test]
-    fn identity_decode_rejects_narrowing_overflow() {
+    fn identity_decode_rejects_narrowing_overflow_in_attributes() {
         let too_large = u64::from(u32::MAX) + 1;
-        assert!(FileIdentity::decode(&format!("{too_large}:1:file:1:1:0")).is_err());
         assert!(FileIdentity::decode(&format!("1:1:file:1:1:{too_large}")).is_err());
+    }
+
+    /// `volume_serial` was widened to `u64` so the non-Windows `identity()`
+    /// branch can store a full `st_dev` without truncating it (see the
+    /// field's doc comment on [`FileIdentity`]); a value beyond `u32::MAX`
+    /// must now round-trip through encode/decode instead of erroring.
+    #[test]
+    fn identity_round_trips_a_volume_serial_beyond_u32() {
+        let beyond_u32 = u64::from(u32::MAX) + 12345;
+        let identity = FileIdentity {
+            volume_serial: beyond_u32,
+            file_index: 1,
+            kind: TargetKind::File,
+            size: 1,
+            last_write_time: 1,
+            attributes: 0,
+        };
+        let decoded = FileIdentity::decode(&identity.encode()).unwrap();
+        assert_eq!(decoded.volume_serial, beyond_u32);
     }
 
     #[test]

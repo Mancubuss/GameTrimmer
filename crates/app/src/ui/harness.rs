@@ -216,6 +216,13 @@ impl UiTest {
                     file_id: i,
                     game_id: i,
                     game_name: format!("Test Game {i}"),
+                    // These two stand for ordinary launcher-known games, which
+                    // is what the seeded libraries say they are. Leaving this
+                    // `None` would make both of them the *unclaimed* kind -
+                    // folder-scan or hand-added - and the tree marks those with
+                    // a trailing diamond (GT-38), which would quietly change
+                    // every row label these tests look up by name.
+                    app_id: Some(format!("{}", 100 + i)),
                     install_dir: std::path::PathBuf::from("C:\\Games\\Test"),
                     library: Some(crate::model::LibraryOrigin {
                         vendor: Some(SEEDED_LIBRARIES[i as usize].0.to_string()),

@@ -28,6 +28,19 @@ const LOG_FILE_NAME: &str = "gametrimmer.log";
 pub(crate) const RULES_FILE_NAME: &str = "rules.json";
 /// Localization-detector data pack (community rules).
 pub const L10N_RULES_FILE_NAME: &str = "l10n_rules.json";
+/// This machine's own exceptions - the files its owner has said never to
+/// touch, one keep rule each (see
+/// [`gametrimmer_core::rules::RulePolarity::Keep`]).
+///
+/// A third file rather than more rules inside `rules.json`, for two reasons
+/// that both come down to ownership. `rules.json` is replaceable: "Restore
+/// defaults" overwrites it wholesale, and an imported community pack merges
+/// into it - neither may take a user's own decisions with it. And the split is
+/// what keeps the pack the user can share free of the exceptions they cannot:
+/// an exception names one path in one of *their* games and means nothing on
+/// anyone else's machine, which is why export/import deliberately does not
+/// carry this file.
+pub(crate) const PERSONAL_RULES_FILE_NAME: &str = "personal_rules.json";
 
 /// Messages sent from a worker thread back to the UI thread.
 #[derive(Debug)]
@@ -265,7 +278,13 @@ pub(crate) fn occupancy_or_default(conn: &rusqlite::Connection) -> crate::model:
 }
 
 /// The directory every data file lives in: next to the executable.
-fn exe_dir() -> io::Result<PathBuf> {
+///
+/// `pub(crate)` rather than private: `main::single_instance_guard` (GT-75)
+/// needs the same directory the database, settings and log all key off of,
+/// resolved the exact same way, so the guard is checking the very directory
+/// whose file it is trying to protect rather than a path that could drift
+/// from it.
+pub(crate) fn exe_dir() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let dir = exe
         .parent()
@@ -323,9 +342,37 @@ pub fn ensure_l10n_rules_path() -> io::Result<PathBuf> {
     ensure_data_file_in(&exe_dir()?, L10N_RULES_FILE_NAME, &builtin)
 }
 
+/// Ensures `personal_rules.json` exists next to the executable and returns
+/// its path, materializing an empty pack on first run.
+///
+/// Seeded empty rather than left absent so the file is there to be found,
+/// audited and hand-edited before the first exception is added - the same
+/// transparency contract as the other two packs, and the answer to "where do
+/// my exceptions live?" being a path that exists.
+pub fn ensure_personal_rules_path() -> io::Result<PathBuf> {
+    let empty = gametrimmer_core::rules::serialize_rule_list(&[]).map_err(io::Error::other)?;
+    ensure_data_file_in(&exe_dir()?, PERSONAL_RULES_FILE_NAME, &empty)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The empty pack the file is seeded with has to be a pack the scan can
+    /// then load - a first run would otherwise warn about its own default.
+    #[test]
+    fn the_seeded_personal_pack_is_a_valid_empty_rule_pack() {
+        let empty = gametrimmer_core::rules::serialize_rule_list(&[]).expect("serialize");
+
+        let engine = gametrimmer_core::rules::RuleEngine::from_json(&empty)
+            .expect("the seeded personal pack must compile");
+
+        assert_eq!(
+            engine.classify(r"data\loc_de.pak", Some("620")),
+            gametrimmer_core::rules::Verdict::Unmatched,
+            "an empty exception pack must veto nothing",
+        );
+    }
 
     /// GT-127's regression guard, written because the regression happened.
     ///

@@ -18,6 +18,20 @@ pub trait Remover {
     fn remove(&self, path: &Path) -> Result<()>;
     /// Stable action name journaled into the `operations` table.
     fn action(&self) -> &'static str;
+
+    /// Removes a target whose identity has just been proven, while it is still
+    /// held open - see [`crate::safety::VerifiedTarget`].
+    ///
+    /// The default releases the handle and falls back to removing by name,
+    /// which is all a remover that only speaks paths can do. Overriding it is
+    /// how a remover opts into having no window between the proof and the act.
+    fn remove_target(&self, target: crate::safety::VerifiedTarget) -> Result<()> {
+        // The handle must be gone before the path-based removal runs: it was
+        // opened without `FILE_SHARE_DELETE`, so leaving it open would make
+        // the very deletion it exists to protect fail with a sharing
+        // violation.
+        self.remove(&target.into_path())
+    }
 }
 
 /// Recoverable remover: sends paths to the Windows Recycle Bin via the
@@ -34,6 +48,13 @@ impl Remover for RecycleBin {
     fn action(&self) -> &'static str {
         "recycle"
     }
+
+    // Deliberately not overridden. `trash::delete` goes through the shell's
+    // `IFileOperation`, which takes a path and gives no way to hand it a
+    // handle, so recycling cannot be made handle-based at all. It keeps the
+    // original resolve-twice window knowingly - and it is much the better of
+    // the two modes to keep it in: if it ever did race onto a different
+    // object, that object is in the Recycle Bin, not destroyed.
 }
 
 /// Fast remover: deletes files/directories permanently via `std::fs`, with
@@ -57,6 +78,13 @@ impl Remover for PermanentDelete {
 
     fn action(&self) -> &'static str {
         "delete"
+    }
+
+    /// The irreversible mode, so it is the one that must not race: this acts
+    /// on the proven handle itself and never resolves the name a second time.
+    fn remove_target(&self, target: crate::safety::VerifiedTarget) -> Result<()> {
+        target.delete()?;
+        Ok(())
     }
 }
 
@@ -110,7 +138,8 @@ pub struct ReconciledOperation {
 pub fn reconcile_pending_operations(conn: &mut Connection) -> Result<Vec<ReconciledOperation>> {
     let pending = {
         let mut stmt = conn.prepare(
-            "SELECT id, trusted_root, rel_path, expected_identity
+            "SELECT id, trusted_root, rel_path, expected_identity,
+                    expected_tree_fingerprint
              FROM operations WHERE status = 'pending' ORDER BY id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -119,13 +148,14 @@ pub fn reconcile_pending_operations(conn: &mut Connection) -> Result<Vec<Reconci
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()?
     };
 
     let mut reconciled = Vec::with_capacity(pending.len());
-    for (operation_id, root, rel_path, expected_identity) in pending {
+    for (operation_id, root, rel_path, expected_identity, expected_fingerprint) in pending {
         let classification = (|| {
             let root = root.ok_or_else(|| "missing trusted root".to_string())?;
             let rel_path = rel_path.ok_or_else(|| "missing relative path".to_string())?;
@@ -145,7 +175,48 @@ pub fn reconcile_pending_operations(conn: &mut Connection) -> Result<Vec<Reconci
             match current_identity(&target) {
                 Err(DeleteBlockReason::Missing) => Ok(Some(("reconciled_removed", None))),
                 Ok(current) if current.same_object(&expected_identity) => {
-                    Ok(Some(("not_applied", None)))
+                    // The object is still there and is still the same object -
+                    // but for a directory that proves nothing about its
+                    // contents. `remove_dir_all` interrupted halfway leaves the
+                    // folder in place, with the same file index, holding an
+                    // unknown fraction of what it had. Calling that
+                    // `not_applied` would be the one verdict that is certainly
+                    // wrong: it invites the same delete to be proposed again
+                    // over a tree that is already half gone, and reports the
+                    // space as still occupied.
+                    if current.kind == TargetKind::Directory {
+                        match (&expected_fingerprint, crate::safety::tree_fingerprint(&target)) {
+                            (Some(expected), Ok(actual)) if *expected == actual => {
+                                Ok(Some(("not_applied", None)))
+                            }
+                            (Some(_), Ok(_)) => Ok(Some((
+                                "partially_applied",
+                                Some(
+                                    "the directory still exists but its contents changed \
+                                     since the scan - the delete may have been interrupted \
+                                     partway"
+                                        .to_string(),
+                                ),
+                            ))),
+                            // No fingerprint was captured (a row written before
+                            // schema v5), or the tree cannot be walked now.
+                            // Either way the question is unanswerable, and an
+                            // unanswerable question is not evidence that
+                            // nothing happened.
+                            (None, _) => Ok(Some((
+                                "unknown",
+                                Some(
+                                    "no directory fingerprint was recorded for this intent"
+                                        .to_string(),
+                                ),
+                            ))),
+                            (Some(_), Err(error)) => {
+                                Ok(Some(("unknown", Some(error.to_string()))))
+                            }
+                        }
+                    } else {
+                        Ok(Some(("not_applied", None)))
+                    }
                 }
                 Ok(_) => Ok(Some((
                     "conflict",
@@ -256,14 +327,16 @@ pub fn prepare_delete_plans(
                 DeleteBlockReason::MissingSafetyEvidence
             )));
         };
-        let evidence_allows_deletion = matches!(
-            (game_id.is_some(), evidence_status),
-            (_, "complete") | (true, "heuristic")
-        );
-        if !evidence_allows_deletion {
+        // One shared policy with the scan's persistence path and the load
+        // query - see `safety::discovery_block_reason`. The reason it returns
+        // is more specific than `DegradedDiscovery`, which this used to report
+        // for every kind of insufficient evidence including a wholly missing
+        // row, so it is passed through instead of being flattened.
+        if let Some(reason) =
+            crate::safety::discovery_block_reason(game_id.is_some(), Some(evidence_status))
+        {
             return Err(crate::error::CoreError::Other(format!(
-                "delete preflight blocked file_id {file_id}: {}",
-                DeleteBlockReason::DegradedDiscovery
+                "delete preflight blocked file_id {file_id}: {reason}"
             )));
         }
         if let Some(reason) = block_reason {
@@ -379,8 +452,8 @@ pub fn execute_delete_plans_observed(
         conn.execute(
             "INSERT INTO operations
              (ts, action, src_path, dst_path, status, scan_id, file_id,
-              trusted_root, rel_path, expected_identity)
-             VALUES (?1, ?2, ?3, NULL, 'pending', ?4, ?5, ?6, ?7, ?8)",
+              trusted_root, rel_path, expected_identity, expected_tree_fingerprint)
+             VALUES (?1, ?2, ?3, NULL, 'pending', ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 ts,
                 remover.action(),
@@ -390,6 +463,10 @@ pub fn execute_delete_plans_observed(
                 plan.snapshot.trusted_root.to_string_lossy(),
                 plan.snapshot.rel_path.to_string_lossy(),
                 plan.snapshot.target_identity.encode(),
+                // `None` for a file. For a directory this is the only thing
+                // that can tell a half-finished `remove_dir_all` from one that
+                // never started - the folder's identity survives both.
+                plan.snapshot.tree_fingerprint.as_deref(),
             ],
         )?;
         let operation_id = conn.last_insert_rowid();
@@ -399,10 +476,20 @@ pub fn execute_delete_plans_observed(
         // allocation or one of several. Costs one open per file, on a bounded,
         // user-initiated batch - never on a scan.
         let mut share = None;
-        let (status, error) = match validate_delete_plan(plan) {
-            Ok(path) => {
+        // `open_verified_for_delete`, not `validate_delete_plan`: the latter
+        // proves identity and then closes the handle, leaving the remover to
+        // resolve the name again. This keeps the proven handle open and hands
+        // it to the remover, so there is no second resolution to race.
+        let (status, error) = match crate::safety::open_verified_for_delete(plan) {
+            Ok(target) => {
+                let path = target.path().to_path_buf();
+                // Read while it still exists: afterwards there is no way to
+                // tell whether this path was the last name for its allocation
+                // or one of several. Safe to do with the verification handle
+                // still open - this asks only for FILE_READ_ATTRIBUTES, which
+                // Windows exempts from share-mode checks.
                 share = crate::hardlink::file_share(&path);
-                match remover.remove(&path) {
+                match remover.remove_target(target) {
                     Ok(()) => (FsOutcome::Removed, None),
                     Err(remove_error) => match std::fs::symlink_metadata(&path) {
                         Err(metadata_error)
@@ -666,6 +753,65 @@ mod tests {
         assert_eq!(outcomes[0].status, FsOutcome::AlreadyAbsent);
     }
 
+    /// A removal that fails while the target is *still there* must be
+    /// `Failed`, never `AlreadyAbsent`.
+    ///
+    /// The two are settled by re-reading the target's metadata after a failed
+    /// remove: `NotFound` means it really did go, anything else means it did
+    /// not. `AlreadyAbsent` is the outcome that lets the caller purge the row,
+    /// so getting this backwards would drop a finding for a file that is still
+    /// on disk - the user is told it is gone, it is not, and nothing ever
+    /// proposes it again. Only the `NotFound` side of that branch was covered.
+    #[test]
+    fn a_failed_removal_with_the_target_still_present_is_failed_not_already_absent() {
+        /// Fails every removal, the way a permission denial or a sharing
+        /// violation does - without needing to manufacture either.
+        struct RefusingRemover;
+
+        impl Remover for RefusingRemover {
+            fn remove(&self, _path: &Path) -> Result<()> {
+                Err(crate::error::CoreError::Other("access is denied".into()))
+            }
+
+            fn action(&self) -> &'static str {
+                "delete"
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("locked.bin");
+        std::fs::write(&target, b"x").unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "locked.bin", "one");
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+        let plans = prepare_delete_plans(&conn, &[file_id], "delete").unwrap();
+
+        let outcomes = execute_delete_plans_observed(
+            &mut conn,
+            &RefusingRemover,
+            &plans,
+            |_, _, _| {},
+            |_, _| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcomes[0].status,
+            FsOutcome::Failed,
+            "a refused removal must not be reported as already absent"
+        );
+        assert!(
+            outcomes[0].error.is_some(),
+            "a failure must carry its reason"
+        );
+        assert!(
+            target.exists(),
+            "the file is still there - that is the whole point"
+        );
+    }
+
     /// The whole library root going away must not be read as "every file in it
     /// was already deleted". `AlreadyAbsent` is what lets the caller purge the
     /// rows, so this is the difference between a disconnected drive and a
@@ -739,6 +885,198 @@ mod tests {
             .query_row("SELECT status FROM operations", [], |row| row.get(0))
             .unwrap();
         assert_eq!(status, "pending");
+    }
+
+    /// A directory keeps its volume serial and file index through an
+    /// interrupted `remove_dir_all`, so `same_object` says "untouched" about a
+    /// folder that has already lost half its contents. That verdict is worse
+    /// than no verdict: it invites the same delete to be proposed again over a
+    /// tree that is already partly destroyed, and reports the space as still
+    /// occupied. The scan-time fingerprint is the only thing that separates
+    /// the two cases.
+    #[test]
+    fn a_half_deleted_directory_is_not_reported_as_untouched() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("library");
+        let target = root.join("bonus");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("keep.bin"), b"a").unwrap();
+        std::fs::write(target.join("gone.bin"), b"b").unwrap();
+
+        let snapshot = crate::safety::capture_safety_snapshot(&root, "bonus").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO operations
+                 (ts, action, src_path, status, trusted_root, rel_path,
+                  expected_identity, expected_tree_fingerprint)
+             VALUES (0, 'delete', ?1, 'pending', ?2, 'bonus', ?3, ?4)",
+            rusqlite::params![
+                target.to_string_lossy(),
+                root.to_string_lossy(),
+                snapshot.target_identity.encode(),
+                snapshot.tree_fingerprint,
+            ],
+        )
+        .unwrap();
+
+        // The delete got partway: one child gone, the directory itself still
+        // there and still the same object.
+        std::fs::remove_file(target.join("gone.bin")).unwrap();
+
+        let reconciled = reconcile_pending_operations(&mut conn).unwrap();
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(
+            reconciled[0].outcome, "partially_applied",
+            "a directory that lost contents must not settle as not_applied"
+        );
+    }
+
+    /// The other half of the same comparison: an untouched directory must
+    /// still settle as `not_applied`, or the fingerprint check would just be a
+    /// way of never trusting anything.
+    #[test]
+    fn an_untouched_directory_still_reconciles_as_not_applied() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("library");
+        let target = root.join("bonus");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("keep.bin"), b"a").unwrap();
+
+        let snapshot = crate::safety::capture_safety_snapshot(&root, "bonus").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO operations
+                 (ts, action, src_path, status, trusted_root, rel_path,
+                  expected_identity, expected_tree_fingerprint)
+             VALUES (0, 'delete', ?1, 'pending', ?2, 'bonus', ?3, ?4)",
+            rusqlite::params![
+                target.to_string_lossy(),
+                root.to_string_lossy(),
+                snapshot.target_identity.encode(),
+                snapshot.tree_fingerprint,
+            ],
+        )
+        .unwrap();
+
+        let reconciled = reconcile_pending_operations(&mut conn).unwrap();
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].outcome, "not_applied");
+    }
+
+    /// A row written before schema v5 has no fingerprint. That is an
+    /// unanswerable question, and an unanswerable question must not be
+    /// answered with the confident "nothing happened".
+    #[test]
+    fn a_directory_intent_without_a_fingerprint_settles_as_unknown() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("library");
+        let target = root.join("bonus");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("keep.bin"), b"a").unwrap();
+
+        let identity = crate::safety::current_identity(&target).unwrap().encode();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO operations
+                 (ts, action, src_path, status, trusted_root, rel_path, expected_identity)
+             VALUES (0, 'delete', ?1, 'pending', ?2, 'bonus', ?3)",
+            rusqlite::params![
+                target.to_string_lossy(),
+                root.to_string_lossy(),
+                identity
+            ],
+        )
+        .unwrap();
+
+        let reconciled = reconcile_pending_operations(&mut conn).unwrap();
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].outcome, "unknown");
+    }
+
+    /// The regression this card exists for: reconciliation used to be
+    /// reachable only from `worker::load::run_load`, which the app starts only
+    /// when the database already holds findings. Crash midway through a delete
+    /// with an empty `findings` table and the `pending` row was stranded
+    /// forever - the only code that could settle it was gated on unrelated
+    /// state. `db::open` now reconciles unconditionally, so the empty-findings
+    /// case is exactly what this asserts: no scan, no findings, just an open.
+    #[test]
+    fn opening_a_database_with_no_findings_still_settles_a_crash_left_intent() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("library");
+        std::fs::create_dir(&root).unwrap();
+        let target = root.join("leftover.bin");
+        std::fs::write(&target, b"x").unwrap();
+        let identity = crate::safety::current_identity(&target).unwrap().encode();
+
+        let db_path = parent.path().join("gametrimmer.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            conn.execute(
+                "INSERT INTO operations
+                     (ts, action, src_path, status, trusted_root, rel_path, expected_identity)
+                 VALUES (0, 'delete', ?1, 'pending', ?2, 'leftover.bin', ?3)",
+                rusqlite::params![target.to_string_lossy(), root.to_string_lossy(), identity],
+            )
+            .unwrap();
+            let findings: i64 = conn
+                .query_row("SELECT COUNT(*) FROM findings", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(findings, 0, "the whole point is an empty findings table");
+        }
+
+        // The delete did happen; the process died before the row was settled.
+        std::fs::remove_file(&target).unwrap();
+
+        let (conn, reconciliation) = crate::db::open_reconciling(&db_path).unwrap();
+        assert!(reconciliation.error.is_none());
+        assert_eq!(
+            reconciliation.reconciled.len(),
+            1,
+            "the open must settle the stranded intent"
+        );
+        let (status, outcome): (String, String) = conn
+            .query_row("SELECT status, outcome FROM operations", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(status, "final");
+        assert_eq!(outcome, "reconciled_removed");
+    }
+
+    /// The plain `open` must reconcile too - it is the entry point nineteen of
+    /// twenty callers use, so if it could skip reconciliation the guarantee
+    /// would be worth nothing.
+    #[test]
+    fn the_plain_open_reconciles_as_well_as_the_reporting_one() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("library");
+        std::fs::create_dir(&root).unwrap();
+        let target = root.join("leftover.bin");
+        std::fs::write(&target, b"x").unwrap();
+        let identity = crate::safety::current_identity(&target).unwrap().encode();
+
+        let db_path = parent.path().join("gametrimmer.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            conn.execute(
+                "INSERT INTO operations
+                     (ts, action, src_path, status, trusted_root, rel_path, expected_identity)
+                 VALUES (0, 'delete', ?1, 'pending', ?2, 'leftover.bin', ?3)",
+                rusqlite::params![target.to_string_lossy(), root.to_string_lossy(), identity],
+            )
+            .unwrap();
+        }
+        std::fs::remove_file(&target).unwrap();
+
+        let conn = crate::db::open(&db_path).unwrap();
+        let (status, outcome): (String, String) = conn
+            .query_row("SELECT status, outcome FROM operations", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(status, "final");
+        assert_eq!(outcome, "reconciled_removed");
     }
 
     /// The counterpart: with the root present and the target gone, the intent

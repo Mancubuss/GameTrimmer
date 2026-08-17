@@ -2,6 +2,9 @@
 
 use rusqlite::OptionalExtension;
 
+use gametrimmer_core::ondisk;
+use gametrimmer_core::providers::steam;
+
 use super::*;
 
 /// One orphaned-residue folder (orphan-residue safety) ready to persist: its absolute path,
@@ -146,7 +149,249 @@ pub(super) fn collect_orphans(
             collection.orphans.extend(library_orphans);
         }
     }
+    collect_steam_service_area_orphans(libraries, cancel, &mut collection);
     collection
+}
+
+/// GT-23: orphan detection for Steam's two remaining service areas -
+/// `steamapps/workshop` (Workshop content of an uninstalled game) and
+/// `depotcache` (cached depot manifests) - each with its own per-item
+/// "is anything still referencing this?" check, since a blind sweep of
+/// either risks deleting live data (a still-subscribed Workshop item, or a
+/// manifest an installed game still needs).
+///
+/// Not folded into [`orphan_spec_for`]/the loop above: both areas need
+/// evidence a single `DiscoveredLibrary`'s already-known `games` can't
+/// supply - Workshop needs a *separate* small state file per appid
+/// (`appworkshop_<appid>.acf`), and depotcache needs evidence from *every*
+/// Steam library, not just its own (see `steam::installed_depots_for_library`
+/// for the real-machine evidence that forced that). So this runs once, after
+/// the generic per-library loop, over every already-discovered library.
+fn collect_steam_service_area_orphans(
+    libraries: &[DiscoveredLibrary],
+    cancel: &AtomicBool,
+    collection: &mut OrphanCollection,
+) {
+    // Only libraries whose manifest inventory is provably complete get this
+    // treatment - same gate `orphan_spec_for` applies to the primary pass.
+    // A degraded library's `games` list may be missing entries, which would
+    // make an installed game's Workshop subscription or depot dependency
+    // look orphaned.
+    let steam_libraries: Vec<&DiscoveredLibrary> = libraries
+        .iter()
+        .filter(|library| {
+            library.vendor == "steam" && library.orphan_evidence == OrphanEvidence::Authoritative
+        })
+        .collect();
+
+    collect_workshop_orphans(&steam_libraries, cancel, collection);
+    collect_depotcache_orphans(&steam_libraries, cancel, collection);
+}
+
+/// Reads and parses one appid's `appworkshop_<appid>.acf`, returning the set
+/// of published-file ids Steam currently lists as installed - or `None` when
+/// the file is missing, unreadable, or malformed. Both collapse to the same
+/// `None` deliberately: GT-23's rule is that missing and unreadable evidence
+/// both degrade to "do not flag", so the caller does not need (and must not
+/// be tempted to add) different handling for the two.
+fn read_workshop_live_items(state_path: &Path) -> Option<HashSet<String>> {
+    let contents = std::fs::read_to_string(state_path).ok()?;
+    steam::parse_workshop_installed_items(&contents)
+}
+
+/// Detects orphaned Workshop item folders across every evidence-authoritative
+/// Steam library: for each appid under `steamapps/workshop/content/`, reads
+/// that appid's own `appworkshop_<appid>.acf` and flags exactly the item
+/// folders it does not list as installed (see
+/// `orphans::workshop_item_orphans`).
+///
+/// An appid whose state file is missing, unreadable, or malformed is skipped
+/// entirely (fail closed) - no items under it are flagged - without recording
+/// an issue: this is a supplementary, already-low-confidence detection pass,
+/// not the primary discovery evidence that `orphan_evidence` guards, so a gap
+/// here is not surfaced as a scan-wide diagnostic.
+fn collect_workshop_orphans(
+    steam_libraries: &[&DiscoveredLibrary],
+    cancel: &AtomicBool,
+    collection: &mut OrphanCollection,
+) {
+    for library in steam_libraries {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let content_dir = orphans::steam_workshop_content_dir(&library.path);
+        let appid_dirs = match orphans::list_subdirs(&content_dir) {
+            Ok(dirs) => dirs,
+            Err(err) => {
+                collection.issues.push(OrphanCollectionIssue {
+                    provider: "steam",
+                    library_path: library.path.clone(),
+                    stage: "workshop-enumeration",
+                    path: content_dir,
+                    message: err.to_string(),
+                });
+                continue;
+            }
+        };
+
+        for appid_dir in appid_dirs {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let Some(appid) = appid_dir.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(live_items) =
+                read_workshop_live_items(&orphans::steam_workshop_state_path(&library.path, appid))
+            else {
+                continue;
+            };
+
+            let candidates = match orphans::workshop_item_orphans(&appid_dir, &live_items) {
+                Ok(candidates) => candidates,
+                Err(err) => {
+                    collection.issues.push(OrphanCollectionIssue {
+                        provider: "steam",
+                        library_path: library.path.clone(),
+                        stage: "workshop-item-enumeration",
+                        path: appid_dir,
+                        message: err.to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            push_measured_orphans(collection, "steam", &library.path, candidates, cancel);
+        }
+    }
+}
+
+/// Detects orphaned `depotcache/*.manifest` files across every
+/// evidence-authoritative Steam library.
+///
+/// The proof-of-need set has to be global (see
+/// `steam::installed_depots_for_library`'s doc comment for the real-machine
+/// evidence): built once, from every Steam library's installed depots, before
+/// any single library's cache files are checked. If reading any library's
+/// installed depots fails, the whole set is untrustworthy - an undercount
+/// there could flag a manifest some other library's game still needs - so
+/// depotcache detection is skipped for the entire scan rather than proceeding
+/// with partial evidence.
+fn collect_depotcache_orphans(
+    steam_libraries: &[&DiscoveredLibrary],
+    cancel: &AtomicBool,
+    collection: &mut OrphanCollection,
+) {
+    if steam_libraries.is_empty() {
+        return;
+    }
+
+    let mut needed_files: HashSet<String> = HashSet::new();
+    for library in steam_libraries {
+        match steam::installed_depots_for_library(&library.path) {
+            Ok(pairs) => needed_files.extend(pairs.into_iter().map(|(depot_id, manifest_id)| {
+                format!("{depot_id}_{manifest_id}.manifest").to_lowercase()
+            })),
+            Err(err) => {
+                collection.issues.push(OrphanCollectionIssue {
+                    provider: "steam",
+                    library_path: library.path.clone(),
+                    stage: "depotcache-evidence",
+                    path: library.path.join("steamapps"),
+                    message: err.to_string(),
+                });
+                return;
+            }
+        }
+    }
+
+    for library in steam_libraries {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let depotcache_dir = orphans::steam_depotcache_dir(&library.path);
+        let candidates = match orphans::depotcache_orphans(&depotcache_dir, &needed_files) {
+            Ok(candidates) => candidates,
+            Err(err) => {
+                collection.issues.push(OrphanCollectionIssue {
+                    provider: "steam",
+                    library_path: library.path.clone(),
+                    stage: "depotcache-enumeration",
+                    path: depotcache_dir,
+                    message: err.to_string(),
+                });
+                continue;
+            }
+        };
+        push_measured_orphans(collection, "steam", &library.path, candidates, cancel);
+    }
+}
+
+/// Measures every candidate and appends it to `collection` as a
+/// [`PreparedOrphan`]. A directory candidate (Workshop item folders) is
+/// walked and summed like the primary per-library loop above;
+/// [`OrphanKind::UnreferencedFile`] candidates (single depot-cache manifests)
+/// are measured directly, since `scan_dir_cancellable` requires a directory
+/// and would simply error on a file.
+///
+/// Unlike the primary loop, one candidate's measurement failure here only
+/// discards that candidate, not the whole library's batch: these are already
+/// a best-effort supplementary pass over a low-confidence category, so there
+/// is no reason to hide otherwise-good results because one item vanished
+/// mid-scan.
+fn push_measured_orphans(
+    collection: &mut OrphanCollection,
+    provider: &'static str,
+    evidence_library_path: &Path,
+    candidates: Vec<orphans::OrphanCandidate>,
+    cancel: &AtomicBool,
+) {
+    for candidate in candidates {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let measured = if candidate.kind == OrphanKind::UnreferencedFile {
+            measure_single_file(&candidate.path)
+        } else {
+            scan_dir_cancellable(&candidate.path, cancel)
+                .map(|entries| {
+                    entries.iter().fold((0u64, 0u64), |(sz, on_disk), entry| {
+                        (sz + entry.size, on_disk + entry.size_on_disk)
+                    })
+                })
+                .map_err(|err| err.to_string())
+        };
+        match measured {
+            Ok((size, size_on_disk)) => collection.orphans.push(PreparedOrphan {
+                full_path: candidate.path,
+                evidence_library_path: evidence_library_path.to_path_buf(),
+                size,
+                size_on_disk,
+                kind: candidate.kind,
+            }),
+            Err(message) => {
+                if !cancel.load(Ordering::Relaxed) {
+                    collection.issues.push(OrphanCollectionIssue {
+                        provider,
+                        library_path: evidence_library_path.to_path_buf(),
+                        stage: "orphan-measurement",
+                        path: candidate.path,
+                        message,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Logical + on-disk size of a single file - the [`scan_dir_cancellable`]
+/// equivalent for a candidate that is a file rather than a directory.
+fn measure_single_file(path: &Path) -> Result<(u64, u64), String> {
+    let metadata = std::fs::metadata(path).map_err(|err| err.to_string())?;
+    let logical = metadata.len();
+    let cluster = ondisk::cluster_size(path);
+    let size_on_disk = ondisk::on_disk_size(path, logical, cluster);
+    Ok((logical, size_on_disk))
 }
 
 /// Persists the detected orphaned residue and returns it as [`FindingRow`]s for
@@ -289,6 +534,7 @@ pub(super) fn persist_orphans(
                 file_id,
                 game_id: ORPHAN_GAME_ID,
                 game_name: String::new(),
+                app_id: None,
                 install_dir,
                 rel_path,
                 size: orphan.size,

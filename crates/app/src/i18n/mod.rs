@@ -351,6 +351,29 @@ pub struct Strings {
     pub ctx_reveal_in_explorer: &'static str,
     pub ctx_open_with: &'static str,
     pub ctx_copy_path: &'static str,
+    /// "Never touch this" - writes a personal exception for this one file in
+    /// this one game (see `worker::rules_io::add_personal_exception`).
+    pub ctx_never_touch: &'static str,
+    /// Why the entry above is greyed out: an exception is bound to a game by
+    /// its launcher id, and a folder-scan or manually added game has none, so
+    /// there is nothing to bind it to. Said rather than left to be guessed at
+    /// from a disabled control.
+    pub ctx_never_touch_needs_app_id: &'static str,
+    /// Hover text on a game row no launcher claims (marked in the tree with a
+    /// small diamond). Names what is unavailable for such a game rather than
+    /// only that it is different - the difference is only worth showing
+    /// because of what it costs.
+    pub game_without_launcher_id: &'static str,
+    /// Starts the sweep for programs installed outside every launcher.
+    pub btn_find_standalone: &'static str,
+    pub find_standalone_hint: &'static str,
+    /// Heading over the offered folders. Phrased as "installed outside a
+    /// launcher", never as "games found" - the sweep cannot tell the two
+    /// apart, and claiming otherwise is what this design refuses to do.
+    pub standalone_candidates_header: &'static str,
+    /// The sweep ran and found nothing. Said out loud, because silence here
+    /// reads as broken detection rather than as an empty answer.
+    pub no_standalone_candidates: &'static str,
 
     // -- app.rs: dialog titles / filter labels --
     pub add_library_dialog_title: &'static str,
@@ -402,6 +425,13 @@ pub struct Strings {
     // -- export.rs --
     pub csv_yes: &'static str,
     pub csv_no: &'static str,
+
+    // -- single_instance.rs --
+    /// Caption of the native message box shown when a second launch from the
+    /// same portable directory finds the first one already running (GT-75).
+    /// The body text is interpolated (whether the window could be raised),
+    /// so it lives in `messages::already_running_body` instead.
+    pub already_running_title: &'static str,
 }
 
 /// Returns the static string table for `lang`. Cheap - callers can call this
@@ -647,6 +677,22 @@ impl Strings {
             ("ctx_reveal_in_explorer", self.ctx_reveal_in_explorer),
             ("ctx_open_with", self.ctx_open_with),
             ("ctx_copy_path", self.ctx_copy_path),
+            ("ctx_never_touch", self.ctx_never_touch),
+            (
+                "ctx_never_touch_needs_app_id",
+                self.ctx_never_touch_needs_app_id,
+            ),
+            (
+                "game_without_launcher_id",
+                self.game_without_launcher_id,
+            ),
+            ("btn_find_standalone", self.btn_find_standalone),
+            ("find_standalone_hint", self.find_standalone_hint),
+            (
+                "standalone_candidates_header",
+                self.standalone_candidates_header,
+            ),
+            ("no_standalone_candidates", self.no_standalone_candidates),
             ("add_library_dialog_title", self.add_library_dialog_title),
             ("export_dialog_title", self.export_dialog_title),
             ("text_file_filter_label", self.text_file_filter_label),
@@ -687,6 +733,7 @@ impl Strings {
             ("unit_b", self.unit_b),
             ("csv_yes", self.csv_yes),
             ("csv_no", self.csv_no),
+            ("already_running_title", self.already_running_title),
         ]
     }
 }

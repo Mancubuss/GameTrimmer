@@ -250,6 +250,18 @@ pub(super) const STRINGS: Strings = Strings {
     ctx_reveal_in_explorer: "Reveal in Explorer",
     ctx_open_with: "Open with\u{2026}",
     ctx_copy_path: "Copy path",
+    ctx_never_touch: "Never touch this file in this game",
+    ctx_never_touch_needs_app_id: "Only for games a launcher identifies. This one was found by \
+         folder scan, so there is no id to pin the exception to.",
+    game_without_launcher_id: "No launcher lists this game - it was found by scanning folders, \
+         or you added it by hand. It has no launcher id, so anything read from a launcher \
+         manifest is unavailable for it, including personal exceptions.",
+    btn_find_standalone: "Find games installed outside launchers",
+    find_standalone_hint: "Reads the Windows uninstall list for programs that no launcher \
+         manages. It cannot tell a game from any other program, so it offers folders rather \
+         than adding them.",
+    standalone_candidates_header: "Installed outside any launcher - add the ones that are games:",
+    no_standalone_candidates: "Nothing found outside your launchers.",
 
     add_library_dialog_title: "Choose a library folder",
     export_dialog_title: "Export analysis results",
@@ -294,4 +306,6 @@ pub(super) const STRINGS: Strings = Strings {
 
     csv_yes: "yes",
     csv_no: "no",
+
+    already_running_title: "GameTrimmer is already running",
 };

@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS operations (
     trusted_root TEXT,
     rel_path TEXT,
     expected_identity TEXT,
+    -- NULL for a file (nothing to fingerprint) and for any row written before
+    -- schema v5. See `migrate_v5`.
+    expected_tree_fingerprint TEXT,
     completed_at INTEGER,
     outcome TEXT,
     error TEXT
@@ -125,16 +128,65 @@ CREATE INDEX IF NOT EXISTS idx_diagnostics_scan   ON scan_diagnostics(scan_id);
 /// `user_version` beside the version this build understands - the pair is
 /// what distinguishes "your database is from a newer build" from "it is
 /// damaged".
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 /// Opens (or creates) the database at `path` and applies the schema.
+/// What reconciling crash-left delete intents found while opening. Advisory:
+/// the durable effect is already written to `operations`, and this only exists
+/// so a caller with a user in front of it can say so out loud.
+#[derive(Debug, Default)]
+pub struct Reconciliation {
+    pub reconciled: Vec<crate::ops::ReconciledOperation>,
+    /// Reconciliation failed. Deliberately not fatal to the open - see
+    /// [`open_reconciling`].
+    pub error: Option<CoreError>,
+}
+
 pub fn open(path: &Path) -> Result<Connection> {
-    let conn = Connection::open(path)?;
+    // The reconciliation result is dropped here on purpose. It is advisory:
+    // rows either got their final status written, or stayed `pending` for the
+    // next open to settle - nothing is lost either way. Callers that show the
+    // user warnings use `open_reconciling` instead. What must NOT exist is an
+    // open that skips reconciliation entirely, which is why this delegates
+    // rather than offering reconciliation as an opt-in second function.
+    open_reconciling(path).map(|(conn, _)| conn)
+}
+
+/// [`open`], plus what reconciling crash-left intents turned up.
+///
+/// Reconciliation used to hang off `worker::load::run_load`, which only runs
+/// when the database already holds findings. A crash midway through a delete
+/// with an empty `findings` table therefore left its `pending` rows
+/// unreconciled *forever* - the one path that could settle them was gated on
+/// unrelated state. Doing it here makes it unconditional on any open, which is
+/// what the safety audit's definition of done asked for.
+///
+/// A reconciliation failure does not fail the open: the database is perfectly
+/// usable, the pending rows simply stay pending for a later attempt, and
+/// refusing to open would strand the user with no way to reach their own data.
+/// The error is handed back rather than swallowed.
+///
+/// This does mean read-only-feeling callers (the diagnostic bundle in
+/// `crate::bundle`) also reconcile. That is intended: reconciliation is
+/// idempotent, performs no filesystem mutation, and a bundle taken from a
+/// database with unsettled intents should describe the settled truth.
+pub fn open_reconciling(path: &Path) -> Result<(Connection, Reconciliation)> {
+    let mut conn = Connection::open(path)?;
     configure(&conn)?;
     ensure_supported_schema_version(&conn)?;
     apply_schema(&conn)?;
     migrate(&conn)?;
-    Ok(conn)
+    let outcome = match crate::ops::reconcile_pending_operations(&mut conn) {
+        Ok(reconciled) => Reconciliation {
+            reconciled,
+            error: None,
+        },
+        Err(error) => Reconciliation {
+            reconciled: Vec::new(),
+            error: Some(error),
+        },
+    };
+    Ok((conn, outcome))
 }
 
 /// Opens an in-memory database with the schema applied. Intended for tests.
@@ -231,6 +283,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 4 {
         migrate_v4(conn)?;
         conn.pragma_update(None, "user_version", 4)?;
+        version = 4;
+    }
+    if version < 5 {
+        migrate_v5(conn)?;
+        conn.pragma_update(None, "user_version", 5)?;
     }
     Ok(())
 }
@@ -359,6 +416,44 @@ fn migrate_v3(conn: &Connection) -> Result<()> {
 /// consulted - dropping it is a net win on every measured path.
 fn migrate_v4(conn: &Connection) -> Result<()> {
     conn.execute("DROP INDEX IF EXISTS idx_files_scan_id", [])?;
+    Ok(())
+}
+
+/// Adds `operations.expected_tree_fingerprint`, without which reconciliation
+/// cannot tell a *partially* deleted directory from one that was never touched.
+///
+/// `same_object` compares volume serial + file index + kind, and a directory
+/// keeps its file index through an interrupted `remove_dir_all`: the folder is
+/// still there, still the same object, with an unknown amount of its contents
+/// already gone. Reconciliation therefore classified it `not_applied` - "the
+/// delete never happened" - which is the one answer that is definitely wrong,
+/// because acting on it means proposing the same delete again over a tree that
+/// is already half destroyed, and reporting the space as still occupied.
+///
+/// Recording the scan-time fingerprint lets the comparison ask the question
+/// that actually distinguishes the two, and a directory whose identity matches
+/// but whose contents do not is classified as needing a human, not as
+/// untouched.
+///
+/// Existing rows get `NULL`, which reads as "no fingerprint was captured" and
+/// keeps its own conservative branch - a pre-migration intent is not silently
+/// promoted to a confident verdict.
+fn migrate_v5(conn: &Connection) -> Result<()> {
+    // The table guard is not redundant with the column guard: `apply_schema`
+    // creates `operations` before `migrate` runs on any real database, but the
+    // migration tests build deliberately partial legacy schemas to check one
+    // table at a time, and `PRAGMA table_info` on a missing table reports no
+    // columns rather than an error - so without this the `ALTER` below would
+    // be the thing that failed, in a test that is not about this migration.
+    if !table_exists(conn, "operations")? {
+        return Ok(());
+    }
+    if !column_exists(conn, "operations", "expected_tree_fingerprint")? {
+        conn.execute(
+            "ALTER TABLE operations ADD COLUMN expected_tree_fingerprint TEXT",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -655,13 +750,23 @@ pub fn abort_scan(conn: &mut Connection, scan_id: i64, state: &str) -> Result<()
 /// "has anything been scanned yet" must test `id != 0` - `activate_scan` and
 /// `scan_allows_deletion` both do.
 pub fn active_scan_id(conn: &Connection) -> Result<Option<i64>> {
-    Ok(conn
-        .query_row(
-            "SELECT active_scan_id FROM scan_state WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(None))
+    // This used to be `.unwrap_or(None)`, which folded a genuine database
+    // failure (a locked file, a corrupt page, the connection going away)
+    // into the same `None` this returns for "database exists but nothing has
+    // been scanned yet". `scan_allows_deletion` below reads `None` as "not
+    // the active generation" and blocks - fail-closed for that one call site
+    // - but other callers use `active_scan_id` for things other than a
+    // deletion gate (see `worker/scan.rs`'s `previous_generation`, which logs
+    // it), and a silently swallowed error there just misreports state as
+    // "empty" instead of surfacing the failure. The row this selects is
+    // always present (see `migrate_v1`), so `QueryReturnedNoRows` is exactly
+    // as much a genuine failure as any other database error - there is no
+    // legitimate "no active scan" answer left to distinguish it from.
+    Ok(conn.query_row(
+        "SELECT active_scan_id FROM scan_state WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?)
 }
 
 /// Legacy generation 0 and any non-active generation are read-only.
@@ -913,7 +1018,25 @@ pub fn clear_scan_data(conn: &Connection) -> Result<()> {
         tx.execute("DELETE FROM findings", [])?;
         tx.execute("DELETE FROM files", [])?;
         tx.execute("DELETE FROM games", [])?;
-        tx.execute("DELETE FROM operations", [])?;
+        // Settled journal rows go; unsettled *intents* must not. A `pending`
+        // row means "a delete was started and we do not yet know whether it
+        // happened" - the only surviving record that a file may already be
+        // gone. Wiping it destroys the evidence reconciliation exists to act
+        // on, and the row can only still be pending for one reason: its
+        // trusted root was unreachable at every open since the crash (an
+        // unplugged drive), because `open` now reconciles unconditionally.
+        // That is precisely the case where the answer is still coming.
+        //
+        // Their `scan_id`/`file_id` are nulled rather than kept dangling: the
+        // scan they belonged to is being erased, and reconciliation reads only
+        // `trusted_root` / `rel_path` / `expected_identity`, so the intent
+        // stays fully actionable without pointing at rows that no longer
+        // exist. Both columns are nullable (see the schema above).
+        tx.execute(
+            "UPDATE operations SET scan_id = NULL, file_id = NULL WHERE status = 'pending'",
+            [],
+        )?;
+        tx.execute("DELETE FROM operations WHERE status <> 'pending'", [])?;
         tx.execute("DELETE FROM scan_library_evidence", [])?;
         tx.execute("DELETE FROM scan_diagnostics", [])?;
         tx.execute("DELETE FROM scan_runs WHERE id <> 0", [])?;
@@ -1243,6 +1366,125 @@ mod tests {
 
     fn count(conn: &Connection, sql: &str) -> i64 {
         conn.query_row(sql, [], |row| row.get(0)).expect("count")
+    }
+
+    /// The scenario the generation machinery exists for, end to end: a scan is
+    /// started, gets partway, and dies. The generation that was already active
+    /// must still be active afterwards, complete and untouched - the user's
+    /// results do not evaporate because the next scan failed.
+    ///
+    /// Neither `abort_scan` nor `validate_scan_generation` was mentioned by a
+    /// single test before this; `generation.rs` had no `#[cfg(test)]` module at
+    /// all. That is the gap this closes.
+    #[test]
+    fn an_aborted_scan_leaves_the_previous_generation_active_and_whole() {
+        let mut conn = open_in_memory().expect("open");
+
+        let first = seed_generation(&mut conn, r"D:\Library", "Kept Game");
+        activate_scan(&mut conn, first).expect("activate the first generation");
+
+        // A second scan starts and gets partway before dying.
+        let second = seed_generation(&mut conn, r"D:\Library", "Half Scanned Game");
+        abort_scan(&mut conn, second, "failed").expect("abort the second generation");
+
+        let active: Option<i64> = conn
+            .query_row(
+                "SELECT active_scan_id FROM scan_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read active generation");
+        assert_eq!(
+            active,
+            Some(first),
+            "the generation that was active before the failed scan must still be active"
+        );
+
+        // The dead generation left nothing behind ...
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM files WHERE scan_id = {second}")
+            ),
+            0,
+            "an aborted generation must not leave rows behind"
+        );
+        // ... and the surviving one is still internally consistent.
+        validate_scan_generation(&conn, first)
+            .expect("the untouched generation must still validate");
+    }
+
+    /// `validate_scan_generation` is the gate that stops a half-written
+    /// generation from being activated, so it has to actually catch the two
+    /// things it looks for rather than passing everything.
+    #[test]
+    fn generation_validation_rejects_a_finding_with_no_safety_evidence() {
+        let mut conn = open_in_memory().expect("open");
+        let scan_id = seed_generation(&mut conn, r"D:\Library", "Game");
+        validate_scan_generation(&conn, scan_id).expect("the seeded generation is consistent");
+
+        // Delete the safety row a finding depends on: exactly the shape of a
+        // scan that died between writing a finding and writing its evidence.
+        conn.execute("DELETE FROM file_safety WHERE scan_id = ?1", [scan_id])
+            .expect("drop safety evidence");
+
+        let err = validate_scan_generation(&conn, scan_id)
+            .expect_err("a finding without safety evidence must not validate");
+        assert!(
+            err.to_string().contains("without safety evidence"),
+            "the error should name what is missing, got: {err}"
+        );
+    }
+
+    /// The other half of the same gate: a file pointing at a game from a
+    /// different generation.
+    #[test]
+    fn generation_validation_rejects_a_file_whose_game_belongs_elsewhere() {
+        let mut conn = open_in_memory().expect("open");
+        let first = seed_generation(&mut conn, r"D:\Library", "Game One");
+        let second = seed_generation(&mut conn, r"E:\Library", "Game Two");
+
+        // Repoint one of the second generation's files at the first
+        // generation's game.
+        let stale_game: i64 = conn
+            .query_row(
+                "SELECT id FROM games WHERE scan_id = ?1",
+                [first],
+                |row| row.get(0),
+            )
+            .expect("first generation game id");
+        conn.execute(
+            "UPDATE files SET game_id = ?1 WHERE scan_id = ?2",
+            params![stale_game, second],
+        )
+        .expect("repoint the file");
+
+        let err = validate_scan_generation(&conn, second)
+            .expect_err("a cross-generation file/game link must not validate");
+        assert!(
+            err.to_string().contains("mismatch"),
+            "the error should name the mismatch, got: {err}"
+        );
+    }
+
+    /// `abort_scan` only accepts the two terminal states that mean "this
+    /// generation is dead". Anything else would leave a generation that
+    /// readers cannot classify.
+    #[test]
+    fn abort_scan_refuses_a_state_that_is_not_terminal() {
+        let mut conn = open_in_memory().expect("open");
+        let scan_id = seed_generation(&mut conn, r"D:\Library", "Game");
+
+        abort_scan(&mut conn, scan_id, "complete")
+            .expect_err("`complete` is not a terminal failure state");
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM files WHERE scan_id = {scan_id}")
+            ),
+            1,
+            "a rejected abort must not have deleted anything"
+        );
     }
 
     /// A superseded generation is unreachable - every reader filters on
@@ -1658,7 +1900,46 @@ mod tests {
         )
         .expect("insert setting");
 
+        // A second, still-unsettled intent: the row that must survive. Its
+        // root is a path that does not exist, which is the only way a row can
+        // still be `pending` now that every open reconciles.
+        conn.execute(
+            "INSERT INTO operations
+                 (ts, action, src_path, status, trusted_root, rel_path, expected_identity)
+             VALUES (0, 'delete', ?1, 'pending', ?2, 'redist/setup.exe', '1:2:file:3:4:5')",
+            (
+                r"Z:\Unplugged\Some Game\redist\setup.exe",
+                r"Z:\Unplugged\Some Game",
+            ),
+        )
+        .expect("insert pending operation");
+
         clear_scan_data(&conn).expect("clear_scan_data should succeed");
+
+        let (pending_left, pending_scan_id): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(scan_id) FROM operations WHERE status = 'pending'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("count pending operations");
+        assert_eq!(
+            pending_left, 1,
+            "an unreconciled delete intent is the only record that a file may \
+             already be gone - clearing scan data must not destroy it"
+        );
+        assert_eq!(
+            pending_scan_id, None,
+            "the surviving intent must not point at the scan that was erased"
+        );
+        let settled_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM operations WHERE status <> 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count settled operations");
+        assert_eq!(settled_left, 0, "settled journal rows are still cleared");
 
         let count = |table: &str| -> i64 {
             conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -1670,7 +1951,13 @@ mod tests {
         assert_eq!(count("findings"), 0, "findings must be wiped");
         assert_eq!(count("files"), 0, "files must be wiped");
         assert_eq!(count("games"), 0, "games must be wiped");
-        assert_eq!(count("operations"), 0, "operations must be wiped");
+        // Not zero: the settled journal row is gone (asserted above), but the
+        // unreconciled intent deliberately survives.
+        assert_eq!(
+            count("operations"),
+            1,
+            "only settled operations are wiped; a pending intent stays"
+        );
         assert_eq!(
             count("game_libraries"),
             1,
@@ -2426,6 +2713,32 @@ mod tests {
         assert!(
             !journal.exists(),
             "the stale -journal sidecar must be removed by the rebuild"
+        );
+    }
+
+    /// `active_scan_id` used to fold a genuine database failure into
+    /// `Ok(None)` via `.unwrap_or(None)` - indistinguishable from "database
+    /// exists, nothing scanned yet". Dropping the table it reads from forces
+    /// exactly that kind of failure (not merely "no active scan"), and both
+    /// this function and `scan_allows_deletion`, which is the actual
+    /// deletion gate, must report it as `Err` rather than quietly answering
+    /// "nothing active" / "not allowed" as if the database were merely empty.
+    /// Fail-closed here specifically means the error surfaces - it must never
+    /// be swallowed into either a permissive `Ok(true)` or an indistinguishable
+    /// `Ok(None)`/`Ok(false)` that looks the same as a healthy empty database.
+    #[test]
+    fn a_database_error_reading_active_scan_id_is_not_reported_as_no_active_scan() {
+        let conn = open_in_memory().expect("in-memory db should open");
+        conn.execute("DROP TABLE scan_state", [])
+            .expect("drop scan_state to force a real query failure");
+
+        assert!(
+            active_scan_id(&conn).is_err(),
+            "a query failure must propagate, not read as Ok(None)"
+        );
+        assert!(
+            scan_allows_deletion(&conn, 1).is_err(),
+            "the deletion gate must propagate the same failure, not answer Ok(true) or Ok(false)"
         );
     }
 }

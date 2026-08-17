@@ -997,7 +997,12 @@ fn report_golden_cases() {
         for (idx, case) in cases.iter().enumerate() {
             // Mirrors the app's combine_finding: a rule claim wins; a
             // localization finding applies only when no rule matched.
-            let rule = engine.classify(case.path);
+            // The corpus asks only "what would be flagged"; a keep-rule
+            // veto is indistinguishable from a non-match for that question,
+            // which is what `Verdict::flagged` exists for. `None` for the
+            // app id: these cases are paths, not games, so no game-scoped
+            // rule can apply to them.
+            let rule = engine.classify(case.path, None).flagged();
             let lang = loc.get(&idx);
 
             let outcome: String = match (&rule, lang) {

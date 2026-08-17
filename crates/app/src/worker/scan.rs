@@ -27,7 +27,7 @@ use gametrimmer_core::perf;
 use gametrimmer_core::providers::{
     self, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, OrphanEvidence,
 };
-use gametrimmer_core::rules::{Finding, RuleEngine, RuleProvenance};
+use gametrimmer_core::rules::{Finding, RuleEngine, RuleProvenance, Verdict};
 use gametrimmer_core::safety::{SafetySnapshot, SnapshotCapture};
 use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry, ScanStats};
 use gametrimmer_core::sysinfo;
@@ -47,7 +47,7 @@ use orphan_analysis::PreparedOrphan;
 use orphan_analysis::{collect_orphans, persist_orphans};
 #[cfg(test)]
 use persistence::persist_prepared_game;
-use persistence::{persist_libraries, run_writer};
+use persistence::{persist_libraries, run_writer, ScannedGame};
 
 /// Worker threads used for scanning+classifying games in parallel.
 ///
@@ -206,7 +206,7 @@ fn run_scan(
     // in those files is exactly what runs. A file that cannot be created or
     // parsed must not silently kill or degrade the scan: warn, fall back to
     // the built-ins, keep going.
-    let engine = match super::ensure_rules_path()
+    let mut engine = match super::ensure_rules_path()
         .map_err(CoreError::from)
         .and_then(|path| {
             RuleEngine::load(&path)
@@ -230,6 +230,33 @@ fn run_scan(
             }
         }
     };
+
+    // The third pack: this machine's personal exceptions, folded on top of
+    // the category rules. Same file format, same parser, same materialize-
+    // once-then-never-overwrite contract as the other two (see
+    // `super::ensure_personal_rules_path`) - it is a rule pack that happens
+    // to hold keep rules, which is the whole point of giving `Rule` a
+    // polarity instead of building a second mechanism beside it.
+    //
+    // A broken personal pack degrades the same way a broken `rules.json`
+    // does, and for the stronger reason: refusing to scan because one hand
+    // edit went wrong would be worse than scanning without the exceptions.
+    // But it must be *said*, loudly, because the visible symptom - files the
+    // user kept coming back - is otherwise indistinguishable from the app
+    // ignoring them.
+    match super::ensure_personal_rules_path()
+        .map_err(CoreError::from)
+        .and_then(|path| {
+            RuleEngine::load(&path)
+                .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
+        }) {
+        Ok(personal) => engine.absorb(personal),
+        Err(err) => {
+            notifier.report_warning(i18n::Reported::new(lang, |l| {
+                i18n::personal_rules_load_failed(l, &err)
+            }));
+        }
+    }
 
     // Keep-list comes from the persisted `keep_languages` setting (see
     // `gametrimmer_core::settings`), configurable in the settings dialog -
@@ -425,6 +452,11 @@ fn run_scan(
     // progress label.
     let completed = std::sync::atomic::AtomicUsize::new(0);
 
+    // Files this run's personal exceptions vetoed, summed across the scan
+    // threads - the number the final status line reports (see
+    // [`PreparedGame::kept`]).
+    let kept = std::sync::atomic::AtomicUsize::new(0);
+
     // Reading one volume's `$MFT`. Passed to `dispatch_scans` rather than
     // called by it, because this is the seam the overlap has to be tested
     // at: "a volume's worth of file lists arrives, some time later" is
@@ -463,6 +495,7 @@ fn run_scan(
         cancel,
         notifier,
         completed: &completed,
+        kept: &kept,
         total,
     };
 
@@ -651,13 +684,25 @@ fn run_scan(
         .collect();
     let routing_breakdown = scan_route::format_walkdir_breakdown(lang, total, &walked_reasons);
 
-    let scan_summary = scan_route::format_scan_summary(
+    let mut scan_summary = scan_route::format_scan_summary(
         lang,
         total,
         mft_pass.mft_count,
         mft_pass.walkdir_count,
         started_at.elapsed().as_secs_f64(),
     );
+    // Why a finding the user kept is no longer in the list. Without this the
+    // only evidence that an exception worked is a row that is *not* there,
+    // which reads exactly like detection having broken - the same reason a
+    // scan that finds nothing says so instead of showing an empty tree. Only
+    // added when there is something to report: a line ending in "kept 0 files"
+    // on every scan of every install would be noise, not evidence.
+    let kept = kept.load(Ordering::Relaxed);
+    if kept > 0 {
+        scan_summary.push(' ');
+        scan_summary.push_str(&i18n::kept_by_exceptions(lang, kept));
+        crate::logger::log(&format!("Personal exceptions kept {kept} file(s)"));
+    }
 
     // Live occupied-space snapshot for the UI (see `occupancy_or_default`);
     // an aggregation failure degrades to 0 rather than hiding the results.
@@ -806,6 +851,9 @@ struct ClassifyContext<'a> {
     /// Games the writer has finished persisting - written by the writer,
     /// only read here, to label the "started scanning <game>" progress.
     completed: &'a std::sync::atomic::AtomicUsize,
+    /// Files vetoed by a personal exception across the whole run, summed by
+    /// the scan threads and read once at the end (see [`PreparedGame::kept`]).
+    kept: &'a std::sync::atomic::AtomicUsize,
     /// Games in this run: the denominator of every progress message.
     total: usize,
 }
@@ -822,6 +870,9 @@ struct ClassifyContext<'a> {
 struct GameTask {
     game_id: i64,
     name: String,
+    /// The game's vendor id, needed to decide which scoped rules apply to it
+    /// (see [`GameIdentity`]). Owned like the rest of the task.
+    app_id: Option<String>,
     install_dir: PathBuf,
     /// `Some` when the MFT pass produced this game's file list. `None` means
     /// walk the directory instead - either the root was never an MFT
@@ -850,6 +901,7 @@ fn run_one(ctx: &ClassifyContext<'_>, task: GameTask) {
     let GameTask {
         game_id,
         name,
+        app_id,
         install_dir,
         entries,
         result_tx,
@@ -882,13 +934,17 @@ fn run_one(ctx: &ClassifyContext<'_>, task: GameTask) {
     // Both paths funnel the game through `classify_game`; either reports a
     // cancelled game through the same `Failed { .. "cancelled" .. }` channel
     // `run_writer` already treats as a normal user action.
+    let identity = GameIdentity {
+        id: game_id,
+        name: &name,
+        install_dir: &install_dir,
+        app_id: app_id.as_deref(),
+    };
     let result = match entries {
         Some(entries) => classify_game(
             ctx.engine,
             ctx.lang_detector,
-            game_id,
-            &name,
-            &install_dir,
+            identity,
             entries,
             ctx.enabled_categories,
             ctx.cancel,
@@ -896,15 +952,19 @@ fn run_one(ctx: &ClassifyContext<'_>, task: GameTask) {
         None => scan_and_prepare_game(
             ctx.engine,
             ctx.lang_detector,
-            game_id,
-            &name,
-            &install_dir,
+            identity,
             ctx.enabled_categories,
             ctx.cancel,
         ),
     };
     let outcome = match result {
-        Ok(prepared) => GameOutcome::Scanned(prepared),
+        Ok(prepared) => {
+            // Summed across every game of the run, on the scan threads, so the
+            // final status line can report what the exceptions actually did -
+            // see [`PreparedGame::kept`].
+            ctx.kept.fetch_add(prepared.kept, Ordering::Relaxed);
+            GameOutcome::Scanned(prepared)
+        }
         Err(error) => GameOutcome::Failed {
             name,
             install_dir,
@@ -955,7 +1015,7 @@ type VolumeReader<'a> = dyn Fn(&[(i64, PathBuf)]) -> VolumeResults + Sync + 'a;
 /// volume - see `walkdir_games_start_before_a_volume_has_been_read`.
 fn dispatch_scans(
     ctx: &ClassifyContext<'_>,
-    games: &[(i64, String, PathBuf)],
+    games: &[ScannedGame],
     plan: MftPlan,
     read_volume: &VolumeReader<'_>,
     result_tx: &SyncSender<GameOutcome>,
@@ -987,7 +1047,7 @@ fn dispatch_scans(
 /// in which order.
 fn drive_scan(
     ctx: &ClassifyContext<'_>,
-    games: &[(i64, String, PathBuf)],
+    games: &[ScannedGame],
     plan: MftPlan,
     read_volume: &VolumeReader<'_>,
     result_tx: &SyncSender<GameOutcome>,
@@ -999,21 +1059,19 @@ fn drive_scan(
         volume_probes,
     } = plan;
 
-    let by_id: HashMap<i64, (&str, &Path)> = games
-        .iter()
-        .map(|(game_id, name, install_dir)| (*game_id, (name.as_str(), install_dir.as_path())))
-        .collect();
+    let by_id: HashMap<i64, &ScannedGame> = games.iter().map(|game| (game.id, game)).collect();
     let candidates: HashSet<i64> = candidates_by_volume
         .values()
         .flatten()
         .map(|(game_id, _)| *game_id)
         .collect();
 
-    let start = |game_id: i64, name: &str, install_dir: &Path, entries: Option<Vec<FileEntry>>| {
+    let start = |game: &ScannedGame, entries: Option<Vec<FileEntry>>| {
         spawn(GameTask {
-            game_id,
-            name: name.to_string(),
-            install_dir: install_dir.to_path_buf(),
+            game_id: game.id,
+            name: game.name.clone(),
+            app_id: game.app_id.clone(),
+            install_dir: game.install_dir.clone(),
             entries,
             result_tx: result_tx.clone(),
             notifier: ctx.notifier.clone(),
@@ -1021,9 +1079,9 @@ fn drive_scan(
     };
 
     // (1) Everything no volume owes a file list for starts immediately.
-    for (game_id, name, install_dir) in games {
-        if !candidates.contains(game_id) {
-            start(*game_id, name, install_dir, None);
+    for game in games {
+        if !candidates.contains(&game.id) {
+            start(game, None);
         }
     }
 
@@ -1035,25 +1093,25 @@ fn drive_scan(
             // Ids come straight from `games`, so a miss here is structurally
             // impossible; skipping rather than indexing keeps it that way
             // without a panic if it ever stops being true.
-            let Some((name, install_dir)) = by_id.get(&game_id).copied() else {
+            let Some(game) = by_id.get(&game_id).copied() else {
                 continue;
             };
             reported.insert(game_id);
             let mft_ok = result.is_ok();
             let entries = result.unwrap_or_default();
             let entries_empty = entries.is_empty();
-            let nonempty_on_disk = entries_empty && root_nonempty_on_disk(install_dir);
+            let nonempty_on_disk = entries_empty && root_nonempty_on_disk(&game.install_dir);
 
             match scan_route::finalize_mft_result(mft_ok, entries_empty, nonempty_on_disk) {
                 ScanRoute::Mft => {
                     mft_count += 1;
-                    start(game_id, name, install_dir, Some(entries));
+                    start(game, Some(entries));
                 }
                 // A candidate the pass itself rejected: it is walked, so it
                 // belongs in the breakdown alongside the roots never tried.
                 ScanRoute::Walkdir(reason) => {
                     walkdir_reasons.push((game_id, reason));
-                    start(game_id, name, install_dir, None);
+                    start(game, None);
                 }
             }
         }
@@ -1068,11 +1126,11 @@ fn drive_scan(
             if reported.contains(game_id) {
                 continue;
             }
-            let Some((name, install_dir)) = by_id.get(game_id).copied() else {
+            let Some(game) = by_id.get(game_id).copied() else {
                 continue;
             };
             walkdir_reasons.push((*game_id, scan_route::WalkdirReason::MftFailed));
-            start(*game_id, name, install_dir, None);
+            start(game, None);
         }
     }
 
@@ -1147,14 +1205,15 @@ struct VolumeProbe {
 fn record_routing_evidence(
     conn: &Connection,
     scan_id: i64,
-    games: &[(i64, String, PathBuf)],
+    games: &[ScannedGame],
     mft_pass: &MftPassOutcome,
 ) {
     let walked: HashMap<i64, scan_route::WalkdirReason> =
         mft_pass.walkdir_reasons.iter().copied().collect();
     let routes: Vec<(i64, String)> = games
         .iter()
-        .map(|(game_id, _, _)| {
+        .map(|game| {
+            let game_id = &game.id;
             let route = match walked.get(game_id) {
                 // The label is the machine-readable variant name, not the
                 // localized one: this is read back by whoever receives a
@@ -1221,25 +1280,25 @@ struct MftPlan {
 /// `mft_count + walkdir_count`, by construction: `walkdir_count` is derived
 /// as `total - mft_count` rather than tracked incrementally, so the two
 /// numbers can never drift apart even if a routing edge case is missed.
-fn plan_mft_pass(elevated: bool, games: &[(i64, String, PathBuf)]) -> MftPlan {
+fn plan_mft_pass(elevated: bool, games: &[ScannedGame]) -> MftPlan {
     if !elevated {
         // The one early exit: no volume can be opened for raw MFT reads at
         // all, so every root walks for the same reason.
         let reason = scan_route::WalkdirReason::NotElevated;
         return MftPlan {
             candidates_by_volume: HashMap::new(),
-            walkdir_reasons: games.iter().map(|(id, _, _)| (*id, reason)).collect(),
+            walkdir_reasons: games.iter().map(|game| (game.id, reason)).collect(),
             volume_probes: Vec::new(),
         };
     }
 
     let checks: Vec<scan_route::RootCheck> = games
         .iter()
-        .map(|(game_id, _, install_dir)| scan_route::RootCheck {
-            game_id: *game_id,
-            install_dir: install_dir.clone(),
-            volume_letter: mftscan::volume_letter(install_dir),
-            canonical_mismatch: canonical_mismatch(install_dir),
+        .map(|game| scan_route::RootCheck {
+            game_id: game.id,
+            install_dir: game.install_dir.clone(),
+            volume_letter: mftscan::volume_letter(&game.install_dir),
+            canonical_mismatch: canonical_mismatch(&game.install_dir),
         })
         .collect();
 
@@ -1417,9 +1476,20 @@ struct PreparedFinding {
 struct PreparedGame {
     game_id: i64,
     name: String,
+    /// The game's vendor id, carried through classification (a rule may be
+    /// scoped to it) and on into the UI row, where "never touch this" needs
+    /// it to bind the exception it writes. See [`persistence::ScannedGame`].
+    app_id: Option<String>,
     install_dir: PathBuf,
     entries: Vec<FileEntry>,
     findings: Vec<PreparedFinding>,
+    /// How many of this game's files a personal exception vetoed.
+    ///
+    /// Counted here, where the verdict is seen, and summed for the whole run
+    /// so the status line can say so: a user who keeps a file and rescans has
+    /// to be able to tell "it is gone because you kept it" from "detection
+    /// broke", and a finding that silently fails to appear says neither.
+    kept: usize,
 }
 
 /// Scans one game's install directory with a regular directory walk, then
@@ -1433,31 +1503,34 @@ struct PreparedGame {
 /// been enumerated. It is checked once more right after the walk returns,
 /// before classification starts, so a game that finishes walking just as
 /// Stop is pressed doesn't still pay the cost of `classify_game`.
-// Same flat-list reasoning as `classify_game`, which this forwards to.
-#[allow(clippy::too_many_arguments)]
 fn scan_and_prepare_game(
     engine: &RuleEngine,
     lang_detector: &LangDetector,
-    game_id: i64,
-    name: &str,
-    install_dir: &Path,
+    game: GameIdentity<'_>,
     enabled_categories: &[String],
     cancel: &AtomicBool,
 ) -> CoreResult<PreparedGame> {
-    let entries = scan_dir_cancellable(install_dir, cancel)?;
+    let entries = scan_dir_cancellable(game.install_dir, cancel)?;
     if cancel.load(Ordering::Relaxed) {
         return Err(CoreError::Other("cancelled".to_string()));
     }
-    classify_game(
-        engine,
-        lang_detector,
-        game_id,
-        name,
-        install_dir,
-        entries,
-        enabled_categories,
-        cancel,
-    )
+    classify_game(engine, lang_detector, game, entries, enabled_categories, cancel)
+}
+
+/// Which game is being classified: the row id its results are written under,
+/// the name progress and errors call it by, where it lives, and the vendor id
+/// a scoped rule is matched against.
+///
+/// Grouped rather than passed as four more parameters because the four always
+/// travel together and the two `&str`s next to each other are exactly the pair
+/// a caller can silently swap.
+#[derive(Debug, Clone, Copy)]
+struct GameIdentity<'a> {
+    id: i64,
+    name: &'a str,
+    install_dir: &'a Path,
+    /// `None` for a folder-scan or manual game; no scoped rule matches one.
+    app_id: Option<&'a str>,
 }
 
 /// Classifies an already-obtained file list - from either `scan_dir`
@@ -1483,17 +1556,10 @@ fn scan_and_prepare_game(
 /// category's files never affect folder-collapsing (`assign_group_dirs`)
 /// either, and the database ends up holding exactly what the setting says
 /// should be scanned, not a superset filtered later.
-// Eight parameters: the game identity (id/name/dir), the two classifiers
-// (rule engine + localization detector), the category filter, the file list,
-// and the cancel token - each is a distinct, unrelated input with no natural
-// grouping into a struct that would read more clearly than the flat list.
-#[allow(clippy::too_many_arguments)]
 fn classify_game(
     engine: &RuleEngine,
     lang_detector: &LangDetector,
-    game_id: i64,
-    name: &str,
-    install_dir: &Path,
+    game: GameIdentity<'_>,
     entries: Vec<FileEntry>,
     enabled_categories: &[String],
     cancel: &AtomicBool,
@@ -1512,6 +1578,7 @@ fn classify_game(
     // the full file list, not just the flagged ones) can be run afterwards.
     let rules_started = Instant::now();
     let mut combined_by_index: Vec<(usize, CombinedFinding)> = Vec::new();
+    let mut kept = 0usize;
     for (index, entry) in entries.iter().enumerate() {
         // The rule-engine pass is per-file regex work; on a game with
         // hundreds of thousands of files it is long enough to be worth
@@ -1519,10 +1586,20 @@ fn classify_game(
         if index % CLASSIFY_CANCEL_POLL_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
             return Err(CoreError::Other("cancelled".to_string()));
         }
-        let rule_finding = engine.classify(&entry.rel_path);
+        let verdict = engine.classify(&entry.rel_path, game.app_id);
+        // A personal exception stops the file here, before the localization
+        // detector gets a look at it. Skipping this branch and letting the
+        // veto fall through as "no rule matched" would hand a kept
+        // `loc_de.pak` straight back as a localization finding - and a
+        // localization finding is exactly what most exceptions are written
+        // against.
+        if verdict == Verdict::Kept {
+            kept += 1;
+            continue;
+        }
         let lang_finding = lang_findings.get(&index);
 
-        if let Some(combined) = combine_finding(rule_finding, lang_finding) {
+        if let Some(combined) = combine_finding(verdict.flagged(), lang_finding) {
             if category_enabled(enabled_categories, display_category(combined.source)) {
                 combined_by_index.push((index, combined));
             }
@@ -1546,7 +1623,7 @@ fn classify_game(
         .map(|(index, combined)| {
             let entry = &entries[index];
             let safety = capture
-                .capture(install_dir, &entry.rel_path, entry.mft_identity.as_ref())
+                .capture(game.install_dir, &entry.rel_path, entry.mft_identity.as_ref())
                 .map_err(|reason| reason.to_string());
             PreparedFinding {
                 entry_index: index,
@@ -1566,11 +1643,13 @@ fn classify_game(
     perf::add(perf::Stage::Safety, safety_started.elapsed());
 
     Ok(PreparedGame {
-        game_id,
-        name: name.to_string(),
-        install_dir: install_dir.to_path_buf(),
+        game_id: game.id,
+        name: game.name.to_string(),
+        app_id: game.app_id.map(str::to_string),
+        install_dir: game.install_dir.to_path_buf(),
         entries,
         findings,
+        kept,
     })
 }
 
@@ -1725,9 +1804,14 @@ fn scan_and_classify_game(
     let prepared = scan_and_prepare_game(
         engine,
         lang_detector,
-        game_id,
-        name,
-        install_dir,
+        GameIdentity {
+            id: game_id,
+            name,
+            install_dir,
+            // No launcher id: this helper builds a game out of a temp
+            // directory, so no game-scoped rule can apply to it.
+            app_id: None,
+        },
         &[],
         &never_cancel,
     )?;
@@ -1942,9 +2026,12 @@ mod tests {
         let result = scan_and_prepare_game(
             &engine,
             &lang_detector,
-            1,
-            "Test Game",
-            install_dir.path(),
+            GameIdentity {
+                id: 1,
+                name: "Test Game",
+                install_dir: install_dir.path(),
+                app_id: None,
+            },
             &[],
             &cancel,
         );
@@ -1977,9 +2064,12 @@ mod tests {
         let result = classify_game(
             &engine,
             &lang_detector,
-            1,
-            "Test Game",
-            Path::new("C:/Games/Test"),
+            GameIdentity {
+                id: 1,
+                name: "Test Game",
+                install_dir: Path::new("C:/Games/Test"),
+                app_id: None,
+            },
             entries,
             &[],
             &cancel,
@@ -2015,10 +2105,18 @@ mod tests {
         engine: &RuleEngine,
         lang_detector: &LangDetector,
         library: &DiscoveredLibrary,
-    ) -> CoreResult<Vec<(i64, String, PathBuf)>> {
+    ) -> CoreResult<Vec<ScannedGame>> {
         let games = persist_libraries(conn, std::slice::from_ref(library), 0)?;
-        for (game_id, name, install_dir) in &games {
-            scan_and_classify_game(conn, engine, lang_detector, *game_id, name, install_dir, 0)?;
+        for game in &games {
+            scan_and_classify_game(
+                conn,
+                engine,
+                lang_detector,
+                game.id,
+                &game.name,
+                &game.install_dir,
+                0,
+            )?;
         }
         Ok(games)
     }
@@ -2100,10 +2198,17 @@ mod tests {
 
         let games =
             persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
-        let (game_id, name, path) = &games[0];
-        let scanned =
-            scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path, 0)
-                .expect("scan game");
+        let game = &games[0];
+        let scanned = scan_and_classify_game(
+            &mut conn,
+            &engine,
+            &lang_detector,
+            game.id,
+            &game.name,
+            &game.install_dir,
+            0,
+        )
+        .expect("scan game");
 
         let expected = Some(LibraryOrigin {
             vendor: Some("steam".to_string()),
@@ -2156,7 +2261,12 @@ mod tests {
         };
         let games =
             persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
-        let (game_id, name, path) = &games[0];
+        let ScannedGame {
+            id: game_id,
+            name,
+            install_dir: path,
+            ..
+        } = &games[0];
         scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path, 0)
             .expect("scan game");
 
@@ -2198,7 +2308,7 @@ mod tests {
         let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
         let games = persist_libraries(&conn, std::slice::from_ref(&library), scan_id)
             .expect("persist library");
-        let walked_id = games[0].0;
+        let walked_id = games[0].id;
 
         record_routing_evidence(
             &conn,
@@ -2314,7 +2424,12 @@ mod tests {
             .expect("record degraded evidence");
         let games = persist_libraries(&conn, std::slice::from_ref(&library), scan_id)
             .expect("persist library");
-        let (game_id, name, path) = &games[0];
+        let ScannedGame {
+            id: game_id,
+            name,
+            install_dir: path,
+            ..
+        } = &games[0];
 
         let rows = scan_and_classify_game(
             &mut conn,
@@ -2379,7 +2494,7 @@ mod tests {
         // No orphaned rows should remain from the first scan's games/files/findings.
         let games = second.unwrap();
         assert_eq!(games.len(), 1, "the library still has exactly one game");
-        let (game_id, _, _) = games[0];
+        let game_id = games[0].id;
 
         assert_eq!(
             count(&conn, "SELECT COUNT(*) FROM games"),
@@ -2907,9 +3022,12 @@ mod tests {
         let prepared_all_enabled = classify_game(
             &engine,
             &lang_detector,
-            1,
-            "Test Game",
-            Path::new("C:/Games/Test"),
+            GameIdentity {
+                id: 1,
+                name: "Test Game",
+                install_dir: Path::new("C:/Games/Test"),
+                app_id: None,
+            },
             entries.clone(),
             &[], // empty = every category enabled
             &never_cancel,
@@ -2924,9 +3042,12 @@ mod tests {
         let prepared_docs_disabled = classify_game(
             &engine,
             &lang_detector,
-            1,
-            "Test Game",
-            Path::new("C:/Games/Test"),
+            GameIdentity {
+                id: 1,
+                name: "Test Game",
+                install_dir: Path::new("C:/Games/Test"),
+                app_id: None,
+            },
             entries,
             &["redist".to_string()], // "docs" is not in the enabled list
             &never_cancel,
@@ -2949,9 +3070,12 @@ mod tests {
         let prepared = classify_game(
             &engine,
             &lang_detector,
-            1,
-            "Test Game",
-            Path::new("C:/Games/Test"),
+            GameIdentity {
+                id: 1,
+                name: "Test Game",
+                install_dir: Path::new("C:/Games/Test"),
+                app_id: None,
+            },
             entries,
             &["docs".to_string()],
             &AtomicBool::new(false),
@@ -3043,8 +3167,8 @@ mod tests {
     #[test]
     fn planning_routes_everything_to_walkdir_when_not_elevated() {
         let games = vec![
-            (1i64, "Game A".to_string(), PathBuf::from(r"G:\Games\A")),
-            (2i64, "Game B".to_string(), PathBuf::from(r"D:\Games\B")),
+            scanned_game(1, "Game A", r"G:\Games\A"),
+            scanned_game(2, "Game B", r"D:\Games\B"),
         ];
 
         let plan = plan_mft_pass(false, &games);
@@ -3065,11 +3189,7 @@ mod tests {
     /// volume's candidate, even when elevated - there is no volume to probe.
     #[test]
     fn planning_routes_unc_paths_to_walkdir_even_when_elevated() {
-        let games = vec![(
-            1i64,
-            "Networked Game".to_string(),
-            PathBuf::from(r"\\server\share\Games\A"),
-        )];
+        let games = vec![scanned_game(1, "Networked Game", r"\\server\share\Games\A")];
 
         let plan = plan_mft_pass(true, &games);
 
@@ -3101,12 +3221,115 @@ mod tests {
     /// The owned halves of a [`ClassifyContext`], in one binding, so the
     /// dispatch tests below can borrow a whole context out of it instead of
     /// each repeating six `let`s that say nothing about what they assert.
+    /// Rows reach the UI only after the batch they belong to has committed.
+    ///
+    /// `flush_batch` builds every game's `FindingRow`s first and appends them
+    /// to the published list *after* `commit()` succeeds. Swap those two lines
+    /// and the app shows a plan built from a transaction that rolled back:
+    /// findings whose `files`/`file_safety` rows do not exist, which the delete
+    /// preflight would then refuse one by one with "the selected database row
+    /// is no longer active" - a screen full of results that cannot be acted on
+    /// and no explanation for why.
+    ///
+    /// Forcing the failure at the commit specifically (rather than at an
+    /// insert) needs SQLite's commit hook - returning `true` from it turns the
+    /// commit into a rollback. `rusqlite`'s `hooks` feature is already enabled
+    /// for the app's other uses, so no new dependency was needed for this.
+    #[test]
+    fn a_batch_whose_commit_fails_publishes_no_rows() {
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        write_file(&install_dir.path().join("manual.pdf"), b"pdf");
+
+        let mut conn = gametrimmer_core::db::open_in_memory().expect("open");
+        let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").expect("begin scan");
+        let library = DiscoveredLibrary {
+            vendor: "test",
+            path: install_dir.path().to_path_buf(),
+            games: vec![GameInstall {
+                name: "Test Game".to_string(),
+                install_dir: install_dir.path().to_path_buf(),
+                app_id: None,
+            }],
+            orphan_evidence: OrphanEvidence::Authoritative,
+        };
+        let games = persist_libraries(&conn, std::slice::from_ref(&library), scan_id)
+            .expect("persist library");
+        let game = &games[0];
+
+        let never_cancel = AtomicBool::new(false);
+        let prepared = scan_and_prepare_game(
+            &match_all_engine(),
+            &LangDetector::new(),
+            GameIdentity {
+                id: game.id,
+                name: &game.name,
+                install_dir: &game.install_dir,
+                app_id: None,
+            },
+            &[],
+            &never_cancel,
+        )
+        .expect("prepare the game");
+        assert!(
+            !prepared.findings.is_empty(),
+            "the fixture must produce findings, or this test proves nothing"
+        );
+
+        // Installed only now: `begin_scan` and `persist_libraries` above have
+        // their own commits, and this must not break them.
+        conn.commit_hook(Some(|| true));
+
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        result_tx
+            .send(GameOutcome::Scanned(prepared))
+            .expect("queue the game");
+        drop(result_tx);
+
+        let harness = Harness::new();
+        let outcome = run_writer(
+            &mut conn,
+            result_rx,
+            &harness.notifier,
+            1,
+            &harness.completed,
+            &harness.cancel,
+            scan_id,
+        );
+
+        conn.commit_hook::<fn() -> bool>(None);
+
+        assert!(
+            outcome.is_err(),
+            "a batch that could not commit must not report success"
+        );
+        let findings: i64 = conn
+            .query_row("SELECT COUNT(*) FROM findings", [], |row| row.get(0))
+            .expect("count findings");
+        assert_eq!(
+            findings, 0,
+            "the rolled-back batch must have left nothing behind"
+        );
+    }
+
+    /// A game as `persist_libraries` would have returned it. The routing
+    /// tests care only about the install dir's volume, so the launcher id is
+    /// always absent.
+    fn scanned_game(id: i64, name: &str, install_dir: &str) -> ScannedGame {
+        ScannedGame {
+            id,
+            name: name.to_string(),
+            install_dir: PathBuf::from(install_dir),
+            app_id: None,
+        }
+    }
+
     struct Harness {
         engine: RuleEngine,
         lang_detector: LangDetector,
         cancel: AtomicBool,
         notifier: Notifier,
         completed: std::sync::atomic::AtomicUsize,
+        kept: std::sync::atomic::AtomicUsize,
         /// Held only so the notifier's channel stays open; nothing reads it.
         _msg_rx: Receiver<WorkerMsg>,
     }
@@ -3120,6 +3343,7 @@ mod tests {
                 cancel: AtomicBool::new(false),
                 notifier: Notifier::new(msg_tx, egui::Context::default()),
                 completed: std::sync::atomic::AtomicUsize::new(0),
+                kept: std::sync::atomic::AtomicUsize::new(0),
                 _msg_rx: msg_rx,
             }
         }
@@ -3133,6 +3357,7 @@ mod tests {
                 cancel: &self.cancel,
                 notifier: &self.notifier,
                 completed: &self.completed,
+                kept: &self.kept,
                 total,
             }
         }
@@ -3152,8 +3377,8 @@ mod tests {
 
         let indexed_dir = PathBuf::from(r"D:\SteamLibrary\Indexed");
         let games = vec![
-            (1i64, "Walked".to_string(), walked_dir.path().to_path_buf()),
-            (2i64, "Indexed".to_string(), indexed_dir.clone()),
+            scanned_game(1, "Walked", &walked_dir.path().to_string_lossy()),
+            scanned_game(2, "Indexed", &indexed_dir.to_string_lossy()),
         ];
         let plan = plan_owing('D', vec![(2, indexed_dir)]);
 
@@ -3210,22 +3435,14 @@ mod tests {
     #[test]
     fn cancelling_while_a_volume_is_being_read_stops_the_games_it_hands_over() {
         let games = vec![
-            (
-                1i64,
-                "First".to_string(),
-                PathBuf::from(r"D:\SteamLibrary\First"),
-            ),
-            (
-                2i64,
-                "Second".to_string(),
-                PathBuf::from(r"D:\SteamLibrary\Second"),
-            ),
+            scanned_game(1, "First", r"D:\SteamLibrary\First"),
+            scanned_game(2, "Second", r"D:\SteamLibrary\Second"),
         ];
         let plan = plan_owing(
             'D',
             games
                 .iter()
-                .map(|(game_id, _, dir)| (*game_id, dir.clone()))
+                .map(|game| (game.id, game.install_dir.clone()))
                 .collect(),
         );
 
@@ -3271,7 +3488,11 @@ mod tests {
         let install_dir = tempfile::tempdir().expect("create temp install dir");
         write_file(&install_dir.path().join("readme.txt"), b"a");
 
-        let games = vec![(1i64, "Silent".to_string(), install_dir.path().to_path_buf())];
+        let games = vec![scanned_game(
+            1,
+            "Silent",
+            &install_dir.path().to_string_lossy(),
+        )];
         let plan = plan_owing('D', vec![(1, install_dir.path().to_path_buf())]);
 
         let harness = Harness::new();
@@ -3361,9 +3582,12 @@ mod tests {
         let prepared = classify_game(
             &engine,
             &LangDetector::new(),
-            1,
-            "Test Game",
-            Path::new("C:/Games/Test"),
+            GameIdentity {
+                id: 1,
+                name: "Test Game",
+                install_dir: Path::new("C:/Games/Test"),
+                app_id: None,
+            },
             entries,
             &[],
             &AtomicBool::new(false),
@@ -3432,7 +3656,12 @@ mod tests {
         };
         let games =
             persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
-        let (game_id, name, path) = &games[0];
+        let ScannedGame {
+            id: game_id,
+            name,
+            install_dir: path,
+            ..
+        } = &games[0];
 
         let scanned =
             scan_and_classify_game(&mut conn, &engine, &lang_detector, *game_id, name, path, 0)
@@ -3494,9 +3723,12 @@ mod tests {
         let prepared = classify_game(
             &engine,
             &LangDetector::new(),
-            1,
-            "Test Game",
-            Path::new("C:/Games/Test"),
+            GameIdentity {
+                id: 1,
+                name: "Test Game",
+                install_dir: Path::new("C:/Games/Test"),
+                app_id: None,
+            },
             entries,
             &[],
             &AtomicBool::new(false),
@@ -3847,6 +4079,309 @@ mod tests {
         assert!(
             !orphans.iter().any(|o| o.full_path == live),
             "a live itch game must never be flagged"
+        );
+    }
+
+    // -- GT-23: Steam workshop + depotcache --
+
+    /// Builds a Steam library on disk with:
+    /// - appid 620 installed, its Workshop state listing item `111` as live,
+    ///   plus a leftover item `999` on disk that the state file does not list
+    ///   (residue under a *still-installed* game - proves the check is
+    ///   per-item, not per-game).
+    /// - appid 300000, not installed (no `GameInstall` for it), whose
+    ///   Workshop state still lists item `1` as live and has a leftover item
+    ///   `2` - the literal "residue of a deleted game" shape, and the
+    ///   counter-proof that an uninstalled game's *live* subscription is
+    ///   still spared.
+    /// - appid 217140, not installed, with Workshop content on disk but **no**
+    ///   `appworkshop_217140.acf` at all - the "evidence missing" shape that
+    ///   must flag nothing.
+    fn steam_library_with_workshop_residue() -> (tempfile::TempDir, DiscoveredLibrary) {
+        let dir = tempfile::tempdir().expect("create temp library");
+        let root = dir.path();
+        let steamapps = root.join("steamapps");
+        let workshop = steamapps.join("workshop");
+
+        let install_dir = steamapps.join("common").join("Live Game");
+        write_file(&install_dir.join("game.exe"), b"payload");
+
+        write_file(
+            &workshop.join("appworkshop_620.acf"),
+            br#"
+"AppWorkshop"
+{
+	"appid"		"620"
+	"WorkshopItemsInstalled"
+	{
+		"111"
+		{
+			"manifest"		"-1"
+		}
+	}
+}
+"#,
+        );
+        write_file(
+            &workshop
+                .join("content")
+                .join("620")
+                .join("111")
+                .join("mod.vpk"),
+            b"live subscription",
+        );
+        write_file(
+            &workshop
+                .join("content")
+                .join("620")
+                .join("999")
+                .join("mod.vpk"),
+            b"unsubscribed leftover",
+        );
+
+        write_file(
+            &workshop.join("appworkshop_300000.acf"),
+            br#"
+"AppWorkshop"
+{
+	"appid"		"300000"
+	"WorkshopItemsInstalled"
+	{
+		"1"
+		{
+			"manifest"		"-1"
+		}
+	}
+}
+"#,
+        );
+        write_file(
+            &workshop
+                .join("content")
+                .join("300000")
+                .join("1")
+                .join("mod.vpk"),
+            b"live subscription of an uninstalled game",
+        );
+        write_file(
+            &workshop
+                .join("content")
+                .join("300000")
+                .join("2")
+                .join("mod.vpk"),
+            b"residue of a deleted game",
+        );
+
+        write_file(
+            &workshop
+                .join("content")
+                .join("217140")
+                .join("555")
+                .join("mod.vpk"),
+            b"cannot be proven either way",
+        );
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: root.to_path_buf(),
+            orphan_evidence: OrphanEvidence::Authoritative,
+            games: vec![GameInstall {
+                name: "Live Game".to_string(),
+                install_dir,
+                app_id: Some("620".to_string()),
+            }],
+        };
+        (dir, library)
+    }
+
+    #[test]
+    fn collect_orphans_flags_workshop_residue_but_spares_every_live_subscription() {
+        let (_dir, library) = steam_library_with_workshop_residue();
+        let cancel = AtomicBool::new(false);
+
+        let orphans = collect_orphans(std::slice::from_ref(&library), &cancel).orphans;
+        let content = library
+            .path
+            .join("steamapps")
+            .join("workshop")
+            .join("content");
+
+        assert!(
+            orphans
+                .iter()
+                .any(|o| o.full_path == content.join("620").join("999")),
+            "an unsubscribed item under a still-installed game must be flagged"
+        );
+        assert!(
+            !orphans
+                .iter()
+                .any(|o| o.full_path == content.join("620").join("111")),
+            "a live subscription of an installed game must never be flagged"
+        );
+
+        assert!(
+            orphans
+                .iter()
+                .any(|o| o.full_path == content.join("300000").join("2")),
+            "workshop residue of a deleted game must be found"
+        );
+        assert!(
+            !orphans
+                .iter()
+                .any(|o| o.full_path == content.join("300000").join("1")),
+            "a live subscription must be spared even when its game is uninstalled - \
+             this is the load-bearing acceptance criterion"
+        );
+
+        for orphan in &orphans {
+            assert_eq!(orphan.kind, OrphanKind::UnmanagedFolder);
+        }
+    }
+
+    #[test]
+    fn collect_orphans_never_flags_a_workshop_item_without_state_evidence() {
+        let (_dir, library) = steam_library_with_workshop_residue();
+        let cancel = AtomicBool::new(false);
+
+        let orphans = collect_orphans(std::slice::from_ref(&library), &cancel).orphans;
+        let missing_evidence_item = library
+            .path
+            .join("steamapps")
+            .join("workshop")
+            .join("content")
+            .join("217140")
+            .join("555");
+
+        assert!(
+            !orphans.iter().any(|o| o.full_path == missing_evidence_item),
+            "no appworkshop_*.acf at all means no evidence either way - fail closed"
+        );
+    }
+
+    /// Builds a Steam library with one installed game (its `InstalledDepots`
+    /// names one depot/manifest pair), a `depotcache/` manifest matching that
+    /// pair (needed, must be spared), an old manifest for the same depot at a
+    /// different manifest id (unreferenced, must be flagged), and a file that
+    /// doesn't match Steam's manifest filename shape at all (must be
+    /// ignored).
+    fn steam_library_with_depotcache_residue() -> (tempfile::TempDir, DiscoveredLibrary) {
+        let dir = tempfile::tempdir().expect("create temp library");
+        let root = dir.path();
+        let steamapps = root.join("steamapps");
+
+        let install_dir = steamapps.join("common").join("Portal 2");
+        write_file(&install_dir.join("game.exe"), b"payload");
+        write_file(
+            &steamapps.join("appmanifest_620.acf"),
+            br#"
+"AppState"
+{
+	"appid"		"620"
+	"name"		"Portal 2"
+	"installdir"		"Portal 2"
+	"InstalledDepots"
+	{
+		"621"
+		{
+			"manifest"		"999888777"
+		}
+	}
+}
+"#,
+        );
+
+        write_file(
+            &root.join("depotcache").join("621_999888777.manifest"),
+            b"needed",
+        );
+        write_file(
+            &root.join("depotcache").join("621_111222333.manifest"),
+            b"stale",
+        );
+        write_file(
+            &root.join("depotcache").join("notes.txt"),
+            b"not a manifest",
+        );
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: root.to_path_buf(),
+            orphan_evidence: OrphanEvidence::Authoritative,
+            games: vec![GameInstall {
+                name: "Portal 2".to_string(),
+                install_dir,
+                app_id: Some("620".to_string()),
+            }],
+        };
+        (dir, library)
+    }
+
+    #[test]
+    fn collect_orphans_flags_an_unreferenced_depot_manifest_but_spares_a_needed_one() {
+        let (_dir, library) = steam_library_with_depotcache_residue();
+        let cancel = AtomicBool::new(false);
+
+        let collection = collect_orphans(std::slice::from_ref(&library), &cancel);
+        let orphans = collection.orphans;
+        let depotcache = library.path.join("depotcache");
+
+        let stale = orphans
+            .iter()
+            .find(|o| o.full_path == depotcache.join("621_111222333.manifest"))
+            .expect("the manifest no installed app names must be flagged");
+        assert_eq!(stale.kind, OrphanKind::UnreferencedFile);
+
+        assert!(
+            !orphans
+                .iter()
+                .any(|o| o.full_path == depotcache.join("621_999888777.manifest")),
+            "a depot manifest referenced by an installed app must never be flagged"
+        );
+        assert!(
+            !orphans
+                .iter()
+                .any(|o| o.full_path == depotcache.join("notes.txt")),
+            "a file that doesn't match Steam's manifest filename shape must be ignored"
+        );
+    }
+
+    #[test]
+    fn collect_orphans_flags_nothing_in_depotcache_when_installed_depot_evidence_is_unreadable() {
+        let dir = tempfile::tempdir().expect("create temp library");
+        let root = dir.path();
+        let steamapps = root.join("steamapps");
+        // A malformed manifest breaks `installed_depots_for_library` for the
+        // whole library - the needed-file set can no longer be trusted.
+        write_file(&steamapps.join("appmanifest_620.acf"), b"\"AppState\" {");
+        write_file(
+            &root.join("depotcache").join("621_999888777.manifest"),
+            b"x",
+        );
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: root.to_path_buf(),
+            orphan_evidence: OrphanEvidence::Authoritative,
+            games: Vec::new(),
+        };
+        let cancel = AtomicBool::new(false);
+
+        let collection = collect_orphans(std::slice::from_ref(&library), &cancel);
+
+        assert!(
+            collection
+                .orphans
+                .iter()
+                .all(|o| o.kind != OrphanKind::UnreferencedFile),
+            "unreadable installed-depot evidence must flag nothing in depotcache, \
+             never fall back to an empty needed set"
+        );
+        assert!(
+            collection
+                .issues
+                .iter()
+                .any(|issue| issue.stage == "depotcache-evidence"),
+            "the evidence gap must still be visible as a diagnostic"
         );
     }
 

@@ -121,6 +121,22 @@ fn flush_batch(
     Ok(())
 }
 
+/// One game as this scan wrote it: the row id its files and findings hang
+/// off, and the three things the rest of the run needs about it.
+///
+/// `app_id` rides along because classification now depends on it - a rule may
+/// be scoped to one game (see `gametrimmer_core::rules::Rule::app_id`), and a
+/// personal exception always is. It is the game's *vendor* id, so it means the
+/// same thing in the next generation, which `id` deliberately does not.
+pub(super) struct ScannedGame {
+    pub id: i64,
+    pub name: String,
+    pub install_dir: PathBuf,
+    /// `None` for a game no launcher gave an id - a folder-scan discovery or
+    /// a manually added library.
+    pub app_id: Option<String>,
+}
+
 /// Writes discovered libraries and their games into the database,
 /// replacing each library's game list (`INSERT OR IGNORE` on the library
 /// itself, keyed by path; full delete+reinsert of its games).
@@ -145,7 +161,7 @@ pub(super) fn persist_libraries(
     conn: &Connection,
     libraries: &[DiscoveredLibrary],
     scan_id: i64,
-) -> CoreResult<Vec<(i64, String, PathBuf)>> {
+) -> CoreResult<Vec<ScannedGame>> {
     // Foreign-key enforcement is disabled for the whole delete+reinsert.
     // This is the silent 15-20s phase at the start of every scan on a large
     // library: the three `DELETE ... WHERE library_id = ?` statements below
@@ -254,11 +270,12 @@ pub(super) fn persist_libraries(
                         build_id
                     ],
                 )?;
-                games.push((
-                    tx.last_insert_rowid(),
-                    game.name.clone(),
-                    game.install_dir.clone(),
-                ));
+                games.push(ScannedGame {
+                    id: tx.last_insert_rowid(),
+                    name: game.name.clone(),
+                    install_dir: game.install_dir.clone(),
+                    app_id: game.app_id.clone(),
+                });
             }
         }
 
@@ -408,11 +425,13 @@ pub(super) fn persist_prepared_game(
         )
         .ok();
     sql += sql_started.elapsed();
-    let evidence_block_reason = match evidence_status.as_deref() {
-        None => Some("missing library discovery evidence".to_string()),
-        Some("degraded") => Some("library discovery was degraded".to_string()),
-        Some(_) => None,
-    };
+    // `true`: this path only ever persists findings belonging to a known game
+    // (`prepared.game_id`); orphan candidates are persisted elsewhere. Shared
+    // with the delete preflight and the load query so all three agree - see
+    // `gametrimmer_core::safety::discovery_block_reason`.
+    let evidence_block_reason =
+        gametrimmer_core::safety::discovery_block_reason(true, evidence_status.as_deref())
+            .map(str::to_string);
 
     let mut rows = Vec::with_capacity(prepared.findings.len());
     let mut insert_finding = conn.prepare_cached(
@@ -512,6 +531,7 @@ pub(super) fn persist_prepared_game(
             file_id,
             game_id: prepared.game_id,
             game_name: prepared.name.clone(),
+            app_id: prepared.app_id.clone(),
             install_dir: prepared.install_dir.clone(),
             rel_path: finding.rel_path.clone(),
             size: finding.size,

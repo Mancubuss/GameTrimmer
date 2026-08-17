@@ -67,6 +67,35 @@ fn is_builtin_provenance(provenance: &RuleProvenance) -> bool {
     *provenance == RuleProvenance::Builtin
 }
 
+/// Which way a rule points: does matching a file make it a deletion candidate,
+/// or does it forbid every other rule from claiming it?
+///
+/// The engine used to know only the first kind, and the only persistent "keep
+/// this" the app had was the localization keep-list - which is coarse (a whole
+/// language) and says nothing about one file in one game. A user's ticks lived
+/// for exactly one scan, so every re-trim re-proposed what they had already
+/// consciously rejected.
+///
+/// A veto is deliberately *not* a new mechanism beside the rules: an exception
+/// differs from a deleting rule in this field and in [`Rule::app_id`] alone, so
+/// it is written in the same file format, validated by the same parser and
+/// carried by the same import/export machinery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RulePolarity {
+    /// Matching makes the file a deletion candidate. The behaviour every rule
+    /// written before this field existed has, which is why it is the default.
+    #[default]
+    Delete,
+    /// Matching forbids *any* rule - and the localization detector after it -
+    /// from claiming the file. See [`Verdict::Kept`].
+    Keep,
+}
+
+fn is_delete_polarity(polarity: &RulePolarity) -> bool {
+    *polarity == RulePolarity::Delete
+}
+
 impl Category {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -119,18 +148,60 @@ impl Category {
 /// One rule from rules.json. `Serialize` keeps the round trip lossless for
 /// the "Export rules"/"Import rules" flow (see
 /// `crate::packs`), which rewrites the merged list back to disk.
+///
+/// # Versioning of the two fields added for exceptions
+///
+/// [`RULE_PACK_VERSION`] deliberately stays at 1 now that `polarity` and
+/// `app_id` exist. Both follow the `provenance` pattern - `default` +
+/// `skip_serializing_if` - so a pack that uses neither serializes byte for
+/// byte as it did before, and bumping the version would make an older build
+/// refuse packs it understands perfectly well.
+///
+/// A pack that *does* use them is refused by an older build either way: the
+/// struct is `deny_unknown_fields`, so `polarity` fails the parse there with
+/// "unknown field `polarity`" rather than with "version newer than
+/// supported". Both are total refusals of the whole file; only the wording
+/// differs, and buying the better wording costs every unchanged pack its
+/// compatibility. Should that trade ever flip (a pack format change an old
+/// build would silently *misread* rather than reject), that is the version's
+/// job and it must be bumped then.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
-    pub category: Category,
+    /// The category a matching file is filed under. Absent on a keep rule
+    /// (see [`RulePolarity::Keep`]), which files nothing - it only forbids.
+    /// Required on a deleting rule; [`RuleEngine::from_json_in`] says so by
+    /// name rather than letting a category-less rule quietly classify
+    /// everything it matches as some arbitrary default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<Category>,
     /// Case-insensitive regex. Folder rules match one path segment,
-    /// file rules match the file name.
+    /// file rules match the file name - and a keep rule matches the whole
+    /// `\`-separated path relative to the game root, because "never touch
+    /// this file" names one file, not a name that may recur anywhere in the
+    /// tree.
     pub pattern: String,
     /// Human-readable description, e.g. "MS Visual C++ Redist". Either one
     /// string or one per language - see [`LocalizedText`].
     pub desc: LocalizedText,
-    /// 0-100.
-    pub confidence: u8,
+    /// 0-100. Absent on a keep rule: a veto is not a guess, and there is
+    /// nothing for it to outrank.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<u8>,
+    /// Which way this rule points; see [`RulePolarity`].
+    #[serde(default, skip_serializing_if = "is_delete_polarity")]
+    pub polarity: RulePolarity,
+    /// Restricts the rule to one game, by the vendor id stored in
+    /// `games.app_id` (a Steam appid, a GOG product id, ...). `None` - the
+    /// shape of every rule written before this field - means every game.
+    ///
+    /// This is what makes a personal exception personal: "never touch this
+    /// file *in my game*" must not quietly protect a same-named file in the
+    /// other four hundred. The same field is what a community recipe will be
+    /// bound with, which is why it lives on `Rule` rather than only on the
+    /// keep side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_builtin_provenance")]
     pub provenance: RuleProvenance,
     /// Optional per-rule override of the category's default depth limit
@@ -149,6 +220,33 @@ pub struct Rule {
     /// material, `QtQuick\Extras\Extras.qml` is program code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
+}
+
+impl Rule {
+    /// A personal exception: never touch `rel_path` in the game whose vendor
+    /// id is `app_id`.
+    ///
+    /// The pattern is built here rather than in the UI so that exactly one
+    /// place decides what "this file" means as a regex: the whole relative
+    /// path, anchored at both ends and escaped, so a path full of regex
+    /// metacharacters (`Data\[DLC]\readme (1).txt` is an ordinary Windows
+    /// name) protects that one file and not a family of them.
+    pub fn keep_file(app_id: &str, rel_path: &str, desc: LocalizedText) -> Self {
+        Self {
+            category: None,
+            pattern: format!("^{}$", regex::escape(rel_path)),
+            desc,
+            confidence: None,
+            polarity: RulePolarity::Keep,
+            // A hand-written exception is the user's own decision about their
+            // own machine, not an imported pack of someone else's rules - the
+            // untrusted marking exists to warn about the latter.
+            provenance: RuleProvenance::Builtin,
+            app_id: Some(app_id.to_string()),
+            max_depth: None,
+            extensions: None,
+        }
+    }
 }
 
 /// A whole `rules.json`: the version marker and the rules it carries.
@@ -200,6 +298,37 @@ pub struct Finding {
     pub provenance: RuleProvenance,
 }
 
+/// Everything the engine can conclude about one file.
+///
+/// The third state is the reason this is not an `Option<Finding>`: "no rule
+/// claimed it" and "a rule forbade claiming it" have to reach the caller as
+/// different answers, because the localization detector runs *after* the rule
+/// engine and only on files no rule claimed (see `combine_finding` in the
+/// app's scan worker). Collapsing a veto into "no match" would let a kept file
+/// come straight back as a localization finding - which is exactly the file
+/// the user just said never to touch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// No rule matched.
+    Unmatched,
+    /// A keep rule matched: the file is off limits to every later stage too.
+    Kept,
+    /// The winning deleting rule's finding.
+    Flagged(Finding),
+}
+
+impl Verdict {
+    /// The deletion candidate this verdict names, if it names one. For the
+    /// callers - benchmarks, corpus checks - that only ever cared about what
+    /// was flagged and treat a veto exactly like a non-match.
+    pub fn flagged(self) -> Option<Finding> {
+        match self {
+            Verdict::Flagged(finding) => Some(finding),
+            Verdict::Unmatched | Verdict::Kept => None,
+        }
+    }
+}
+
 /// A rule with its pattern already compiled to a case-insensitive [`Regex`].
 #[derive(Debug)]
 struct CompiledRule {
@@ -214,11 +343,40 @@ struct CompiledRule {
     /// Lowercased extension whitelist, if the rule declares one
     /// (see [`Rule::extensions`]).
     extensions: Option<HashSet<String>>,
+    /// The one game this rule applies to, if it is scoped (see
+    /// [`Rule::app_id`]).
+    app_id: Option<String>,
+}
+
+/// A keep rule with its pattern compiled. Carries none of the deleting rule's
+/// machinery - a veto has no category to rank, no confidence to weigh, no
+/// depth limit and no extension whitelist, and the parser rejects a keep rule
+/// that sets any of them rather than accepting a field that would do nothing.
+#[derive(Debug)]
+struct CompiledKeep {
+    /// Matched against the whole relative path, not a single segment.
+    regex: Regex,
+    app_id: Option<String>,
+}
+
+/// Whether a rule scoped to `scope` applies while classifying a game whose
+/// vendor id is `app_id`. An unscoped rule (the shape of every built-in)
+/// applies to everything, which is what keeps this free for them.
+fn scope_applies(scope: &Option<String>, app_id: Option<&str>) -> bool {
+    match scope {
+        None => true,
+        Some(scope) => app_id.is_some_and(|id| id == scope),
+    }
 }
 
 #[derive(Debug)]
 pub struct RuleEngine {
     rules: Vec<CompiledRule>,
+    /// Split out from `rules` rather than filtered out of it per file: on a
+    /// default install this is empty, so honouring the veto costs one
+    /// `is_empty` per file over a 4.9-million-file scan instead of a polarity
+    /// branch inside the loop that runs for every rule of every file.
+    keeps: Vec<CompiledKeep>,
 }
 
 impl RuleEngine {
@@ -249,13 +407,14 @@ impl RuleEngine {
         }
 
         let mut rules = Vec::with_capacity(raw_rules.len());
+        let mut keeps = Vec::new();
         for (index, rule) in raw_rules.into_iter().enumerate() {
             if rule.pattern.len() > MAX_REGEX_BYTES {
                 return Err(CoreError::Other(format!(
                     "rules.json: rule #{index} regex exceeds {MAX_REGEX_BYTES} bytes"
                 )));
             }
-            if rule.confidence > 100 {
+            if rule.confidence.is_some_and(|confidence| confidence > 100) {
                 return Err(CoreError::Other(format!(
                     "rules.json: rule #{index} confidence must be in 0..=100"
                 )));
@@ -301,16 +460,55 @@ impl RuleEngine {
                     ))
                 })?;
 
-            let default_depth = if rule.category.is_depth_limited() {
+            if rule.polarity == RulePolarity::Keep {
+                // Every field below belongs to the ranking a veto does not
+                // take part in. Accepting them silently would leave a rule
+                // that looks tuned and is not - the same trap a rule with no
+                // description is, and refused for the same reason.
+                if rule.category.is_some()
+                    || rule.confidence.is_some()
+                    || rule.max_depth.is_some()
+                    || rule.extensions.is_some()
+                {
+                    return Err(CoreError::Other(format!(
+                        "rules.json: keep rule #{index} (pattern `{}`) sets category, confidence, \
+                         max_depth or extensions; a veto ranks against nothing and matches the \
+                         whole relative path, so none of them would do anything",
+                        rule.pattern
+                    )));
+                }
+                keeps.push(CompiledKeep {
+                    regex,
+                    app_id: rule.app_id,
+                });
+                continue;
+            }
+
+            let Some(category) = rule.category else {
+                return Err(CoreError::Other(format!(
+                    "rules.json: rule #{index} (desc \"{desc}\", pattern `{}`) has no category; \
+                     only a keep rule may omit it",
+                    rule.pattern
+                )));
+            };
+            let Some(confidence) = rule.confidence else {
+                return Err(CoreError::Other(format!(
+                    "rules.json: rule #{index} (desc \"{desc}\", pattern `{}`) has no confidence; \
+                     only a keep rule may omit it",
+                    rule.pattern
+                )));
+            };
+
+            let default_depth = if category.is_depth_limited() {
                 MAX_SHALLOW_DEPTH
             } else {
                 usize::MAX
             };
             rules.push(CompiledRule {
-                category: rule.category,
+                category,
                 regex,
                 desc,
-                confidence: rule.confidence,
+                confidence,
                 provenance: rule.provenance,
                 max_depth: rule.max_depth.unwrap_or(default_depth),
                 extensions: rule.extensions.map(|list| {
@@ -318,10 +516,21 @@ impl RuleEngine {
                         .map(|ext| ext.to_ascii_lowercase())
                         .collect()
                 }),
+                app_id: rule.app_id,
             });
         }
 
-        Ok(Self { rules })
+        Ok(Self { rules, keeps })
+    }
+
+    /// Folds another engine's rules into this one, as the scan does with the
+    /// personal exception pack on top of `rules.json`.
+    ///
+    /// Order matters for nothing but ties: precedence is decided by category
+    /// rank and confidence, and the veto is checked before either.
+    pub fn absorb(&mut self, other: RuleEngine) {
+        self.rules.extend(other.rules);
+        self.keeps.extend(other.keeps);
     }
 
     /// Loads and builds the engine from a rules.json file, describing its
@@ -338,12 +547,33 @@ impl RuleEngine {
     }
 
     /// Classifies one file by its path relative to the game root
-    /// (`\`-separated, as produced by the scanner). When several rules
-    /// match the file name or a directory segment, the winner is the one
-    /// whose category has the highest precedence (see
-    /// [`Category::priority_rank`]); confidence breaks ties within one
-    /// category rank.
-    pub fn classify(&self, rel_path: &str) -> Option<Finding> {
+    /// (`\`-separated, as produced by the scanner), in the game whose vendor
+    /// id is `app_id` (`None` for a game no launcher gave one - a folder-scan
+    /// or manual library).
+    ///
+    /// Precedence, outermost first:
+    ///
+    /// 1. **A keep rule vetoes everything.** This is the rank below every
+    ///    category rank that [`Category::priority_rank`] describes as "lowest
+    ///    rank wins regardless of confidence" - taken to its conclusion: a
+    ///    veto is not a better classification, it is the refusal of any. It
+    ///    also outranks the stage *after* this one, which no `Category` can
+    ///    express, and that is why it is a [`Verdict`] rather than a rank.
+    /// 2. Among the deleting rules that match, the one whose category has the
+    ///    highest precedence wins, confidence breaking ties within one rank.
+    ///
+    /// A rule scoped to a game (see [`Rule::app_id`]) takes part in neither
+    /// step while any other game is being classified.
+    pub fn classify(&self, rel_path: &str, app_id: Option<&str>) -> Verdict {
+        // Before anything is matched, and before the path is even split: a
+        // vetoed file is not classified at all. Empty on a default install,
+        // so this costs one length check per file.
+        for keep in &self.keeps {
+            if scope_applies(&keep.app_id, app_id) && keep.regex.is_match(rel_path) {
+                return Verdict::Kept;
+            }
+        }
+
         let segments: Vec<&str> = rel_path
             .split(['\\', '/'])
             .filter(|segment| !segment.is_empty())
@@ -351,7 +581,7 @@ impl RuleEngine {
 
         let (file_name, folder_segments) = match segments.split_last() {
             Some((file_name, folders)) => (*file_name, folders),
-            None => return None,
+            None => return Verdict::Unmatched,
         };
         let file_ext = file_name
             .rsplit_once('.')
@@ -360,6 +590,13 @@ impl RuleEngine {
         let mut best: Option<Finding> = None;
 
         for rule in &self.rules {
+            // Cheapest test first, and free for every unscoped rule (which is
+            // all of them until a recipe pack arrives): an `Option` tag check
+            // beside the extension check already here, in front of a regex
+            // match that costs orders of magnitude more.
+            if !scope_applies(&rule.app_id, app_id) {
+                continue;
+            }
             if let Some(allowed) = &rule.extensions {
                 let ext_listed = file_ext.as_deref().is_some_and(|ext| allowed.contains(ext));
                 if !ext_listed {
@@ -400,7 +637,10 @@ impl RuleEngine {
             }
         }
 
-        best
+        match best {
+            Some(finding) => Verdict::Flagged(finding),
+            None => Verdict::Unmatched,
+        }
     }
 }
 
@@ -437,7 +677,8 @@ mod tests {
         let engine = RuleEngine::from_json(&sample_json()).unwrap();
 
         let finding = engine
-            .classify("_CommonRedist\\vcredist_x64.exe")
+            .classify("_CommonRedist\\vcredist_x64.exe", None)
+            .flagged()
             .expect("should match both the folder and the file rule");
 
         // The file rule (95) beats the folder rule (90).
@@ -450,7 +691,8 @@ mod tests {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
         let finding = engine
-            .classify("manual\\game_manual.pdf")
+            .classify("manual\\game_manual.pdf", None)
+            .flagged()
             .expect("manual folder + pdf file should be classified as docs");
 
         // The dedicated readme/eula/manual rule (88) outranks the generic
@@ -476,7 +718,8 @@ mod tests {
             "Siren\\Content\\Data\\PrivacyPolicy\\pt",
         ] {
             let finding = engine
-                .classify(path)
+                .classify(path, None)
+                .flagged()
                 .unwrap_or_else(|| panic!("{path} should be classified as documentation"));
             assert_eq!(finding.category, Category::DocsFolder);
         }
@@ -486,7 +729,9 @@ mod tests {
     fn classify_returns_none_for_unremarkable_game_content() {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
-        let finding = engine.classify("base\\sound\\music\\track01.ogg");
+        let finding = engine
+            .classify("base\\sound\\music\\track01.ogg", None)
+            .flagged();
 
         assert_eq!(finding, None);
     }
@@ -497,7 +742,9 @@ mod tests {
 
         // "installations" contains the substring "install" but sits four
         // segments deep, well past MAX_REDIST_DEPTH, and is real game content.
-        let finding = engine.classify("data\\assets\\textures\\installations\\wall.dds");
+        let finding = engine
+            .classify("data\\assets\\textures\\installations\\wall.dds", None)
+            .flagged();
 
         assert_eq!(finding, None);
     }
@@ -512,13 +759,16 @@ mod tests {
         // Depth 4 (3 folders + file) is beyond the category default of 2,
         // but within this rule's own override.
         let finding = engine
-            .classify(r"Support\Software\VCRedist\vc_redist.x64.exe")
+            .classify(r"Support\Software\VCRedist\vc_redist.x64.exe", None)
+            .flagged()
             .expect("max_depth override should allow the deeper match");
         assert_eq!(finding.category, Category::RedistFile);
 
         // Depth 5 is beyond even the override.
         assert_eq!(
-            engine.classify(r"a\b\c\d\vc_redist.x64.exe"),
+            engine
+                .classify(r"a\b\c\d\vc_redist.x64.exe", None)
+                .flagged(),
             None,
             "the override is still a limit, not an unlimited pass"
         );
@@ -533,7 +783,8 @@ mod tests {
         // low-confidence support/docs folder rule - the specific redist
         // file rule must win by category precedence.
         let finding = engine
-            .classify(r"Support\Software\VCRedist\vc_redist.x64.exe")
+            .classify(r"Support\Software\VCRedist\vc_redist.x64.exe", None)
+            .flagged()
             .expect("vc_redist installer should be classified");
 
         assert_eq!(finding.category, Category::RedistFile);
@@ -547,7 +798,8 @@ mod tests {
         // folder rule (80), but an artbook inside an extras folder is bonus
         // material - category precedence must beat raw confidence.
         let finding = engine
-            .classify(r"Extras\artbook.pdf")
+            .classify(r"Extras\artbook.pdf", None)
+            .flagged()
             .expect("an artbook inside Extras should be classified");
 
         assert_eq!(finding.category, Category::Bonus);
@@ -562,7 +814,8 @@ mod tests {
         // UI), not to bonus - and the folder claims its content wholesale,
         // whatever the file type or per-language subfolder split inside.
         let finding = engine
-            .classify(r"Support\ru\voices.pak")
+            .classify(r"Support\ru\voices.pak", None)
+            .flagged()
             .expect("support folder content should be classified");
 
         assert_eq!(finding.category, Category::DocsFolder);
@@ -576,7 +829,12 @@ mod tests {
         // module three segments deep, not a bonus-content folder. The
         // shallow depth limit must keep the bonus rule away from it even
         // for media-typed files.
-        assert_eq!(engine.classify(r"Launcher\QtQuick\Extras\poster.png"), None);
+        assert_eq!(
+            engine
+                .classify(r"Launcher\QtQuick\Extras\poster.png", None)
+                .flagged(),
+            None
+        );
     }
 
     #[test]
@@ -584,12 +842,13 @@ mod tests {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
         let media = engine
-            .classify(r"Extras\track01.mp3")
+            .classify(r"Extras\track01.mp3", None)
+            .flagged()
             .expect("music inside Extras should be bonus material");
         assert_eq!(media.category, Category::Bonus);
 
         assert_eq!(
-            engine.classify(r"Extras\plugin.dll"),
+            engine.classify(r"Extras\plugin.dll", None).flagged(),
             None,
             "a program file is not bonus material even inside an extras folder"
         );
@@ -602,10 +861,13 @@ mod tests {
         ]"#;
         let engine = RuleEngine::from_json(&pack(json)).unwrap();
 
-        assert!(engine.classify(r"Extras\Artbook.PDF").is_some());
-        assert_eq!(engine.classify(r"Extras\readme.txt"), None);
+        assert!(engine
+            .classify(r"Extras\Artbook.PDF", None)
+            .flagged()
+            .is_some());
+        assert_eq!(engine.classify(r"Extras\readme.txt", None).flagged(), None);
         assert_eq!(
-            engine.classify(r"Extras\noextension"),
+            engine.classify(r"Extras\noextension", None).flagged(),
             None,
             "a file without an extension never passes a whitelist"
         );
@@ -786,6 +1048,192 @@ mod tests {
         let engine = RuleEngine::load(&default_rules_path())
             .expect("repo rules.json should parse and compile");
         assert!(!engine.rules.is_empty());
+    }
+
+    /// A pack holding the builtin rules plus `extra`, which is how the scan
+    /// actually runs once a personal exception exists.
+    fn engine_with_keep(extra: &str) -> RuleEngine {
+        let mut engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json loads");
+        engine.absorb(RuleEngine::from_json(&pack(extra)).expect("keep pack compiles"));
+        engine
+    }
+
+    /// The point of the whole card: a file the user has kept stops being
+    /// offered, however confidently a rule would otherwise claim it.
+    #[test]
+    fn a_keep_rule_vetoes_the_rule_that_would_have_flagged_the_file() {
+        let path = r"Support\Software\VCRedist\vc_redist.x64.exe";
+        let plain = RuleEngine::load(&default_rules_path()).unwrap();
+        assert!(
+            matches!(plain.classify(path, Some("620")), Verdict::Flagged(_)),
+            "precondition: this path is a finding without the exception",
+        );
+
+        let engine = engine_with_keep(&format!(
+            r#"[{{"polarity":"keep","app_id":"620","pattern":"{}","desc":"Kept by me"}}]"#,
+            regex::escape(path).replace('\\', "\\\\"),
+        ));
+
+        assert_eq!(engine.classify(path, Some("620")), Verdict::Kept);
+    }
+
+    /// A veto is not a non-match: the localization detector runs on files no
+    /// rule claimed, so the two answers have to stay distinguishable or a kept
+    /// file walks straight back in through the other door.
+    #[test]
+    fn a_veto_is_reported_apart_from_a_plain_non_match() {
+        let engine = engine_with_keep(
+            r#"[{"polarity":"keep","app_id":"620","pattern":"^data\\\\loc_de\\.pak$","desc":"Kept"}]"#,
+        );
+
+        assert_eq!(
+            engine.classify(r"data\loc_de.pak", Some("620")),
+            Verdict::Kept
+        );
+        assert_eq!(
+            engine.classify(r"data\loc_fr.pak", Some("620")),
+            Verdict::Unmatched,
+        );
+    }
+
+    /// "Never touch this file *in my game*" - the same relative path in the
+    /// other four hundred games must be untouched by one game's exception.
+    #[test]
+    fn a_keep_rule_scoped_to_one_game_does_not_affect_another() {
+        let path = r"Extras\artbook.pdf";
+        let engine = engine_with_keep(
+            r#"[{"polarity":"keep","app_id":"620","pattern":"^Extras\\\\artbook\\.pdf$","desc":"Kept"}]"#,
+        );
+
+        assert_eq!(engine.classify(path, Some("620")), Verdict::Kept);
+        assert!(
+            matches!(engine.classify(path, Some("730")), Verdict::Flagged(_)),
+            "another game's identical path must still be classified",
+        );
+        assert!(
+            matches!(engine.classify(path, None), Verdict::Flagged(_)),
+            "a game with no vendor id matches no scoped rule",
+        );
+    }
+
+    /// The scope is a property of `Rule`, not of the keep side alone - a
+    /// community recipe will bind a *deleting* rule to one game the same way,
+    /// and a field that only worked on one polarity would be a trap.
+    #[test]
+    fn a_scope_restricts_a_deleting_rule_to_its_game_too() {
+        let json = r#"[
+            {"category": "bonus", "pattern": "^extras$", "desc": "Bonus", "confidence": 80,
+             "app_id": "620"}
+        ]"#;
+        let engine = RuleEngine::from_json(&pack(json)).unwrap();
+
+        assert!(matches!(
+            engine.classify(r"Extras\track.mp3", Some("620")),
+            Verdict::Flagged(_)
+        ));
+        assert_eq!(
+            engine.classify(r"Extras\track.mp3", Some("730")),
+            Verdict::Unmatched,
+        );
+    }
+
+    /// `keep_file` is the only place that turns a path into a pattern, and a
+    /// Windows file name is full of characters a regex reads as syntax.
+    #[test]
+    fn keep_file_matches_the_one_path_it_names_and_nothing_else() {
+        let rule = Rule::keep_file("620", r"Data\[DLC]\readme (1).txt", "Kept".into());
+        let json = serialize_rule_list(&[rule]).expect("the exception serializes");
+        let engine = RuleEngine::from_json(&json).expect("the exception compiles");
+
+        assert_eq!(
+            engine.classify(r"Data\[DLC]\readme (1).txt", Some("620")),
+            Verdict::Kept,
+        );
+        assert_eq!(
+            engine.classify(r"Data\xDLCx\readme (1)atxt", Some("620")),
+            Verdict::Unmatched,
+            "the metacharacters must have been escaped, not interpreted",
+        );
+        assert_eq!(
+            engine.classify(r"Data\[DLC]\readme (1).txt.bak", Some("620")),
+            Verdict::Unmatched,
+            "the pattern is anchored: a longer path is a different file",
+        );
+    }
+
+    /// A personal pack has to come back off disk as what was written to it -
+    /// this is the "survives a reload" half of surviving a re-scan.
+    #[test]
+    fn an_exception_pack_round_trips_through_the_file_format() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("personal_rules.json");
+        let written = serialize_rule_list(&[Rule::keep_file(
+            "620",
+            r"Support\ru\voices.pak",
+            "Kept by me".into(),
+        )])
+        .expect("serialize");
+        std::fs::write(&path, &written).expect("write the pack");
+
+        let reloaded = parse_rule_list(&std::fs::read_to_string(&path).unwrap())
+            .expect("the written pack reparses");
+
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].polarity, RulePolarity::Keep);
+        assert_eq!(reloaded[0].app_id.as_deref(), Some("620"));
+        assert_eq!(reloaded[0].category, None);
+        assert_eq!(reloaded[0].confidence, None);
+        assert_eq!(
+            RuleEngine::load(&path)
+                .expect("the reloaded pack compiles")
+                .classify(r"Support\ru\voices.pak", Some("620")),
+            Verdict::Kept,
+        );
+    }
+
+    /// The versioning decision, pinned: the two new fields are absent from a
+    /// pack that does not use them, so an unchanged `rules.json` is still the
+    /// v1 file every older build reads.
+    #[test]
+    fn a_pack_that_uses_no_exception_field_serializes_exactly_as_before() {
+        let rules = parse_rule_list(BUILTIN_RULES_JSON).expect("builtin rules parse");
+
+        let json = serialize_rule_list(&rules).expect("rules serialize");
+
+        assert!(!json.contains("polarity"), "{json:.200}");
+        assert!(!json.contains("app_id"), "{json:.200}");
+        assert!(json.contains(&format!("\"version\": {RULE_PACK_VERSION}")));
+    }
+
+    /// Fields that would silently do nothing are refused rather than ignored:
+    /// a veto ranks against nothing and matches the whole relative path.
+    #[test]
+    fn a_keep_rule_may_not_carry_the_fields_a_veto_ignores() {
+        for extra in [
+            r#""category":"bonus""#,
+            r#""confidence":80"#,
+            r#""max_depth":3"#,
+            r#""extensions":["pdf"]"#,
+        ] {
+            let json = pack(&format!(
+                r#"[{{"polarity":"keep","pattern":"^x$","desc":"Kept",{extra}}}]"#
+            ));
+            let err = RuleEngine::from_json(&json)
+                .expect_err("a keep rule carrying {extra} must be refused");
+            assert!(err.to_string().contains("keep rule #0"), "{err}");
+        }
+    }
+
+    /// The other direction: only a keep rule may omit them.
+    #[test]
+    fn a_deleting_rule_still_has_to_declare_its_category_and_confidence() {
+        let no_category = r#"[{"pattern":"^x$","desc":"x","confidence":80}]"#;
+        let err = RuleEngine::from_json(&pack(no_category)).expect_err("category is required");
+        assert!(err.to_string().contains("no category"), "{err}");
+
+        let no_confidence = r#"[{"category":"bonus","pattern":"^x$","desc":"x"}]"#;
+        let err = RuleEngine::from_json(&pack(no_confidence)).expect_err("confidence is required");
+        assert!(err.to_string().contains("no confidence"), "{err}");
     }
 
     fn default_rules_path() -> std::path::PathBuf {

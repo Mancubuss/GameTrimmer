@@ -200,7 +200,15 @@ pub struct GameTrimmerApp {
     /// rebuilt at most once per frame in `drain_messages`, not once per
     /// message - running `build_tree` over thousands of findings for every
     /// single removed file would burn CPU for nothing.
-    tree_dirty: bool,
+    /// Programs found installed outside every launcher, offered as folders to
+    /// register by hand. `None` until the user asks - the sweep reads the
+    /// whole uninstall registry. See `ui::settings::scanning`.
+    pub(crate) standalone_candidates:
+        Option<Vec<gametrimmer_core::standalone::StandaloneCandidate>>,
+    /// `pub(crate)` for `ui::tree_view::apply_keep_request`, which drops a
+    /// kept row from the plan and needs the next frame to rebuild the tree
+    /// without it.
+    pub(crate) tree_dirty: bool,
     /// Explicit user expand/collapse choices for the virtualized tree view,
     /// keyed by a stable node key (see `ui::tree_view`). Absent key = the
     /// node's default (top-level branches open, games/folders closed,
@@ -477,6 +485,7 @@ impl GameTrimmerApp {
             descriptions: worker::descriptions::Descriptions::load(Lang::En),
             occupancy: model::Occupancy::default(),
             tree: Vec::new(),
+            standalone_candidates: None,
             tree_dirty: false,
             tree_toggles: std::collections::HashMap::new(),
             tree_cursor: None,
@@ -711,6 +720,14 @@ impl GameTrimmerApp {
     /// Registers a user-picked folder as a manual library and refreshes the
     /// library list. Errors are surfaced as a warning rather than a full
     /// scan-blocking error, since the folder picker can run at any time.
+    /// Registers `path` as a manual library. Public so the standalone-game
+    /// suggestions in the settings dialog can accept an offer directly, with
+    /// the path they already know, instead of sending the user through a
+    /// folder picker to find a folder the app just named.
+    pub fn add_library_path(&mut self, path: PathBuf) {
+        self.add_manual_library(path);
+    }
+
     fn add_manual_library(&mut self, path: PathBuf) {
         let lang = self.lang();
         let Some(db_path) = self.db_path.clone() else {
@@ -2406,6 +2423,7 @@ mod tests {
                 file_id: 1,
                 game_id: 1,
                 game_name: "Test Game".to_string(),
+                app_id: None,
                 install_dir: PathBuf::from("C:\\Games\\Test"),
                 rel_path: "data/loc.pak".to_string(),
                 size,

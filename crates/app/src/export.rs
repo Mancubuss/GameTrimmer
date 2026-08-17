@@ -178,6 +178,7 @@ mod tests {
                 file_id: 0,
                 game_id: 1,
                 game_name: game_name.to_string(),
+                app_id: None,
                 install_dir: PathBuf::from("C:\\Games\\Test"),
                 rel_path: rel_path.to_string(),
                 size,

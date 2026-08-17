@@ -268,7 +268,11 @@ fn main() {
         compare(
             &mut tallies,
             "volume_serial",
-            mft.volume_serial == live.volume_serial,
+            // The MFT side still carries the volume serial as the u32 Windows
+            // reports; `FileIdentity` widened its own field to u64 so the
+            // non-Windows `identity()` can store a full `st_dev`. Widen here
+            // rather than narrowing `live`, which would silently drop bits.
+            u64::from(mft.volume_serial) == live.volume_serial,
             || {
                 format!(
                     "{}: mft {} live {}",

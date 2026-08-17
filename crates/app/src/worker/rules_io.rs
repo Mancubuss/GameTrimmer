@@ -101,6 +101,19 @@ pub fn restore_builtin(lang: Lang, kind: PackKind) -> Result<String, String> {
 /// temp directory instead of over the packs next to the test binary.
 fn restore_builtin_at(lang: Lang, kind: PackKind, target: &Path) -> Result<String, String> {
     let text = builtin_text(kind)?;
+    // Read the outgoing pack before it is overwritten. Restore exists to undo
+    // a broken hand edit, and the user may well want back whatever they were
+    // trying to write - so the displaced file is kept as a `.bak` beside the
+    // pack. That backup is this function's *product*, not a temporary.
+    //
+    // It has to be written by hand, after the replacement, rather than left to
+    // `atomic_write_with_backup`'s own recovery copy - which lands on the same
+    // `.bak` path but is scaffolding for rollback and is removed once the
+    // write commits (leaving it behind is what silts a portable install up
+    // with `.bak` copies next to the exe). Depending on that removed copy is
+    // what made this backup vanish; writing it here makes the intent explicit
+    // and independent of how the atomic helper manages its own temporaries.
+    let displaced = std::fs::read(target).ok();
     gametrimmer_core::atomic_file::atomic_write_with_backup(
         target,
         text.as_bytes(),
@@ -112,7 +125,85 @@ fn restore_builtin_at(lang: Lang, kind: PackKind, target: &Path) -> Result<Strin
         },
     )
     .map_err(|err| i18n::write_failed(lang, target.display(), err))?;
+    if let Some(displaced) = displaced {
+        // Best-effort: the restore itself already succeeded and must be
+        // reported as such. Failing to park the old copy is worth telling the
+        // user about, but not worth turning a working pack back into an error.
+        if let Err(err) = std::fs::write(backup_path(target), displaced) {
+            return Ok(i18n::rules_restored_without_backup(
+                lang,
+                target.display(),
+                err,
+            ));
+        }
+    }
     Ok(i18n::rules_restored(lang, target.display()))
+}
+
+/// Where the displaced pack is parked by [`restore_builtin_at`]: `rules.json`
+/// becomes `rules.json.bak`, matching the recovery-copy naming the atomic
+/// writer uses for the same file.
+fn backup_path(target: &Path) -> PathBuf {
+    let mut name = target.file_name().unwrap_or_default().to_os_string();
+    name.push(".bak");
+    target.with_file_name(name)
+}
+
+/// Adds "never touch `rel_path` in the game whose vendor id is `app_id`" to
+/// the personal exception pack, and returns the already-localized line to show
+/// for it.
+///
+/// Synchronous, like [`restore_builtin`] and for the same reason: it is one
+/// read and one atomic write of a file measured in kilobytes, and pushing it
+/// onto a worker thread would only add a round trip between the click and the
+/// row leaving the tree.
+///
+/// The write goes through the same validating atomic writer every pack write
+/// uses, so a pack that would no longer compile is never left on disk - this
+/// one matters more than the others, because the scan folds this file into the
+/// rule engine and a broken one costs the run its exceptions.
+pub fn add_personal_exception(
+    lang: Lang,
+    app_id: &str,
+    rel_path: &str,
+    desc: gametrimmer_core::localized::LocalizedText,
+) -> Result<String, String> {
+    let path = super::ensure_personal_rules_path()
+        .map_err(|err| i18n::prepare_rules_file_failed(lang, err))?;
+    add_personal_exception_at(lang, &path, app_id, rel_path, desc)
+}
+
+/// The path-taking half of [`add_personal_exception`], so a test can write
+/// into a temp directory instead of over the packs next to the test binary.
+fn add_personal_exception_at(
+    lang: Lang,
+    path: &Path,
+    app_id: &str,
+    rel_path: &str,
+    desc: gametrimmer_core::localized::LocalizedText,
+) -> Result<String, String> {
+    let current = std::fs::read_to_string(path)
+        .map_err(|err| i18n::read_file_failed(lang, path.display(), err))?;
+
+    let rule = gametrimmer_core::rules::Rule::keep_file(app_id, rel_path, desc);
+    let (json, added) =
+        packs::add_rule(&current, rule).map_err(|err| format!("{}: {err}", path.display()))?;
+    if !added {
+        return Ok(i18n::exception_already_kept(lang, rel_path));
+    }
+
+    gametrimmer_core::atomic_file::atomic_write_with_backup(path, json.as_bytes(), |_path, bytes| {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        // The personal pack *is* a category-rules pack - same envelope, same
+        // parser, same compile check. Only its polarity and its ownership
+        // differ, and neither is something this validation can or should see.
+        validate_pack_text(PackKind::CategoryRules, text)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    })
+    .map_err(|err| i18n::write_failed(lang, path.display(), err))?;
+
+    Ok(i18n::exception_kept(lang, rel_path))
 }
 
 /// Unwraps an `ensure_*` result and reads the materialized file.
@@ -492,6 +583,69 @@ mod tests {
         let restored = std::fs::read_to_string(&target).unwrap();
         assert!(pack_text_is_valid(PackKind::CategoryRules, &restored));
         assert!(!target.with_extension("json.bak").exists());
+    }
+
+    /// A fresh personal pack, as `ensure_personal_rules_path` would seed it.
+    fn empty_personal_pack(dir: &Path) -> PathBuf {
+        let path = dir.join(super::super::PERSONAL_RULES_FILE_NAME);
+        std::fs::write(
+            &path,
+            gametrimmer_core::rules::serialize_rule_list(&[]).expect("serialize the empty pack"),
+        )
+        .expect("seed the personal pack");
+        path
+    }
+
+    /// The acceptance criterion, at the file level: what "never touch this"
+    /// writes is still there, and still a veto, after the file is read back -
+    /// which is all a re-scan does with it.
+    #[test]
+    fn a_personal_exception_survives_being_written_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = empty_personal_pack(dir.path());
+
+        add_personal_exception_at(
+            Lang::En,
+            &path,
+            "620",
+            r"Support\ru\voices.pak",
+            "Kept by me".into(),
+        )
+        .expect("the exception is written");
+
+        let engine = gametrimmer_core::rules::RuleEngine::load(&path)
+            .expect("the written pack is the pack a scan loads");
+        assert_eq!(
+            engine.classify(r"Support\ru\voices.pak", Some("620")),
+            gametrimmer_core::rules::Verdict::Kept,
+        );
+        assert_eq!(
+            engine.classify(r"Support\ru\voices.pak", Some("730")),
+            gametrimmer_core::rules::Verdict::Unmatched,
+            "the exception is bound to the game it was written in",
+        );
+    }
+
+    /// Right-clicking the same file twice is an ordinary thing to do, and it
+    /// has to say what happened rather than quietly growing the file.
+    #[test]
+    fn keeping_the_same_file_twice_reports_it_as_already_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = empty_personal_pack(dir.path());
+        let keep = || {
+            add_personal_exception_at(Lang::En, &path, "620", r"data\loc_de.pak", "Kept".into())
+                .expect("the exception is written")
+        };
+
+        let first = keep();
+        let second = keep();
+
+        assert_ne!(first, second, "the second click must say something else");
+        let rules = gametrimmer_core::rules::parse_rule_list(
+            &std::fs::read_to_string(&path).expect("read the pack"),
+        )
+        .expect("the pack parses");
+        assert_eq!(rules.len(), 1, "the pack grew a duplicate");
     }
 
     #[test]

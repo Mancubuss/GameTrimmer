@@ -93,7 +93,7 @@ fn main() {
         match scan_dir(&game.install_dir) {
             Ok(entries) => {
                 for entry in &entries {
-                    if let Some(finding) = engine.classify(&entry.rel_path) {
+                    if let Some(finding) = engine.classify(&entry.rel_path, None).flagged() {
                         classified.push(ClassifiedFile {
                             full_path: game.install_dir.join(&entry.rel_path),
                             size: entry.size,
