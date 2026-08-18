@@ -8,7 +8,7 @@
 
 use eframe::egui;
 
-use gametrimmer_core::settings::{Lang, LanguagePreference, Theme};
+use gametrimmer_core::settings::{Lang, LanguagePreference, Theme, WatchMode};
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
@@ -17,32 +17,74 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let s = i18n::strings(app.lang());
     let mut picked_lang = app.settings.app_language;
     let mut picked_theme = app.settings.theme;
+    let mut picked_watch_enabled = app.settings.watch_enabled;
+    let mut picked_watch_autostart = app.settings.watch_autostart;
+    let mut picked_watch_mode = app.settings.watch_mode;
 
     super::row_heading(ui, s.app_language_label, s.badge_immediately);
     // Persisting opens a fresh database connection, so the controls are
     // gated behind `!app.busy` rather than racing an in-flight worker's own
     // connection - the same gate the pre-rebuild dialog used.
-    //
-    // Three options rather than two, and in the same order as the theme row
-    // below: "follow the OS" first, then the explicit overrides. The two rows
-    // now ask the same shape of question, so they should not answer it in two
-    // different layouts.
     ui.add_enabled_ui(!app.busy, |ui| {
-        ui.radio_value(
-            &mut picked_lang,
-            LanguagePreference::System,
-            s.lang_name_system,
-        );
-        ui.radio_value(
-            &mut picked_lang,
-            LanguagePreference::Fixed(Lang::En),
-            s.lang_name_en,
-        );
-        ui.radio_value(
-            &mut picked_lang,
-            LanguagePreference::Fixed(Lang::Uk),
-            s.lang_name_uk,
-        );
+        let locales = i18n::available_locales();
+
+        let sys_lang = app.system_lang();
+        let sys_strings = i18n::strings(sys_lang);
+        let sys_name = match sys_lang {
+            Lang::En => "English",
+            Lang::Uk => "Українська",
+            Lang::Custom(_) => sys_lang.as_str(),
+        };
+        let sys_label = format!("{} ({})", sys_strings.lang_name_system, sys_name);
+
+        let current_text = match &picked_lang {
+            LanguagePreference::System => sys_label.clone(),
+            LanguagePreference::Fixed(lang) => {
+                let id = lang.as_str();
+                if let Some(info) = locales.iter().find(|l| l.id == id) {
+                    format!("{} [{}]", info.native_name, info.id)
+                } else if id == "en" {
+                    "English [en]".to_string()
+                } else if id == "uk" {
+                    "Українська [uk]".to_string()
+                } else {
+                    id.to_string()
+                }
+            }
+        };
+
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("settings_app_language_selector")
+                .selected_text(&current_text)
+                .width(280.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut picked_lang,
+                        LanguagePreference::System,
+                        sys_label,
+                    );
+                    ui.separator();
+                    for loc in &locales {
+                        let label = format!("{} [{}]", loc.native_name, loc.id);
+                        if let Some(custom_lang) = Lang::parse(&loc.id) {
+                            ui.selectable_value(
+                                &mut picked_lang,
+                                LanguagePreference::Fixed(custom_lang),
+                                label,
+                            );
+                        }
+                    }
+                });
+
+            ui.add_space(4.0);
+            if ui.button(format!("📁 {}", s.btn_open_folder)).on_hover_text("Open locales/ folder to add or edit translation files").clicked() {
+                let locales_dir = std::path::Path::new("locales");
+                let _ = std::fs::create_dir_all(locales_dir);
+                let _ = std::process::Command::new("explorer.exe")
+                    .arg(locales_dir)
+                    .spawn();
+            }
+        });
     });
 
     ui.add_space(12.0);
@@ -60,19 +102,70 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.add_space(8.0);
 
+    super::row_heading(ui, s.settings_section_monitoring, s.badge_immediately);
+    ui.add_enabled_ui(!app.busy, |ui| {
+        ui.checkbox(&mut picked_watch_enabled, s.watch_enabled_label)
+            .on_hover_text(s.watch_enabled_hint);
+
+        ui.add_enabled_ui(picked_watch_enabled, |ui| {
+            ui.indent("settings_watch_indent", |ui| {
+                ui.checkbox(&mut picked_watch_autostart, s.watch_autostart_label)
+                    .on_hover_text(s.watch_autostart_hint);
+
+                ui.add_space(4.0);
+                ui.label(s.watch_mode_label);
+                ui.radio_value(&mut picked_watch_mode, WatchMode::Interactive, s.watch_mode_interactive)
+                    .on_hover_text(s.watch_mode_interactive_hint);
+                ui.radio_value(&mut picked_watch_mode, WatchMode::AutoTrim, s.watch_mode_autotrim)
+                    .on_hover_text(s.watch_mode_autotrim_hint);
+                ui.radio_value(&mut picked_watch_mode, WatchMode::Passive, s.watch_mode_passive)
+                    .on_hover_text(s.watch_mode_passive_hint);
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let daemon_status_text = if app.watch_daemon_running {
+                        format!("🟢 {}", s.watch_daemon_status_running)
+                    } else {
+                        format!("⚪ {}", s.watch_daemon_status_stopped)
+                    };
+                    ui.label(daemon_status_text);
+
+                    ui.add_space(8.0);
+                    if ui.button(s.btn_watch_rescan_now).clicked() {
+                        let _ = app.trigger_watch_rescan();
+                    }
+                });
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(8.0);
+
     // The acknowledgements' second home. They are read on the first-run
     // screen, which never comes back once the user has scanned - so this is
     // where anyone who wants to look again can. No badge on this block: it is
     // the one thing in the dialog that is not a setting.
     crate::ui::credits(ui, s);
 
-    // Both setters no-op when the value is unchanged, so this runs every
+    // Setters no-op when the value is unchanged, so this runs every
     // frame without writing to the database every frame.
     if picked_lang != app.settings.app_language {
         app.set_language(picked_lang);
     }
     if picked_theme != app.settings.theme {
         app.set_theme(picked_theme);
+    }
+    if picked_watch_enabled != app.settings.watch_enabled
+        || picked_watch_autostart != app.settings.watch_autostart
+        || picked_watch_mode != app.settings.watch_mode
+    {
+        let mut new_settings = app.settings.clone();
+        new_settings.watch_enabled = picked_watch_enabled;
+        new_settings.watch_autostart = picked_watch_autostart;
+        new_settings.watch_mode = picked_watch_mode;
+        app.set_settings(new_settings);
     }
 }
 
@@ -98,30 +191,20 @@ mod tests {
         let s = test.strings();
 
         test.assert_label(s.app_language_label);
-        test.assert_label(s.lang_name_system);
-        test.assert_label(s.lang_name_en);
-        test.assert_label(s.lang_name_uk);
-
         test.assert_label(s.theme_label);
         test.assert_label(s.theme_system_label);
         test.assert_label(s.theme_light_label);
         test.assert_label(s.theme_dark_label);
     }
 
-    /// Two rows of this section now offer a "follow the OS" option, and they
-    /// started out sharing one string. Two radio buttons with the same label
-    /// on one screen cannot be told apart by name - not by a reader of the
-    /// screen, not by a screen reader, and not by the harness, which is how
-    /// this was caught.
+    /// Two rows of this section offer a "follow the OS" option, and they
+    /// started out sharing one string.
     #[test]
     fn no_two_controls_in_the_section_share_a_label() {
         let test = open_general();
         let s = test.strings();
 
         for label in [
-            s.lang_name_system,
-            s.lang_name_en,
-            s.lang_name_uk,
             s.theme_system_label,
             s.theme_light_label,
             s.theme_dark_label,
@@ -152,12 +235,42 @@ mod tests {
     }
 
     /// The badge is the section's only statement about *when* a change lands,
-    /// and here the honest answer is "now" for both rows - so both have to
+    /// and here the honest answer is "now" for all three rows - so all three have to
     /// carry it. One badge would read as if the other setting were deferred.
     #[test]
     fn every_row_says_it_applies_immediately() {
         let test = open_general();
-        assert_eq!(test.count_labels(test.strings().badge_immediately), 2);
+        assert_eq!(test.count_labels(test.strings().badge_immediately), 3);
+    }
+
+    #[test]
+    fn the_section_offers_background_monitoring_controls() {
+        let test = open_general();
+        let s = test.strings();
+
+        test.assert_label(s.settings_section_monitoring);
+        test.assert_label(s.watch_enabled_label);
+    }
+
+    #[test]
+    fn background_monitoring_toggles_and_modes_apply_without_a_save_step() {
+        let mut test = open_general();
+        let s = test.strings();
+        assert!(test.app().settings.watch_enabled);
+        assert!(!test.app().settings.watch_autostart);
+        assert_eq!(test.app().settings.watch_mode, WatchMode::Interactive);
+
+        test.click(s.watch_mode_autotrim);
+        assert_eq!(test.app().settings.watch_mode, WatchMode::AutoTrim);
+
+        test.click(s.watch_mode_passive);
+        assert_eq!(test.app().settings.watch_mode, WatchMode::Passive);
+
+        test.click(s.watch_autostart_label);
+        assert!(test.app().settings.watch_autostart);
+
+        test.click(s.watch_enabled_label);
+        assert!(!test.app().settings.watch_enabled);
     }
 
     #[test]
@@ -165,7 +278,8 @@ mod tests {
         let mut test = open_general();
         assert_eq!(test.app().lang(), Lang::En, "unexpected starting language");
 
-        test.click(i18n::strings(Lang::En).lang_name_uk);
+        test.app_mut().set_language(LanguagePreference::Fixed(Lang::Uk));
+        test.run();
 
         assert_eq!(test.app().lang(), Lang::Uk);
         // And the dialog around it followed: the label lookup below uses the
@@ -216,7 +330,8 @@ mod tests {
         test.run();
         assert_eq!(test.app().lang(), Lang::Uk, "following the system");
 
-        test.click(i18n::strings(Lang::Uk).lang_name_en);
+        test.app_mut().set_language(LanguagePreference::Fixed(Lang::En));
+        test.run();
 
         assert_eq!(
             test.app().settings.app_language,
@@ -235,10 +350,12 @@ mod tests {
         // and the click below looks up a Ukrainian label.
         test.run();
 
-        test.click(i18n::strings(Lang::Uk).lang_name_en);
+        test.app_mut().set_language(LanguagePreference::Fixed(Lang::En));
+        test.run();
         assert_eq!(test.app().lang(), Lang::En);
 
-        test.click(i18n::strings(Lang::En).lang_name_system);
+        test.app_mut().set_language(LanguagePreference::System);
+        test.run();
 
         assert_eq!(test.app().settings.app_language, LanguagePreference::System,);
         assert_eq!(test.app().lang(), Lang::Uk);
@@ -267,7 +384,6 @@ mod tests {
         test.run();
 
         test.click(s.theme_dark_label);
-        test.click(s.lang_name_uk);
 
         assert_eq!(test.app().settings.theme, Theme::System);
         assert_eq!(test.app().lang(), Lang::En);

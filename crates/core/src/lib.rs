@@ -1,4 +1,5 @@
 pub mod atomic_file;
+pub mod autostart;
 pub mod bundle;
 pub mod db;
 pub mod error;
@@ -13,6 +14,7 @@ pub mod orphans;
 pub mod packs;
 pub mod perf;
 pub mod providers;
+pub mod retrim;
 pub mod rules;
 pub mod safety;
 pub mod scanner;

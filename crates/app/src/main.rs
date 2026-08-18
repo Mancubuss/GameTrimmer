@@ -6,6 +6,7 @@ mod deletion_controller;
 mod elevation;
 mod export;
 mod i18n;
+pub(crate) mod ipc;
 mod logger;
 mod model;
 mod path_normalize;
@@ -37,6 +38,12 @@ const CJK_FONT_PATH: &str = r"C:\Windows\Fonts\msyh.ttc";
 const CJK_FONT_NAME: &str = "microsoft-yahei";
 const KOREAN_FONT_PATH: &str = r"C:\Windows\Fonts\malgun.ttf";
 const KOREAN_FONT_NAME: &str = "malgun-gothic";
+const JAPANESE_FONT_PATH: &str = r"C:\Windows\Fonts\YuGothR.ttc";
+const JAPANESE_FONT_NAME: &str = "yu-gothic";
+const THAI_FONT_PATH: &str = r"C:\Windows\Fonts\LeelawUI.ttf";
+const THAI_FONT_NAME: &str = "leelawadee-ui";
+const TAHOMA_FONT_PATH: &str = r"C:\Windows\Fonts\tahoma.ttf";
+const TAHOMA_FONT_NAME: &str = "tahoma";
 
 /// The 256x256 PNG frame of `assets/gametrimmer.ico`, used as the runtime
 /// window icon (the exe-resource icon embedded by `build.rs` covers
@@ -223,11 +230,14 @@ fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
     // (font key, file path, ttc face index, prepend-to-front vs. append)
-    let entries: [(&str, &str, u32, bool); 4] = [
+    let entries: [(&str, &str, u32, bool); 7] = [
         (SYSTEM_FONT_NAME, SYSTEM_FONT_PATH, 0, true),
         (SYMBOL_FONT_NAME, SYMBOL_FONT_PATH, 0, false),
         (CJK_FONT_NAME, CJK_FONT_PATH, 0, false),
         (KOREAN_FONT_NAME, KOREAN_FONT_PATH, 0, false),
+        (JAPANESE_FONT_NAME, JAPANESE_FONT_PATH, 0, false),
+        (THAI_FONT_NAME, THAI_FONT_PATH, 0, false),
+        (TAHOMA_FONT_NAME, TAHOMA_FONT_PATH, 0, false),
     ];
 
     for (name, path, face_index, is_primary) in entries {

@@ -349,6 +349,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             descriptions: &app.descriptions,
             query: app.tree_search_index.query(),
             keep_request: &keep_request,
+            updated_games: &app.updated_games,
         };
 
         // Keep the scrollbar drawn even when the content happens to fit, so the
@@ -1100,6 +1101,8 @@ struct RowCtx<'a> {
     /// borrow is released. Last click of a frame wins, which is the only
     /// thing that can happen anyway: the menu closes on click.
     keep_request: &'a std::cell::Cell<Option<usize>>,
+    /// Map of recently updated games from background monitoring.
+    updated_games: &'a std::collections::HashMap<String, String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1289,6 +1292,13 @@ fn show_game_row(
             // Decoration, not searched text: a query matching the marker must
             // not tint anything, and the marker is not part of the name.
             parts.push(Part::decoration(" ◇"));
+        }
+        let is_updated = !is_orphan_branch(game.game_id) && (
+            ctx.updated_games.contains_key(&game.game_name)
+            || game.all_indices.first().and_then(|&idx| findings.get(idx)).and_then(|f| f.row.app_id.as_ref()).map(|id| ctx.updated_games.contains_key(id)).unwrap_or(false)
+        );
+        if is_updated {
+            parts.push(Part::decoration(" [🔄 Updated]"));
         }
         highlight::strong_name(ui, &parts, ctx.query)
     };

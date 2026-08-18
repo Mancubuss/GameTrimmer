@@ -1290,6 +1290,8 @@ dependencies = [
  "rayon",
  "rfd",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "windows 0.62.2",
  "winresource",
@@ -1315,6 +1317,19 @@ dependencies = [
  "windows 0.62.2",
  "winreg",
  "zip",
+]
+
+[[package]]
+name = "gametrimmer-watch"
+version = "1.0.0"
+dependencies = [
+ "gametrimmer-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows 0.62.2",
+ "winreg",
 ]
 
 [[package]]

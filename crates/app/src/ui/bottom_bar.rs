@@ -210,8 +210,8 @@ mod tests {
         // `strings()` is not used because this phrasing lives in
         // `i18n::scan_timing_summary`, not in the string table.
         let joiner = match test.app_mut().lang() {
-            crate::i18n::Lang::En => "within analysis",
             crate::i18n::Lang::Uk => "у межах аналізу",
+            _ => "within analysis",
         };
         test.assert_label_containing(joiner);
     }

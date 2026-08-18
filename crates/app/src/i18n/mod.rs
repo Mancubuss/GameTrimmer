@@ -1,15 +1,12 @@
-//! Hand-rolled i18n: no runtime string keys to typo, no heavy crate (fluent
-//! etc.) for two languages and a few hundred short strings. Plain text with
-//! no interpolation lives in [`Strings`] (one `&'static str` field per
-//! string, exhaustively filled in for both languages at compile time);
-//! anything with a count, a path, or an error message interpolated into it
-//! is a small function in [`messages`] instead, taking [`Lang`] plus its
-//! arguments and returning an owned `String`.
+//! Hand-rolled i18n with dynamic community locale support.
+//! Plain text lives in [`Strings`]; anything with a count, a path, or an error
+//! is a function in [`messages`].
 //!
-//! [`Lang`] itself lives in `gametrimmer_core::settings` (not duplicated
-//! here) since the same enum is also the persisted `app_language` setting -
-//! one type, one source of truth, both for "which language is active" and
-//! "which language is saved".
+//! External JSON locales in `locales/*.json` (portable root or AppData)
+//! are discovered dynamically and merged over the English baseline.
+
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
 
 mod en;
 mod messages;
@@ -20,10 +17,154 @@ pub use gametrimmer_core::settings::Lang;
 pub use messages::*;
 pub use system::detect as detect_system_language;
 
-/// One `&'static str` per plain (non-interpolated) UI string, mirrored for
-/// every [`Lang`] variant. Compile-time exhaustive: adding a field here
-/// without filling it in for both `en` and `uk` fails the build, so a
-/// language can never silently fall back to empty text.
+#[allow(dead_code)]
+pub const EMBEDDED_LOCALE_EN: &str = include_str!("../../../../locales/en.json");
+#[allow(dead_code)]
+pub const EMBEDDED_LOCALE_UK: &str = include_str!("../../../../locales/uk.json");
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocaleInfo {
+    pub id: String,
+    pub name: String,
+    pub native_name: String,
+    pub is_builtin: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct LocaleHeader {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    native_name: String,
+    #[serde(default)]
+    strings: HashMap<String, String>,
+}
+
+static LOCALE_CACHE: OnceLock<RwLock<HashMap<String, &'static Strings>>> = OnceLock::new();
+
+fn get_locale_cache() -> &'static RwLock<HashMap<String, &'static Strings>> {
+    LOCALE_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn scan_dir_locales(dir: &std::path::Path, map: &mut HashMap<String, LocaleInfo>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return; };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("json") {
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            if file_name.ends_with(".template.json") || file_name.ends_with(".schema.json") {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(header) = serde_json::from_str::<LocaleHeader>(&content) {
+                    if !header.id.is_empty() {
+                        let id = header.id.to_lowercase();
+                        let is_builtin = id == "en" || id == "uk";
+                        let name = if header.name.is_empty() { id.clone() } else { header.name };
+                        let native_name = if header.native_name.is_empty() { name.clone() } else { header.native_name };
+                        map.insert(id.clone(), LocaleInfo {
+                            id,
+                            name,
+                            native_name,
+                            is_builtin,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn available_locales() -> Vec<LocaleInfo> {
+    let mut map = HashMap::new();
+
+    // Built-ins
+    map.insert("en".to_string(), LocaleInfo {
+        id: "en".to_string(),
+        name: "English".to_string(),
+        native_name: "English".to_string(),
+        is_builtin: true,
+    });
+    map.insert("uk".to_string(), LocaleInfo {
+        id: "uk".to_string(),
+        name: "Ukrainian".to_string(),
+        native_name: "Українська".to_string(),
+        is_builtin: true,
+    });
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            scan_dir_locales(&exe_dir.join("locales"), &mut map);
+        }
+    }
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let p = std::path::PathBuf::from(local_app_data).join("GameTrimmer").join("locales");
+        scan_dir_locales(&p, &mut map);
+    }
+    scan_dir_locales(std::path::Path::new("locales"), &mut map);
+
+    let mut list: Vec<LocaleInfo> = map.into_values().collect();
+    list.sort_by(|a, b| match (a.id.as_str(), b.id.as_str()) {
+        ("en", _) => std::cmp::Ordering::Less,
+        (_, "en") => std::cmp::Ordering::Greater,
+        ("uk", _) => std::cmp::Ordering::Less,
+        (_, "uk") => std::cmp::Ordering::Greater,
+        _ => a.id.cmp(&b.id),
+    });
+    list
+}
+
+fn load_external_strings(id: &str) -> Option<Strings> {
+    let file_name = format!("{id}.json");
+
+    let candidate_paths = [
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("locales").join(&file_name))),
+        std::env::var_os("LOCALAPPDATA").map(|l| std::path::PathBuf::from(l).join("GameTrimmer").join("locales").join(&file_name)),
+        Some(std::path::PathBuf::from("locales").join(&file_name)),
+    ];
+
+    for path_opt in candidate_paths.into_iter().flatten() {
+        if path_opt.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path_opt) {
+                if let Ok(header) = serde_json::from_str::<LocaleHeader>(&content) {
+                    let base = if id == "uk" { &uk::STRINGS } else { &en::STRINGS };
+                    return Some(base.apply_overrides(&header.strings));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Returns the string table for `lang`.
+/// Falls back to embedded English for missing keys/locales.
+pub fn strings(lang: Lang) -> &'static Strings {
+    let tag = lang.as_str();
+
+    let cache = get_locale_cache();
+    {
+        let r = cache.read().unwrap();
+        if let Some(&ptr) = r.get(tag) {
+            return ptr;
+        }
+    }
+
+    if let Some(loaded) = load_external_strings(tag) {
+        let leaked: &'static Strings = Box::leak(Box::new(loaded));
+        let mut w = cache.write().unwrap();
+        w.insert(tag.to_string(), leaked);
+        return leaked;
+    }
+
+    match lang {
+        Lang::Uk => &uk::STRINGS,
+        _ => &en::STRINGS,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Strings {
     // -- top_bar --
     pub btn_scan_libraries: &'static str,
@@ -39,10 +180,36 @@ pub struct Strings {
     // Left-hand navigation of the rebuilt settings dialog, in listed order,
     // plus its footer.
     pub settings_section_general: &'static str,
+    pub settings_section_monitoring: &'static str,
     pub settings_section_scanning: &'static str,
     pub settings_section_selection: &'static str,
     pub settings_section_rules: &'static str,
     pub settings_section_data: &'static str,
+    pub watch_enabled_label: &'static str,
+    pub watch_enabled_hint: &'static str,
+    pub watch_autostart_label: &'static str,
+    pub watch_autostart_hint: &'static str,
+    pub watch_mode_label: &'static str,
+    pub watch_mode_interactive: &'static str,
+    pub watch_mode_interactive_hint: &'static str,
+    pub watch_mode_autotrim: &'static str,
+    pub watch_mode_autotrim_hint: &'static str,
+    pub watch_mode_passive: &'static str,
+    pub watch_mode_passive_hint: &'static str,
+    pub watch_daemon_status_running: &'static str,
+    pub watch_daemon_status_stopped: &'static str,
+    pub btn_watch_rescan_now: &'static str,
+    pub watch_tray_tooltip_active: &'static str,
+    pub watch_tray_tooltip_paused: &'static str,
+    pub watch_tray_menu_open: &'static str,
+    pub watch_tray_menu_check_now: &'static str,
+    pub watch_tray_menu_pause: &'static str,
+    pub watch_tray_menu_resume: &'static str,
+    pub watch_tray_menu_exit: &'static str,
+    pub watch_toast_updated_transition: &'static str,
+    pub watch_toast_updated_build: &'static str,
+    pub watch_toast_files_changed: &'static str,
+    pub watch_toast_daemon_title: &'static str,
     /// "Done" rather than "Close": every setting is already applied and
     /// persisted, so there is nothing left to discard.
     pub btn_done: &'static str,
@@ -437,19 +604,253 @@ pub struct Strings {
     pub already_running_title: &'static str,
 }
 
-/// Returns the static string table for `lang`. Cheap - callers can call this
-/// once per frame/message without worrying about cost.
-pub fn strings(lang: Lang) -> &'static Strings {
-    match lang {
-        Lang::En => &en::STRINGS,
-        Lang::Uk => &uk::STRINGS,
+impl Strings {
+    pub fn apply_overrides(&self, map: &std::collections::HashMap<String, String>) -> Strings {
+        let mut s = *self;
+        if let Some(val) = map.get("btn_scan_libraries") { s.btn_scan_libraries = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_cancel") { s.btn_cancel = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_export") { s.btn_export = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_settings") { s.btn_settings = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_select_all") { s.btn_select_all = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_deselect_all") { s.btn_deselect_all = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_delete_selected") { s.btn_delete_selected = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("settings_section_general") { s.settings_section_general = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("settings_section_monitoring") { s.settings_section_monitoring = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("settings_section_scanning") { s.settings_section_scanning = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("settings_section_selection") { s.settings_section_selection = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("settings_section_rules") { s.settings_section_rules = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("settings_section_data") { s.settings_section_data = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_enabled_label") { s.watch_enabled_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_enabled_hint") { s.watch_enabled_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_autostart_label") { s.watch_autostart_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_autostart_hint") { s.watch_autostart_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_mode_label") { s.watch_mode_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_mode_interactive") { s.watch_mode_interactive = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_mode_interactive_hint") { s.watch_mode_interactive_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_mode_autotrim") { s.watch_mode_autotrim = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_mode_autotrim_hint") { s.watch_mode_autotrim_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_mode_passive") { s.watch_mode_passive = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_mode_passive_hint") { s.watch_mode_passive_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_daemon_status_running") { s.watch_daemon_status_running = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_daemon_status_stopped") { s.watch_daemon_status_stopped = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_watch_rescan_now") { s.btn_watch_rescan_now = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_tray_tooltip_active") { s.watch_tray_tooltip_active = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_tray_tooltip_paused") { s.watch_tray_tooltip_paused = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_tray_menu_open") { s.watch_tray_menu_open = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_tray_menu_check_now") { s.watch_tray_menu_check_now = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_tray_menu_pause") { s.watch_tray_menu_pause = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_tray_menu_resume") { s.watch_tray_menu_resume = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_tray_menu_exit") { s.watch_tray_menu_exit = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_toast_updated_transition") { s.watch_toast_updated_transition = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_toast_updated_build") { s.watch_toast_updated_build = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_toast_files_changed") { s.watch_toast_files_changed = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("watch_toast_daemon_title") { s.watch_toast_daemon_title = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_done") { s.btn_done = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_restore_defaults") { s.btn_restore_defaults = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("label_saved") { s.label_saved = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("badge_immediately") { s.badge_immediately = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("badge_next_scan") { s.badge_next_scan = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("badge_next_delete") { s.badge_next_delete = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("default_profile_label") { s.default_profile_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("default_profile_hint") { s.default_profile_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("confirm_behavior_label") { s.confirm_behavior_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("confirm_yes_label") { s.confirm_yes_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("confirm_no_label") { s.confirm_no_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("confirm_behavior_hint") { s.confirm_behavior_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("selection_independent_switches_hint") { s.selection_independent_switches_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("keep_languages_add_placeholder") { s.keep_languages_add_placeholder = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("categories_table_header_category") { s.categories_table_header_category = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("categories_table_header_risk") { s.categories_table_header_risk = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("categories_table_header_profile_behavior") { s.categories_table_header_profile_behavior = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_behavior_auto") { s.profile_behavior_auto = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_behavior_manual") { s.profile_behavior_manual = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disabled_last_keep_language") { s.disabled_last_keep_language = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disabled_last_category") { s.disabled_last_category = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disabled_last_library") { s.disabled_last_library = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("keep_english_warning") { s.keep_english_warning = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("keep_english_absent") { s.keep_english_absent = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_keep_english_again") { s.btn_keep_english_again = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("rules_pack_category_label") { s.rules_pack_category_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("rules_pack_lang_label") { s.rules_pack_lang_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("rules_valid_label") { s.rules_valid_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("rules_invalid_label") { s.rules_invalid_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("db_path_label") { s.db_path_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_copy") { s.btn_copy = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_open_folder") { s.btn_open_folder = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("danger_zone_label") { s.danger_zone_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disabled_busy") { s.disabled_busy = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disabled_no_findings") { s.disabled_no_findings = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disabled_no_selection") { s.disabled_no_selection = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disabled_export_running") { s.disabled_export_running = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disabled_disclaimer") { s.disabled_disclaimer = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disabled_database") { s.disabled_database = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_label") { s.profile_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_cautious") { s.profile_cautious = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_balanced") { s.profile_balanced = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_aggressive") { s.profile_aggressive = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_custom") { s.profile_custom = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_hint") { s.profile_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_cautious_hint") { s.profile_cautious_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_balanced_hint") { s.profile_balanced_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_aggressive_hint") { s.profile_aggressive_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("profile_custom_hint") { s.profile_custom_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("plan_filter_label") { s.plan_filter_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("plan_filter_all") { s.plan_filter_all = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("plan_group_label") { s.plan_group_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("group_axis_disk") { s.group_axis_disk = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("group_axis_launcher") { s.group_axis_launcher = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("group_axis_library") { s.group_axis_library = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("group_axis_category") { s.group_axis_category = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("group_axis_flat") { s.group_axis_flat = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("group_unattributed") { s.group_unattributed = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_remove_category") { s.btn_remove_category = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("search_hint") { s.search_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_clear_search") { s.btn_clear_search = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("search_no_matches") { s.search_no_matches = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("elevation_heading") { s.elevation_heading = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("elevation_body") { s.elevation_body = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("elevation_when_asked") { s.elevation_when_asked = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_continue_without_elevation") { s.btn_continue_without_elevation = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_relaunch_elevated") { s.btn_relaunch_elevated = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("elevation_never_ask") { s.elevation_never_ask = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("confirm_delete_heading") { s.confirm_delete_heading = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("confirm_label_permanent") { s.confirm_label_permanent = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("confirm_label_recycle") { s.confirm_label_recycle = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("remember_delete_method") { s.remember_delete_method = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("remove_summary_heading") { s.remove_summary_heading = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_close") { s.btn_close = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("settings_heading") { s.settings_heading = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("delete_method_label") { s.delete_method_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("delete_method_permanent_label") { s.delete_method_permanent_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("delete_method_permanent_hint") { s.delete_method_permanent_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("delete_method_recycle_label") { s.delete_method_recycle_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("delete_method_recycle_hint") { s.delete_method_recycle_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("database_label") { s.database_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_compact_database") { s.btn_compact_database = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("compact_hint") { s.compact_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_clear_database") { s.btn_clear_database = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("clear_hint") { s.clear_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("confirm_clear_heading") { s.confirm_clear_heading = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("confirm_clear_body") { s.confirm_clear_body = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_confirm_clear") { s.btn_confirm_clear = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("rules_label") { s.rules_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_export_rules") { s.btn_export_rules = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_import_rules") { s.btn_import_rules = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("rules_hint") { s.rules_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("running_ellipsis") { s.running_ellipsis = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("keep_languages_label") { s.keep_languages_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("keep_languages_hint") { s.keep_languages_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("scan_method_label") { s.scan_method_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("scan_method_hint") { s.scan_method_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("app_language_label") { s.app_language_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("lang_name_system") { s.lang_name_system = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("lang_name_en") { s.lang_name_en = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("lang_name_uk") { s.lang_name_uk = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("theme_label") { s.theme_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("theme_system_label") { s.theme_system_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("theme_light_label") { s.theme_light_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("theme_dark_label") { s.theme_dark_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("categories_label") { s.categories_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("categories_hint") { s.categories_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("logging_label") { s.logging_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("logging_checkbox") { s.logging_checkbox = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("logging_hint") { s.logging_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("log_path_label") { s.log_path_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("bundle_label") { s.bundle_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("bundle_hint") { s.bundle_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_generate_bundle") { s.btn_generate_bundle = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("bundle_titles_checkbox") { s.bundle_titles_checkbox = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("bundle_operations_checkbox") { s.bundle_operations_checkbox = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("bundle_preview_label") { s.bundle_preview_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("bundle_save_title") { s.bundle_save_title = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("libraries_header") { s.libraries_header = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_add_folder") { s.btn_add_folder = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("picking_folder") { s.picking_folder = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("no_libraries_registered") { s.no_libraries_registered = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_remove") { s.btn_remove = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("library_include_checkbox") { s.library_include_checkbox = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_heading") { s.onboarding_heading = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_step_scan") { s.onboarding_step_scan = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_step_review") { s.onboarding_step_review = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_step_remove") { s.onboarding_step_remove = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_how_heading") { s.onboarding_how_heading = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_how_body") { s.onboarding_how_body = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_filters_body") { s.onboarding_filters_body = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_profile") { s.onboarding_profile = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_review_mark") { s.onboarding_review_mark = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_safety") { s.onboarding_safety = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("onboarding_logging_body") { s.onboarding_logging_body = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disclaimer_heading") { s.disclaimer_heading = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disclaimer_body") { s.disclaimer_body = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disclaimer_accept_checkbox") { s.disclaimer_accept_checkbox = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("disclaimer_already_accepted") { s.disclaimer_already_accepted = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("credits_heading") { s.credits_heading = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("credits_anthropic") { s.credits_anthropic = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("credits_karpathy") { s.credits_karpathy = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("credits_tikione") { s.credits_tikione = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("scanning_in_progress") { s.scanning_in_progress = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("no_findings_hint") { s.no_findings_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("col_language") { s.col_language = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("col_files") { s.col_files = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("col_size") { s.col_size = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("col_name") { s.col_name = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("col_sort_hint") { s.col_sort_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("review_mark_hint") { s.review_mark_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("hover_stub_note") { s.hover_stub_note = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("ctx_open") { s.ctx_open = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("ctx_reveal_in_explorer") { s.ctx_reveal_in_explorer = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("ctx_open_with") { s.ctx_open_with = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("ctx_copy_path") { s.ctx_copy_path = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("ctx_never_touch") { s.ctx_never_touch = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("ctx_never_touch_needs_app_id") { s.ctx_never_touch_needs_app_id = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("game_without_launcher_id") { s.game_without_launcher_id = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("btn_find_standalone") { s.btn_find_standalone = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("find_standalone_hint") { s.find_standalone_hint = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("standalone_candidates_header") { s.standalone_candidates_header = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("no_standalone_candidates") { s.no_standalone_candidates = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("add_library_dialog_title") { s.add_library_dialog_title = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("export_dialog_title") { s.export_dialog_title = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("text_file_filter_label") { s.text_file_filter_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("rules_export_dialog_title") { s.rules_export_dialog_title = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("rules_import_dialog_title") { s.rules_import_dialog_title = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("rules_import_filter_label") { s.rules_import_filter_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("no_db_path") { s.no_db_path = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("db_path_error") { s.db_path_error = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("detecting_libraries") { s.detecting_libraries = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("preparing_database") { s.preparing_database = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("loading_previous_scan") { s.loading_previous_scan = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("deleting_selected_files") { s.deleting_selected_files = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("compacting_database") { s.compacting_database = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("clearing_database") { s.clearing_database = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("scan_cancelled") { s.scan_cancelled = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("deletion_completed") { s.deletion_completed = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("database_compacted") { s.database_compacted = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("database_cleared") { s.database_cleared = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("settings_not_saved_no_path") { s.settings_not_saved_no_path = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("verb_analyze") { s.verb_analyze = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("verb_delete") { s.verb_delete = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("verb_compact") { s.verb_compact = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("verb_clear") { s.verb_clear = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("verb_bundle") { s.verb_bundle = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("category_redist") { s.category_redist = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("category_intro") { s.category_intro = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("category_docs") { s.category_docs = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("category_bonus") { s.category_bonus = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("category_loc") { s.category_loc = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("category_other") { s.category_other = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("category_orphan") { s.category_orphan = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("orphan_branch_label") { s.orphan_branch_label = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("unit_gb") { s.unit_gb = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("unit_mb") { s.unit_mb = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("unit_kb") { s.unit_kb = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("unit_b") { s.unit_b = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("csv_yes") { s.csv_yes = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("csv_no") { s.csv_no = Box::leak(val.clone().into_boxed_str()); }
+        if let Some(val) = map.get("already_running_title") { s.already_running_title = Box::leak(val.clone().into_boxed_str()); }
+        s
     }
 }
 
-/// The progress verb shown before the `current/total` counter in the top bar
-/// (e.g. "Scanning 3/10: ..."). Kept as an enum on [`crate::worker::WorkerMsg`]
-/// rather than a pre-localized `&'static str` so the label always reflects
-/// the *current* UI language, even if it changes mid-operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
     /// A scan, all of it. There used to be a second verb here for the MFT
@@ -494,6 +895,10 @@ impl Strings {
             ("btn_deselect_all", self.btn_deselect_all),
             ("btn_delete_selected", self.btn_delete_selected),
             ("settings_section_general", self.settings_section_general),
+            (
+                "settings_section_monitoring",
+                self.settings_section_monitoring,
+            ),
             ("settings_section_scanning", self.settings_section_scanning),
             (
                 "settings_section_selection",
@@ -501,6 +906,31 @@ impl Strings {
             ),
             ("settings_section_rules", self.settings_section_rules),
             ("settings_section_data", self.settings_section_data),
+            ("watch_enabled_label", self.watch_enabled_label),
+            ("watch_enabled_hint", self.watch_enabled_hint),
+            ("watch_autostart_label", self.watch_autostart_label),
+            ("watch_autostart_hint", self.watch_autostart_hint),
+            ("watch_mode_label", self.watch_mode_label),
+            ("watch_mode_interactive", self.watch_mode_interactive),
+            ("watch_mode_interactive_hint", self.watch_mode_interactive_hint),
+            ("watch_mode_autotrim", self.watch_mode_autotrim),
+            ("watch_mode_autotrim_hint", self.watch_mode_autotrim_hint),
+            ("watch_mode_passive", self.watch_mode_passive),
+            ("watch_mode_passive_hint", self.watch_mode_passive_hint),
+            ("watch_daemon_status_running", self.watch_daemon_status_running),
+            ("watch_daemon_status_stopped", self.watch_daemon_status_stopped),
+            ("btn_watch_rescan_now", self.btn_watch_rescan_now),
+            ("watch_tray_tooltip_active", self.watch_tray_tooltip_active),
+            ("watch_tray_tooltip_paused", self.watch_tray_tooltip_paused),
+            ("watch_tray_menu_open", self.watch_tray_menu_open),
+            ("watch_tray_menu_check_now", self.watch_tray_menu_check_now),
+            ("watch_tray_menu_pause", self.watch_tray_menu_pause),
+            ("watch_tray_menu_resume", self.watch_tray_menu_resume),
+            ("watch_tray_menu_exit", self.watch_tray_menu_exit),
+            ("watch_toast_updated_transition", self.watch_toast_updated_transition),
+            ("watch_toast_updated_build", self.watch_toast_updated_build),
+            ("watch_toast_files_changed", self.watch_toast_files_changed),
+            ("watch_toast_daemon_title", self.watch_toast_daemon_title),
             ("btn_done", self.btn_done),
             ("btn_restore_defaults", self.btn_restore_defaults),
             ("label_saved", self.label_saved),

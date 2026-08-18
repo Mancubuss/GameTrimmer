@@ -180,6 +180,14 @@ pub struct GameTrimmerApp {
     /// a previous scan rather than freshly produced (see `WorkerMsg::Done`).
     pub last_scan_timing: Option<model::ScanTiming>,
 
+    /// Whether the background monitoring companion daemon is running.
+    pub watch_daemon_running: bool,
+    /// Games that have been recently updated via background monitoring.
+    pub updated_games: std::collections::HashMap<String, String>,
+    /// Last time we checked IPC daemon status.
+    #[allow(dead_code)]
+    pub last_ipc_poll: Option<std::time::Instant>,
+
     pub findings: Vec<FindingItem>,
     /// Turns each finding's stored (English) description into the one the
     /// window shows - see `worker::descriptions`.
@@ -514,6 +522,9 @@ impl GameTrimmerApp {
             compact_after_delete: false,
             elevated,
             show_elevation_prompt,
+            watch_daemon_running: false,
+            updated_games: std::collections::HashMap::new(),
+            last_ipc_poll: None,
         };
 
         // Show the previous scan's results immediately rather than an empty
@@ -552,6 +563,11 @@ impl GameTrimmerApp {
     /// buy inconsistency between one widget and the next.
     pub fn lang(&self) -> Lang {
         self.settings.app_language.resolve(self.system_lang)
+    }
+
+    /// The detected OS UI language, captured once at startup.
+    pub fn system_lang(&self) -> Lang {
+        self.system_lang
     }
 
     /// Read access to the otherwise-private database path: the settings
@@ -1626,6 +1642,82 @@ impl GameTrimmerApp {
         }
     }
 
+    /// Sets whether background update monitoring is enabled.
+    #[allow(dead_code)]
+    pub fn set_watch_enabled(&mut self, enabled: bool) {
+        if self.settings.watch_enabled == enabled {
+            return;
+        }
+        self.settings = Settings {
+            watch_enabled: enabled,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Sets whether background update monitoring starts with Windows.
+    #[allow(dead_code)]
+    pub fn set_watch_autostart(&mut self, autostart: bool) {
+        if self.settings.watch_autostart == autostart {
+            return;
+        }
+        self.settings = Settings {
+            watch_autostart: autostart,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Sets the background monitoring action mode.
+    #[allow(dead_code)]
+    pub fn set_watch_mode(&mut self, mode: gametrimmer_core::settings::WatchMode) {
+        if self.settings.watch_mode == mode {
+            return;
+        }
+        self.settings = Settings {
+            watch_mode: mode,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Applies a whole new settings structure, persists it, and syncs autostart.
+    #[allow(dead_code)]
+    pub fn set_settings(&mut self, settings: Settings) {
+        if self.settings == settings {
+            return;
+        }
+        self.settings = settings;
+        self.persist_settings();
+    }
+
+    /// Pings the watch companion daemon and caches its liveness state.
+    #[allow(dead_code)]
+    pub fn check_watch_daemon(&mut self) -> bool {
+        let running = crate::ipc::ping_daemon(None);
+        self.watch_daemon_running = running;
+        self.last_ipc_poll = Some(std::time::Instant::now());
+        running
+    }
+
+    /// Triggers an immediate rescan on the watch daemon.
+    pub fn trigger_watch_rescan(&mut self) -> Result<String, String> {
+        match crate::ipc::trigger_daemon_rescan(None) {
+            Ok(crate::ipc::IpcResponse::Ok { message }) => {
+                self.watch_daemon_running = true;
+                Ok(message)
+            }
+            Ok(resp) => {
+                self.watch_daemon_running = true;
+                Ok(format!("{resp:?}"))
+            }
+            Err(e) => {
+                self.watch_daemon_running = false;
+                Err(e)
+            }
+        }
+    }
+
     fn persist_settings(&mut self) {
         let lang = self.lang();
         let Some(settings_path) = self.settings_path.clone() else {
@@ -1635,6 +1727,11 @@ impl GameTrimmerApp {
             return;
         };
         let result = gametrimmer_core::settings::save_file(&settings_path, &self.settings);
+        // Synchronize autostart in Windows registry
+        let _ = gametrimmer_core::autostart::set_autostart(self.settings.watch_autostart, None);
+        // Notify daemon over IPC if active
+        crate::ipc::reload_daemon_settings(None);
+
         match result {
             Ok(()) => self.record_settings_save(Ok(())),
             Err(err) => {
@@ -1706,6 +1803,19 @@ impl GameTrimmerApp {
     pub(crate) fn apply_message(&mut self, msg: WorkerMsg) {
         let lang = self.lang();
         match msg {
+            WorkerMsg::GameUpdatedIpc {
+                app_id,
+                name,
+                new_build_id,
+                launcher,
+            } => {
+                crate::logger::log(&format!(
+                    "Daemon reported game updated: {name} (app_id: {app_id}, launcher: {launcher}, build: {new_build_id:?})"
+                ));
+                self.status_message = format!("🔄 {} updated ({})", name, launcher);
+                self.updated_games.insert(app_id, new_build_id.unwrap_or_default());
+                self.tree_dirty = true;
+            }
             WorkerMsg::Status { text } => {
                 // A phase without granular progress: drop any stale bar so the
                 // spinner + this text is what shows.

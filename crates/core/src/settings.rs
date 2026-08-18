@@ -55,6 +55,8 @@ impl DeleteMethod {
 /// international, and English avoids surprising a user whose Windows locale
 /// isn't Ukrainian. `Uk` stays fully supported - the strings started life in
 /// Ukrainian, and it is still the primary maintainer's own language.
+///
+/// Custom community languages (e.g. `pl`, `de`, `fr`) are supported via [`Lang::Custom`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Lang {
     /// English UI text.
@@ -62,23 +64,37 @@ pub enum Lang {
     En,
     /// Ukrainian UI text.
     Uk,
+    /// Custom community language code (up to 8 ASCII bytes).
+    Custom([u8; 8]),
 }
 
 impl Lang {
     /// Stable string form persisted in `gametrimmer.ini`.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Lang::En => "en",
             Lang::Uk => "uk",
+            Lang::Custom(bytes) => {
+                let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+                std::str::from_utf8(&bytes[..len]).unwrap_or("en")
+            }
         }
     }
 
-    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values (e.g.
-    /// written by a future version) - callers fall back to the default.
+    /// Inverse of [`as_str`](Self::as_str). `None` for invalid or empty values.
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed.len() > 8 {
+            return None;
+        }
+        match trimmed.to_lowercase().as_str() {
             "en" => Some(Lang::En),
             "uk" => Some(Lang::Uk),
+            other if other.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {
+                let mut bytes = [0u8; 8];
+                bytes[..other.len()].copy_from_slice(other.as_bytes());
+                Some(Lang::Custom(bytes))
+            }
             _ => None,
         }
     }
@@ -86,25 +102,10 @@ impl Lang {
 
 /// What the user picked for the UI language: a specific one, or "whatever
 /// Windows is set to".
-///
-/// A separate type from [`Lang`] on purpose, and the same shape [`Theme`]
-/// already uses for the light/dark question. `Lang` answers "which language
-/// is being rendered right now" and has to stay a plain two-valued answer -
-/// every `i18n::strings` call takes one. This answers "what did the user
-/// choose", which has a third state that is not a language at all. Folding
-/// the two together would mean threading "...unless it is System" through
-/// every call site that only ever wanted to look up a string.
-///
-/// Resolved once at startup rather than per call - see [`Self::resolve`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LanguagePreference {
     /// Follow the OS UI language, falling back to [`Lang::En`] when Windows
     /// prefers something this app does not speak.
-    ///
-    /// The default, and the reason it is: a Windows set to Ukrainian used to
-    /// get an English interface until the user found the switch. Defaulting
-    /// to the machine's own language is not a preference this app is entitled
-    /// to have an opinion about.
     #[default]
     System,
     /// An explicit choice, which never yields to the OS.
@@ -113,32 +114,24 @@ pub enum LanguagePreference {
 
 impl LanguagePreference {
     /// Stable string form persisted in `gametrimmer.ini`.
-    ///
-    /// Shares the `app_language` key with the plain [`Lang`] values written
-    /// by earlier versions: `"en"` and `"uk"` still parse, and still mean an
-    /// explicit choice, so upgrading never silently overrides a language the
-    /// user picked by hand.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             LanguagePreference::System => "system",
             LanguagePreference::Fixed(lang) => lang.as_str(),
         }
     }
 
-    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values (e.g.
-    /// written by a future version) - callers fall back to the default.
+    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values.
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "system" => Some(LanguagePreference::System),
-            other => Lang::parse(other).map(LanguagePreference::Fixed),
+        let trimmed = value.trim();
+        if trimmed.eq_ignore_ascii_case("system") {
+            Some(LanguagePreference::System)
+        } else {
+            Lang::parse(trimmed).map(LanguagePreference::Fixed)
         }
     }
 
     /// The language to actually render in, given what the OS reports.
-    ///
-    /// `system` is passed in rather than detected here: this crate has no
-    /// business calling Win32, and a pure function is what lets the whole
-    /// policy be tested without a machine set to the right locale.
     pub fn resolve(self, system: Lang) -> Lang {
         match self {
             LanguagePreference::System => system,
@@ -303,6 +296,39 @@ impl ConfirmBehavior {
         match self {
             ConfirmBehavior::Always => true,
             ConfirmBehavior::Never => false,
+        }
+    }
+}
+
+/// Operating mode for the background monitor companion daemon (`gametrimmer-watch`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum WatchMode {
+    /// Interactive Toast notification with action buttons on detected updates.
+    #[default]
+    Interactive,
+    /// Silently auto-trims detected game updates based on known rules.
+    AutoTrim,
+    /// Passive mode: updates badge/status in GUI without showing toasts or auto-trimming.
+    Passive,
+}
+
+impl WatchMode {
+    /// Stable string form persisted in `gametrimmer.ini`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WatchMode::Interactive => "interactive",
+            WatchMode::AutoTrim => "autotrim",
+            WatchMode::Passive => "passive",
+        }
+    }
+
+    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values - callers fall back to default.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "interactive" => Some(WatchMode::Interactive),
+            "autotrim" | "auto_trim" => Some(WatchMode::AutoTrim),
+            "passive" => Some(WatchMode::Passive),
+            _ => None,
         }
     }
 }
@@ -525,9 +551,17 @@ pub struct Settings {
     /// acceptance on record, and that user has to be shown the disclaimer
     /// once, not locked out of a tool they were already using.
     pub disclaimer_accepted: bool,
+    /// Whether background update monitoring is enabled.
+    pub watch_enabled: bool,
+    /// Whether background monitoring launches automatically on Windows boot.
+    pub watch_autostart: bool,
+    /// Operating mode for the background monitor companion daemon.
+    pub watch_mode: WatchMode,
 }
 
 const DEFAULT_LOGGING_ENABLED: bool = true;
+const DEFAULT_WATCH_ENABLED: bool = true;
+const DEFAULT_WATCH_AUTOSTART: bool = false;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -545,6 +579,9 @@ impl Default for Settings {
             logging_enabled: DEFAULT_LOGGING_ENABLED,
             has_scanned: false,
             disclaimer_accepted: false,
+            watch_enabled: DEFAULT_WATCH_ENABLED,
+            watch_autostart: DEFAULT_WATCH_AUTOSTART,
+            watch_mode: WatchMode::default(),
         }
     }
 }
@@ -568,8 +605,11 @@ const CONFIRM_BEHAVIOR_KEY: &str = "confirm_behavior";
 const LOGGING_ENABLED_KEY: &str = "logging_enabled";
 const HAS_SCANNED_KEY: &str = "has_scanned";
 const DISCLAIMER_ACCEPTED_KEY: &str = "disclaimer_accepted";
+const WATCH_ENABLED_KEY: &str = "watch_enabled";
+const WATCH_AUTOSTART_KEY: &str = "watch_autostart";
+const WATCH_MODE_KEY: &str = "watch_mode";
 
-const SETTINGS_KEYS: [&str; 14] = [
+const SETTINGS_KEYS: [&str; 17] = [
     DELETE_METHOD_KEY,
     APP_LANGUAGE_KEY,
     KEEP_LANGUAGES_KEY,
@@ -584,6 +624,9 @@ const SETTINGS_KEYS: [&str; 14] = [
     LOGGING_ENABLED_KEY,
     HAS_SCANNED_KEY,
     DISCLAIMER_ACCEPTED_KEY,
+    WATCH_ENABLED_KEY,
+    WATCH_AUTOSTART_KEY,
+    WATCH_MODE_KEY,
 ];
 
 const INI_HEADER: &str = "; GameTrimmer user settings. Unknown keys are ignored.\n[settings]\n";
@@ -635,6 +678,15 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
         disclaimer_accepted: value(DISCLAIMER_ACCEPTED_KEY)
             .and_then(parse_bool)
             .unwrap_or_default(),
+        watch_enabled: value(WATCH_ENABLED_KEY)
+            .and_then(parse_bool)
+            .unwrap_or(DEFAULT_WATCH_ENABLED),
+        watch_autostart: value(WATCH_AUTOSTART_KEY)
+            .and_then(parse_bool)
+            .unwrap_or(DEFAULT_WATCH_AUTOSTART),
+        watch_mode: value(WATCH_MODE_KEY)
+            .and_then(WatchMode::parse)
+            .unwrap_or_default(),
     }
 }
 
@@ -642,7 +694,7 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
 /// reports the parsed settings: `Settings` is not serde-backed, and this is
 /// already the canonical text form of every field, so a `Serialize` derive
 /// would be a second description of the same thing to keep in sync.
-pub fn settings_values(settings: &Settings) -> [(&'static str, String); 13] {
+pub fn settings_values(settings: &Settings) -> [(&'static str, String); 16] {
     [
         (DELETE_METHOD_KEY, settings.delete_method.as_str().into()),
         (APP_LANGUAGE_KEY, settings.app_language.as_str().into()),
@@ -684,6 +736,15 @@ pub fn settings_values(settings: &Settings) -> [(&'static str, String); 13] {
             DISCLAIMER_ACCEPTED_KEY,
             bool_as_str(settings.disclaimer_accepted).into(),
         ),
+        (
+            WATCH_ENABLED_KEY,
+            bool_as_str(settings.watch_enabled).into(),
+        ),
+        (
+            WATCH_AUTOSTART_KEY,
+            bool_as_str(settings.watch_autostart).into(),
+        ),
+        (WATCH_MODE_KEY, settings.watch_mode.as_str().into()),
     ]
 }
 
@@ -951,7 +1012,7 @@ mod tests {
     fn unknown_stored_language_falls_back_to_default() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('app_language', 'fr')",
+            "INSERT INTO settings (key, value) VALUES ('app_language', 'invalid language code')",
             [],
         )
         .expect("insert unknown value");
@@ -977,7 +1038,9 @@ mod tests {
         for lang in [Lang::En, Lang::Uk] {
             assert_eq!(Lang::parse(lang.as_str()), Some(lang));
         }
-        assert_eq!(Lang::parse("nonsense"), None);
+        let custom = Lang::parse("pl").expect("parse custom pl");
+        assert_eq!(custom.as_str(), "pl");
+        assert_eq!(Lang::parse("invalid language with spaces"), None);
     }
 
     #[test]
@@ -1598,6 +1661,28 @@ mod tests {
                 ..Settings::default()
             });
         }
+        for watch_enabled in [true, false] {
+            cases.push(Settings {
+                watch_enabled,
+                ..Settings::default()
+            });
+        }
+        for watch_autostart in [true, false] {
+            cases.push(Settings {
+                watch_autostart,
+                ..Settings::default()
+            });
+        }
+        for watch_mode in [
+            WatchMode::Interactive,
+            WatchMode::AutoTrim,
+            WatchMode::Passive,
+        ] {
+            cases.push(Settings {
+                watch_mode,
+                ..Settings::default()
+            });
+        }
         cases.push(Settings {
             keep_languages: vec!["uk".into(), "en".into(), "ja".into()],
             enabled_categories: vec!["docs".into(), "redist".into()],
@@ -1605,6 +1690,9 @@ mod tests {
             logging_enabled: true,
             has_scanned: true,
             disclaimer_accepted: true,
+            watch_enabled: true,
+            watch_autostart: true,
+            watch_mode: WatchMode::AutoTrim,
             ..Settings::default()
         });
 
@@ -1631,7 +1719,7 @@ mod tests {
               malformed line\n\
               future_key=future_value\n\
               delete_method=quarantine\n\
-              app_language=fr\n\
+              app_language=invalid language with spaces\n\
               keep_languages=\n\
               scan_routing=teleport\n\
               never_ask_elevation=maybe\n\
@@ -1695,5 +1783,55 @@ mod tests {
 
         assert_eq!(loaded, Settings::default());
         assert_eq!(load_file(&path).expect("reload default ini"), loaded);
+    }
+
+    #[test]
+    fn watch_mode_as_str_and_parse() {
+        assert_eq!(WatchMode::Interactive.as_str(), "interactive");
+        assert_eq!(WatchMode::AutoTrim.as_str(), "autotrim");
+        assert_eq!(WatchMode::Passive.as_str(), "passive");
+
+        assert_eq!(WatchMode::parse("interactive"), Some(WatchMode::Interactive));
+        assert_eq!(WatchMode::parse("INTERACTIVE"), Some(WatchMode::Interactive));
+        assert_eq!(WatchMode::parse("autotrim"), Some(WatchMode::AutoTrim));
+        assert_eq!(WatchMode::parse("auto_trim"), Some(WatchMode::AutoTrim));
+        assert_eq!(WatchMode::parse("AUTOTRIM"), Some(WatchMode::AutoTrim));
+        assert_eq!(WatchMode::parse("passive"), Some(WatchMode::Passive));
+        assert_eq!(WatchMode::parse("PASSIVE"), Some(WatchMode::Passive));
+        assert_eq!(WatchMode::parse("  interactive  "), Some(WatchMode::Interactive));
+        assert_eq!(WatchMode::parse("unknown_mode"), None);
+        assert_eq!(WatchMode::parse(""), None);
+    }
+
+    #[test]
+    fn defaults_for_watch_settings_on_empty_database() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        let settings = load(&conn).expect("load settings");
+        assert_eq!(settings.watch_enabled, true);
+        assert_eq!(settings.watch_autostart, false);
+        assert_eq!(settings.watch_mode, WatchMode::Interactive);
+    }
+
+    #[test]
+    fn save_then_load_round_trips_watch_settings() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+
+        for enabled in [true, false] {
+            for autostart in [true, false] {
+                for mode in [WatchMode::Interactive, WatchMode::AutoTrim, WatchMode::Passive] {
+                    let settings = Settings {
+                        watch_enabled: enabled,
+                        watch_autostart: autostart,
+                        watch_mode: mode,
+                        ..Settings::default()
+                    };
+                    save(&conn, &settings).expect("save settings");
+                    let loaded = load(&conn).expect("load settings");
+                    assert_eq!(loaded.watch_enabled, enabled);
+                    assert_eq!(loaded.watch_autostart, autostart);
+                    assert_eq!(loaded.watch_mode, mode);
+                }
+            }
+        }
     }
 }

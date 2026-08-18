@@ -1,0 +1,500 @@
+//! Targeted single-game re-trim execution.
+//!
+//! Re-scans and cleans only the files of an updated game without requiring a
+//! full library re-scan. Fails closed if the game executable is currently running.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use rusqlite::Connection;
+
+use crate::error::{CoreError, Result};
+use crate::langdetect::LangDetector;
+use crate::rules::RuleEngine;
+use crate::settings::DeleteMethod;
+
+/// Summary report returned by [`retrim_game`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RetrimReport {
+    pub game_id: i64,
+    pub game_name: String,
+    pub files_deleted: usize,
+    pub bytes_freed: u64,
+    pub errors: Vec<String>,
+}
+
+/// Checks whether any executable running on the system originates from `install_dir`.
+#[cfg(windows)]
+pub fn is_game_running(install_dir: &Path) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::ProcessStatus::K32EnumProcesses;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let target_dir = match install_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => install_dir.to_path_buf(),
+    };
+    let target_dir_str = target_dir.to_string_lossy().to_lowercase();
+
+    let mut pids = [0u32; 2048];
+    let mut bytes_returned = 0u32;
+    let ok = unsafe {
+        K32EnumProcesses(
+            pids.as_mut_ptr(),
+            (pids.len() * std::mem::size_of::<u32>()) as u32,
+            &mut bytes_returned,
+        )
+    };
+    if !ok.as_bool() {
+        return false;
+    }
+
+    let count = (bytes_returned as usize) / std::mem::size_of::<u32>();
+    let mut image_path = [0u16; 1024];
+
+    for &pid in &pids[..count] {
+        if pid == 0 {
+            continue;
+        }
+        let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+            Ok(h) if !h.is_invalid() => h,
+            _ => continue,
+        };
+
+        let mut size = image_path.len() as u32;
+        let success = unsafe {
+            QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_FORMAT(0),
+                windows::core::PWSTR(image_path.as_mut_ptr()),
+                &mut size,
+            )
+        };
+        let _ = unsafe { CloseHandle(handle) };
+
+        if success.is_ok() && size > 0 {
+            let exe_path_str = String::from_utf16_lossy(&image_path[..size as usize]).to_lowercase();
+            let exe_path = PathBuf::from(&exe_path_str);
+            let exe_canon = exe_path.canonicalize().unwrap_or(exe_path);
+            let exe_canon_str = exe_canon.to_string_lossy().to_lowercase();
+
+            if exe_path_str.starts_with(&target_dir_str) || exe_canon_str.starts_with(&target_dir_str) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Non-Windows fallback for process checking.
+#[cfg(not(windows))]
+pub fn is_game_running(_install_dir: &Path) -> bool {
+    false
+}
+
+/// Executes a targeted re-trim for a single game by its database ID.
+pub fn retrim_game(
+    conn: &mut Connection,
+    game_id: i64,
+    rule_engine: &RuleEngine,
+    lang_detector: &LangDetector,
+    delete_method: DeleteMethod,
+) -> Result<RetrimReport> {
+    retrim_game_with_new_build(conn, game_id, None, rule_engine, lang_detector, delete_method)
+}
+
+/// Executes a targeted re-trim for a single game, optionally updating its `build_id`.
+pub fn retrim_game_with_new_build(
+    conn: &mut Connection,
+    game_id: i64,
+    new_build_id: Option<&str>,
+    rule_engine: &RuleEngine,
+    lang_detector: &LangDetector,
+    delete_method: DeleteMethod,
+) -> Result<RetrimReport> {
+    // 1. Fetch game record
+    let game = crate::gamestate::find_game_by_id(conn, game_id)?
+        .ok_or_else(|| CoreError::Other(format!("game id {game_id} not found in database")))?;
+
+    let install_path = PathBuf::from(&game.install_dir);
+    if !install_path.is_dir() {
+        return Err(CoreError::Other(format!(
+            "install directory for \"{}\" does not exist or is not a directory: {}",
+            game.name,
+            install_path.display()
+        )));
+    }
+
+    // 2. Fail-closed if game executable is currently running
+    if is_game_running(&install_path) {
+        return Err(CoreError::Other(format!(
+            "cannot re-trim \"{}\": game executable is currently running",
+            game.name
+        )));
+    }
+
+    // 3. Scan the game's directory
+    let entries = crate::scanner::scan_dir(&install_path)?;
+    let stats_before = crate::scanner::ScanStats::of(&entries);
+
+    // 4. Classify files through RuleEngine & LangDetector
+    let lang_findings: HashMap<usize, crate::langdetect::LangFinding> = lang_detector
+        .analyze_game(&entries)
+        .into_iter()
+        .collect();
+
+    struct Candidate<'a> {
+        entry: &'a crate::scanner::FileEntry,
+        category: &'static str,
+        rule_desc: Option<String>,
+        confidence: u8,
+        lang_tag: Option<String>,
+        provenance: crate::rules::RuleProvenance,
+    }
+
+    let mut candidates = Vec::new();
+
+    for (index, entry) in entries.iter().enumerate() {
+        let verdict = rule_engine.classify(&entry.rel_path, game.app_id.as_deref());
+        match verdict {
+            crate::rules::Verdict::Kept => {
+                // Explicit keep veto
+                continue;
+            }
+            crate::rules::Verdict::Flagged(finding) => {
+                candidates.push(Candidate {
+                    entry,
+                    category: finding.category.as_str(),
+                    rule_desc: Some(finding.rule_desc),
+                    confidence: finding.confidence,
+                    lang_tag: None,
+                    provenance: finding.provenance,
+                });
+            }
+            crate::rules::Verdict::Unmatched => {
+                if let Some(lang_finding) = lang_findings.get(&index) {
+                    candidates.push(Candidate {
+                        entry,
+                        category: "localization",
+                        rule_desc: Some(lang_finding.reason.to_string()),
+                        confidence: lang_finding.confidence,
+                        lang_tag: Some(lang_finding.lang_tag.clone()),
+                        provenance: crate::rules::RuleProvenance::Builtin,
+                    });
+                }
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        let final_build_id = new_build_id.or(game.build_id.as_deref());
+        conn.execute(
+            "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4, build_id = ?5 WHERE id = ?1",
+            rusqlite::params![
+                game.id,
+                stats_before.files as i64,
+                stats_before.bytes as i64,
+                stats_before.bytes_on_disk as i64,
+                final_build_id,
+            ],
+        )?;
+
+        return Ok(RetrimReport {
+            game_id: game.id,
+            game_name: game.name,
+            files_deleted: 0,
+            bytes_freed: 0,
+            errors: Vec::new(),
+        });
+    }
+
+    // 5. Ensure an active scan generation and safety evidence exist
+    let scan_id = match crate::db::active_scan_id(conn)? {
+        Some(id) if crate::db::scan_allows_deletion(conn, id).unwrap_or(false) => id,
+        _ => {
+            let id = crate::db::begin_scan(conn, "complete")?;
+            crate::db::activate_scan(conn, id)?;
+            id
+        }
+    };
+
+    let lib_path: String = conn
+        .query_row(
+            "SELECT path FROM game_libraries WHERE id = ?1",
+            [game.library_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| game.install_dir.clone());
+
+    conn.execute(
+        "INSERT OR REPLACE INTO scan_library_evidence (scan_id, library_path, provider, status)
+         VALUES (?1, ?2, 'retrim', 'complete')",
+        rusqlite::params![scan_id, &lib_path],
+    )?;
+
+    // Clean previous findings/safety for this game
+    conn.execute(
+        "DELETE FROM findings WHERE file_id IN (SELECT id FROM files WHERE game_id = ?1)",
+        [game.id],
+    )?;
+    conn.execute(
+        "DELETE FROM file_safety WHERE file_id IN (SELECT id FROM files WHERE game_id = ?1)",
+        [game.id],
+    )?;
+    conn.execute("DELETE FROM files WHERE game_id = ?1", [game.id])?;
+
+    // 6. Build safety snapshots and delete plans
+    let remover: Box<dyn crate::ops::Remover> = match delete_method {
+        DeleteMethod::Permanent => Box::new(crate::ops::PermanentDelete),
+        DeleteMethod::RecycleBin => Box::new(crate::ops::RecycleBin),
+    };
+
+    let mut plans = Vec::new();
+    let mut candidate_sizes = Vec::new();
+    let mut candidate_sizes_on_disk = Vec::new();
+
+    for candidate in candidates {
+        let snapshot = match crate::safety::capture_safety_snapshot(&install_path, &candidate.entry.rel_path) {
+            Ok(s) => s,
+            Err(_) => {
+                continue;
+            }
+        };
+
+        conn.execute(
+            "INSERT INTO files (scan_id, game_id, rel_path, size, size_on_disk, mtime)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                scan_id,
+                game.id,
+                &candidate.entry.rel_path,
+                candidate.entry.size as i64,
+                candidate.entry.size_on_disk as i64,
+                candidate.entry.mtime,
+            ],
+        )?;
+        let file_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag, group_dir, provenance)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
+            rusqlite::params![
+                file_id,
+                candidate.category,
+                candidate.rule_desc,
+                candidate.confidence,
+                candidate.lang_tag,
+                match candidate.provenance {
+                    crate::rules::RuleProvenance::Builtin => "builtin",
+                    crate::rules::RuleProvenance::ImportedUntrusted => "imported_untrusted",
+                },
+            ],
+        )?;
+
+        let root_identity = snapshot.root_identity.encode();
+        let target_identity = snapshot.target_identity.encode();
+        conn.execute(
+            "INSERT OR REPLACE INTO file_safety
+             (file_id, scan_id, evidence_library_path, trusted_root, rel_path, root_identity,
+              target_identity, target_kind, tree_fingerprint, block_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
+            rusqlite::params![
+                file_id,
+                scan_id,
+                &lib_path,
+                snapshot.trusted_root.to_string_lossy(),
+                snapshot.rel_path.to_string_lossy(),
+                root_identity,
+                target_identity,
+                snapshot.target_identity.kind.as_str(),
+                snapshot.tree_fingerprint.as_deref(),
+            ],
+        )?;
+
+        candidate_sizes.push(candidate.entry.size);
+        candidate_sizes_on_disk.push(candidate.entry.size_on_disk);
+        plans.push(crate::safety::DeletePlan {
+            file_id,
+            scan_id,
+            action: remover.action().to_string(),
+            snapshot,
+        });
+    }
+
+    if plans.is_empty() {
+        let final_build_id = new_build_id.or(game.build_id.as_deref());
+        conn.execute(
+            "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4, build_id = ?5 WHERE id = ?1",
+            rusqlite::params![
+                game.id,
+                stats_before.files as i64,
+                stats_before.bytes as i64,
+                stats_before.bytes_on_disk as i64,
+                final_build_id,
+            ],
+        )?;
+
+        return Ok(RetrimReport {
+            game_id: game.id,
+            game_name: game.name,
+            files_deleted: 0,
+            bytes_freed: 0,
+            errors: Vec::new(),
+        });
+    }
+
+    // 7. Execute delete plans
+    let outcomes = crate::ops::execute_delete_plans_observed(
+        conn,
+        remover.as_ref(),
+        &plans,
+        |_current, _total, _path| {},
+        |_index, _outcome| {},
+    )?;
+
+    // 8. Tally results
+    let mut files_deleted = 0;
+    let mut bytes_freed = 0;
+    let mut bytes_on_disk_freed = 0;
+    let mut errors = Vec::new();
+
+    for (idx, outcome) in outcomes.iter().enumerate() {
+        if matches!(
+            outcome.status,
+            crate::ops::FsOutcome::Removed | crate::ops::FsOutcome::AlreadyAbsent
+        ) {
+            files_deleted += 1;
+            bytes_freed += candidate_sizes[idx];
+            bytes_on_disk_freed += candidate_sizes_on_disk[idx];
+        }
+        if let Some(err) = &outcome.error {
+            errors.push(format!("{}: {}", outcome.path.display(), err));
+        }
+    }
+
+    // 9. Update games row
+    let final_build_id = new_build_id.or(game.build_id.as_deref());
+    let final_files = stats_before.files.saturating_sub(files_deleted as u64);
+    let final_bytes = stats_before.bytes.saturating_sub(bytes_freed);
+    let final_bytes_on_disk = stats_before.bytes_on_disk.saturating_sub(bytes_on_disk_freed);
+
+    conn.execute(
+        "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4, build_id = ?5 WHERE id = ?1",
+        rusqlite::params![
+            game.id,
+            final_files as i64,
+            final_bytes as i64,
+            final_bytes_on_disk as i64,
+            final_build_id,
+        ],
+    )?;
+
+    Ok(RetrimReport {
+        game_id: game.id,
+        game_name: game.name,
+        files_deleted,
+        bytes_freed,
+        errors,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn retrim_game_deletes_flagged_files_and_updates_database() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Portal 2");
+        fs::create_dir_all(&game_dir).expect("create game dir");
+
+        // Create synthetic game files
+        let game_exe = game_dir.join("portal2.exe");
+        fs::write(&game_exe, b"MZ_GAME_BINARY").expect("write exe");
+
+        let redist_dir = game_dir.join("_CommonRedist");
+        fs::create_dir_all(&redist_dir).expect("create redist dir");
+        let vcredist = redist_dir.join("vcredist_x64.exe");
+        fs::write(&vcredist, vec![0u8; 1024]).expect("write vcredist");
+
+        let bonus_dir = game_dir.join("Bonus");
+        fs::create_dir_all(&bonus_dir).expect("create bonus dir");
+        let soundtrack = bonus_dir.join("soundtrack.mp3");
+        fs::write(&soundtrack, vec![0u8; 2048]).expect("write soundtrack");
+
+        // Database setup
+        let mut conn = crate::db::open_in_memory().expect("open memory db");
+        let lib_path = temp_dir.path().to_string_lossy().to_string();
+        conn.execute(
+            "INSERT INTO game_libraries (id, vendor, path) VALUES (1, 'steam', ?1)",
+            [&lib_path],
+        )
+        .expect("insert library");
+
+        let install_dir_str = game_dir.to_string_lossy().to_string();
+        conn.execute(
+            "INSERT INTO games (id, library_id, name, install_dir, app_id, build_id)
+             VALUES (10, 1, 'Portal 2', ?1, '620', '100')",
+            [&install_dir_str],
+        )
+        .expect("insert game");
+
+        let rule_json = format!(
+            r#"{{"version":{},"rules":[
+                {{"category": "redist_folder", "pattern": "^_?commonredist(s)?$", "desc": "Common redist folder", "confidence": 90}},
+                {{"category": "bonus", "pattern": "^bonus$", "desc": "Bonus material", "confidence": 85}}
+            ]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let rule_engine = RuleEngine::from_json(&rule_json).expect("parse rules");
+        let lang_detector = LangDetector::new();
+
+        let report = retrim_game_with_new_build(
+            &mut conn,
+            10,
+            Some("200"),
+            &rule_engine,
+            &lang_detector,
+            DeleteMethod::Permanent,
+        )
+        .expect("execute retrim");
+
+        assert_eq!(report.game_id, 10);
+        assert_eq!(report.game_name, "Portal 2");
+        assert_eq!(report.files_deleted, 2);
+        assert_eq!(report.bytes_freed, 3072);
+        assert!(report.errors.is_empty());
+
+        // Verify files on disk
+        assert!(game_exe.exists(), "game executable must remain intact");
+        assert!(!vcredist.exists(), "vcredist must be deleted");
+        assert!(!soundtrack.exists(), "soundtrack must be deleted");
+
+        // Verify DB update
+        let updated_build_id: String = conn
+            .query_row("SELECT build_id FROM games WHERE id = 10", [], |row| row.get(0))
+            .expect("query updated build_id");
+        assert_eq!(updated_build_id, "200");
+    }
+
+    #[test]
+    fn retrim_non_existent_game_returns_error() {
+        let mut conn = crate::db::open_in_memory().expect("open memory db");
+        let rule_engine = RuleEngine::from_json(crate::rules::BUILTIN_RULES_JSON).expect("builtin rules");
+        let lang_detector = LangDetector::new();
+
+        let result = retrim_game(
+            &mut conn,
+            999,
+            &rule_engine,
+            &lang_detector,
+            DeleteMethod::Permanent,
+        );
+        assert!(result.is_err());
+    }
+}

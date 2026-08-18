@@ -128,6 +128,13 @@ pub enum WorkerMsg {
     /// The background "Add Folder..." folder picker finished. `None` means
     /// the user cancelled the dialog.
     FolderPicked { path: Option<PathBuf> },
+    /// Notification from the background monitoring daemon that a game state was updated.
+    GameUpdatedIpc {
+        app_id: String,
+        name: String,
+        new_build_id: Option<String>,
+        launcher: String,
+    },
     /// The background "Export..." export finished. `path` is `None`
     /// when the user cancelled the save dialog (in which case `error` is
     /// also `None`); `error` is set if the save dialog returned a path but

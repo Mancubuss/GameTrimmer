@@ -375,7 +375,7 @@ fn format_preview(lang: Lang, summary: &str) -> String {
 
 Продовжити?"
         ),
-        Lang::En => format!(
+        Lang::En | Lang::Custom(_) => format!(
             "Import preview
 
 {summary}

@@ -609,7 +609,7 @@ pub fn parse_workshop_installed_items(acf: &str) -> Option<HashSet<String>> {
 /// either a leaf string, or an object holding an ordered list of key/value pairs
 /// (values may themselves be nested objects).
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum VdfValue {
+pub(crate) enum VdfValue {
     Str(String),
     Obj(Vec<(String, VdfValue)>),
 }
@@ -729,7 +729,7 @@ fn parse_object(tokens: &[VdfToken], pos: &mut usize) -> Vec<(String, VdfValue)>
     entries
 }
 
-fn parse_vdf(input: &str) -> VdfValue {
+pub(crate) fn parse_vdf(input: &str) -> VdfValue {
     let tokens = tokenize_vdf(input);
     let mut pos = 0;
     VdfValue::Obj(parse_object(&tokens, &mut pos))

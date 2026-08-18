@@ -46,3 +46,8 @@ desktop.ini
 *.dll
 *.pdb
 .claude/
+
+# Python & Temporary
+__pycache__/
+*.pyc
+temp/
