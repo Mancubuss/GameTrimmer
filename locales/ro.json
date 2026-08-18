@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "da",
     "csv_no": "nu",
-    "already_running_title": "GameTrimmer rulează deja"
+    "already_running_title": "GameTrimmer rulează deja",
+    "category_workshop": "Obiecte din Atelier",
+    "category_shader_cache": "Cache-uri de shadere",
+    "category_crashes": "Fișiere dump și jurnale",
+    "category_saves": "Salvări de joc și salvări automate",
+    "category_launcher_cache": "Cache-uri web ale lansatoarelor",
+    "category_mod_downloads": "Arhive ale managerului de moduri",
+    "badge_safe": "Sigur de curățat",
+    "badge_review": "Revizuire recomandată",
+    "badge_backup_shield": "Protejat prin copie de rezervă",
+    "saves_pruner_title": "Curățare inteligentă a salvărilor",
+    "saves_retention_slider": "Păstrează cele mai recente salvări rapide per joc",
+    "saves_auto_backup_label": "Copie de rezervă ZIP automată înainte de ștergere",
+    "saves_backup_success": "Copia de rezervă a salvărilor a fost creată cu succes",
+    "saves_total_prunable": "Salvări automate redundante găsite"
   }
 }

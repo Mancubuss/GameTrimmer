@@ -192,15 +192,19 @@ fn add_personal_exception_at(
         return Ok(i18n::exception_already_kept(lang, rel_path));
     }
 
-    gametrimmer_core::atomic_file::atomic_write_with_backup(path, json.as_bytes(), |_path, bytes| {
-        let text = std::str::from_utf8(bytes)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        // The personal pack *is* a category-rules pack - same envelope, same
-        // parser, same compile check. Only its polarity and its ownership
-        // differ, and neither is something this validation can or should see.
-        validate_pack_text(PackKind::CategoryRules, text)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-    })
+    gametrimmer_core::atomic_file::atomic_write_with_backup(
+        path,
+        json.as_bytes(),
+        |_path, bytes| {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            // The personal pack *is* a category-rules pack - same envelope, same
+            // parser, same compile check. Only its polarity and its ownership
+            // differ, and neither is something this validation can or should see.
+            validate_pack_text(PackKind::CategoryRules, text)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        },
+    )
     .map_err(|err| i18n::write_failed(lang, path.display(), err))?;
 
     Ok(i18n::exception_kept(lang, rel_path))

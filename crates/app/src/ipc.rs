@@ -92,8 +92,8 @@ pub fn send_ipc_request(req: &IpcRequest, pipe_name: Option<&str>) -> Result<Ipc
     }
 
     let resp_str = String::from_utf8_lossy(&buf);
-    let resp: IpcResponse = serde_json::from_str(resp_str.trim())
-        .map_err(|e| format!("{e}: {resp_str}"))?;
+    let resp: IpcResponse =
+        serde_json::from_str(resp_str.trim()).map_err(|e| format!("{e}: {resp_str}"))?;
     Ok(resp)
 }
 

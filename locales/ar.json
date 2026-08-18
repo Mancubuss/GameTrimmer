@@ -244,6 +244,20 @@
     "unit_b": "بايت",
     "csv_yes": "نعم",
     "csv_no": "لا",
-    "already_running_title": "GameTrimmer قيد التشغيل بالفعل"
+    "already_running_title": "GameTrimmer قيد التشغيل بالفعل",
+    "category_workshop": "عناصر الورشة",
+    "category_shader_cache": "ذاكرة التخزين المؤقت للمظلل",
+    "category_crashes": "تقارير الانهيار والسجلات",
+    "category_saves": "ملفات الحفظ والحفظ التلقائي",
+    "category_launcher_cache": "ذاكرة التخزين المؤقت لبرامج التشغيل",
+    "category_mod_downloads": "أرشيفات مدير التعديلات",
+    "badge_safe": "آمن للتنظيف",
+    "badge_review": "يوصى بالمراجعة",
+    "badge_backup_shield": "محمي بنسخة احتياطية",
+    "saves_pruner_title": "أداة التقليم الذكية للحفظ",
+    "saves_retention_slider": "الاحتفاظ بأحدث عمليات الحفظ السريع لكل لعبة",
+    "saves_auto_backup_label": "نسخ احتياطي تلقائي بتنسيق ZIP قبل الحذف",
+    "saves_backup_success": "تم إنشاء النسخة الاحتياطية لملفات الحفظ بنجاح",
+    "saves_total_prunable": "تم العثور على عمليات حفظ تلقائي قابلة للتقليم"
   }
 }

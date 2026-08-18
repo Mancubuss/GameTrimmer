@@ -1275,8 +1275,8 @@ fn show_game_row(
     // off the sentinel id, so it follows the current UI language even though
     // the stored `game_name` is empty.
     let label = game_branch_label(lang, game);
-    let unclaimed = !is_orphan_branch(game.game_id)
-        && !game_has_launcher_id(findings, &game.all_indices);
+    let unclaimed =
+        !is_orphan_branch(game.game_id) && !game_has_launcher_id(findings, &game.all_indices);
     let name = if is_orphan_branch(game.game_id) {
         // A UI string, not a name the search index holds: drawn as decoration
         // so a query that happens to occur in it tints nothing.
@@ -1293,10 +1293,15 @@ fn show_game_row(
             // not tint anything, and the marker is not part of the name.
             parts.push(Part::decoration(" ◇"));
         }
-        let is_updated = !is_orphan_branch(game.game_id) && (
-            ctx.updated_games.contains_key(&game.game_name)
-            || game.all_indices.first().and_then(|&idx| findings.get(idx)).and_then(|f| f.row.app_id.as_ref()).map(|id| ctx.updated_games.contains_key(id)).unwrap_or(false)
-        );
+        let is_updated = !is_orphan_branch(game.game_id)
+            && (ctx.updated_games.contains_key(&game.game_name)
+                || game
+                    .all_indices
+                    .first()
+                    .and_then(|&idx| findings.get(idx))
+                    .and_then(|f| f.row.app_id.as_ref())
+                    .map(|id| ctx.updated_games.contains_key(id))
+                    .unwrap_or(false));
         if is_updated {
             parts.push(Part::decoration(" [🔄 Updated]"));
         }
@@ -1951,19 +1956,18 @@ fn apply_keep_request(app: &mut GameTrimmerApp, index: usize) {
         .collect(),
     );
 
-    app.status_message = match crate::worker::rules_io::add_personal_exception(
-        lang, &app_id, &rel_path, desc,
-    ) {
-        Ok(message) => {
-            if let Some(item) = app.findings.get_mut(index) {
-                item.removed = true;
-                item.selected = false;
+    app.status_message =
+        match crate::worker::rules_io::add_personal_exception(lang, &app_id, &rel_path, desc) {
+            Ok(message) => {
+                if let Some(item) = app.findings.get_mut(index) {
+                    item.removed = true;
+                    item.selected = false;
+                }
+                app.tree_dirty = true;
+                message
             }
-            app.tree_dirty = true;
-            message
-        }
-        Err(error) => i18n::error_prefixed(lang, error),
-    };
+            Err(error) => i18n::error_prefixed(lang, error),
+        };
 }
 
 #[cfg(test)]

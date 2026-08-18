@@ -153,7 +153,7 @@ fn show_libraries(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 /// the answer only changes when the user installs something.
 ///
 /// It lives here, under the library list, because that is what the answer *is*
-/// - a suggestion of libraries to register. It is not a new panel: the
+/// -- a suggestion of libraries to register. It is not a new panel: the
 /// interface is already dense, and a separate screen for "here are some
 /// folders" would be out of proportion to what it does.
 ///

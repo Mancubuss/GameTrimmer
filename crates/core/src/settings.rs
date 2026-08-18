@@ -90,7 +90,11 @@ impl Lang {
         match trimmed.to_lowercase().as_str() {
             "en" => Some(Lang::En),
             "uk" => Some(Lang::Uk),
-            other if other.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {
+            other
+                if other
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+            {
                 let mut bytes = [0u8; 8];
                 bytes[..other.len()].copy_from_slice(other.as_bytes());
                 Some(Lang::Custom(bytes))
@@ -1791,14 +1795,23 @@ mod tests {
         assert_eq!(WatchMode::AutoTrim.as_str(), "autotrim");
         assert_eq!(WatchMode::Passive.as_str(), "passive");
 
-        assert_eq!(WatchMode::parse("interactive"), Some(WatchMode::Interactive));
-        assert_eq!(WatchMode::parse("INTERACTIVE"), Some(WatchMode::Interactive));
+        assert_eq!(
+            WatchMode::parse("interactive"),
+            Some(WatchMode::Interactive)
+        );
+        assert_eq!(
+            WatchMode::parse("INTERACTIVE"),
+            Some(WatchMode::Interactive)
+        );
         assert_eq!(WatchMode::parse("autotrim"), Some(WatchMode::AutoTrim));
         assert_eq!(WatchMode::parse("auto_trim"), Some(WatchMode::AutoTrim));
         assert_eq!(WatchMode::parse("AUTOTRIM"), Some(WatchMode::AutoTrim));
         assert_eq!(WatchMode::parse("passive"), Some(WatchMode::Passive));
         assert_eq!(WatchMode::parse("PASSIVE"), Some(WatchMode::Passive));
-        assert_eq!(WatchMode::parse("  interactive  "), Some(WatchMode::Interactive));
+        assert_eq!(
+            WatchMode::parse("  interactive  "),
+            Some(WatchMode::Interactive)
+        );
         assert_eq!(WatchMode::parse("unknown_mode"), None);
         assert_eq!(WatchMode::parse(""), None);
     }
@@ -1807,8 +1820,8 @@ mod tests {
     fn defaults_for_watch_settings_on_empty_database() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
         let settings = load(&conn).expect("load settings");
-        assert_eq!(settings.watch_enabled, true);
-        assert_eq!(settings.watch_autostart, false);
+        assert!(settings.watch_enabled);
+        assert!(!settings.watch_autostart);
         assert_eq!(settings.watch_mode, WatchMode::Interactive);
     }
 
@@ -1818,7 +1831,11 @@ mod tests {
 
         for enabled in [true, false] {
             for autostart in [true, false] {
-                for mode in [WatchMode::Interactive, WatchMode::AutoTrim, WatchMode::Passive] {
+                for mode in [
+                    WatchMode::Interactive,
+                    WatchMode::AutoTrim,
+                    WatchMode::Passive,
+                ] {
                     let settings = Settings {
                         watch_enabled: enabled,
                         watch_autostart: autostart,

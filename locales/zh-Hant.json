@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "是",
     "csv_no": "否",
-    "already_running_title": "GameTrimmer 已經在執行中"
+    "already_running_title": "GameTrimmer 已經在執行中",
+    "category_workshop": "工作坊物品",
+    "category_shader_cache": "著色器快取",
+    "category_crashes": "損毀傾印與記錄",
+    "category_saves": "存檔與自動存檔",
+    "category_launcher_cache": "啟動器網頁快取",
+    "category_mod_downloads": "模組管理器壓縮檔",
+    "badge_safe": "安全清理",
+    "badge_review": "建議檢查",
+    "badge_backup_shield": "受備份保護",
+    "saves_pruner_title": "智慧存檔修剪器",
+    "saves_retention_slider": "每個遊戲保留最新快速存檔數",
+    "saves_auto_backup_label": "刪除前自動建立 ZIP 備份",
+    "saves_backup_success": "存檔備份建立成功",
+    "saves_total_prunable": "找到可修剪的自動存檔"
   }
 }

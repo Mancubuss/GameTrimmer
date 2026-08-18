@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "sim",
     "csv_no": "não",
-    "already_running_title": "O GameTrimmer já está em execução"
+    "already_running_title": "O GameTrimmer já está em execução",
+    "category_workshop": "Itens da Oficina",
+    "category_shader_cache": "Caches de sombreadores",
+    "category_crashes": "Relatórios de falhas e registros",
+    "category_saves": "Jogos salvos e salvamentos automáticos",
+    "category_launcher_cache": "Caches da web de inicializadores",
+    "category_mod_downloads": "Arquivos de gerenciadores de mods",
+    "badge_safe": "Seguro para limpar",
+    "badge_review": "Revisão recomendada",
+    "badge_backup_shield": "Protegido por backup",
+    "saves_pruner_title": "Limpador inteligente de saves",
+    "saves_retention_slider": "Manter salvamentos rápidos recentes por jogo",
+    "saves_auto_backup_label": "Backup automático em ZIP antes de excluir",
+    "saves_backup_success": "Backup de saves criado com sucesso",
+    "saves_total_prunable": "Salvamentos automáticos descartáveis encontrados"
   }
 }

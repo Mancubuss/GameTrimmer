@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "ใช่",
     "csv_no": "ไม่",
-    "already_running_title": "GameTrimmer กำลังทำงานอยู่แล้ว"
+    "already_running_title": "GameTrimmer กำลังทำงานอยู่แล้ว",
+    "category_workshop": "ไอเท็มเวิร์กชอป",
+    "category_shader_cache": "แคชเชเดอร์",
+    "category_crashes": "ดัมพ์การขัดข้องและบันทึก",
+    "category_saves": "เซฟเกมและการบันทึกอัตโนมัติ",
+    "category_launcher_cache": "แคชเว็บของตัวเปิดเกม",
+    "category_mod_downloads": "ไฟล์บันทึกตัวจัดการม็อด",
+    "badge_safe": "ปลอดภัยสำหรับการล้าง",
+    "badge_review": "แนะนำให้ตรวจสอบ",
+    "badge_backup_shield": "ได้รับการปกป้องโดยการสำรองข้อมูล",
+    "saves_pruner_title": "ตัวตัดแต่งไฟล์เซฟอัจฉริยะ",
+    "saves_retention_slider": "เก็บเซฟด่วนล่าสุดต่อเกม",
+    "saves_auto_backup_label": "สำรองข้อมูล ZIP อัตโนมัติก่อนลบ",
+    "saves_backup_success": "สร้างการสำรองข้อมูลเซฟสำเร็จแล้ว",
+    "saves_total_prunable": "พบการบันทึกอัตโนมัติที่สามารถลบได้"
   }
 }

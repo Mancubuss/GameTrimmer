@@ -244,6 +244,20 @@
     "unit_b": "Б",
     "csv_yes": "да",
     "csv_no": "нет",
-    "already_running_title": "GameTrimmer уже запущен"
+    "already_running_title": "GameTrimmer уже запущен",
+    "category_workshop": "Моды Workshop",
+    "category_shader_cache": "Шейдерные кэши",
+    "category_crashes": "Дампы падений и логи",
+    "category_saves": "Сохранения и автосохранения",
+    "category_launcher_cache": "Веб-кэши лаунчеров",
+    "category_mod_downloads": "Архивы мод-менеджеров",
+    "badge_safe": "Безопасно для очистки",
+    "badge_review": "Рекомендуется проверить",
+    "badge_backup_shield": "Защищено автобэкапом",
+    "saves_pruner_title": "Умное прореживание автосохранений",
+    "saves_retention_slider": "Сохранять свежих быстрых сохранений на игру",
+    "saves_auto_backup_label": "Автоматический ZIP-бэкап перед удалением",
+    "saves_backup_success": "Бэкап сохранений успешно создан",
+    "saves_total_prunable": "Найдено лишних автосохранений"
   }
 }

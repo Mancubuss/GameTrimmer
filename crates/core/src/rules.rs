@@ -54,6 +54,14 @@ pub enum Category {
     Bonus,
     DevLeftovers,
     Intro,
+    WorkshopOrphan,
+    DownloadingStaging,
+    ShaderCache,
+    CrashDump,
+    DiagnosticLogs,
+    SaveBloat,
+    LauncherWebCache,
+    ModManagerDownloads,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -107,6 +115,14 @@ impl Category {
             Category::Bonus => "bonus",
             Category::DevLeftovers => "dev_leftovers",
             Category::Intro => "intro",
+            Category::WorkshopOrphan => "workshop_orphan",
+            Category::DownloadingStaging => "downloading_staging",
+            Category::ShaderCache => "shader_cache",
+            Category::CrashDump => "crash_dump",
+            Category::DiagnosticLogs => "diagnostic_logs",
+            Category::SaveBloat => "save_bloat",
+            Category::LauncherWebCache => "launcher_web_cache",
+            Category::ModManagerDownloads => "mod_manager_downloads",
         }
     }
 
@@ -115,7 +131,18 @@ impl Category {
     fn matches_folder_segments(self) -> bool {
         matches!(
             self,
-            Category::RedistFolder | Category::DocsFolder | Category::Bonus | Category::Intro
+            Category::RedistFolder
+                | Category::DocsFolder
+                | Category::Bonus
+                | Category::Intro
+                | Category::WorkshopOrphan
+                | Category::DownloadingStaging
+                | Category::ShaderCache
+                | Category::CrashDump
+                | Category::DiagnosticLogs
+                | Category::SaveBloat
+                | Category::LauncherWebCache
+                | Category::ModManagerDownloads
         )
     }
 
@@ -130,20 +157,20 @@ impl Category {
 
     /// Precedence when several rules match one file: the lowest rank wins
     /// regardless of confidence, and confidence only breaks ties within one
-    /// rank. Ordered by how reliably the category is identified: redists are
-    /// exact installer/folder names, intros are game startup/logo videos,
-    /// dev leftovers are exact file names, bonus rules need both a telling
-    /// folder name and a media-typed file (an artbook PDF inside `Extras\` is
-    /// bonus material, not standalone documentation), and docs rules are the
-    /// most generic (any PDF/RTF anywhere). Localization is checked after
-    /// all rule categories - see `combine_finding` in the app's scan worker.
+    /// rank. Ordered by how reliably the category is identified.
     fn priority_rank(self) -> u8 {
         match self {
             Category::RedistFolder | Category::RedistFile => 0,
             Category::Intro => 1,
-            Category::DevLeftovers => 2,
-            Category::Bonus => 3,
-            Category::DocsFolder | Category::DocsFile => 4,
+            Category::DevLeftovers | Category::CrashDump | Category::DiagnosticLogs => 2,
+            Category::WorkshopOrphan
+            | Category::DownloadingStaging
+            | Category::ShaderCache
+            | Category::LauncherWebCache
+            | Category::ModManagerDownloads
+            | Category::SaveBloat => 3,
+            Category::Bonus => 4,
+            Category::DocsFolder | Category::DocsFile => 5,
         }
     }
 }
@@ -909,7 +936,9 @@ mod tests {
         let credits_file = engine.classify(r"Movies\credits.bk2", None).flagged();
         assert!(credits_file.is_none() || credits_file.unwrap().category != Category::Intro);
 
-        let opening_story = engine.classify(r"Movies\opening_cinematic.mp4", None).flagged();
+        let opening_story = engine
+            .classify(r"Movies\opening_cinematic.mp4", None)
+            .flagged();
         assert!(opening_story.is_none() || opening_story.unwrap().category != Category::Intro);
     }
 

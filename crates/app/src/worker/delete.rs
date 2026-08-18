@@ -66,7 +66,25 @@ fn run_delete(
     let file_ids: Vec<i64> = items.iter().map(|item| item.file_id).collect();
     let intro_file_ids: HashSet<i64> = {
         let mut set = HashSet::new();
-        if let Ok(mut stmt) = conn.prepare("SELECT file_id FROM findings WHERE category = 'intro'") {
+        if let Ok(mut stmt) = conn.prepare("SELECT file_id FROM findings WHERE category = 'intro'")
+        {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i64>(0)) {
+                let batch_set: HashSet<i64> = file_ids.iter().copied().collect();
+                for id in rows.flatten() {
+                    if batch_set.contains(&id) {
+                        set.insert(id);
+                    }
+                }
+            }
+        }
+        set
+    };
+
+    let save_file_ids: HashSet<i64> = {
+        let mut set = HashSet::new();
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT file_id FROM findings WHERE category = 'save_bloat'")
+        {
             if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i64>(0)) {
                 let batch_set: HashSet<i64> = file_ids.iter().copied().collect();
                 for id in rows.flatten() {
@@ -92,6 +110,38 @@ fn run_delete(
             return;
         }
     };
+
+    // Zero-Data-Loss Shield: If any save_bloat files are queued, backup them before deleting
+    if !save_file_ids.is_empty() {
+        let save_paths: Vec<PathBuf> = plans
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| save_file_ids.contains(&items[*idx].file_id))
+            .map(|(_, plan)| plan.snapshot.trusted_root.join(&plan.snapshot.rel_path))
+            .collect();
+
+        if !save_paths.is_empty() {
+            let backup_base = std::env::var("LOCALAPPDATA")
+                .map(|p| {
+                    PathBuf::from(p)
+                        .join("GameTrimmer")
+                        .join("backups")
+                        .join("saves")
+                })
+                .unwrap_or_else(|_| PathBuf::from("backups").join("saves"));
+
+            if let Err(err) = gametrimmer_core::janitor::saves::create_save_backup_zip(
+                &save_paths,
+                &backup_base,
+                "Saves_AutoBackup",
+            ) {
+                notifier.report_error(i18n::Reported::new(lang, move |_l| {
+                    format!("Zero-Data-Loss Shield: Failed to create save backup ZIP archive ({err}). Deletion aborted to protect save files.")
+                }));
+                return;
+            }
+        }
+    }
 
     let outcomes = match execute_delete_plans_observed(
         &mut conn,
@@ -601,7 +651,8 @@ mod tests {
             ],
         )
         .unwrap();
-        gametrimmer_core::db::record_scan_library_evidence(conn, scan_id, root, "test", "complete").unwrap();
+        gametrimmer_core::db::record_scan_library_evidence(conn, scan_id, root, "test", "complete")
+            .unwrap();
         file_id
     }
 
@@ -611,14 +662,19 @@ mod tests {
         let intro_path = temp.path().join("intro.bik");
         let docs_path = temp.path().join("manual.pdf");
 
-        std::fs::write(&intro_path, b"ORIGINAL BIK VIDEO WITH LOTS OF BYTES 1234567890").unwrap();
+        std::fs::write(
+            &intro_path,
+            b"ORIGINAL BIK VIDEO WITH LOTS OF BYTES 1234567890",
+        )
+        .unwrap();
         std::fs::write(&docs_path, b"ORIGINAL PDF MANUAL DOCUMENTATION 1234567890").unwrap();
 
         let db_path = temp.path().join("test.db");
         let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
         let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
         let intro_file_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.bik", "intro");
-        let docs_file_id = insert_test_finding(&conn, scan_id, temp.path(), "manual.pdf", "docs_file");
+        let docs_file_id =
+            insert_test_finding(&conn, scan_id, temp.path(), "manual.pdf", "docs_file");
         gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
         drop(conn);
 
@@ -636,7 +692,13 @@ mod tests {
             },
         ];
 
-        run_delete(&db_path, items, DeleteMethod::Permanent, &notifier, Lang::En);
+        run_delete(
+            &db_path,
+            items,
+            DeleteMethod::Permanent,
+            &notifier,
+            Lang::En,
+        );
 
         let mut done = false;
         for msg in rx {
@@ -651,12 +713,25 @@ mod tests {
         assert!(done, "run_delete must emit RemoveDone");
 
         // The intro file should exist and contain the BIK micro-stub
-        assert!(intro_path.exists(), "intro file should be replaced with micro-stub");
+        assert!(
+            intro_path.exists(),
+            "intro file should be replaced with micro-stub"
+        );
         let intro_content = std::fs::read(&intro_path).unwrap();
-        assert_eq!(&intro_content[0..4], b"BIKi", "intro stub should have BIK magic bytes");
-        assert_ne!(intro_content, b"ORIGINAL BIK VIDEO WITH LOTS OF BYTES 1234567890");
+        assert_eq!(
+            &intro_content[0..4],
+            b"BIKi",
+            "intro stub should have BIK magic bytes"
+        );
+        assert_ne!(
+            intro_content,
+            b"ORIGINAL BIK VIDEO WITH LOTS OF BYTES 1234567890"
+        );
 
         // The docs file should be completely removed (not stubbed)
-        assert!(!docs_path.exists(), "docs file should be deleted without stub");
+        assert!(
+            !docs_path.exists(),
+            "docs file should be deleted without stub"
+        );
     }
 }

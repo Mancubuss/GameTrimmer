@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "예",
     "csv_no": "아니요",
-    "already_running_title": "GameTrimmer가 이미 실행 중입니다"
+    "already_running_title": "GameTrimmer가 이미 실행 중입니다",
+    "category_workshop": "창작마당 아이템",
+    "category_shader_cache": "셰이더 캐시",
+    "category_crashes": "충돌 덤프 및 로그",
+    "category_saves": "저장 파일 및 자동 저장",
+    "category_launcher_cache": "런처 웹 캐시",
+    "category_mod_downloads": "모드 관리자 압축 파일",
+    "badge_safe": "안전하게 정리 가능",
+    "badge_review": "확인 권장",
+    "badge_backup_shield": "백업으로 보호됨",
+    "saves_pruner_title": "스마트 세이브 정리기",
+    "saves_retention_slider": "게임당 최신 퀵세이브 유지 개수",
+    "saves_auto_backup_label": "삭제 전 자동 ZIP 백업 생성",
+    "saves_backup_success": "저장 파일 백업이 생성되었습니다",
+    "saves_total_prunable": "정리 가능한 자동 저장 파일을 찾았습니다"
   }
 }

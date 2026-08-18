@@ -13,8 +13,7 @@ use rusqlite::Connection;
 use serde::Deserialize;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
-    INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, INVALID_HANDLE_VALUE,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
@@ -83,11 +82,14 @@ impl FsmDebouncer {
 
     /// Feeds a new file change event into the debouncer.
     pub fn record_event(&mut self, event: ManifestEvent) {
-        let entry = self.pending.entry(event.file_path).or_insert_with(|| PendingManifest {
-            last_event_time: Instant::now(),
-            launcher: event.launcher,
-            retry_count: 0,
-        });
+        let entry = self
+            .pending
+            .entry(event.file_path)
+            .or_insert_with(|| PendingManifest {
+                last_event_time: Instant::now(),
+                launcher: event.launcher,
+                retry_count: 0,
+            });
         entry.last_event_time = Instant::now();
         entry.launcher = event.launcher;
     }
@@ -98,10 +100,7 @@ impl FsmDebouncer {
     }
 
     /// Check for settled files, verify locks, parse manifest states, and compare against DB.
-    pub fn check_settled(
-        &mut self,
-        db_conn: Option<&Connection>,
-    ) -> Vec<VerifiedGameUpdate> {
+    pub fn check_settled(&mut self, db_conn: Option<&Connection>) -> Vec<VerifiedGameUpdate> {
         let now = Instant::now();
         let mut ready_paths = Vec::new();
         let mut updates = Vec::new();
@@ -189,7 +188,8 @@ impl FsmDebouncer {
         if let Some(new_id) = new_build_id {
             if let Some(ref old_id) = baseline_id {
                 if old_id != new_id {
-                    self.known_build_ids.insert(app_id.to_string(), new_id.to_string());
+                    self.known_build_ids
+                        .insert(app_id.to_string(), new_id.to_string());
                     return Some(VerifiedGameUpdate {
                         app_id: app_id.to_string(),
                         name: name.to_string(),
@@ -201,7 +201,8 @@ impl FsmDebouncer {
                 }
             } else {
                 // Cold start / establishing baseline
-                self.known_build_ids.insert(app_id.to_string(), new_id.to_string());
+                self.known_build_ids
+                    .insert(app_id.to_string(), new_id.to_string());
             }
         }
 
@@ -271,9 +272,17 @@ pub fn read_manifest_state(path: &Path, launcher: LauncherKind) -> ManifestState
         LauncherKind::Steam => parse_steam_manifest(&content, path),
         LauncherKind::Epic => parse_epic_manifest(&content),
         LauncherKind::Gog | LauncherKind::Custom => {
-            if path.extension().and_then(|e| e.to_str()).map_or(false, |e| e.eq_ignore_ascii_case("acf")) {
+            if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("acf"))
+            {
                 parse_steam_manifest(&content, path)
-            } else if path.extension().and_then(|e| e.to_str()).map_or(false, |e| e.eq_ignore_ascii_case("item")) {
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("item"))
+            {
                 parse_epic_manifest(&content)
             } else {
                 ManifestStateStatus::Invalid
@@ -296,7 +305,10 @@ pub fn parse_steam_manifest(acf: &str, manifest_path: &Path) -> ManifestStateSta
     let name = name.unwrap_or_else(|| format!("Steam App {app_id}"));
 
     // StateFlags == 4 means StateFullyInstalled
-    let state_flags: u64 = state_flags_str.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let state_flags: u64 = state_flags_str
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     if state_flags != 4 {
         return ManifestStateStatus::Incomplete {
             app_id,
@@ -306,9 +318,9 @@ pub fn parse_steam_manifest(acf: &str, manifest_path: &Path) -> ManifestStateSta
     }
 
     let install_dir = install_dir_name.and_then(|dir_name| {
-        manifest_path.parent().map(|steamapps| {
-            steamapps.join("common").join(dir_name)
-        })
+        manifest_path
+            .parent()
+            .map(|steamapps| steamapps.join("common").join(dir_name))
     });
 
     ManifestStateStatus::Ready {
@@ -507,11 +519,25 @@ mod tests {
         let mut fsm = FsmDebouncer::new();
 
         // Same build id -> no update
-        let res1 = fsm.evaluate_game_state("730", "CS2", Some("1000"), None, LauncherKind::Steam, Some(&conn));
+        let res1 = fsm.evaluate_game_state(
+            "730",
+            "CS2",
+            Some("1000"),
+            None,
+            LauncherKind::Steam,
+            Some(&conn),
+        );
         assert!(res1.is_none());
 
         // New build id -> VerifiedGameUpdate!
-        let res2 = fsm.evaluate_game_state("730", "CS2", Some("2000"), None, LauncherKind::Steam, Some(&conn));
+        let res2 = fsm.evaluate_game_state(
+            "730",
+            "CS2",
+            Some("2000"),
+            None,
+            LauncherKind::Steam,
+            Some(&conn),
+        );
         assert!(res2.is_some());
         let update = res2.unwrap();
         assert_eq!(update.old_build_id, Some("1000".to_string()));

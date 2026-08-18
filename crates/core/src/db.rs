@@ -1447,11 +1447,9 @@ mod tests {
         // Repoint one of the second generation's files at the first
         // generation's game.
         let stale_game: i64 = conn
-            .query_row(
-                "SELECT id FROM games WHERE scan_id = ?1",
-                [first],
-                |row| row.get(0),
-            )
+            .query_row("SELECT id FROM games WHERE scan_id = ?1", [first], |row| {
+                row.get(0)
+            })
             .expect("first generation game id");
         conn.execute(
             "UPDATE files SET game_id = ?1 WHERE scan_id = ?2",

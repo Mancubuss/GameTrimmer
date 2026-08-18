@@ -1514,7 +1514,14 @@ fn scan_and_prepare_game(
     if cancel.load(Ordering::Relaxed) {
         return Err(CoreError::Other("cancelled".to_string()));
     }
-    classify_game(engine, lang_detector, game, entries, enabled_categories, cancel)
+    classify_game(
+        engine,
+        lang_detector,
+        game,
+        entries,
+        enabled_categories,
+        cancel,
+    )
 }
 
 /// Which game is being classified: the row id its results are written under,
@@ -1623,7 +1630,11 @@ fn classify_game(
         .map(|(index, combined)| {
             let entry = &entries[index];
             let safety = capture
-                .capture(game.install_dir, &entry.rel_path, entry.mft_identity.as_ref())
+                .capture(
+                    game.install_dir,
+                    &entry.rel_path,
+                    entry.mft_identity.as_ref(),
+                )
                 .map_err(|reason| reason.to_string());
             PreparedFinding {
                 entry_index: index,
@@ -3277,7 +3288,7 @@ mod tests {
 
         // Installed only now: `begin_scan` and `persist_libraries` above have
         // their own commits, and this must not break them.
-        conn.commit_hook(Some(|| true));
+        let _ = conn.commit_hook(Some(|| true));
 
         let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
         result_tx
@@ -3296,7 +3307,7 @@ mod tests {
             scan_id,
         );
 
-        conn.commit_hook::<fn() -> bool>(None);
+        let _ = conn.commit_hook::<fn() -> bool>(None);
 
         assert!(
             outcome.is_err(),

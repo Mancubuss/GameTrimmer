@@ -506,15 +506,7 @@ fn combine(
 }
 
 fn rule_category_key(category: Category) -> &'static str {
-    match category {
-        Category::RedistFolder => "redist_folder",
-        Category::RedistFile => "redist_file",
-        Category::DocsFolder => "docs_folder",
-        Category::DocsFile => "docs_file",
-        Category::Bonus => "bonus",
-        Category::DevLeftovers => "dev_leftovers",
-        Category::Intro => "intro",
-    }
+    category.as_str()
 }
 
 fn lang_category_key(kind: LangKind) -> &'static str {

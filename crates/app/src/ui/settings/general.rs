@@ -58,11 +58,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 .selected_text(&current_text)
                 .width(280.0)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut picked_lang,
-                        LanguagePreference::System,
-                        sys_label,
-                    );
+                    ui.selectable_value(&mut picked_lang, LanguagePreference::System, sys_label);
                     ui.separator();
                     for loc in &locales {
                         let label = format!("{} [{}]", loc.native_name, loc.id);
@@ -77,7 +73,11 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 });
 
             ui.add_space(4.0);
-            if ui.button(format!("📁 {}", s.btn_open_folder)).on_hover_text("Open locales/ folder to add or edit translation files").clicked() {
+            if ui
+                .button(format!("📁 {}", s.btn_open_folder))
+                .on_hover_text("Open locales/ folder to add or edit translation files")
+                .clicked()
+            {
                 let locales_dir = std::path::Path::new("locales");
                 let _ = std::fs::create_dir_all(locales_dir);
                 let _ = std::process::Command::new("explorer.exe")
@@ -114,12 +114,24 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
                 ui.add_space(4.0);
                 ui.label(s.watch_mode_label);
-                ui.radio_value(&mut picked_watch_mode, WatchMode::Interactive, s.watch_mode_interactive)
-                    .on_hover_text(s.watch_mode_interactive_hint);
-                ui.radio_value(&mut picked_watch_mode, WatchMode::AutoTrim, s.watch_mode_autotrim)
-                    .on_hover_text(s.watch_mode_autotrim_hint);
-                ui.radio_value(&mut picked_watch_mode, WatchMode::Passive, s.watch_mode_passive)
-                    .on_hover_text(s.watch_mode_passive_hint);
+                ui.radio_value(
+                    &mut picked_watch_mode,
+                    WatchMode::Interactive,
+                    s.watch_mode_interactive,
+                )
+                .on_hover_text(s.watch_mode_interactive_hint);
+                ui.radio_value(
+                    &mut picked_watch_mode,
+                    WatchMode::AutoTrim,
+                    s.watch_mode_autotrim,
+                )
+                .on_hover_text(s.watch_mode_autotrim_hint);
+                ui.radio_value(
+                    &mut picked_watch_mode,
+                    WatchMode::Passive,
+                    s.watch_mode_passive,
+                )
+                .on_hover_text(s.watch_mode_passive_hint);
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -278,7 +290,8 @@ mod tests {
         let mut test = open_general();
         assert_eq!(test.app().lang(), Lang::En, "unexpected starting language");
 
-        test.app_mut().set_language(LanguagePreference::Fixed(Lang::Uk));
+        test.app_mut()
+            .set_language(LanguagePreference::Fixed(Lang::Uk));
         test.run();
 
         assert_eq!(test.app().lang(), Lang::Uk);
@@ -330,7 +343,8 @@ mod tests {
         test.run();
         assert_eq!(test.app().lang(), Lang::Uk, "following the system");
 
-        test.app_mut().set_language(LanguagePreference::Fixed(Lang::En));
+        test.app_mut()
+            .set_language(LanguagePreference::Fixed(Lang::En));
         test.run();
 
         assert_eq!(
@@ -350,7 +364,8 @@ mod tests {
         // and the click below looks up a Ukrainian label.
         test.run();
 
-        test.app_mut().set_language(LanguagePreference::Fixed(Lang::En));
+        test.app_mut()
+            .set_language(LanguagePreference::Fixed(Lang::En));
         test.run();
         assert_eq!(test.app().lang(), Lang::En);
 

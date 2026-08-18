@@ -43,6 +43,11 @@ pub enum DisplayCategory {
     /// Orphaned launcher residue (orphan-residue safety) - shown under the per-disk pseudo-game
     /// branch ([`ORPHAN_GAME_ID`]), never mixed into a real game's categories.
     Orphan,
+    Workshop,
+    ShaderCache,
+    Crashes,
+    Saves,
+    LauncherCache,
 }
 
 /// Which game library a finding came from: the launcher that owns the library
@@ -168,7 +173,7 @@ pub struct FindingItem {
 /// [`ORPHAN_GAME_ID`]), never inside a real game, so its position relative to
 /// the other six is immaterial - but it must still be listed so the settings
 /// dialog offers a checkbox for it and [`category_enabled`] can gate it.
-pub const CATEGORY_ORDER: [DisplayCategory; 7] = [
+pub const CATEGORY_ORDER: [DisplayCategory; 12] = [
     DisplayCategory::Redist,
     DisplayCategory::Intro,
     DisplayCategory::Docs,
@@ -176,7 +181,40 @@ pub const CATEGORY_ORDER: [DisplayCategory; 7] = [
     DisplayCategory::Loc,
     DisplayCategory::Other,
     DisplayCategory::Orphan,
+    DisplayCategory::Workshop,
+    DisplayCategory::ShaderCache,
+    DisplayCategory::Crashes,
+    DisplayCategory::Saves,
+    DisplayCategory::LauncherCache,
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum SafetyBadge {
+    Safe,
+    Review,
+    BackupShield,
+}
+
+impl DisplayCategory {
+    #[allow(dead_code)]
+    pub fn safety_badge(self) -> SafetyBadge {
+        match self {
+            DisplayCategory::Redist
+            | DisplayCategory::Docs
+            | DisplayCategory::Crashes
+            | DisplayCategory::ShaderCache
+            | DisplayCategory::LauncherCache => SafetyBadge::Safe,
+            DisplayCategory::Intro
+            | DisplayCategory::Bonus
+            | DisplayCategory::Loc
+            | DisplayCategory::Other
+            | DisplayCategory::Orphan
+            | DisplayCategory::Workshop => SafetyBadge::Review,
+            DisplayCategory::Saves => SafetyBadge::BackupShield,
+        }
+    }
+}
 
 /// Synthetic `game_id` shared by every orphaned-residue finding (orphan-residue safety). Real
 /// game ids are SQLite rowids (always `>= 1`), so a single reserved negative
@@ -283,6 +321,14 @@ pub fn display_category(source: FindingSource) -> DisplayCategory {
         FindingSource::Rule(Category::Bonus) => DisplayCategory::Bonus,
         FindingSource::Rule(Category::DevLeftovers) => DisplayCategory::Other,
         FindingSource::Rule(Category::Intro) => DisplayCategory::Intro,
+        FindingSource::Rule(Category::WorkshopOrphan) => DisplayCategory::Workshop,
+        FindingSource::Rule(Category::DownloadingStaging) => DisplayCategory::Orphan,
+        FindingSource::Rule(Category::ShaderCache) => DisplayCategory::ShaderCache,
+        FindingSource::Rule(Category::CrashDump)
+        | FindingSource::Rule(Category::DiagnosticLogs) => DisplayCategory::Crashes,
+        FindingSource::Rule(Category::SaveBloat) => DisplayCategory::Saves,
+        FindingSource::Rule(Category::LauncherWebCache)
+        | FindingSource::Rule(Category::ModManagerDownloads) => DisplayCategory::LauncherCache,
         FindingSource::Loc(_) => DisplayCategory::Loc,
         FindingSource::Orphan(_) => DisplayCategory::Orphan,
     }
@@ -299,6 +345,11 @@ pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &
         DisplayCategory::Loc => s.category_loc,
         DisplayCategory::Other => s.category_other,
         DisplayCategory::Orphan => s.category_orphan,
+        DisplayCategory::Workshop => s.category_workshop,
+        DisplayCategory::ShaderCache => s.category_shader_cache,
+        DisplayCategory::Crashes => s.category_crashes,
+        DisplayCategory::Saves => s.category_saves,
+        DisplayCategory::LauncherCache => s.category_launcher_cache,
     }
 }
 
@@ -316,6 +367,14 @@ pub fn source_key(source: FindingSource) -> &'static str {
         FindingSource::Rule(Category::Bonus) => "bonus",
         FindingSource::Rule(Category::DevLeftovers) => "dev_leftovers",
         FindingSource::Rule(Category::Intro) => "intro",
+        FindingSource::Rule(Category::WorkshopOrphan) => "workshop_orphan",
+        FindingSource::Rule(Category::DownloadingStaging) => "downloading_staging",
+        FindingSource::Rule(Category::ShaderCache) => "shader_cache",
+        FindingSource::Rule(Category::CrashDump) => "crash_dump",
+        FindingSource::Rule(Category::DiagnosticLogs) => "diagnostic_logs",
+        FindingSource::Rule(Category::SaveBloat) => "save_bloat",
+        FindingSource::Rule(Category::LauncherWebCache) => "launcher_web_cache",
+        FindingSource::Rule(Category::ModManagerDownloads) => "mod_manager_downloads",
         FindingSource::Loc(LangKind::Audio) => "loc_audio",
         FindingSource::Loc(LangKind::Text) => "loc_text",
         FindingSource::Loc(LangKind::Video) => "loc_video",
@@ -344,6 +403,14 @@ pub fn parse_source_key(key: &str) -> Option<FindingSource> {
         "bonus" => Some(FindingSource::Rule(Category::Bonus)),
         "dev_leftovers" => Some(FindingSource::Rule(Category::DevLeftovers)),
         "intro" => Some(FindingSource::Rule(Category::Intro)),
+        "workshop_orphan" => Some(FindingSource::Rule(Category::WorkshopOrphan)),
+        "downloading_staging" => Some(FindingSource::Rule(Category::DownloadingStaging)),
+        "shader_cache" => Some(FindingSource::Rule(Category::ShaderCache)),
+        "crash_dump" => Some(FindingSource::Rule(Category::CrashDump)),
+        "diagnostic_logs" => Some(FindingSource::Rule(Category::DiagnosticLogs)),
+        "save_bloat" => Some(FindingSource::Rule(Category::SaveBloat)),
+        "launcher_web_cache" => Some(FindingSource::Rule(Category::LauncherWebCache)),
+        "mod_manager_downloads" => Some(FindingSource::Rule(Category::ModManagerDownloads)),
         "loc_audio" => Some(FindingSource::Loc(LangKind::Audio)),
         "loc_text" => Some(FindingSource::Loc(LangKind::Text)),
         "loc_video" => Some(FindingSource::Loc(LangKind::Video)),
@@ -368,6 +435,11 @@ pub fn category_ui_key(category: DisplayCategory) -> &'static str {
         DisplayCategory::Loc => "loc",
         DisplayCategory::Other => "other",
         DisplayCategory::Orphan => "orphan",
+        DisplayCategory::Workshop => "workshop",
+        DisplayCategory::ShaderCache => "shader_cache",
+        DisplayCategory::Crashes => "crashes",
+        DisplayCategory::Saves => "saves",
+        DisplayCategory::LauncherCache => "launcher_cache",
     }
 }
 
@@ -429,7 +501,9 @@ pub fn profile_auto_selects(
     match profile {
         SelectionProfile::Cautious => is_safe_category,
         SelectionProfile::Balanced => {
-            is_safe_category || category == DisplayCategory::Loc || category == DisplayCategory::Intro
+            is_safe_category
+                || category == DisplayCategory::Loc
+                || category == DisplayCategory::Intro
         }
         SelectionProfile::Aggressive => {
             is_safe_category
@@ -468,11 +542,18 @@ pub fn category_risk(category: DisplayCategory) -> RiskLevel {
         // Orphaned residue: the game is already uninstalled. Redist: MSVC/DX
         // installers a game re-runs or the store re-fetches on demand.
         // Intro: micro-stubs safely replace intro videos for instant launch.
-        DisplayCategory::Orphan | DisplayCategory::Redist | DisplayCategory::Intro => RiskLevel::None,
-        DisplayCategory::Bonus | DisplayCategory::Docs | DisplayCategory::Loc => RiskLevel::Low,
-        // Dev leftovers (PDBs, editor junk): almost always disposable, but the
-        // one category where a false positive is plausible enough to flag.
-        DisplayCategory::Other => RiskLevel::Medium,
+        DisplayCategory::Orphan
+        | DisplayCategory::Redist
+        | DisplayCategory::Intro
+        | DisplayCategory::ShaderCache
+        | DisplayCategory::Crashes
+        | DisplayCategory::LauncherCache => RiskLevel::None,
+        DisplayCategory::Bonus
+        | DisplayCategory::Docs
+        | DisplayCategory::Loc
+        | DisplayCategory::Workshop => RiskLevel::Low,
+        // Dev leftovers and saves: review / backup recommended
+        DisplayCategory::Other | DisplayCategory::Saves => RiskLevel::Medium,
     }
 }
 
@@ -1783,7 +1864,20 @@ mod tests {
         let keys: Vec<&str> = CATEGORY_ORDER.iter().map(|&c| category_ui_key(c)).collect();
         assert_eq!(
             keys,
-            vec!["redist", "intro", "docs", "bonus", "loc", "other", "orphan"]
+            vec![
+                "redist",
+                "intro",
+                "docs",
+                "bonus",
+                "loc",
+                "other",
+                "orphan",
+                "workshop",
+                "shader_cache",
+                "crashes",
+                "saves",
+                "launcher_cache"
+            ]
         );
     }
 

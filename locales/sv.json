@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "ja",
     "csv_no": "nej",
-    "already_running_title": "GameTrimmer körs redan"
+    "already_running_title": "GameTrimmer körs redan",
+    "category_workshop": "Workshop-objekt",
+    "category_shader_cache": "Skuggcache",
+    "category_crashes": "Kraschdumpar och loggar",
+    "category_saves": "Sparade spel och autosparningar",
+    "category_launcher_cache": "Startprogrammets webbcache",
+    "category_mod_downloads": "Moddhanterararkiv",
+    "badge_safe": "Säkert att rensa",
+    "badge_review": "Granskning rekommenderas",
+    "badge_backup_shield": "Skyddad av säkerhetskopia",
+    "saves_pruner_title": "Smart rensning av sparfiler",
+    "saves_retention_slider": "Behåll de senaste snabbsparfilerna per spel",
+    "saves_auto_backup_label": "Automatisk ZIP-säkerhetskopiering före radering",
+    "saves_backup_success": "Säkerhetskopia av sparfiler har skapats",
+    "saves_total_prunable": "Överflödiga autosparfiler hittades"
   }
 }

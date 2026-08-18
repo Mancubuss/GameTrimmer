@@ -244,6 +244,20 @@
     "unit_b": "[B]",
     "csv_yes": "[yes]",
     "csv_no": "[no]",
-    "already_running_title": "[GameTrimmer is already running]"
+    "already_running_title": "[GameTrimmer is already running]",
+    "category_workshop": "[TRANSLATE: Workshop mods]",
+    "category_shader_cache": "[TRANSLATE: Shader caches]",
+    "category_crashes": "[TRANSLATE: Crash dumps & logs]",
+    "category_saves": "[TRANSLATE: Save games & autosaves]",
+    "category_launcher_cache": "[TRANSLATE: Launcher web caches]",
+    "category_mod_downloads": "[TRANSLATE: Mod manager archives]",
+    "badge_safe": "[TRANSLATE: Safe to clean]",
+    "badge_review": "[TRANSLATE: Review recommended]",
+    "badge_backup_shield": "[TRANSLATE: Protected by backup]",
+    "saves_pruner_title": "[TRANSLATE: Smart Save Pruner]",
+    "saves_retention_slider": "[TRANSLATE: Keep latest quicksaves per game]",
+    "saves_auto_backup_label": "[TRANSLATE: Automatic ZIP backup before deletion]",
+    "saves_backup_success": "[TRANSLATE: Save backup created successfully]",
+    "saves_total_prunable": "[TRANSLATE: Prunable autosaves found]"
   }
 }

@@ -27,19 +27,15 @@ pub fn format_game_updated_toast(
     let title = format!("GameTrimmer • {launcher_title}");
 
     let body = match (old_build, new_build) {
-        (Some(old_b), Some(new_b)) if old_b != new_b => {
-            strings
-                .toast_updated_transition
-                .replace("{name}", name)
-                .replace("{old}", old_b)
-                .replace("{new}", new_b)
-        }
-        (_, Some(new_b)) => {
-            strings
-                .toast_updated_build
-                .replace("{name}", name)
-                .replace("{new}", new_b)
-        }
+        (Some(old_b), Some(new_b)) if old_b != new_b => strings
+            .toast_updated_transition
+            .replace("{name}", name)
+            .replace("{old}", old_b)
+            .replace("{new}", new_b),
+        (_, Some(new_b)) => strings
+            .toast_updated_build
+            .replace("{name}", name)
+            .replace("{new}", new_b),
         _ => strings.toast_files_changed.replace("{name}", name),
     };
 
@@ -53,12 +49,14 @@ pub fn format_daemon_status_toast(strings: &WatchStrings, status: &str) -> (Stri
 
 /// Shows a Win32 Balloon notification through the tray icon's HWND.
 pub fn show_tray_balloon(hwnd: HWND, icon_id: u32, title: &str, body: &str) -> bool {
-    let mut nid = NOTIFYICONDATAW::default();
-    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-    nid.hWnd = hwnd;
-    nid.uID = icon_id;
-    nid.uFlags = NIF_INFO;
-    nid.dwInfoFlags = NIIF_INFO | NIIF_LARGE_ICON;
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: icon_id,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO | NIIF_LARGE_ICON,
+        ..Default::default()
+    };
 
     let title_wide = to_wide_capped(title, 64);
     nid.szInfoTitle[..title_wide.len()].copy_from_slice(&title_wide);
@@ -82,8 +80,13 @@ mod tests {
     #[test]
     fn format_game_updated_toast_build_transition() {
         let strings = WatchStrings::english();
-        let (title, body) =
-            format_game_updated_toast(&strings, "Cyberpunk 2077", "steam", Some("100"), Some("200"));
+        let (title, body) = format_game_updated_toast(
+            &strings,
+            "Cyberpunk 2077",
+            "steam",
+            Some("100"),
+            Some("200"),
+        );
         assert_eq!(title, "GameTrimmer • Steam");
         assert!(body.contains("Cyberpunk 2077 was updated (100 → 200)"));
     }
@@ -100,8 +103,13 @@ mod tests {
     #[test]
     fn format_game_updated_toast_ukrainian() {
         let strings = WatchStrings::ukrainian();
-        let (title, body) =
-            format_game_updated_toast(&strings, "Cyberpunk 2077", "steam", Some("100"), Some("200"));
+        let (title, body) = format_game_updated_toast(
+            &strings,
+            "Cyberpunk 2077",
+            "steam",
+            Some("100"),
+            Some("200"),
+        );
         assert_eq!(title, "GameTrimmer • Steam");
         assert!(body.contains("Cyberpunk 2077 оновлено (100 → 200)"));
     }

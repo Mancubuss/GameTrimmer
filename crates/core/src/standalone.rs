@@ -276,7 +276,7 @@ pub fn candidates_from_entries(
             publisher: entry.publisher,
         });
     }
-    found.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    found.sort_by_key(|a| a.name.to_lowercase());
     found
 }
 
@@ -328,8 +328,8 @@ pub fn find_candidates(known_roots: &[PathBuf]) -> Vec<StandaloneCandidate> {
     // entry points only at a cached bootstrapper.
     for (root, label) in [(HKEY_CURRENT_USER, "HKCU"), (HKEY_LOCAL_MACHINE, "HKLM")] {
         let _ = label;
-        let Ok(software) = RegKey::predef(root)
-            .open_subkey_with_flags("SOFTWARE", KEY_READ | KEY_WOW64_64KEY)
+        let Ok(software) =
+            RegKey::predef(root).open_subkey_with_flags("SOFTWARE", KEY_READ | KEY_WOW64_64KEY)
         else {
             continue;
         };
@@ -470,7 +470,10 @@ mod tests {
             &known
         ));
         // A sibling that merely shares a prefix is a different folder.
-        assert!(dir_is_offerable(Path::new(r"F:\SteamLibrary2\Game"), &known));
+        assert!(dir_is_offerable(
+            Path::new(r"F:\SteamLibrary2\Game"),
+            &known
+        ));
     }
 
     /// Offering a parent of a registered library would make that library a

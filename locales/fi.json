@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "kyllä",
     "csv_no": "ei",
-    "already_running_title": "GameTrimmer on jo käynnissä"
+    "already_running_title": "GameTrimmer on jo käynnissä",
+    "category_workshop": "Workshop-kohteet",
+    "category_shader_cache": "Varjostinvälimuistit",
+    "category_crashes": "Kaatumislokit ja -vedokset",
+    "category_saves": "Pelitallennukset ja automaattitallennukset",
+    "category_launcher_cache": "Käynnistysohjelman verkkovälimuistit",
+    "category_mod_downloads": "Modinhallintaohjelmien arkistot",
+    "badge_safe": "Turvallinen puhdistaa",
+    "badge_review": "Tarkistus suositeltavaa",
+    "badge_backup_shield": "Suojattu varmuuskopiolla",
+    "saves_pruner_title": "Älykäs tallennusten karsinta",
+    "saves_retention_slider": "Säilytä pelin uusimmat pikatallennukset",
+    "saves_auto_backup_label": "Automaattinen ZIP-varmuuskopio ennen poistoa",
+    "saves_backup_success": "Tallennusten varmuuskopio luotu onnistuneesti",
+    "saves_total_prunable": "Poistettavia automaattitallennuksia löytyi"
   }
 }

@@ -722,9 +722,9 @@ impl VerifiedTarget {
         use std::os::windows::io::AsRawHandle;
         use windows::Win32::Foundation::HANDLE;
         use windows::Win32::Storage::FileSystem::{
-            SetFileInformationByHandle, FileDispositionInfo, FileDispositionInfoEx,
-            FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_DISPOSITION_FLAG_DELETE,
-            FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+            FileDispositionInfo, FileDispositionInfoEx, SetFileInformationByHandle,
+            FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+            FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
         };
 
         if self.kind == TargetKind::Directory {
@@ -766,9 +766,7 @@ impl VerifiedTarget {
         // ignoring the request. Fall back to the classic class, which every
         // supported Windows has: same effect, except the name survives until
         // this handle closes - which is immediately after, when `self` drops.
-        let mut classic = FILE_DISPOSITION_INFO {
-            DeleteFile: true.into(),
-        };
+        let mut classic = FILE_DISPOSITION_INFO { DeleteFile: true };
         // SAFETY: as above, for the classic information class.
         unsafe {
             SetFileInformationByHandle(

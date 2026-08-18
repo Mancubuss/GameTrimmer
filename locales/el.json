@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "ναι",
     "csv_no": "όχι",
-    "already_running_title": "Το GameTrimmer εκτελείται ήδη"
+    "already_running_title": "Το GameTrimmer εκτελείται ήδη",
+    "category_workshop": "Στοιχεία Workshop",
+    "category_shader_cache": "Προσωρινή μνήμη shader",
+    "category_crashes": "Αναφορές σφαλμάτων & αρχεία καταγραφής",
+    "category_saves": "Αποθηκευμένα παιχνίδια & αυτόματες αποθηκεύσεις",
+    "category_launcher_cache": "Προσωρινή μνήμη web των εκκινητών",
+    "category_mod_downloads": "Αρχεία διαχειριστών mod",
+    "badge_safe": "Ασφαλές για καθαρισμό",
+    "badge_review": "Συνιστάται έλεγχος",
+    "badge_backup_shield": "Προστατεύεται με αντίγραφο ασφαλείας",
+    "saves_pruner_title": "Έξυπνη εκκαθάριση αποθηκεύσεων",
+    "saves_retention_slider": "Διατήρηση πρόσφατων γρήγορων αποθηκεύσεων ανά παιχνίδι",
+    "saves_auto_backup_label": "Αυτόματο αντίγραφο ασφαλείας ZIP πριν από τη διαγραφή",
+    "saves_backup_success": "Το αντίγραφο ασφαλείας αποθηκεύσεων δημιουργήθηκε με επιτυχία",
+    "saves_total_prunable": "Βρέθηκαν περιττές αυτόματες αποθηκεύσεις"
   }
 }

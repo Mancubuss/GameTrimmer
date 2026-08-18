@@ -245,10 +245,7 @@ pub fn find_stored_game_by_app_id(
 }
 
 /// Finds a game record in SQLite by its launcher app/vendor ID.
-pub fn find_game_by_app_id(
-    conn: &Connection,
-    app_id: &str,
-) -> Result<Option<GameRecord>> {
+pub fn find_game_by_app_id(conn: &Connection, app_id: &str) -> Result<Option<GameRecord>> {
     conn.query_row(
         "SELECT id, library_id, name, install_dir, app_id, build_id FROM games WHERE app_id = ?1 ORDER BY id DESC LIMIT 1",
         [app_id],
@@ -268,10 +265,7 @@ pub fn find_game_by_app_id(
 }
 
 /// Finds a game record in SQLite by its primary key (`id`).
-pub fn find_game_by_id(
-    conn: &Connection,
-    game_id: i64,
-) -> Result<Option<GameRecord>> {
+pub fn find_game_by_id(conn: &Connection, game_id: i64) -> Result<Option<GameRecord>> {
     conn.query_row(
         "SELECT id, library_id, name, install_dir, app_id, build_id FROM games WHERE id = ?1",
         [game_id],
@@ -424,7 +418,8 @@ mod tests {
     "InstallLocation": "F:\\Epic\\Cyberpunk2077"
 }
 "#;
-        let incomplete_state = EpicItemState::parse(json_incomplete).expect("parse incomplete epic item");
+        let incomplete_state =
+            EpicItemState::parse(json_incomplete).expect("parse incomplete epic item");
         assert!(incomplete_state.is_incomplete_install);
         assert!(!incomplete_state.is_ready());
     }
@@ -488,7 +483,10 @@ mod tests {
         assert_eq!(record.id, 42);
         assert_eq!(record.library_id, 1);
         assert_eq!(record.name, "Portal 2");
-        assert_eq!(record.install_dir, "C:\\SteamLibrary\\steamapps\\common\\Portal 2");
+        assert_eq!(
+            record.install_dir,
+            "C:\\SteamLibrary\\steamapps\\common\\Portal 2"
+        );
 
         let by_id = find_game_by_id(&conn, 42).expect("query by id");
         assert_eq!(by_id, Some(record));

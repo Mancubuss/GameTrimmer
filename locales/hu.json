@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "igen",
     "csv_no": "nem",
-    "already_running_title": "A GameTrimmer már fut"
+    "already_running_title": "A GameTrimmer már fut",
+    "category_workshop": "Workshop elemek",
+    "category_shader_cache": "Shader gyorsítótárak",
+    "category_crashes": "Összeomlási naplók és memóriaképek",
+    "category_saves": "Mentett játékok és automatikus mentések",
+    "category_launcher_cache": "Indítóprogramok webes gyorsítótárai",
+    "category_mod_downloads": "Modkezelő archívumok",
+    "badge_safe": "Biztonságosan törölhető",
+    "badge_review": "Ellenőrzés ajánlott",
+    "badge_backup_shield": "Biztonsági mentéssel védve",
+    "saves_pruner_title": "Intelligens mentéstisztító",
+    "saves_retention_slider": "Legújabb gyorsmentések megtartása játékonként",
+    "saves_auto_backup_label": "Automatikus ZIP mentés törlés előtt",
+    "saves_backup_success": "A mentés biztonsági másolata sikeresen létrejött",
+    "saves_total_prunable": "Törölhető automatikus mentések találhatók"
   }
 }

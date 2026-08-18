@@ -268,15 +268,7 @@ fn lang_kind_label(kind: LangKind) -> &'static str {
 }
 
 fn category_label(category: Category) -> &'static str {
-    match category {
-        Category::RedistFolder => "redist_folder",
-        Category::RedistFile => "redist_file",
-        Category::DocsFolder => "docs_folder",
-        Category::DocsFile => "docs_file",
-        Category::Bonus => "bonus",
-        Category::DevLeftovers => "dev_leftovers",
-        Category::Intro => "intro",
-    }
+    category.as_str()
 }
 
 fn format_bytes(bytes: u64) -> String {

@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "是",
     "csv_no": "否",
-    "already_running_title": "GameTrimmer 已经在运行中"
+    "already_running_title": "GameTrimmer 已经在运行中",
+    "category_workshop": "创意工坊物品",
+    "category_shader_cache": "着色器缓存",
+    "category_crashes": "崩溃转储与日志",
+    "category_saves": "存档与自动存档",
+    "category_launcher_cache": "启动器网页缓存",
+    "category_mod_downloads": "模组管理器压缩包",
+    "badge_safe": "安全清理",
+    "badge_review": "建议检查",
+    "badge_backup_shield": "受备份保护",
+    "saves_pruner_title": "智能存档精简器",
+    "saves_retention_slider": "每个游戏保留最新快速存档数",
+    "saves_auto_backup_label": "删除前自动创建 ZIP 备份",
+    "saves_backup_success": "存档备份创建成功",
+    "saves_total_prunable": "找到可精简的自动存档"
   }
 }

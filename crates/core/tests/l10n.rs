@@ -27,7 +27,7 @@ fn all_locales_json_exist_and_match_keys() {
     let en_raw = fs::read_to_string(&en_p).expect("read en.json");
     let en_loc: LocaleJson = serde_json::from_str(&en_raw).expect("parse en.json");
     assert_eq!(en_loc.id, "en");
-    assert_eq!(en_loc.strings.len(), 240, "en.json should have 240 strings");
+    assert_eq!(en_loc.strings.len(), 254, "en.json should have 254 strings");
 
     let entries = fs::read_dir(locales_dir).expect("read locales dir");
     let mut checked_count = 0;
@@ -35,7 +35,10 @@ fn all_locales_json_exist_and_match_keys() {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
             let raw = fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("failed to read {file_name}: {e}"));
             let loc: LocaleJson = serde_json::from_str(&raw)
@@ -43,11 +46,14 @@ fn all_locales_json_exist_and_match_keys() {
 
             assert!(!loc.id.is_empty(), "{file_name} missing 'id'");
             assert!(!loc.name.is_empty(), "{file_name} missing 'name'");
-            assert!(!loc.native_name.is_empty(), "{file_name} missing 'native_name'");
+            assert!(
+                !loc.native_name.is_empty(),
+                "{file_name} missing 'native_name'"
+            );
             assert_eq!(
                 loc.strings.len(),
-                240,
-                "{file_name} has {} strings, expected 240",
+                254,
+                "{file_name} has {} strings, expected 254",
                 loc.strings.len()
             );
 
@@ -65,7 +71,10 @@ fn all_locales_json_exist_and_match_keys() {
         }
     }
 
-    assert_eq!(checked_count, 30, "Expected 30 locale JSON files to be checked");
+    assert_eq!(
+        checked_count, 30,
+        "Expected 30 locale JSON files to be checked"
+    );
 }
 
 #[test]
@@ -74,7 +83,7 @@ fn custom_language_tag_parsing() {
 
     assert_eq!(Lang::parse("en"), Some(Lang::En));
     assert_eq!(Lang::parse("uk"), Some(Lang::Uk));
-    
+
     let pl = Lang::parse("pl").expect("parse pl");
     assert_eq!(pl.as_str(), "pl");
 

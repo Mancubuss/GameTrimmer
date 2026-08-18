@@ -76,12 +76,15 @@ pub fn is_game_running(install_dir: &Path) -> bool {
         let _ = unsafe { CloseHandle(handle) };
 
         if success.is_ok() && size > 0 {
-            let exe_path_str = String::from_utf16_lossy(&image_path[..size as usize]).to_lowercase();
+            let exe_path_str =
+                String::from_utf16_lossy(&image_path[..size as usize]).to_lowercase();
             let exe_path = PathBuf::from(&exe_path_str);
             let exe_canon = exe_path.canonicalize().unwrap_or(exe_path);
             let exe_canon_str = exe_canon.to_string_lossy().to_lowercase();
 
-            if exe_path_str.starts_with(&target_dir_str) || exe_canon_str.starts_with(&target_dir_str) {
+            if exe_path_str.starts_with(&target_dir_str)
+                || exe_canon_str.starts_with(&target_dir_str)
+            {
                 return true;
             }
         }
@@ -104,7 +107,14 @@ pub fn retrim_game(
     lang_detector: &LangDetector,
     delete_method: DeleteMethod,
 ) -> Result<RetrimReport> {
-    retrim_game_with_new_build(conn, game_id, None, rule_engine, lang_detector, delete_method)
+    retrim_game_with_new_build(
+        conn,
+        game_id,
+        None,
+        rule_engine,
+        lang_detector,
+        delete_method,
+    )
 }
 
 /// Executes a targeted re-trim for a single game, optionally updating its `build_id`.
@@ -142,10 +152,8 @@ pub fn retrim_game_with_new_build(
     let stats_before = crate::scanner::ScanStats::of(&entries);
 
     // 4. Classify files through RuleEngine & LangDetector
-    let lang_findings: HashMap<usize, crate::langdetect::LangFinding> = lang_detector
-        .analyze_game(&entries)
-        .into_iter()
-        .collect();
+    let lang_findings: HashMap<usize, crate::langdetect::LangFinding> =
+        lang_detector.analyze_game(&entries).into_iter().collect();
 
     struct Candidate<'a> {
         entry: &'a crate::scanner::FileEntry,
@@ -258,7 +266,10 @@ pub fn retrim_game_with_new_build(
     let mut candidate_sizes_on_disk = Vec::new();
 
     for candidate in candidates {
-        let snapshot = match crate::safety::capture_safety_snapshot(&install_path, &candidate.entry.rel_path) {
+        let snapshot = match crate::safety::capture_safety_snapshot(
+            &install_path,
+            &candidate.entry.rel_path,
+        ) {
             Ok(s) => s,
             Err(_) => {
                 continue;
@@ -380,7 +391,9 @@ pub fn retrim_game_with_new_build(
     let final_build_id = new_build_id.or(game.build_id.as_deref());
     let final_files = stats_before.files.saturating_sub(files_deleted as u64);
     let final_bytes = stats_before.bytes.saturating_sub(bytes_freed);
-    let final_bytes_on_disk = stats_before.bytes_on_disk.saturating_sub(bytes_on_disk_freed);
+    let final_bytes_on_disk = stats_before
+        .bytes_on_disk
+        .saturating_sub(bytes_on_disk_freed);
 
     conn.execute(
         "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4, build_id = ?5 WHERE id = ?1",
@@ -477,7 +490,9 @@ mod tests {
 
         // Verify DB update
         let updated_build_id: String = conn
-            .query_row("SELECT build_id FROM games WHERE id = 10", [], |row| row.get(0))
+            .query_row("SELECT build_id FROM games WHERE id = 10", [], |row| {
+                row.get(0)
+            })
             .expect("query updated build_id");
         assert_eq!(updated_build_id, "200");
     }
@@ -485,7 +500,8 @@ mod tests {
     #[test]
     fn retrim_non_existent_game_returns_error() {
         let mut conn = crate::db::open_in_memory().expect("open memory db");
-        let rule_engine = RuleEngine::from_json(crate::rules::BUILTIN_RULES_JSON).expect("builtin rules");
+        let rule_engine =
+            RuleEngine::from_json(crate::rules::BUILTIN_RULES_JSON).expect("builtin rules");
         let lang_detector = LangDetector::new();
 
         let result = retrim_game(

@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "tak",
     "csv_no": "nie",
-    "already_running_title": "GameTrimmer jest już uruchomiony"
+    "already_running_title": "GameTrimmer jest już uruchomiony",
+    "category_workshop": "Mody z Warsztatu",
+    "category_shader_cache": "Pamięć podręczna cieniowania",
+    "category_crashes": "Zrzuty awarii i dzienniki",
+    "category_saves": "Zapisy gier i autozapisy",
+    "category_launcher_cache": "Pamięć podręczna przeglądarki programów uruchamiających",
+    "category_mod_downloads": "Archiwa menedżerów modów",
+    "badge_safe": "Bezpieczne do usunięcia",
+    "badge_review": "Zalecany przegląd",
+    "badge_backup_shield": "Chronione kopią zapasową",
+    "saves_pruner_title": "Inteligentne czyszczenie zapisów",
+    "saves_retention_slider": "Zachowaj najnowsze szybkie zapisy na grę",
+    "saves_auto_backup_label": "Automatyczna kopia zapasowa ZIP przed usunięciem",
+    "saves_backup_success": "Kopia zapasowa zapisów została pomyślnie utworzona",
+    "saves_total_prunable": "Znaleziono nadmiarowe autozapisy"
   }
 }

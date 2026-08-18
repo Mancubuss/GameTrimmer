@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "ja",
     "csv_no": "nei",
-    "already_running_title": "GameTrimmer kjører allerede"
+    "already_running_title": "GameTrimmer kjører allerede",
+    "category_workshop": "Workshop-elementer",
+    "category_shader_cache": "Skyggeleggingshurtigbuffere",
+    "category_crashes": "Krasjdumper og logger",
+    "category_saves": "Lagrede spill og autolagringer",
+    "category_launcher_cache": "Startprogrammers netthurtigbuffere",
+    "category_mod_downloads": "Mod-behandlerarkiver",
+    "badge_safe": "Trygt å rydde",
+    "badge_review": "Gjennomgang anbefales",
+    "badge_backup_shield": "Beskyttet av sikkerhetskopi",
+    "saves_pruner_title": "Smart opprydding i lagrede spill",
+    "saves_retention_slider": "Behold nyeste hurtiglagringer per spill",
+    "saves_auto_backup_label": "Automatisk ZIP-sikkerhetskopi før sletting",
+    "saves_backup_success": "Sikkerhetskopi av lagringer opprettet",
+    "saves_total_prunable": "Overflødige autolagringer funnet"
   }
 }

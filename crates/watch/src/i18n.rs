@@ -40,9 +40,13 @@ impl WatchStrings {
             tray_menu_pause: "Pause monitoring".to_string(),
             tray_menu_resume: "Resume monitoring".to_string(),
             tray_menu_exit: "Exit".to_string(),
-            toast_updated_transition: "{name} was updated ({old} → {new}). Click to re-trim and reclaim space.".to_string(),
-            toast_updated_build: "{name} was updated (build {new}). Click to re-trim and reclaim space.".to_string(),
-            toast_files_changed: "{name} files changed. Click to re-trim and reclaim space.".to_string(),
+            toast_updated_transition:
+                "{name} was updated ({old} → {new}). Click to re-trim and reclaim space."
+                    .to_string(),
+            toast_updated_build:
+                "{name} was updated (build {new}). Click to re-trim and reclaim space.".to_string(),
+            toast_files_changed: "{name} files changed. Click to re-trim and reclaim space."
+                .to_string(),
             toast_daemon_title: "GameTrimmer Watcher".to_string(),
         }
     }
@@ -56,9 +60,12 @@ impl WatchStrings {
             tray_menu_pause: "Призупинити моніторинг".to_string(),
             tray_menu_resume: "Відновити моніторинг".to_string(),
             tray_menu_exit: "Вийти".to_string(),
-            toast_updated_transition: "{name} оновлено ({old} → {new}). Натисніть, щоб очистити рештки.".to_string(),
-            toast_updated_build: "{name} оновлено (білд {new}). Натисніть, щоб очистити рештки.".to_string(),
-            toast_files_changed: "Файли гри {name} змінилися. Натисніть, щоб очистити рештки.".to_string(),
+            toast_updated_transition:
+                "{name} оновлено ({old} → {new}). Натисніть, щоб очистити рештки.".to_string(),
+            toast_updated_build: "{name} оновлено (білд {new}). Натисніть, щоб очистити рештки."
+                .to_string(),
+            toast_files_changed: "Файли гри {name} змінилися. Натисніть, щоб очистити рештки."
+                .to_string(),
             toast_daemon_title: "Фоновий монітор GameTrimmer".to_string(),
         }
     }
@@ -90,17 +97,39 @@ impl WatchStrings {
     }
 
     fn merge_from_map(&mut self, map: &HashMap<String, String>) {
-        if let Some(v) = map.get("watch_tray_tooltip_active") { self.tray_tooltip_active = v.clone(); }
-        if let Some(v) = map.get("watch_tray_tooltip_paused") { self.tray_tooltip_paused = v.clone(); }
-        if let Some(v) = map.get("watch_tray_menu_open") { self.tray_menu_open = v.clone(); }
-        if let Some(v) = map.get("watch_tray_menu_check_now") { self.tray_menu_check_now = v.clone(); }
-        if let Some(v) = map.get("watch_tray_menu_pause") { self.tray_menu_pause = v.clone(); }
-        if let Some(v) = map.get("watch_tray_menu_resume") { self.tray_menu_resume = v.clone(); }
-        if let Some(v) = map.get("watch_tray_menu_exit") { self.tray_menu_exit = v.clone(); }
-        if let Some(v) = map.get("watch_toast_updated_transition") { self.toast_updated_transition = v.clone(); }
-        if let Some(v) = map.get("watch_toast_updated_build") { self.toast_updated_build = v.clone(); }
-        if let Some(v) = map.get("watch_toast_files_changed") { self.toast_files_changed = v.clone(); }
-        if let Some(v) = map.get("watch_toast_daemon_title") { self.toast_daemon_title = v.clone(); }
+        if let Some(v) = map.get("watch_tray_tooltip_active") {
+            self.tray_tooltip_active = v.clone();
+        }
+        if let Some(v) = map.get("watch_tray_tooltip_paused") {
+            self.tray_tooltip_paused = v.clone();
+        }
+        if let Some(v) = map.get("watch_tray_menu_open") {
+            self.tray_menu_open = v.clone();
+        }
+        if let Some(v) = map.get("watch_tray_menu_check_now") {
+            self.tray_menu_check_now = v.clone();
+        }
+        if let Some(v) = map.get("watch_tray_menu_pause") {
+            self.tray_menu_pause = v.clone();
+        }
+        if let Some(v) = map.get("watch_tray_menu_resume") {
+            self.tray_menu_resume = v.clone();
+        }
+        if let Some(v) = map.get("watch_tray_menu_exit") {
+            self.tray_menu_exit = v.clone();
+        }
+        if let Some(v) = map.get("watch_toast_updated_transition") {
+            self.toast_updated_transition = v.clone();
+        }
+        if let Some(v) = map.get("watch_toast_updated_build") {
+            self.toast_updated_build = v.clone();
+        }
+        if let Some(v) = map.get("watch_toast_files_changed") {
+            self.toast_files_changed = v.clone();
+        }
+        if let Some(v) = map.get("watch_toast_daemon_title") {
+            self.toast_daemon_title = v.clone();
+        }
     }
 }
 
@@ -168,7 +197,10 @@ mod tests {
     fn watch_strings_merge() {
         let mut en = WatchStrings::english();
         let mut map = HashMap::new();
-        map.insert("watch_tray_menu_open".to_string(), "Ouvrir GameTrimmer".to_string());
+        map.insert(
+            "watch_tray_menu_open".to_string(),
+            "Ouvrir GameTrimmer".to_string(),
+        );
         en.merge_from_map(&map);
         assert_eq!(en.tray_menu_open, "Ouvrir GameTrimmer");
         assert_eq!(en.tray_menu_check_now, "Check now");

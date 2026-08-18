@@ -14,9 +14,7 @@ use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE,
-};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
 use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess};
 use windows::Win32::UI::WindowsAndMessaging::{

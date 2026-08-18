@@ -103,7 +103,8 @@ impl WatchedDirectory {
                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
                 None,
             )
-        }.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("CreateFileW on {:?}: {e}", path)))?;
+        }
+        .map_err(|e| std::io::Error::other(format!("CreateFileW on {:?}: {e}", path)))?;
 
         if handle == INVALID_HANDLE_VALUE || handle.is_invalid() {
             return Err(std::io::Error::last_os_error());
@@ -125,9 +126,8 @@ impl WatchedDirectory {
         self.overlapped.Anonymous.Anonymous.Offset = 0;
         self.overlapped.Anonymous.Anonymous.OffsetHigh = 0;
 
-        let notify_filter = FILE_NOTIFY_CHANGE_FILE_NAME
-            | FILE_NOTIFY_CHANGE_LAST_WRITE
-            | FILE_NOTIFY_CHANGE_SIZE;
+        let notify_filter =
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE;
 
         let ok = unsafe {
             ReadDirectoryChangesW(
@@ -172,9 +172,8 @@ unsafe impl Sync for ManifestWatcher {}
 impl ManifestWatcher {
     /// Creates a new `ManifestWatcher` and registers the provided directories.
     pub fn new(paths: &[(PathBuf, LauncherKind)]) -> std::io::Result<Self> {
-        let iocp = unsafe {
-            CreateIoCompletionPort(INVALID_HANDLE_VALUE, None, 0, 0)
-        }.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("CreateIoCompletionPort: {e}")))?;
+        let iocp = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, None, 0, 0) }
+            .map_err(|e| std::io::Error::other(format!("CreateIoCompletionPort: {e}")))?;
 
         if iocp == INVALID_HANDLE_VALUE || iocp.is_invalid() {
             return Err(std::io::Error::last_os_error());
@@ -206,7 +205,7 @@ impl ManifestWatcher {
 
         unsafe {
             CreateIoCompletionPort(watched.handle, Some(self.iocp), key, 0)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Attach to IOCP: {e}")))?;
+                .map_err(|e| std::io::Error::other(format!("Attach to IOCP: {e}")))?;
         }
 
         watched.arm_read()?;
@@ -430,7 +429,10 @@ fn discover_steam_manifest_dirs() -> Vec<PathBuf> {
                 for line in vdf_content.lines() {
                     let trimmed = line.trim();
                     if trimmed.starts_with("\"path\"") {
-                        let parts: Vec<&str> = trimmed.split('"').filter(|s| !s.trim().is_empty()).collect();
+                        let parts: Vec<&str> = trimmed
+                            .split('"')
+                            .filter(|s| !s.trim().is_empty())
+                            .collect();
                         if parts.len() >= 2 {
                             let lib_path = PathBuf::from(parts[1].replace(r"\\", r"\"));
                             let lib_steamapps = lib_path.join("steamapps");
@@ -452,22 +454,21 @@ fn discover_epic_manifest_dir() -> Option<PathBuf> {
     use winreg::RegKey;
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let manifests_dir = if let Ok(key) =
-        hklm.open_subkey(r"SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher")
-    {
-        if let Ok(app_data) = key.get_value::<String, _>("AppDataPath") {
-            let p = PathBuf::from(app_data.replace('/', "\\")).join("Manifests");
-            if p.is_dir() {
-                Some(p)
+    let manifests_dir =
+        if let Ok(key) = hklm.open_subkey(r"SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher") {
+            if let Ok(app_data) = key.get_value::<String, _>("AppDataPath") {
+                let p = PathBuf::from(app_data.replace('/', "\\")).join("Manifests");
+                if p.is_dir() {
+                    Some(p)
+                } else {
+                    None
+                }
             } else {
                 None
             }
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
 
     manifests_dir.or_else(|| {
         let default_p = PathBuf::from(r"C:\ProgramData\Epic\EpicGamesLauncher\Data\Manifests");
@@ -486,19 +487,31 @@ mod tests {
     #[test]
     fn is_manifest_file_checks_proper_extensions() {
         assert!(is_manifest_file("appmanifest_730.acf", LauncherKind::Steam));
-        assert!(is_manifest_file("appmanifest_123456.acf", LauncherKind::Steam));
+        assert!(is_manifest_file(
+            "appmanifest_123456.acf",
+            LauncherKind::Steam
+        ));
         assert!(!is_manifest_file("libraryfolders.vdf", LauncherKind::Steam));
-        assert!(!is_manifest_file("appmanifest_730.txt", LauncherKind::Steam));
+        assert!(!is_manifest_file(
+            "appmanifest_730.txt",
+            LauncherKind::Steam
+        ));
 
         assert!(is_manifest_file("Fortnite.item", LauncherKind::Epic));
-        assert!(is_manifest_file("5CB97847CEE34581AB9576419A91D9F3.item", LauncherKind::Epic));
+        assert!(is_manifest_file(
+            "5CB97847CEE34581AB9576419A91D9F3.item",
+            LauncherKind::Epic
+        ));
         assert!(!is_manifest_file("Fortnite.json", LauncherKind::Epic));
 
         assert!(is_manifest_file("goggame-12345.info", LauncherKind::Gog));
         assert!(is_manifest_file("goggame.info", LauncherKind::Gog));
         assert!(is_manifest_file("game.manifest", LauncherKind::Gog));
 
-        assert!(is_manifest_file("appmanifest_550.acf", LauncherKind::Custom));
+        assert!(is_manifest_file(
+            "appmanifest_550.acf",
+            LauncherKind::Custom
+        ));
         assert!(is_manifest_file("game.item", LauncherKind::Custom));
     }
 

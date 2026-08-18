@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "evet",
     "csv_no": "hayır",
-    "already_running_title": "GameTrimmer zaten çalışıyor"
+    "already_running_title": "GameTrimmer zaten çalışıyor",
+    "category_workshop": "Atölye Öğeleri",
+    "category_shader_cache": "Gölgelendirici önbellekleri",
+    "category_crashes": "Çökme dökümleri ve günlükler",
+    "category_saves": "Kayıtlı oyunlar ve otomatik kayıtlar",
+    "category_launcher_cache": "Başlatıcı web önbellekleri",
+    "category_mod_downloads": "Mod yöneticisi arşivleri",
+    "badge_safe": "Temizlemesi güvenli",
+    "badge_review": "İnceleme önerilir",
+    "badge_backup_shield": "Yedekleme ile korunuyor",
+    "saves_pruner_title": "Akıllı Kayıt Temizleyici",
+    "saves_retention_slider": "Oyun başına en son hızlı kayıtları sakla",
+    "saves_auto_backup_label": "Silmeden önce otomatik ZIP yedeklemesi",
+    "saves_backup_success": "Kayıt yedeklemesi başarıyla oluşturuldu",
+    "saves_total_prunable": "Temizlenebilir otomatik kayıtlar bulundu"
   }
 }

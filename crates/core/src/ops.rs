@@ -185,7 +185,10 @@ pub fn reconcile_pending_operations(conn: &mut Connection) -> Result<Vec<Reconci
                     // over a tree that is already half gone, and reports the
                     // space as still occupied.
                     if current.kind == TargetKind::Directory {
-                        match (&expected_fingerprint, crate::safety::tree_fingerprint(&target)) {
+                        match (
+                            &expected_fingerprint,
+                            crate::safety::tree_fingerprint(&target),
+                        ) {
                             (Some(expected), Ok(actual)) if *expected == actual => {
                                 Ok(Some(("not_applied", None)))
                             }
@@ -210,9 +213,7 @@ pub fn reconcile_pending_operations(conn: &mut Connection) -> Result<Vec<Reconci
                                         .to_string(),
                                 ),
                             ))),
-                            (Some(_), Err(error)) => {
-                                Ok(Some(("unknown", Some(error.to_string()))))
-                            }
+                            (Some(_), Err(error)) => Ok(Some(("unknown", Some(error.to_string())))),
                         }
                     } else {
                         Ok(Some(("not_applied", None)))
@@ -980,11 +981,7 @@ mod tests {
             "INSERT INTO operations
                  (ts, action, src_path, status, trusted_root, rel_path, expected_identity)
              VALUES (0, 'delete', ?1, 'pending', ?2, 'bonus', ?3)",
-            rusqlite::params![
-                target.to_string_lossy(),
-                root.to_string_lossy(),
-                identity
-            ],
+            rusqlite::params![target.to_string_lossy(), root.to_string_lossy(), identity],
         )
         .unwrap();
 

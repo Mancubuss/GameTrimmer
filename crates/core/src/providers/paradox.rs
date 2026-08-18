@@ -357,6 +357,7 @@ struct ParadoxSettings {
 enum LibraryPathEntry {
     Explicit(ParadoxGameEntry),
     Root(String),
+    #[allow(dead_code)]
     Other(serde_json::Value),
 }
 

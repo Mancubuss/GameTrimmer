@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "はい",
     "csv_no": "いいえ",
-    "already_running_title": "GameTrimmer は既に起動しています"
+    "already_running_title": "GameTrimmer は既に起動しています",
+    "category_workshop": "ワークショップアイテム",
+    "category_shader_cache": "シェーダーキャッシュ",
+    "category_crashes": "クラッシュダンプとログ",
+    "category_saves": "セーブデータとオートセーブ",
+    "category_launcher_cache": "ランチャーWebキャッシュ",
+    "category_mod_downloads": "Modマネージャーアーカイブ",
+    "badge_safe": "安全に削除可能",
+    "badge_review": "確認を推奨",
+    "badge_backup_shield": "バックアップで保護",
+    "saves_pruner_title": "スマートセーブプルーナー",
+    "saves_retention_slider": "ゲームごとに最新のクイックセーブを保持",
+    "saves_auto_backup_label": "削除前にZIPバックアップを自動作成",
+    "saves_backup_success": "セーブデータのバックアップが正常に作成されました",
+    "saves_total_prunable": "削除可能なオートセーブが見つかりました"
   }
 }

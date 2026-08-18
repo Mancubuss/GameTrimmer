@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "có",
     "csv_no": "không",
-    "already_running_title": "GameTrimmer đang chạy"
+    "already_running_title": "GameTrimmer đang chạy",
+    "category_workshop": "Vật phẩm Workshop",
+    "category_shader_cache": "Bộ nhớ đệm Shader",
+    "category_crashes": "Bản kết xuất sự cố & nhật ký",
+    "category_saves": "Tệp lưu trò chơi & tự động lưu",
+    "category_launcher_cache": "Bộ nhớ đệm web của trình khởi chạy",
+    "category_mod_downloads": "Tệp lưu trữ trình quản lý mod",
+    "badge_safe": "An toàn để dọn dẹp",
+    "badge_review": "Khuyến nghị xem lại",
+    "badge_backup_shield": "Được bảo vệ bằng bản sao lưu",
+    "saves_pruner_title": "Trình dọn dẹp tệp lưu thông minh",
+    "saves_retention_slider": "Giữ lại các bản lưu nhanh mới nhất cho mỗi trò chơi",
+    "saves_auto_backup_label": "Tự động sao lưu ZIP trước khi xóa",
+    "saves_backup_success": "Đã tạo bản sao lưu tệp lưu thành công",
+    "saves_total_prunable": "Đã tìm thấy các bản tự động lưu có thể dọn dẹp"
   }
 }

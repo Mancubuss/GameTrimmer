@@ -244,6 +244,20 @@
     "unit_b": "Б",
     "csv_yes": "да",
     "csv_no": "не",
-    "already_running_title": "GameTrimmer вече работи"
+    "already_running_title": "GameTrimmer вече работи",
+    "category_workshop": "Елементи от работилницата",
+    "category_shader_cache": "Шейдърни кешове",
+    "category_crashes": "Дъмпове при срив и дневници",
+    "category_saves": "Запазени игри и автозаписи",
+    "category_launcher_cache": "Уеб кешове на лаунчерите",
+    "category_mod_downloads": "Архиви на мениджъри на модове",
+    "badge_safe": "Безопасно за изчистване",
+    "badge_review": "Препоръчва се преглед",
+    "badge_backup_shield": "Защитено с резервно копие",
+    "saves_pruner_title": "Интелигентно прочистване на записи",
+    "saves_retention_slider": "Запазване на най-новите бързи записи за игра",
+    "saves_auto_backup_label": "Автоматичен ZIP архив преди изтриване",
+    "saves_backup_success": "Резервното копие на записите е създадено успешно",
+    "saves_total_prunable": "Намерени са излишни автозаписи"
   }
 }

@@ -106,7 +106,10 @@ pub mod oneshot_channel {
     }
 
     impl<T> ReceiverWrapper<T> {
-        pub fn recv_timeout(self, timeout: std::time::Duration) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
+        pub fn recv_timeout(
+            self,
+            timeout: std::time::Duration,
+        ) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
             self.0.recv_timeout(timeout)
         }
     }
@@ -159,7 +162,11 @@ impl Drop for IpcServer {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
         // Poke the pipe with a dummy connection to unblock ConnectNamedPipe if waiting
-        let _ = send_ipc_raw(&self.pipe_name, b"{\"type\":\"Ping\"}\n", Duration::from_millis(50));
+        let _ = send_ipc_raw(
+            &self.pipe_name,
+            b"{\"type\":\"Ping\"}\n",
+            Duration::from_millis(50),
+        );
         if let Some(handle) = self.worker_handle.take() {
             let _ = handle.join();
         }
@@ -170,7 +177,11 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn run_server_loop(pipe_name: &str, shutdown: Arc<AtomicBool>, command_tx: Sender<IpcServerCommand>) {
+fn run_server_loop(
+    pipe_name: &str,
+    shutdown: Arc<AtomicBool>,
+    command_tx: Sender<IpcServerCommand>,
+) {
     let wide_name = to_wide(pipe_name);
 
     while !shutdown.load(Ordering::SeqCst) {
@@ -193,7 +204,8 @@ fn run_server_loop(pipe_name: &str, shutdown: Arc<AtomicBool>, command_tx: Sende
         }
 
         let connected = unsafe { ConnectNamedPipe(pipe_handle, None) };
-        let connect_success = connected.is_ok() || (unsafe { GetLastError() } == ERROR_PIPE_CONNECTED);
+        let connect_success =
+            connected.is_ok() || (unsafe { GetLastError() } == ERROR_PIPE_CONNECTED);
 
         if connect_success && !shutdown.load(Ordering::SeqCst) {
             handle_client_connection(pipe_handle, &command_tx);
@@ -268,20 +280,19 @@ fn handle_client_connection(pipe_handle: HANDLE, command_tx: &Sender<IpcServerCo
 
 /// Client helper: Sends an IPC request to the named pipe and awaits the response.
 pub fn send_ipc_request(pipe_name: &str, req: &IpcRequest) -> std::io::Result<IpcResponse> {
-    let req_json = serde_json::to_string(req).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let req_json = serde_json::to_string(req)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let payload = format!("{req_json}\n");
     let resp_bytes = send_ipc_raw(pipe_name, payload.as_bytes(), Duration::from_millis(3000))?;
     let resp_str = String::from_utf8_lossy(&resp_bytes);
-    let resp: IpcResponse = serde_json::from_str(resp_str.trim())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e}: {resp_str}")))?;
+    let resp: IpcResponse = serde_json::from_str(resp_str.trim()).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e}: {resp_str}"))
+    })?;
     Ok(resp)
 }
 
 fn send_ipc_raw(pipe_name: &str, data: &[u8], _timeout: Duration) -> std::io::Result<Vec<u8>> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(pipe_name)?;
+    let mut file = OpenOptions::new().read(true).write(true).open(pipe_name)?;
 
     file.write_all(data)?;
     file.flush()?;

@@ -9,9 +9,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, RwLock};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{
-    HWND, LPARAM, LRESULT, POINT, WPARAM,
-};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -19,10 +17,11 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    GetCursorPos, GetWindowLongPtrW, LoadIconW, PostMessageW, RegisterClassExW, SetForegroundWindow,
-    SetWindowLongPtrW, TrackPopupMenuEx, GWLP_USERDATA, HMENU, IDI_APPLICATION, MF_SEPARATOR,
-    MF_STRING, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_COMMAND, WM_DESTROY,
-    WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_USER, WNDCLASSEXW, WS_OVERLAPPED,
+    GetCursorPos, GetWindowLongPtrW, LoadIconW, PostMessageW, RegisterClassExW,
+    SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenuEx, GWLP_USERDATA, HMENU,
+    IDI_APPLICATION, MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINDOW_EX_STYLE,
+    WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_USER, WNDCLASSEXW,
+    WS_OVERLAPPED,
 };
 
 use crate::i18n::WatchStrings;
@@ -75,7 +74,7 @@ impl TrayIcon {
             strings: Arc::clone(&strings_arc),
         });
 
-        let hwnd = create_hidden_window(WINDOW_CLASS_NAME, &*user_data)?;
+        let hwnd = create_hidden_window(WINDOW_CLASS_NAME, &user_data)?;
 
         let mut tray = Self {
             hwnd,
@@ -128,15 +127,17 @@ impl TrayIcon {
 
     fn add_icon(&mut self, tooltip: &str) -> std::io::Result<()> {
         let icon = unsafe { LoadIconW(None, IDI_APPLICATION) }
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("LoadIconW: {e}")))?;
+            .map_err(|e| std::io::Error::other(format!("LoadIconW: {e}")))?;
 
-        let mut nid = NOTIFYICONDATAW::default();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = self.hwnd;
-        nid.uID = TRAY_ICON_ID;
-        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = icon;
+        let mut nid = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: self.hwnd,
+            uID: TRAY_ICON_ID,
+            uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+            uCallbackMessage: WM_TRAYICON,
+            hIcon: icon,
+            ..Default::default()
+        };
 
         let tip_wide = to_wide_capped(tooltip, 128);
         nid.szTip[..tip_wide.len()].copy_from_slice(&tip_wide);
@@ -146,11 +147,13 @@ impl TrayIcon {
     }
 
     pub fn update_tooltip(&self, tooltip: &str) -> std::io::Result<()> {
-        let mut nid = NOTIFYICONDATAW::default();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = self.hwnd;
-        nid.uID = TRAY_ICON_ID;
-        nid.uFlags = NIF_TIP;
+        let mut nid = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: self.hwnd,
+            uID: TRAY_ICON_ID,
+            uFlags: NIF_TIP,
+            ..Default::default()
+        };
 
         let tip_wide = to_wide_capped(tooltip, 128);
         nid.szTip[..tip_wide.len()].copy_from_slice(&tip_wide);
@@ -162,10 +165,12 @@ impl TrayIcon {
 
 impl Drop for TrayIcon {
     fn drop(&mut self) {
-        let mut nid = NOTIFYICONDATAW::default();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = self.hwnd;
-        nid.uID = TRAY_ICON_ID;
+        let nid = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: self.hwnd,
+            uID: TRAY_ICON_ID,
+            ..Default::default()
+        };
         unsafe {
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
             let _ = DestroyWindow(self.hwnd);
@@ -176,13 +181,15 @@ impl Drop for TrayIcon {
 fn create_hidden_window(class_name: &str, user_data: &WindowUserData) -> std::io::Result<HWND> {
     let wide_class = to_wide(class_name);
     let hinstance = unsafe { GetModuleHandleW(None) }
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("GetModuleHandleW: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("GetModuleHandleW: {e}")))?;
 
-    let mut wnd_class = WNDCLASSEXW::default();
-    wnd_class.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
-    wnd_class.lpfnWndProc = Some(wnd_proc);
-    wnd_class.hInstance = hinstance.into();
-    wnd_class.lpszClassName = PCWSTR::from_raw(wide_class.as_ptr());
+    let wnd_class = WNDCLASSEXW {
+        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+        lpfnWndProc: Some(wnd_proc),
+        hInstance: hinstance.into(),
+        lpszClassName: PCWSTR::from_raw(wide_class.as_ptr()),
+        ..Default::default()
+    };
 
     unsafe {
         let _ = RegisterClassExW(&wnd_class);
@@ -203,7 +210,8 @@ fn create_hidden_window(class_name: &str, user_data: &WindowUserData) -> std::io
             Some(hinstance.into()),
             None,
         )
-    }.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("CreateWindowExW: {e}")))?;
+    }
+    .map_err(|e| std::io::Error::other(format!("CreateWindowExW: {e}")))?;
 
     if hwnd.is_invalid() || hwnd.0.is_null() {
         return Err(std::io::Error::last_os_error());
@@ -241,7 +249,7 @@ unsafe extern "system" fn wnd_proc(
             let user_data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowUserData;
             if !user_data_ptr.is_null() {
                 let user_data = &*user_data_ptr;
-                let cmd_id = (wparam.0 & 0xffff) as usize;
+                let cmd_id = wparam.0 & 0xffff;
 
                 match cmd_id {
                     IDM_OPEN => {
@@ -331,7 +339,10 @@ mod tests {
         assert!(!tray.is_paused());
 
         // Test sending command
-        tray._user_data.command_tx.send(TrayCommand::CheckNow).unwrap();
+        tray._user_data
+            .command_tx
+            .send(TrayCommand::CheckNow)
+            .unwrap();
         let cmd = tray.try_recv_command();
         assert_eq!(cmd, Some(TrayCommand::CheckNow));
     }

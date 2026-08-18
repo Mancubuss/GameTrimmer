@@ -129,6 +129,7 @@ pub enum WorkerMsg {
     /// the user cancelled the dialog.
     FolderPicked { path: Option<PathBuf> },
     /// Notification from the background monitoring daemon that a game state was updated.
+    #[allow(dead_code)]
     GameUpdatedIpc {
         app_id: String,
         name: String,

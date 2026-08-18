@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "ano",
     "csv_no": "ne",
-    "already_running_title": "GameTrimmer již běží"
+    "already_running_title": "GameTrimmer již běží",
+    "category_workshop": "Položky z Workshopu",
+    "category_shader_cache": "Mezipaměti shaderů",
+    "category_crashes": "Výpisy paměti při selhání a protokoly",
+    "category_saves": "Uložené hry a automatická ukládání",
+    "category_launcher_cache": "Webové mezipaměti spouštěčů",
+    "category_mod_downloads": "Archivy správců modifikací",
+    "badge_safe": "Bezpečné k vyčištění",
+    "badge_review": "Doporučena kontrola",
+    "badge_backup_shield": "Chráněno zálohou",
+    "saves_pruner_title": "Inteligentní prořezávání uložených pozic",
+    "saves_retention_slider": "Ponechat nejnovější rychlá uložení pro každou hru",
+    "saves_auto_backup_label": "Automatická záloha do ZIP před smazáním",
+    "saves_backup_success": "Záloha uložených pozic byla úspěšně vytvořena",
+    "saves_total_prunable": "Nalezeny nadbytečné automatické uložené pozice"
   }
 }

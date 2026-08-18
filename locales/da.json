@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "ja",
     "csv_no": "nej",
-    "already_running_title": "GameTrimmer kører allerede"
+    "already_running_title": "GameTrimmer kører allerede",
+    "category_workshop": "Workshop-elementer",
+    "category_shader_cache": "Shader-caches",
+    "category_crashes": "Nedbrudsdump og logfiler",
+    "category_saves": "Gemte spil og automatiske gem",
+    "category_launcher_cache": "Startprogrammets webcaches",
+    "category_mod_downloads": "Mod-administrationsarkiver",
+    "badge_safe": "Sikker at rydde op",
+    "badge_review": "Gennemgang anbefales",
+    "badge_backup_shield": "Beskyttet af sikkerhedskopi",
+    "saves_pruner_title": "Smart spilgem-beskæring",
+    "saves_retention_slider": "Behold nyeste hurtiggem pr. spil",
+    "saves_auto_backup_label": "Automatisk ZIP-sikkerhedskopiering før sletning",
+    "saves_backup_success": "Sikkerhedskopi af gemte spil oprettet",
+    "saves_total_prunable": "Overflødige automatiske gem fundet"
   }
 }

@@ -1813,7 +1813,8 @@ impl GameTrimmerApp {
                     "Daemon reported game updated: {name} (app_id: {app_id}, launcher: {launcher}, build: {new_build_id:?})"
                 ));
                 self.status_message = format!("🔄 {} updated ({})", name, launcher);
-                self.updated_games.insert(app_id, new_build_id.unwrap_or_default());
+                self.updated_games
+                    .insert(app_id, new_build_id.unwrap_or_default());
                 self.tree_dirty = true;
             }
             WorkerMsg::Status { text } => {

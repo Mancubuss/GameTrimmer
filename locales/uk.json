@@ -244,6 +244,20 @@
     "unit_b": "Б",
     "csv_yes": "так",
     "csv_no": "ні",
-    "already_running_title": "GameTrimmer уже запущено"
+    "already_running_title": "GameTrimmer уже запущено",
+    "category_workshop": "Моди Workshop",
+    "category_shader_cache": "Шейдерні кеші",
+    "category_crashes": "Дампи падінь та логи",
+    "category_saves": "Збереження та автосейви",
+    "category_launcher_cache": "Веб-кеші лаунчерів",
+    "category_mod_downloads": "Архіви мод-менеджерів",
+    "badge_safe": "Безпечно для очищення",
+    "badge_review": "Рекомендовано перевірити",
+    "badge_backup_shield": "Захищено автобекапом",
+    "saves_pruner_title": "Розумне проріджування автосейвів",
+    "saves_retention_slider": "Зберігати найновіших квіксейвів на гру",
+    "saves_auto_backup_label": "Автоматичний ZIP-бекап перед видаленням",
+    "saves_backup_success": "Бекап збережень успішно створено",
+    "saves_total_prunable": "Знайдено надлишкових автосейвів"
   }
 }

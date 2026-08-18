@@ -1061,17 +1061,29 @@ pub fn stub_for_magic(header: &[u8]) -> Option<&'static [u8]> {
     }
     if header.len() >= 8 {
         let tag = &header[4..8];
-        if tag == b"ftyp" || tag == b"moov" || tag == b"mdat" || tag == b"wide" || tag == b"free" || tag == b"skip" {
+        if tag == b"ftyp"
+            || tag == b"moov"
+            || tag == b"mdat"
+            || tag == b"wide"
+            || tag == b"free"
+            || tag == b"skip"
+        {
             return Some(MP4_STUB);
         }
     }
-    if header.len() >= 12 && &header[0..4] == b"RIFF" && (&header[8..12] == b"AVI " || &header[8..12] == b"AVIX") {
+    if header.len() >= 12
+        && &header[0..4] == b"RIFF"
+        && (&header[8..12] == b"AVI " || &header[8..12] == b"AVIX")
+    {
         return Some(AVI_STUB);
     }
-    if header.len() >= 16 && header[0..16] == [
-        0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11,
-        0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c,
-    ] {
+    if header.len() >= 16
+        && header[0..16]
+            == [
+                0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62,
+                0xce, 0x6c,
+            ]
+    {
         return Some(WMV_STUB);
     }
     if header.len() >= 5 && &header[0..5] == b"@CRID" {

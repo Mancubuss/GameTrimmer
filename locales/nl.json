@@ -244,6 +244,20 @@
     "unit_b": "B",
     "csv_yes": "ja",
     "csv_no": "nee",
-    "already_running_title": "GameTrimmer is al geopend"
+    "already_running_title": "GameTrimmer is al geopend",
+    "category_workshop": "Workshop-items",
+    "category_shader_cache": "Shadercaches",
+    "category_crashes": "Crashdumps en logboeken",
+    "category_saves": "Opgeslagen spellen en autosaves",
+    "category_launcher_cache": "Launcher-webcaches",
+    "category_mod_downloads": "Modbeheer-archieven",
+    "badge_safe": "Veilig om op te ruimen",
+    "badge_review": "Controle aanbevolen",
+    "badge_backup_shield": "Beveiligd met back-up",
+    "saves_pruner_title": "Slimme save-opschoning",
+    "saves_retention_slider": "Nieuwste quicksaves per spel behouden",
+    "saves_auto_backup_label": "Automatische ZIP-back-up vóór verwijdering",
+    "saves_backup_success": "Save-back-up succesvol aangemaakt",
+    "saves_total_prunable": "Overbodige autosaves gevonden"
   }
 }

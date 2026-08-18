@@ -460,6 +460,33 @@
         "m4v",
         "mov"
       ]
+    },
+    {
+      "category": "crash_dump",
+      "pattern": "^(crashes|crashdumps|minidumps)$",
+      "desc": {
+        "en": "Crash dump reports and minidump folder",
+        "uk": "Тека звітів про падіння та мінідампів"
+      },
+      "confidence": 95
+    },
+    {
+      "category": "crash_dump",
+      "pattern": "^.*\\.(dmp|mdmp|crashdump)$",
+      "desc": {
+        "en": "Minidump crash state memory dump file",
+        "uk": "Файл мінідампу пам'яті аварійного завершення"
+      },
+      "confidence": 95
+    },
+    {
+      "category": "diagnostic_logs",
+      "pattern": "^(player|player-prev|ue4cc-.*)\\.log$",
+      "desc": {
+        "en": "Game engine runtime diagnostic log file",
+        "uk": "Діагностичний лог-файл ігрового рушія"
+      },
+      "confidence": 90
     }
   ]
 }
