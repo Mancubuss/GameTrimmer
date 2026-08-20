@@ -327,6 +327,7 @@ pub(super) const STRINGS: Strings = Strings {
     category_docs: "Документація і довідкові матеріали",
     category_bonus: "Бонусні матеріали",
     category_loc: "Файли локалізацій",
+    category_archives: "Монолітні архіви",
     category_other: "Інше",
     category_orphan: "Осиротіле",
     category_workshop: "Моди Workshop",
@@ -355,4 +356,16 @@ pub(super) const STRINGS: Strings = Strings {
     csv_no: "ні",
 
     already_running_title: "GameTrimmer уже запущено",
+
+    monolithic_archives_label: "Монолітні архіви",
+    scan_monolithic_archives_checkbox: "Глибокий аналіз монолітних архівів (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
+    scan_monolithic_archives_subtitle: "Лише читає вміст контейнерів. Обрізання недоступне до реалізації безпечного відновлення.",
+    scan_phase_1_title: "1. Сканування дисків та бібліотек",
+    scan_phase_2_title: "2. Аналіз звичайних файлів",
+    scan_phase_3_title: "3. Аналіз монолітних архівів",
+    scan_overall_title: "Загальний прогрес",
+    badge_monolith: "Моноліт",
+    badge_anticheat_shield: "🛡️ Античит",
+    anticheat_shield_tooltip: "Гру захищено античитом; модифікацію вимкнено для безпеки",
+    archive_action_unavailable: "Обрізання архівів недоступне до реалізації безпечного відновлення",
 };

@@ -9,6 +9,7 @@ pub(crate) struct BatchBlock {
     pub(crate) reason: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SelectionSummary {
     pub(crate) count: usize,
@@ -61,6 +62,11 @@ pub(crate) fn validate_batch(
                 reason: reason.clone(),
             });
         }
+        if item.row.anti_cheat_protected && item.row.is_monolithic_archive() {
+            return Err(BatchBlock {
+                reason: "anti-cheat protected monolithic archives cannot be trimmed".to_string(),
+            });
+        }
         checked.push(index);
     }
     Ok(checked)
@@ -80,6 +86,7 @@ pub(crate) fn deselect_all(items: &mut [FindingItem]) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn selection_summary(items: &[FindingItem]) -> SelectionSummary {
     let mut summary = SelectionSummary {
         count: 0,
@@ -88,7 +95,7 @@ pub(crate) fn selection_summary(items: &[FindingItem]) -> SelectionSummary {
     for item in items {
         if item.selected && !item.removed {
             summary.count += 1;
-            summary.bytes_on_disk += item.row.size_on_disk;
+            summary.bytes_on_disk = summary.bytes_on_disk.saturating_add(item.row.size_on_disk);
         }
     }
     summary
@@ -120,6 +127,9 @@ mod tests {
                 deletion_block_reason: blocked.map(str::to_string),
                 imported_untrusted: false,
                 library: None,
+                action: gametrimmer_core::models::FindingAction::DirectDelete,
+                anti_cheat_protected: false,
+                monolith_badge: None,
             },
             selected,
             removed,
@@ -186,5 +196,38 @@ mod tests {
                 bytes_on_disk: 16,
             }
         );
+    }
+
+    #[test]
+    fn anti_cheat_protected_monolithic_archive_rejects_batch_and_skips_select_all() {
+        let mut row_ac = item(1, None, false, false);
+        row_ac.row.anti_cheat_protected = true;
+        row_ac.row.action = gametrimmer_core::models::FindingAction::SparseZero {
+            format: "Wwise".to_string(),
+            languages: vec!["french".to_string()],
+            stream_count: 1,
+            offsets: vec![(1024, 2048)],
+            streams: vec![],
+            estimated_savings: 2048,
+        };
+
+        let normal = item(2, None, false, false);
+        let mut items = vec![row_ac, normal];
+
+        select_all(&mut items);
+        assert!(
+            !items[0].selected,
+            "anti-cheat monolithic file must not be selected by select_all"
+        );
+        assert!(
+            items[1].selected,
+            "normal file must be selected by select_all"
+        );
+
+        items[0].selected = true;
+        let err = validate_batch(&items, &[0]).unwrap_err();
+        assert!(err
+            .reason
+            .contains("anti-cheat protected monolithic archives"));
     }
 }

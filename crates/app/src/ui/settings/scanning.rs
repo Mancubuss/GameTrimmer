@@ -46,6 +46,8 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     separate(ui);
     show_keep_languages(app, ui);
     separate(ui);
+    show_monolithic_archives(app, ui);
+    separate(ui);
     show_categories(app, ui);
     separate(ui);
     show_routing(app, ui);
@@ -55,6 +57,22 @@ fn separate(ui: &mut egui::Ui) {
     ui.add_space(12.0);
     ui.separator();
     ui.add_space(8.0);
+}
+
+fn show_monolithic_archives(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
+    let s = i18n::strings(app.lang());
+    ui.strong(s.monolithic_archives_label);
+    ui.add_space(4.0);
+
+    let mut enabled = app.settings.scan_monolithic_archives;
+    if ui
+        .checkbox(&mut enabled, s.scan_monolithic_archives_checkbox)
+        .changed()
+    {
+        app.set_scan_monolithic_archives(enabled);
+    }
+    ui.add_space(2.0);
+    ui.small(s.scan_monolithic_archives_subtitle);
 }
 
 /// The registered libraries, with the disk each one occupies. Only manually

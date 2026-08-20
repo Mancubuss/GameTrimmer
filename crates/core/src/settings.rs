@@ -561,11 +561,14 @@ pub struct Settings {
     pub watch_autostart: bool,
     /// Operating mode for the background monitor companion daemon.
     pub watch_mode: WatchMode,
+    /// Whether to perform deep inspection and localized stream trimming on monolithic game archives.
+    pub scan_monolithic_archives: bool,
 }
 
 const DEFAULT_LOGGING_ENABLED: bool = true;
 const DEFAULT_WATCH_ENABLED: bool = true;
 const DEFAULT_WATCH_AUTOSTART: bool = false;
+const DEFAULT_SCAN_MONOLITHIC_ARCHIVES: bool = true;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -586,6 +589,7 @@ impl Default for Settings {
             watch_enabled: DEFAULT_WATCH_ENABLED,
             watch_autostart: DEFAULT_WATCH_AUTOSTART,
             watch_mode: WatchMode::default(),
+            scan_monolithic_archives: DEFAULT_SCAN_MONOLITHIC_ARCHIVES,
         }
     }
 }
@@ -612,8 +616,9 @@ const DISCLAIMER_ACCEPTED_KEY: &str = "disclaimer_accepted";
 const WATCH_ENABLED_KEY: &str = "watch_enabled";
 const WATCH_AUTOSTART_KEY: &str = "watch_autostart";
 const WATCH_MODE_KEY: &str = "watch_mode";
+const SCAN_MONOLITHIC_ARCHIVES_KEY: &str = "scan_monolithic_archives";
 
-const SETTINGS_KEYS: [&str; 17] = [
+const SETTINGS_KEYS: [&str; 18] = [
     DELETE_METHOD_KEY,
     APP_LANGUAGE_KEY,
     KEEP_LANGUAGES_KEY,
@@ -631,6 +636,7 @@ const SETTINGS_KEYS: [&str; 17] = [
     WATCH_ENABLED_KEY,
     WATCH_AUTOSTART_KEY,
     WATCH_MODE_KEY,
+    SCAN_MONOLITHIC_ARCHIVES_KEY,
 ];
 
 const INI_HEADER: &str = "; GameTrimmer user settings. Unknown keys are ignored.\n[settings]\n";
@@ -691,6 +697,9 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
         watch_mode: value(WATCH_MODE_KEY)
             .and_then(WatchMode::parse)
             .unwrap_or_default(),
+        scan_monolithic_archives: value(SCAN_MONOLITHIC_ARCHIVES_KEY)
+            .and_then(parse_bool)
+            .unwrap_or(DEFAULT_SCAN_MONOLITHIC_ARCHIVES),
     }
 }
 
@@ -698,7 +707,7 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
 /// reports the parsed settings: `Settings` is not serde-backed, and this is
 /// already the canonical text form of every field, so a `Serialize` derive
 /// would be a second description of the same thing to keep in sync.
-pub fn settings_values(settings: &Settings) -> [(&'static str, String); 16] {
+pub fn settings_values(settings: &Settings) -> [(&'static str, String); 17] {
     [
         (DELETE_METHOD_KEY, settings.delete_method.as_str().into()),
         (APP_LANGUAGE_KEY, settings.app_language.as_str().into()),
@@ -749,6 +758,10 @@ pub fn settings_values(settings: &Settings) -> [(&'static str, String); 16] {
             bool_as_str(settings.watch_autostart).into(),
         ),
         (WATCH_MODE_KEY, settings.watch_mode.as_str().into()),
+        (
+            SCAN_MONOLITHIC_ARCHIVES_KEY,
+            bool_as_str(settings.scan_monolithic_archives).into(),
+        ),
     ]
 }
 
@@ -861,6 +874,16 @@ pub fn save_file(path: &Path, settings: &Settings) -> Result<()> {
     Ok(())
 }
 
+/// Loads settings from an INI file.
+pub fn load_from_ini(path: &Path) -> Result<Settings> {
+    load_file(path)
+}
+
+/// Saves settings to an INI file.
+pub fn save_to_ini(path: &Path, settings: &Settings) -> Result<()> {
+    save_file(path, settings)
+}
+
 fn parse_ini(text: &str) -> HashMap<String, String> {
     let known: std::collections::HashSet<&str> = SETTINGS_KEYS.into_iter().collect();
     let mut values = HashMap::new();
@@ -877,9 +900,9 @@ fn parse_ini(text: &str) -> HashMap<String, String> {
             continue;
         }
         if line.starts_with('[') && line.ends_with(']') {
-            in_settings = line[1..line.len() - 1]
-                .trim()
-                .eq_ignore_ascii_case("settings");
+            let section = line[1..line.len() - 1].trim();
+            in_settings =
+                section.eq_ignore_ascii_case("settings") || section.eq_ignore_ascii_case("scan");
             continue;
         }
         if !in_settings {
@@ -1850,5 +1873,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn defaults_for_scan_monolithic_archives() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+        let settings = load(&conn).expect("load settings");
+        assert!(settings.scan_monolithic_archives);
+        assert!(Settings::default().scan_monolithic_archives);
+    }
+
+    #[test]
+    fn save_then_load_round_trips_scan_monolithic_archives() {
+        let conn = crate::db::open_in_memory().expect("open in-memory db");
+
+        for val in [true, false] {
+            let settings = Settings {
+                scan_monolithic_archives: val,
+                ..Settings::default()
+            };
+            save(&conn, &settings).expect("save settings");
+            let loaded = load(&conn).expect("load settings");
+            assert_eq!(loaded.scan_monolithic_archives, val);
+        }
+    }
+
+    #[test]
+    fn load_from_ini_parses_scan_section_and_keys() {
+        let ini = "[Scan]\nscan_monolithic_archives = false\n";
+        let values = parse_ini(ini);
+        let settings = settings_from_values(&values);
+        assert!(!settings.scan_monolithic_archives);
+
+        let ini_settings = "[settings]\nscan_monolithic_archives=true\n";
+        let values_settings = parse_ini(ini_settings);
+        let settings2 = settings_from_values(&values_settings);
+        assert!(settings2.scan_monolithic_archives);
     }
 }

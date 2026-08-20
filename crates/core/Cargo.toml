@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+archive_trimmer = { path = "../archive_trimmer", default-features = false }
 chrono = { version = "0.4.45", default-features = false, features = ["now"] }
 crc32fast = "1.5.0"
 # The 0.4.0 crates.io release pins binrw 0.11, which Rust 1.97 reports as

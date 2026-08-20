@@ -4,8 +4,9 @@
 //!
 //! # Why an index and not a per-frame filter
 //!
-//! `ui::tree_view::build_visible_rows` runs on every frame (twice, around
-//! keyboard handling), and a real scan holds hundreds of thousands of findings.
+//! `ui::tree_view::build_visible_rows` normally runs once per frame (and once
+//! more only after keyboard expansion changes structural visibility), while a
+//! real scan holds hundreds of thousands of findings.
 //! Testing every path against the query inside that walk would put a full
 //! string scan of the whole result set into the frame budget. Instead the match
 //! decision is made once per query change and stored here: a `Vec<bool>` keyed
@@ -249,6 +250,9 @@ mod tests {
                 deletion_block_reason: None,
                 imported_untrusted: false,
                 library: None,
+                action: gametrimmer_core::models::FindingAction::DirectDelete,
+                anti_cheat_protected: false,
+                monolith_badge: None,
             },
             selected: false,
             removed: false,

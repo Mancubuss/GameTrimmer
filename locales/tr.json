@@ -235,6 +235,7 @@
     "category_docs": "Belgeler ve başvuru materyalleri",
     "category_bonus": "Bonus içerik",
     "category_loc": "Yerelleştirme dosyaları",
+    "category_archives": "Monolitik Arşivler",
     "category_other": "Diğer",
     "category_orphan": "Sahipsiz dosyalar",
     "orphan_branch_label": "Sahipsiz kalıntılar",
@@ -258,6 +259,17 @@
     "saves_retention_slider": "Oyun başına en son hızlı kayıtları sakla",
     "saves_auto_backup_label": "Silmeden önce otomatik ZIP yedeklemesi",
     "saves_backup_success": "Kayıt yedeklemesi başarıyla oluşturuldu",
-    "saves_total_prunable": "Temizlenebilir otomatik kayıtlar bulundu"
+    "saves_total_prunable": "Temizlenebilir otomatik kayıtlar bulundu",
+    "monolithic_archives_label": "Monolithic archives",
+    "scan_monolithic_archives_checkbox": "Deep scan monolithic archives (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
+    "scan_monolithic_archives_subtitle": "Read-only inspection of container internals. Trimming is unavailable until safe rollback is implemented.",
+    "scan_phase_1_title": "1. Disks & libraries discovery",
+    "scan_phase_2_title": "2. Regular file analysis",
+    "scan_phase_3_title": "3. Monolithic archives inspection",
+    "scan_overall_title": "Overall progress",
+    "badge_monolith": "Monolith",
+    "badge_anticheat_shield": "🛡️ Anti-Cheat",
+    "anticheat_shield_tooltip": "Game protected by anti-cheat; modification disabled for safety",
+    "archive_action_unavailable": "Archive trimming is unavailable until safe rollback is implemented"
   }
 }

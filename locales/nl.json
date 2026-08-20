@@ -235,6 +235,7 @@
     "category_docs": "Documentatie en referentiemateriaal",
     "category_bonus": "Bonusmateriaal",
     "category_loc": "Lokalisatiebestanden",
+    "category_archives": "Monolithische archieven",
     "category_other": "Overig",
     "category_orphan": "Achtergebleven resten",
     "orphan_branch_label": "Achtergebleven resten",
@@ -258,6 +259,17 @@
     "saves_retention_slider": "Nieuwste quicksaves per spel behouden",
     "saves_auto_backup_label": "Automatische ZIP-back-up vóór verwijdering",
     "saves_backup_success": "Save-back-up succesvol aangemaakt",
-    "saves_total_prunable": "Overbodige autosaves gevonden"
+    "saves_total_prunable": "Overbodige autosaves gevonden",
+    "monolithic_archives_label": "Monolithic archives",
+    "scan_monolithic_archives_checkbox": "Deep scan monolithic archives (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
+    "scan_monolithic_archives_subtitle": "Read-only inspection of container internals. Trimming is unavailable until safe rollback is implemented.",
+    "scan_phase_1_title": "1. Disks & libraries discovery",
+    "scan_phase_2_title": "2. Regular file analysis",
+    "scan_phase_3_title": "3. Monolithic archives inspection",
+    "scan_overall_title": "Overall progress",
+    "badge_monolith": "Monolith",
+    "badge_anticheat_shield": "🛡️ Anti-Cheat",
+    "anticheat_shield_tooltip": "Game protected by anti-cheat; modification disabled for safety",
+    "archive_action_unavailable": "Archive trimming is unavailable until safe rollback is implemented"
   }
 }

@@ -5,6 +5,7 @@
 //! thread exactly like [`super::scan`], communicating back through the same
 //! [`WorkerMsg::Done`] the scan worker uses.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
@@ -84,7 +85,7 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
         })),
     }
 
-    match load_findings(&conn) {
+    match load_findings_with_lang(&conn, lang) {
         Ok(findings) => {
             // Live occupied-space snapshot for the UI (see
             // `occupancy_or_default`); degrades to 0 on aggregation failure.
@@ -161,7 +162,12 @@ fn load_scan_diagnostics(conn: &Connection) -> CoreResult<Vec<StoredDiagnostic>>
 /// other source requires its `games` row and is skipped (logged) if that row
 /// is somehow absent, which foreign-key enforcement makes impossible for a
 /// non-`NULL` `game_id` anyway.
+#[cfg(test)]
 pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
+    load_findings_with_lang(conn, Lang::En)
+}
+
+fn load_findings_with_lang(conn: &Connection, lang: Lang) -> CoreResult<Vec<FindingRow>> {
     let mut stmt = conn.prepare(
         "SELECT g.id, g.name, g.install_dir, \
                 fi.file_id, f.rel_path, f.size, \
@@ -177,7 +183,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                 END, COALESCE(fi.provenance, 'builtin'), \
                 COALESCE(gl.vendor, glo.vendor), \
                 COALESCE(gl.path, fs.evidence_library_path), \
-                sle.status, f.game_id IS NULL, g.app_id \
+                sle.status, f.game_id IS NULL, g.app_id, fi.action \
          FROM findings fi \
          JOIN files f ON f.id = fi.file_id \
          LEFT JOIN games g ON g.id = f.game_id \
@@ -191,6 +197,10 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
     )?;
 
     let mut rows = Vec::new();
+    // A game may contribute thousands of findings, but its anti-cheat verdict
+    // requires one complete directory walk. Cache only monolithic-relevant
+    // games: ordinary DirectDelete rows do not consult this protection flag.
+    let mut anti_cheat_cache = HashMap::new();
     let mut result = stmt.query([])?;
     while let Some(row) = result.next()? {
         let category: String = row.get(6)?;
@@ -203,11 +213,21 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
         };
 
         let rel_path: String = row.get(4)?;
-        let size = row.get::<_, i64>(5)? as u64;
+        let Some(size) = nonnegative_persisted_size(row.get(5)?, "size", file_id) else {
+            continue;
+        };
         let rule_desc = row.get::<_, Option<String>>(7)?.unwrap_or_default();
         let confidence = row.get::<_, i64>(8)? as u8;
         let lang_tag: Option<String> = row.get(9)?;
-        let size_on_disk = row.get::<_, i64>(11)? as u64;
+        let Some(full_size_on_disk) =
+            nonnegative_persisted_size(row.get(11)?, "size_on_disk", file_id)
+        else {
+            continue;
+        };
+        let action_raw: Option<String> = row.get(19)?;
+        let Some(action) = restored_action(&source, action_raw.as_deref(), file_id) else {
+            continue;
+        };
         // The filesystem-evidence half of the verdict is still decided in SQL
         // (it reads columns and nothing else). The launcher-discovery half is
         // decided here instead, by the same function the scan's persistence
@@ -252,7 +272,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                 install_dir,
                 rel_path: name,
                 size,
-                size_on_disk,
+                size_on_disk: full_size_on_disk,
                 source,
                 rule_desc,
                 confidence,
@@ -261,6 +281,9 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                 deletion_block_reason,
                 imported_untrusted,
                 library,
+                action,
+                anti_cheat_protected: false,
+                monolith_badge: None,
             });
             continue;
         }
@@ -274,12 +297,29 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
             continue;
         };
         let install_dir: String = row.get(2)?;
+        let install_path = PathBuf::from(&install_dir);
+        let anti_cheat_protected = cached_anti_cheat_protection(
+            &mut anti_cheat_cache,
+            game_id,
+            action.is_monolithic_archive(),
+            || archive_trimmer::anti_cheat::AntiCheatShield::is_safe(&install_path),
+        );
+        let size_on_disk = if deletion_block_reason.as_deref()
+            == Some("archive container is read-only until safe rollback is implemented")
+        {
+            0
+        } else {
+            reclaimable_size_on_load(&action, size, full_size_on_disk)
+        };
+        let monolith_badge = action
+            .is_monolithic_archive()
+            .then(|| i18n::monolithic_badge(lang, size_on_disk, size));
         rows.push(FindingRow {
             file_id,
             game_id,
             game_name: row.get(1)?,
             app_id: row.get(18)?,
-            install_dir: PathBuf::from(install_dir),
+            install_dir: install_path,
             rel_path,
             size,
             size_on_disk,
@@ -291,10 +331,102 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
             deletion_block_reason,
             imported_untrusted,
             library,
+            action,
+            anti_cheat_protected,
+            monolith_badge,
         });
     }
 
     Ok(rows)
+}
+
+/// SQLite does not have an unsigned integer type. A corrupt negative size
+/// must never cross the `i64 -> u64` boundary, where it would become a huge
+/// reclaim estimate and poison every UI aggregate. Skip the affected row and
+/// retain a diagnostic instead.
+fn nonnegative_persisted_size(value: i64, field: &str, file_id: i64) -> Option<u64> {
+    match u64::try_from(value) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            crate::logger::error(&format!(
+                "Skipped finding {file_id}: persisted {field} is negative ({value})"
+            ));
+            None
+        }
+    }
+}
+
+fn cached_anti_cheat_protection(
+    cache: &mut HashMap<i64, bool>,
+    game_id: i64,
+    monolithic_relevant: bool,
+    check_safe: impl FnOnce() -> bool,
+) -> bool {
+    if !monolithic_relevant {
+        return false;
+    }
+    *cache.entry(game_id).or_insert_with(|| !check_safe())
+}
+
+/// Restored monolithic rows display the bytes their validated action can
+/// reclaim, not the allocation of the whole archive. Persisted estimates are
+/// untrusted accounting hints, so they cannot exceed either logical or
+/// allocated archive size. Ordinary whole-file deletes retain their full
+/// allocated size.
+fn reclaimable_size_on_load(
+    action: &gametrimmer_core::models::FindingAction,
+    logical_size: u64,
+    physical_size: u64,
+) -> u64 {
+    if action.is_monolithic_archive() {
+        action
+            .estimated_savings()
+            .min(logical_size)
+            .min(physical_size)
+    } else {
+        physical_size
+    }
+}
+
+/// Restores the action contract persisted alongside a finding without ever
+/// converting corruption into a deletion. Older ordinary findings did not
+/// carry action JSON, so a missing/blank value remains a compatible direct
+/// delete only for non-monolithic categories. A monolithic row without a
+/// valid monolithic action is skipped and diagnosed: showing it as an
+/// ordinary whole-file delete would be materially unsafe.
+fn restored_action(
+    source: &FindingSource,
+    raw: Option<&str>,
+    file_id: i64,
+) -> Option<gametrimmer_core::models::FindingAction> {
+    use gametrimmer_core::models::FindingAction;
+    use gametrimmer_core::rules::Category;
+
+    let is_monolithic = matches!(source, FindingSource::Rule(Category::MonolithicArchive));
+    let legacy_blank = raw.map(str::trim).is_none_or(str::is_empty);
+    let action = match FindingAction::from_json(raw) {
+        Ok(action) => action,
+        Err(err) => {
+            crate::logger::error(&format!(
+                "Skipped finding {file_id}: persisted action JSON is invalid: {err}"
+            ));
+            return None;
+        }
+    };
+
+    if is_monolithic && (legacy_blank || !action.is_monolithic_archive()) {
+        crate::logger::error(&format!(
+            "Skipped monolithic finding {file_id}: missing or non-monolithic action contract"
+        ));
+        return None;
+    }
+    if !is_monolithic && !matches!(action, FindingAction::DirectDelete) {
+        crate::logger::error(&format!(
+            "Skipped non-monolithic finding {file_id}: unexpected non-delete action contract"
+        ));
+        return None;
+    }
+    Some(action)
 }
 
 #[cfg(test)]
@@ -305,6 +437,139 @@ mod tests {
     use rusqlite::params;
 
     use crate::model::FindingSource;
+
+    #[test]
+    fn malformed_persisted_action_never_becomes_direct_delete() {
+        let source = FindingSource::Rule(Category::RedistFile);
+        assert!(restored_action(&source, Some("{not valid json"), 7).is_none());
+    }
+
+    #[test]
+    fn legacy_blank_action_is_kept_only_for_ordinary_findings() {
+        let ordinary = FindingSource::Rule(Category::RedistFile);
+        assert!(matches!(
+            restored_action(&ordinary, None, 7),
+            Some(gametrimmer_core::models::FindingAction::DirectDelete)
+        ));
+
+        let monolith = FindingSource::Rule(Category::MonolithicArchive);
+        assert!(restored_action(&monolith, Some("  "), 8).is_none());
+    }
+
+    #[test]
+    fn anti_cheat_check_is_lazy_and_cached_once_per_relevant_game() {
+        let mut cache = HashMap::new();
+        let calls = std::cell::Cell::new(0usize);
+
+        assert!(!cached_anti_cheat_protection(&mut cache, 1, false, || {
+            calls.set(calls.get() + 1);
+            false
+        }));
+        assert_eq!(calls.get(), 0, "ordinary findings need no directory walk");
+
+        for _ in 0..2 {
+            assert!(cached_anti_cheat_protection(&mut cache, 1, true, || {
+                calls.set(calls.get() + 1);
+                false
+            }));
+        }
+        assert_eq!(
+            calls.get(),
+            1,
+            "multiple monolithic findings from one game share one fail-closed verdict"
+        );
+    }
+
+    #[test]
+    fn restored_archive_savings_are_capped_by_logical_and_physical_size() {
+        use gametrimmer_core::models::FindingAction;
+
+        let action = FindingAction::SparseZero {
+            format: "Wwise".to_string(),
+            languages: vec!["de".to_string()],
+            stream_count: 1,
+            offsets: vec![(0, 1_200)],
+            streams: vec![],
+            estimated_savings: 1_200,
+        };
+        assert_eq!(reclaimable_size_on_load(&action, 1_000, 800), 800);
+        assert_eq!(reclaimable_size_on_load(&action, 700, 900), 700);
+        assert_eq!(
+            reclaimable_size_on_load(&FindingAction::DirectDelete, 700, 900),
+            900,
+            "ordinary delete rows retain allocated-size accounting"
+        );
+    }
+
+    #[test]
+    fn load_rebuilds_archive_reclaimable_size_and_localized_badge() {
+        use gametrimmer_core::models::FindingAction;
+
+        let conn = db::open_in_memory().expect("open in-memory db");
+        let install = tempfile::tempdir().expect("create install dir");
+        let library_id = insert_library(&conn, &install.path().to_string_lossy());
+        let game_id = insert_game(
+            &conn,
+            library_id,
+            "Archive Game",
+            &install.path().to_string_lossy(),
+        );
+        let file_id = insert_file(&conn, game_id, "voices.pck", 1_000);
+        conn.execute(
+            "UPDATE files SET size_on_disk = 800 WHERE id = ?1",
+            [file_id],
+        )
+        .expect("set physical archive size");
+        insert_finding(
+            &conn,
+            file_id,
+            "monolithic_archive",
+            "archive inspector",
+            90,
+            None,
+            None,
+        );
+        let action = FindingAction::SparseZero {
+            format: "Wwise".to_string(),
+            languages: vec!["de".to_string()],
+            stream_count: 1,
+            offsets: vec![(0, 1_200)],
+            streams: vec![],
+            estimated_savings: 1_200,
+        };
+        conn.execute(
+            "UPDATE findings SET action = ?1 WHERE file_id = ?2",
+            params![action.to_json(), file_id],
+        )
+        .expect("persist archive action");
+
+        let rows = load_findings_with_lang(&conn, Lang::Uk).expect("load archive finding");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].size_on_disk, 800);
+        assert_eq!(
+            rows[0].monolith_badge,
+            Some(i18n::monolithic_badge(Lang::Uk, 800, 1_000)),
+            "reload rebuilds the badge from capped reclaimable bytes in the active locale"
+        );
+    }
+
+    #[test]
+    fn load_skips_negative_persisted_sizes_instead_of_wrapping_to_u64() {
+        let conn = db::open_in_memory().expect("open in-memory db");
+        let library_id = insert_library(&conn, "C:/Games");
+        let game_id = insert_game(&conn, library_id, "Corrupt Game", "C:/Games/Corrupt");
+        let corrupt_file = insert_file(&conn, game_id, "negative.bin", -1);
+        insert_finding(&conn, corrupt_file, "bonus", "corrupt size", 80, None, None);
+        let valid_file = insert_file(&conn, game_id, "valid.bin", 42);
+        insert_finding(&conn, valid_file, "bonus", "valid size", 80, None, None);
+
+        let rows = load_findings(&conn).expect("one corrupt row must not abort the load");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].file_id, valid_file);
+        assert_eq!(rows[0].size, 42);
+    }
 
     fn insert_library(conn: &Connection, path: &str) -> i64 {
         conn.execute(

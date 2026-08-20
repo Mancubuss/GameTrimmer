@@ -204,6 +204,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         keep_languages: settings.keep_languages.clone(),
         enabled_categories: settings.enabled_categories.clone(),
         excluded_libraries: settings.excluded_libraries.clone(),
+        scan_monolithic_archives: settings.scan_monolithic_archives,
     };
 
     let (findings, scan_summary) = match run_scan_headless(&db_path, elevated, options) {
@@ -264,6 +265,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
                 .map(|item| DeleteItem {
                     file_id: item.row.file_id,
                     size_on_disk: item.row.size_on_disk,
+                    action: item.row.action.clone(),
                 })
                 .collect();
 

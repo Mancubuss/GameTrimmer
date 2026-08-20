@@ -7,7 +7,7 @@
 use gametrimmer_core::langdetect::{LangEvidence, LangReason};
 
 use super::{strings, Lang};
-use crate::model::RiskLevel;
+use crate::model::{format_size, RiskLevel};
 
 /// One report rendered twice: English for the diagnostic log, the interface
 /// language for the window.
@@ -506,6 +506,9 @@ pub fn manual_library_unavailable(lang: Lang, path: impl std::fmt::Display) -> S
 // -- worker::delete --
 
 pub fn deletion_block_reason(lang: Lang, reason: &str) -> String {
+    if reason == "archive container is read-only until safe rollback is implemented" {
+        return super::strings(lang).archive_action_unavailable.to_string();
+    }
     if lang == Lang::En {
         return reason.to_string();
     }
@@ -1428,6 +1431,105 @@ pub fn csv_header(lang: Lang) -> &'static str {
     match lang {
         Lang::En | Lang::Custom(_) => "Disk;Category;Game;Group folder;Path;Size (bytes);Size;Confidence;Source;Rule/reason;Language;Selected",
         Lang::Uk => "Диск;Категорія;Гра;Тека групи;Шлях;Розмір (байт);Розмір;Впевненість;Джерело;Правило/причина;Мова;Вибрано",
+    }
+}
+
+// -- 3-phase scanning & monolithic archives --
+
+pub fn scan_phase_1_label(lang: Lang, current: usize, total: usize) -> String {
+    match lang {
+        Lang::Uk => format!("1. Сканування дисків та бібліотек ({current} / {total} ігор)"),
+        _ => format!("1. Disks & libraries discovery ({current} / {total} games)"),
+    }
+}
+
+pub fn scan_phase_2_label(lang: Lang, current: usize, total: usize) -> String {
+    match lang {
+        Lang::Uk => format!("2. Аналіз звичайних файлів ({current} / {total} файлів)"),
+        _ => format!("2. Regular file analysis ({current} / {total} files)"),
+    }
+}
+
+pub fn scan_phase_3_label(lang: Lang, current: usize, total: usize) -> String {
+    match lang {
+        Lang::Uk => format!("3. Аналіз монолітних архівів ({current} / {total} архівів)"),
+        _ => format!("3. Monolithic archives inspection ({current} / {total} archives)"),
+    }
+}
+
+pub fn monolithic_badge(lang: Lang, savings: u64, total: u64) -> String {
+    let savings_str = format_size(lang, savings);
+    let total_str = format_size(lang, total);
+    match lang {
+        Lang::Uk => format!("📦 Моноліт [Економія: {savings_str} / Разом: {total_str}]"),
+        _ => format!("📦 Monolith [Savings: {savings_str} / Total: {total_str}]"),
+    }
+}
+
+pub fn anticheat_shield_badge() -> &'static str {
+    "🛡️"
+}
+
+pub fn anticheat_shield_tooltip(lang: Lang) -> &'static str {
+    strings(lang).anticheat_shield_tooltip
+}
+
+pub fn hover_monolith_suffix(
+    lang: Lang,
+    action: &gametrimmer_core::models::FindingAction,
+) -> String {
+    match action {
+        gametrimmer_core::models::FindingAction::SparseZero {
+            format,
+            languages,
+            stream_count,
+            offsets,
+            ..
+        } => {
+            let total_stream_bytes: u64 = offsets.iter().map(|(_, l)| *l).sum();
+            let size_str = format_size(lang, total_stream_bytes);
+            let langs = if languages.is_empty() {
+                match lang {
+                    Lang::Uk => "всі мови",
+                    _ => "all languages",
+                }
+            } else {
+                &languages.join(", ")
+            };
+            match lang {
+                Lang::Uk => format!(
+                    "\n\n📦 Монолітний контейнер: {format}\nВиявлено невикористовуваних потоків: {stream_count} ({langs})\nПотенційна економія простору: {size_str}"
+                ),
+                _ => format!(
+                    "\n\n📦 Monolithic container: {format}\nUnused localized streams found: {stream_count} ({langs})\nPotential space savings: {size_str}"
+                ),
+            }
+        }
+        gametrimmer_core::models::FindingAction::Repack {
+            format,
+            languages,
+            estimated_savings,
+            ..
+        } => {
+            let size_str = format_size(lang, *estimated_savings);
+            let langs = if languages.is_empty() {
+                match lang {
+                    Lang::Uk => "всі мови",
+                    _ => "all languages",
+                }
+            } else {
+                &languages.join(", ")
+            };
+            match lang {
+                Lang::Uk => format!(
+                    "\n\n📦 Монолітний архів (перепакування): {format}\nМови для видалення: {langs}\nПотенційна економія простору: {size_str}"
+                ),
+                _ => format!(
+                    "\n\n📦 Monolithic archive (repack): {format}\nLanguages to strip: {langs}\nPotential space savings: {size_str}"
+                ),
+            }
+        }
+        _ => String::new(),
     }
 }
 

@@ -62,6 +62,7 @@ pub enum Category {
     SaveBloat,
     LauncherWebCache,
     ModManagerDownloads,
+    MonolithicArchive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -123,6 +124,7 @@ impl Category {
             Category::SaveBloat => "save_bloat",
             Category::LauncherWebCache => "launcher_web_cache",
             Category::ModManagerDownloads => "mod_manager_downloads",
+            Category::MonolithicArchive => "monolithic_archive",
         }
     }
 
@@ -195,7 +197,10 @@ impl Category {
         match self {
             Category::RedistFolder | Category::RedistFile => 0,
             Category::Intro => 1,
-            Category::DevLeftovers | Category::CrashDump | Category::DiagnosticLogs => 2,
+            Category::DevLeftovers
+            | Category::CrashDump
+            | Category::DiagnosticLogs
+            | Category::MonolithicArchive => 2,
             Category::WorkshopOrphan
             | Category::DownloadingStaging
             | Category::ShaderCache
@@ -353,14 +358,7 @@ pub fn serialize_rule_list(rules: &[Rule]) -> Result<String> {
     .map_err(CoreError::from)
 }
 
-/// A classification produced by the engine for one file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Finding {
-    pub category: Category,
-    pub rule_desc: String,
-    pub confidence: u8,
-    pub provenance: RuleProvenance,
-}
+pub use crate::models::{Finding, FindingAction};
 
 /// Everything the engine can conclude about one file.
 ///
@@ -433,7 +431,7 @@ fn scope_applies(scope: &Option<String>, app_id: Option<&str>) -> bool {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RuleEngine {
     rules: Vec<CompiledRule>,
     /// Split out from `rules` rather than filtered out of it per file: on a
@@ -555,6 +553,12 @@ impl RuleEngine {
                     rule.pattern
                 )));
             };
+            if category == Category::MonolithicArchive {
+                return Err(CoreError::Other(format!(
+                    "rules.json: rule #{index} uses reserved category monolithic_archive; \
+                     only the archive inspector may emit an explicit SparseZero or Repack action"
+                )));
+            }
             let Some(confidence) = rule.confidence else {
                 return Err(CoreError::Other(format!(
                     "rules.json: rule #{index} (desc \"{desc}\", pattern `{}`) has no confidence; \
@@ -638,6 +642,15 @@ impl RuleEngine {
             }
         }
 
+        // Archive candidates belong exclusively to the deep archive
+        // inspector, which emits an explicit SparseZero/Repack contract. An
+        // ordinary or imported rule may use any display category it wants;
+        // letting it claim `voices.pck` as `docs_file` would otherwise smuggle
+        // the container into the whole-file delete path.
+        if crate::worker::is_candidate_archive_path(rel_path) {
+            return Verdict::Unmatched;
+        }
+
         let segments: Vec<&str> = rel_path
             .split(['\\', '/'])
             .filter(|segment| !segment.is_empty())
@@ -704,6 +717,7 @@ impl RuleEngine {
                     rule_desc: rule.desc.clone(),
                     confidence: rule.confidence,
                     provenance: rule.provenance,
+                    action: FindingAction::DirectDelete,
                 });
             }
         }
@@ -880,12 +894,15 @@ mod tests {
     fn classify_puts_support_folder_content_into_docs_not_bonus() {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
-        // Support/help folders are reference material, so they belong to
-        // the docs category ("Documentation and reference material" in the
-        // UI), not to bonus - and the folder claims its content wholesale,
-        // whatever the file type or per-language subfolder split inside.
+        // Support/help folders are reference material, but an archive-shaped
+        // file is reserved for Phase 3 and must not become a whole-file rule
+        // finding merely because of its parent folder.
+        assert_eq!(
+            engine.classify(r"Support\ru\voices.pak", None),
+            Verdict::Unmatched
+        );
         let finding = engine
-            .classify(r"Support\ru\voices.pak", None)
+            .classify(r"Support\ru\voices.dat", None)
             .flagged()
             .expect("support folder content should be classified");
 
@@ -938,16 +955,16 @@ mod tests {
 
         // Specific boot sequence / splash in generic folders
         let boot_file = engine
-            .classify(r"Data\Movies\boot_sequence.bik", None)
+            .classify(r"Data\Movies\boot_sequence.mp4", None)
             .flagged()
-            .expect("boot_sequence.bik should be classified as intro");
+            .expect("boot_sequence.mp4 should be classified as intro");
         assert_eq!(boot_file.category, Category::Intro);
 
         // Specific middleware logo files
         let nvidia_file = engine
-            .classify(r"Engine\Binaries\nvidia_logo.bik", None)
+            .classify(r"Engine\Binaries\nvidia_logo.mp4", None)
             .flagged()
-            .expect("nvidia_logo.bik should be classified as intro");
+            .expect("nvidia_logo.mp4 should be classified as intro");
         assert_eq!(nvidia_file.category, Category::Intro);
         assert_eq!(nvidia_file.confidence, 95);
 
@@ -959,12 +976,11 @@ mod tests {
         assert_eq!(unreal_file.confidence, 95);
 
         // Game-specific rule with app_id (Prey 2017)
-        let prey_file = engine
-            .classify(r"Whiplash\GameSDK\Videos\LegalScreens.bk2", Some("480490"))
-            .flagged()
-            .expect("LegalScreens.bk2 for Prey should match game-specific rule");
-        assert_eq!(prey_file.category, Category::Intro);
-        assert_eq!(prey_file.confidence, 95);
+        assert_eq!(
+            engine.classify(r"Whiplash\GameSDK\Videos\LegalScreens.bk2", Some("480490")),
+            Verdict::Unmatched,
+            "Bink containers are reserved for archive inspection"
+        );
 
         // Crucial safety checks: credits and story cinematics are NOT intro videos
         let credits_file = engine.classify(r"Movies\credits.bk2", None).flagged();
@@ -982,7 +998,7 @@ mod tests {
 
         // An intro logo video inside Extras folder: Intro category has priority rank 1 vs Bonus rank 3
         let finding = engine
-            .classify(r"Extras\nvidia_logo.bik", None)
+            .classify(r"Extras\nvidia_logo.mp4", None)
             .flagged()
             .expect("nvidia_logo inside Extras should be classified as intro rather than bonus");
         assert_eq!(finding.category, Category::Intro);
@@ -1468,6 +1484,26 @@ mod tests {
         let no_confidence = r#"[{"category":"bonus","pattern":"^x$","desc":"x"}]"#;
         let err = RuleEngine::from_json(&pack(no_confidence)).expect_err("confidence is required");
         assert!(err.to_string().contains("no confidence"), "{err}");
+    }
+
+    #[test]
+    fn ordinary_rules_cannot_emit_the_reserved_monolithic_archive_category() {
+        let json = pack(
+            r#"[{"category":"monolithic_archive","pattern":".*\\.pck$","desc":"unsafe archive rule","confidence":90}]"#,
+        );
+        let error = RuleEngine::from_json(&json).expect_err("reserved category must be rejected");
+        assert!(error
+            .to_string()
+            .contains("reserved category monolithic_archive"));
+    }
+
+    #[test]
+    fn ordinary_rule_category_cannot_smuggle_a_monolithic_candidate() {
+        let json = pack(
+            r#"[{"category":"docs_file","pattern":"^voices\\.pck$","desc":"smuggled archive","confidence":99,"provenance":"imported_untrusted"}]"#,
+        );
+        let engine = RuleEngine::from_json(&json).expect("syntactically valid imported rule");
+        assert_eq!(engine.classify("voices.pck", None), Verdict::Unmatched);
     }
 
     fn default_rules_path() -> std::path::PathBuf {

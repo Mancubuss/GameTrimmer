@@ -199,10 +199,18 @@ pub struct SafetySnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeletePlan {
-    pub file_id: i64,
-    pub scan_id: i64,
-    pub action: String,
-    pub snapshot: SafetySnapshot,
+    pub(crate) file_id: i64,
+    pub(crate) scan_id: i64,
+    pub(crate) action: String,
+    pub(crate) snapshot: SafetySnapshot,
+}
+
+impl DeletePlan {
+    /// Nominal path used only for user-facing backup/progress preparation.
+    /// Execution revalidates the opaque plan before touching this path.
+    pub fn target_path(&self) -> PathBuf {
+        self.snapshot.trusted_root.join(&self.snapshot.rel_path)
+    }
 }
 
 pub fn normalize_relative_path(raw: &str) -> std::result::Result<PathBuf, DeleteBlockReason> {
@@ -225,10 +233,12 @@ pub fn normalize_relative_path(raw: &str) -> std::result::Result<PathBuf, Delete
     // the one it was captured against - still inside the trusted root, so
     // `OutsideTrustedRoot` would never catch it, but the wrong object all the
     // same. `ends_with('.')` alone already covers the bare `"."`/`".."` cases.
-    if raw
-        .split(['\\', '/'])
-        .any(|part| part.is_empty() || part.ends_with('.') || part.ends_with(' '))
-    {
+    if raw.split(['\\', '/']).any(|part| {
+        part.is_empty()
+            || part.ends_with('.')
+            || part.ends_with(' ')
+            || is_windows_reserved_component(part)
+    }) {
         return Err(DeleteBlockReason::InvalidRelativePath(
             "only non-empty normal components are allowed".into(),
         ));
@@ -245,6 +255,21 @@ pub fn normalize_relative_path(raw: &str) -> std::result::Result<PathBuf, Delete
         ));
     }
     Ok(path)
+}
+
+fn is_windows_reserved_component(component: &str) -> bool {
+    let basename = component.split('.').next().unwrap_or(component);
+    let uppercase = basename.to_ascii_uppercase();
+    matches!(
+        uppercase.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || uppercase
+        .strip_prefix("COM")
+        .or_else(|| uppercase.strip_prefix("LPT"))
+        .is_some_and(|suffix| {
+            (suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9'))
+                || matches!(suffix, "¹" | "²" | "³")
+        })
 }
 
 /// Classifies a failed `CreateFileW` exactly as the metadata call it replaced
@@ -663,7 +688,7 @@ pub fn capture_safety_snapshot(
 /// openers the DELETE access that renaming or replacing the object would need.
 /// There is no second name resolution to race.
 #[cfg(windows)]
-pub struct VerifiedTarget {
+pub(crate) struct VerifiedTarget {
     /// Owns the open handle; dropping it closes the handle.
     file: fs::File,
     path: PathBuf,
@@ -676,18 +701,14 @@ pub struct VerifiedTarget {
 /// and pretending otherwise in a type named "verified" would be worse than
 /// saying so.
 #[cfg(not(windows))]
-pub struct VerifiedTarget {
+pub(crate) struct VerifiedTarget {
     path: PathBuf,
     kind: TargetKind,
 }
 
 impl VerifiedTarget {
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
-    }
-
-    pub fn kind(&self) -> TargetKind {
-        self.kind
     }
 
     /// Releases the handle and hands back the path, for removers that can only
@@ -701,7 +722,7 @@ impl VerifiedTarget {
     /// the bin rather than destroyed. Making the trade-off explicit here, in
     /// the type, rather than leaving it as an unremarked difference between two
     /// call sites.
-    pub fn into_path(self) -> PathBuf {
+    pub(crate) fn into_path(self) -> PathBuf {
         self.path
     }
 }
@@ -718,7 +739,7 @@ impl VerifiedTarget {
     /// the paths are relative to cannot be swapped for another while the walk
     /// is running, because this handle's share mode denies the DELETE access a
     /// rename would require.
-    pub fn delete(self) -> std::result::Result<(), std::io::Error> {
+    pub(crate) fn delete(self) -> std::result::Result<(), std::io::Error> {
         use std::os::windows::io::AsRawHandle;
         use windows::Win32::Foundation::HANDLE;
         use windows::Win32::Storage::FileSystem::{
@@ -782,7 +803,7 @@ impl VerifiedTarget {
 
 #[cfg(not(windows))]
 impl VerifiedTarget {
-    pub fn delete(self) -> std::result::Result<(), std::io::Error> {
+    pub(crate) fn delete(self) -> std::result::Result<(), std::io::Error> {
         if self.kind == TargetKind::Directory {
             fs::remove_dir_all(&self.path)
         } else {
@@ -834,7 +855,7 @@ fn validated_target_path(plan: &DeletePlan) -> std::result::Result<PathBuf, Dele
 /// Every check [`validate_delete_plan`] makes is made here too, with the one
 /// difference that identity is read from the handle that is kept, not from a
 /// handle that is thrown away.
-pub fn open_verified_for_delete(
+pub(crate) fn open_verified_for_delete(
     plan: &DeletePlan,
 ) -> std::result::Result<VerifiedTarget, DeleteBlockReason> {
     let target = validated_target_path(plan)?;
@@ -1132,6 +1153,20 @@ mod tests {
             "dir\\foo..",
             "dir\\foo ",
             "dir\\foo.  ",
+            // Win32 resolves these legacy device basenames independently of
+            // case and even when an extension is present.
+            "NUL",
+            "nul.txt",
+            "dir\\CON",
+            "dir\\COM1.log",
+            "dir\\LPT9.bin",
+            // Win32 also treats the ISO-8859-1 superscript digits as device
+            // number suffixes and exposes console input/output aliases.
+            "dir\\COM¹.log",
+            "dir\\COM²",
+            "dir\\LPT³.bin",
+            "CONIN$",
+            "conout$.txt",
         ] {
             assert!(normalize_relative_path(path).is_err(), "accepted {path:?}");
         }

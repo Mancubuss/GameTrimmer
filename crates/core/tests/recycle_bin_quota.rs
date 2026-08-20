@@ -30,7 +30,8 @@
 
 use std::path::PathBuf;
 
-use gametrimmer_core::ops::{RecycleBin, Remover};
+use gametrimmer_core::ops::{execute_delete_plans_observed, prepare_delete_plans, FsOutcome};
+use gametrimmer_core::settings::DeleteMethod;
 
 /// Writes `size_mb` MiB of zeroes to `path` in 1 MiB chunks.
 fn write_filler(path: &std::path::Path, size_mb: u64) {
@@ -57,9 +58,69 @@ fn is_in_recycle_bin(path: &std::path::Path) -> bool {
             return false;
         }
     };
-    items
-        .iter()
-        .any(|item| item.original_path().as_path() == path)
+    items.iter().any(|item| {
+        item.original_path()
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .eq_ignore_ascii_case(path.to_string_lossy().trim_start_matches(r"\\?\"))
+    })
+}
+
+fn recycle_through_authoritative_pipeline(
+    root: &std::path::Path,
+    rel_path: &str,
+) -> gametrimmer_core::error::Result<FsOutcome> {
+    let mut conn = gametrimmer_core::db::open_in_memory()?;
+    let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete")?;
+    conn.execute(
+        "INSERT INTO game_libraries (vendor, path) VALUES ('test', ?1)",
+        [root.to_string_lossy()],
+    )?;
+    let library_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO games (scan_id, library_id, name, install_dir, app_id)
+         VALUES (?1, ?2, 'Recycle quota probe', ?3, 'probe')",
+        rusqlite::params![scan_id, library_id, root.to_string_lossy()],
+    )?;
+    let game_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO files (scan_id, game_id, rel_path, size) VALUES (?1, ?2, ?3, 1)",
+        rusqlite::params![scan_id, game_id, rel_path],
+    )?;
+    let file_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO findings (file_id, category, confidence) VALUES (?1, 'docs_file', 90)",
+        [file_id],
+    )?;
+    let snapshot = gametrimmer_core::safety::capture_safety_snapshot(root, rel_path)
+        .map_err(|error| gametrimmer_core::error::CoreError::Other(error.to_string()))?;
+    conn.execute(
+        "INSERT INTO file_safety
+         (file_id, scan_id, trusted_root, rel_path, root_identity,
+          target_identity, target_kind, tree_fingerprint)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            file_id,
+            scan_id,
+            snapshot.trusted_root.to_string_lossy(),
+            snapshot.rel_path.to_string_lossy(),
+            snapshot.root_identity.encode(),
+            snapshot.target_identity.encode(),
+            snapshot.target_identity.kind.as_str(),
+            snapshot.tree_fingerprint,
+        ],
+    )?;
+    gametrimmer_core::db::record_scan_library_evidence(&conn, scan_id, root, "test", "complete")?;
+    gametrimmer_core::db::activate_scan(&mut conn, scan_id)?;
+    let plans = prepare_delete_plans(&conn, &[file_id], DeleteMethod::RecycleBin)?;
+    let outcomes = execute_delete_plans_observed(
+        &mut conn,
+        DeleteMethod::RecycleBin,
+        &plans,
+        |_, _, _| {},
+        |_, _| {},
+    )?;
+    Ok(outcomes[0].status)
 }
 
 #[test]
@@ -79,7 +140,7 @@ fn item_larger_than_the_bin_quota_is_never_reported_as_a_successful_recycle() {
     println!("writing {size_mb} MiB to {}", target.display());
     write_filler(&target, size_mb);
 
-    let result = RecycleBin.remove(&target);
+    let result = recycle_through_authoritative_pipeline(&dir, "oversized.bin");
     let still_on_disk = target.exists();
     let in_bin = is_in_recycle_bin(&target);
 
@@ -96,7 +157,7 @@ fn item_larger_than_the_bin_quota_is_never_reported_as_a_successful_recycle() {
     // recoverable. An error (item left on disk) is an acceptable outcome too -
     // the app surfaces it as a per-file failure. Success reported for a file
     // that is actually gone (permanently deleted, not in the bin) is not.
-    if result.is_ok() {
+    if matches!(result, Ok(FsOutcome::Removed)) {
         assert!(
             in_bin,
             "`trash::delete` reported success for an item over the bin quota, \

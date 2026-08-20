@@ -1,4 +1,4 @@
-//! The ordinary [`RecycleBin`] success path: an item comfortably under the
+//! The ordinary high-level Recycle Bin success path: an item comfortably under the
 //! volume's Recycle Bin quota really is recycled, and really is recoverable.
 //!
 //! Every other test in this workspace removes files through a stub `Remover`
@@ -26,7 +26,15 @@
 
 #![cfg(windows)]
 
-use gametrimmer_core::ops::{RecycleBin, Remover};
+use gametrimmer_core::ops::{execute_delete_plans_observed, prepare_delete_plans, FsOutcome};
+use gametrimmer_core::settings::DeleteMethod;
+
+fn comparable_path(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .replace('/', "\\")
+        .to_lowercase()
+}
 
 /// Bin entries whose original path is `path`. Returned rather than a bool
 /// because the caller needs the items themselves to purge them again.
@@ -34,7 +42,7 @@ fn bin_entries_for(path: &std::path::Path) -> Vec<trash::TrashItem> {
     match trash::os_limited::list() {
         Ok(items) => items
             .into_iter()
-            .filter(|item| item.original_path().as_path() == path)
+            .filter(|item| comparable_path(item.original_path().as_path()) == comparable_path(path))
             .collect(),
         // A failure to list is not evidence of absence. Report it and let the
         // caller's assertion fail on its own terms rather than silently
@@ -44,6 +52,63 @@ fn bin_entries_for(path: &std::path::Path) -> Vec<trash::TrashItem> {
             Vec::new()
         }
     }
+}
+
+fn recycle_through_authoritative_pipeline(
+    root: &std::path::Path,
+    rel_path: &str,
+) -> gametrimmer_core::error::Result<FsOutcome> {
+    let mut conn = gametrimmer_core::db::open_in_memory()?;
+    let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete")?;
+    conn.execute(
+        "INSERT INTO game_libraries (vendor, path) VALUES ('test', ?1)",
+        [root.to_string_lossy()],
+    )?;
+    let library_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO games (scan_id, library_id, name, install_dir, app_id)
+         VALUES (?1, ?2, 'Recycle probe', ?3, 'probe')",
+        rusqlite::params![scan_id, library_id, root.to_string_lossy()],
+    )?;
+    let game_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO files (scan_id, game_id, rel_path, size) VALUES (?1, ?2, ?3, 1)",
+        rusqlite::params![scan_id, game_id, rel_path],
+    )?;
+    let file_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO findings (file_id, category, confidence) VALUES (?1, 'docs_file', 90)",
+        [file_id],
+    )?;
+    let snapshot = gametrimmer_core::safety::capture_safety_snapshot(root, rel_path)
+        .map_err(|error| gametrimmer_core::error::CoreError::Other(error.to_string()))?;
+    conn.execute(
+        "INSERT INTO file_safety
+         (file_id, scan_id, trusted_root, rel_path, root_identity,
+          target_identity, target_kind, tree_fingerprint)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            file_id,
+            scan_id,
+            snapshot.trusted_root.to_string_lossy(),
+            snapshot.rel_path.to_string_lossy(),
+            snapshot.root_identity.encode(),
+            snapshot.target_identity.encode(),
+            snapshot.target_identity.kind.as_str(),
+            snapshot.tree_fingerprint,
+        ],
+    )?;
+    gametrimmer_core::db::record_scan_library_evidence(&conn, scan_id, root, "test", "complete")?;
+    gametrimmer_core::db::activate_scan(&mut conn, scan_id)?;
+    let plans = prepare_delete_plans(&conn, &[file_id], DeleteMethod::RecycleBin)?;
+    let outcomes = execute_delete_plans_observed(
+        &mut conn,
+        DeleteMethod::RecycleBin,
+        &plans,
+        |_, _, _| {},
+        |_, _| {},
+    )?;
+    Ok(outcomes[0].status)
 }
 
 /// A temp directory that is unique per test run without pulling in a
@@ -92,13 +157,16 @@ fn a_recycled_file_leaves_the_disk_and_is_recoverable_from_the_bin() {
 
     // `trash` records the path it was given; canonicalizing here would compare
     // a verbatim `\\?\` path against the plain one the bin stores.
-    let result = RecycleBin.remove(&target);
+    let result = recycle_through_authoritative_pipeline(dir.0.as_path(), "recyclable.txt");
     let still_on_disk = target.exists();
     let entries = bin_entries_for(&target);
 
     purge_bin_entries_for(&target);
 
-    result.expect("recycling a small file on a normal volume must succeed");
+    assert_eq!(
+        result.expect("recycling a small file on a normal volume must succeed"),
+        FsOutcome::Removed
+    );
     assert!(
         !still_on_disk,
         "`RecycleBin::remove` reported success but the file is still on disk - \
@@ -120,13 +188,16 @@ fn a_recycled_directory_leaves_the_disk_and_is_recoverable_from_the_bin() {
     std::fs::create_dir_all(target.join("nested")).expect("create the directory to be recycled");
     std::fs::write(target.join("nested").join("leaf.txt"), b"leaf").expect("write nested file");
 
-    let result = RecycleBin.remove(&target);
+    let result = recycle_through_authoritative_pipeline(dir.0.as_path(), "recyclable-dir");
     let still_on_disk = target.exists();
     let entries = bin_entries_for(&target);
 
     purge_bin_entries_for(&target);
 
-    result.expect("recycling a small directory on a normal volume must succeed");
+    assert_eq!(
+        result.expect("recycling a small directory on a normal volume must succeed"),
+        FsOutcome::Removed
+    );
     assert!(
         !still_on_disk,
         "`RecycleBin::remove` reported success but the directory is still on disk"
@@ -143,16 +214,12 @@ fn removing_an_absent_path_is_an_error_rather_than_a_silent_success() {
     let dir = TempDir::new("absent");
     let target = dir.join("never-existed.txt");
 
-    // The deletion pipeline distinguishes `AlreadyAbsent` from `Removed` by
-    // re-checking the filesystem after an error (see `ops.rs`), which only
-    // works if the remover reports the failure instead of swallowing it.
-    let result = RecycleBin.remove(&target);
+    let result = recycle_through_authoritative_pipeline(dir.0.as_path(), "never-existed.txt");
 
     purge_bin_entries_for(&target);
 
     assert!(
         result.is_err(),
-        "recycling a path that does not exist must fail, otherwise the \
-         already-absent branch in the deletion pipeline is never reached"
+        "an absent path must fail authoritative preflight rather than be reported removed"
     );
 }

@@ -235,6 +235,7 @@
     "category_docs": "Ohjeet ja dokumentaatio",
     "category_bonus": "Bonusmateriaali",
     "category_loc": "Kielipaketit ja lokalisoinnit",
+    "category_archives": "Monoliittiset arkistot",
     "category_other": "Muut",
     "category_orphan": "Jäänteet",
     "orphan_branch_label": "Orvot jäänteet",
@@ -258,6 +259,17 @@
     "saves_retention_slider": "Säilytä pelin uusimmat pikatallennukset",
     "saves_auto_backup_label": "Automaattinen ZIP-varmuuskopio ennen poistoa",
     "saves_backup_success": "Tallennusten varmuuskopio luotu onnistuneesti",
-    "saves_total_prunable": "Poistettavia automaattitallennuksia löytyi"
+    "saves_total_prunable": "Poistettavia automaattitallennuksia löytyi",
+    "monolithic_archives_label": "Monolithic archives",
+    "scan_monolithic_archives_checkbox": "Deep scan monolithic archives (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
+    "scan_monolithic_archives_subtitle": "Read-only inspection of container internals. Trimming is unavailable until safe rollback is implemented.",
+    "scan_phase_1_title": "1. Disks & libraries discovery",
+    "scan_phase_2_title": "2. Regular file analysis",
+    "scan_phase_3_title": "3. Monolithic archives inspection",
+    "scan_overall_title": "Overall progress",
+    "badge_monolith": "Monolith",
+    "badge_anticheat_shield": "🛡️ Anti-Cheat",
+    "anticheat_shield_tooltip": "Game protected by anti-cheat; modification disabled for safety",
+    "archive_action_unavailable": "Archive trimming is unavailable until safe rollback is implemented"
   }
 }

@@ -550,6 +550,9 @@ pub(super) fn persist_orphans(
                     vendor,
                     root: orphan.evidence_library_path.clone(),
                 }),
+                action: gametrimmer_core::models::FindingAction::DirectDelete,
+                anti_cheat_protected: false,
+                monolith_badge: None,
             });
         }
     }

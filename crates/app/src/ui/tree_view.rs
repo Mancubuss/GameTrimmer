@@ -79,6 +79,11 @@ const INDENT_PX: f32 = 18.0;
 const LANG_COLUMN_PX: f32 = 48.0;
 const COUNT_COLUMN_PX: f32 = 64.0;
 const SIZE_COLUMN_PX: f32 = 92.0;
+/// A monolithic archive can contain thousands of localized chunks. Materialize
+/// a bounded page at a time, otherwise expanding one archive defeats the
+/// surrounding row virtualization before `ScrollArea::show_rows` gets a
+/// chance to do its work.
+const MONOLITHIC_STREAM_PAGE_SIZE: usize = 128;
 
 /// Width held before every file name for the "look at this one" mark, so the
 /// names of marked and unmarked rows still line up in one column.
@@ -143,6 +148,25 @@ enum Row {
         c: usize,
         n: usize,
         member: Option<usize>,
+    },
+    MonolithicStream {
+        d: usize,
+        g: usize,
+        c: usize,
+        n: usize,
+        member: Option<usize>,
+        stream_index: usize,
+    },
+    /// Explicitly loads the next bounded page of streams for one monolithic
+    /// archive. This is a navigation row, not a selectable deletion target.
+    MonolithicStreamsMore {
+        d: usize,
+        g: usize,
+        c: usize,
+        n: usize,
+        member: Option<usize>,
+        next_page: usize,
+        remaining: usize,
     },
 }
 
@@ -232,16 +256,11 @@ impl DrawnLevels {
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
 
-    // Every selection edit reachable from this panel - per-file checkbox,
-    // tri-state group checkboxes, keyboard toggle, context-menu actions -
-    // happens through a disjoint `&mut app.findings` borrow with no way to
-    // call back into `app`. Rather than hooking each site and hoping the list
-    // stays complete, take a fingerprint around the whole pass and compare.
-    // Worker messages that also touch `findings` (a fresh scan applying the
-    // profile, files disappearing mid-delete) are handled in
-    // `drain_messages`, outside this window, so they cannot be mistaken for a
-    // hand-edit.
-    let selection_before = model::selection_fingerprint(&app.findings);
+    // Selection is recorded exactly at its mutation sites instead of hashing
+    // every finding before and after every frame. With a large result set the
+    // old two full-list fingerprints were measurable UI work even while the
+    // user merely scrolled.
+    let selection_changed = std::cell::Cell::new(false);
     // Outlives the row pass on purpose - see `RowCtx::keep_request`.
     let keep_request = std::cell::Cell::new(None);
 
@@ -295,22 +314,10 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         // which is the single list of them (this used to enumerate three of
         // the five here and silently kept handling keys behind the settings
         // dialog and the clear-database confirmation).
-        let mut scroll_override = None;
-        if !app.any_modal_open() {
-            let rows = build_visible_rows(
-                &app.tree,
-                &app.findings,
-                app.tree_axis,
-                &app.tree_toggles,
-                app.tree_category_filter,
-                &app.tree_search_index,
-            );
-            scroll_override = handle_keyboard(app, ui, &rows, row_stride);
-        }
-
-        // Rebuilt after key handling: expanding/collapsing above changes
-        // which rows are visible.
-        let rows = build_visible_rows(
+        // One normal frame constructs the flattened list once. Keyboard
+        // expansion/collapse is the sole path that can change structural
+        // visibility before it is rendered, and only then do we rebuild it.
+        let mut rows = build_visible_rows(
             &app.tree,
             &app.findings,
             app.tree_axis,
@@ -318,6 +325,21 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             app.tree_category_filter,
             &app.tree_search_index,
         );
+        let mut scroll_override = None;
+        if !app.any_modal_open() {
+            let keyboard = handle_keyboard(app, ui, &rows, row_stride);
+            scroll_override = keyboard.scroll_override;
+            if keyboard.visibility_changed {
+                rows = build_visible_rows(
+                    &app.tree,
+                    &app.findings,
+                    app.tree_axis,
+                    &app.tree_toggles,
+                    app.tree_category_filter,
+                    &app.tree_search_index,
+                );
+            }
+        }
         if let Some(cursor) = app.tree_cursor {
             if cursor >= rows.len() {
                 app.tree_cursor = rows.len().checked_sub(1);
@@ -349,6 +371,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             descriptions: &app.descriptions,
             query: app.tree_search_index.query(),
             keep_request: &keep_request,
+            selection_changed: &selection_changed,
             updated_games: &app.updated_games,
         };
 
@@ -383,14 +406,13 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     // The profile picker claims to describe what is checked. Once the user
     // has hand-edited any of it, only "Custom" is still true.
-    if model::selection_fingerprint(&app.findings) != selection_before {
+    if selection_changed.get() {
         app.mark_selection_custom();
     }
 
-    // After the fingerprint check, not before: dropping the kept row clears
-    // its own selection, and that is a consequence of the exception rather
-    // than a hand edit of the profile - crediting it to the user would flip
-    // the profile picker to "Custom" for a click that never touched a box.
+    // Apply this after the direct selection edits: dropping the kept row can
+    // clear its own selection, but that is a consequence of the exception
+    // rather than a hand edit of the profile.
     if let Some(index) = keep_request.take() {
         apply_keep_request(app, index);
     }
@@ -754,6 +776,20 @@ fn build_visible_rows(
                                     },
                                     indent: node_indent + 1,
                                 });
+                                push_monolithic_stream_rows(
+                                    &mut rows,
+                                    findings,
+                                    toggles,
+                                    &top_group.key,
+                                    game.game_id,
+                                    d,
+                                    g,
+                                    c,
+                                    n,
+                                    Some(member),
+                                    index,
+                                    node_indent + 2,
+                                );
                             }
                         }
                         TreeNode::File { index } => {
@@ -777,6 +813,20 @@ fn build_visible_rows(
                                 },
                                 indent: node_indent,
                             });
+                            push_monolithic_stream_rows(
+                                &mut rows,
+                                findings,
+                                toggles,
+                                &top_group.key,
+                                game.game_id,
+                                d,
+                                g,
+                                c,
+                                n,
+                                None,
+                                *index,
+                                node_indent + 1,
+                            );
                         }
                     }
                 }
@@ -837,6 +887,90 @@ fn folder_key(
     )
 }
 
+/// Stable, collision-free key for an expandable monolithic container file row.
+fn monolith_key(top: &TopKey, game_id: i64, rel_path: &str) -> String {
+    format!("m|{}|{game_id}|{rel_path}", top.collapse_key())
+}
+
+/// Key that records one extra materialized stream page. Page zero is implicit
+/// once its archive row is expanded, so this only stores user requests beyond
+/// the initial bounded page.
+fn monolith_stream_page_key(monolith_key: &str, page: usize) -> String {
+    format!("{monolith_key}|page|{page}")
+}
+
+fn loaded_monolith_stream_pages(toggles: &HashMap<String, bool>, monolith_key: &str) -> usize {
+    // Page zero is always available after expansion. Stop at the first gap so
+    // a stale key from a changed scan cannot make us materialize a later page.
+    let mut pages = 1;
+    while toggles
+        .get(&monolith_stream_page_key(monolith_key, pages))
+        .copied()
+        .unwrap_or(false)
+    {
+        pages += 1;
+    }
+    pages
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_monolithic_stream_rows(
+    rows: &mut Vec<VisibleRow>,
+    findings: &[FindingItem],
+    toggles: &HashMap<String, bool>,
+    top: &TopKey,
+    game_id: i64,
+    d: usize,
+    g: usize,
+    c: usize,
+    n: usize,
+    member: Option<usize>,
+    finding_index: usize,
+    indent: usize,
+) {
+    let finding = &findings[finding_index].row;
+    let streams = finding.action.streams();
+    if !finding.is_monolithic_archive() || streams.is_empty() {
+        return;
+    }
+    let key = monolith_key(top, game_id, &finding.rel_path);
+    if !is_open(toggles, &key, false) {
+        return;
+    }
+
+    let pages = loaded_monolith_stream_pages(toggles, &key);
+    let end = streams
+        .len()
+        .min(pages.saturating_mul(MONOLITHIC_STREAM_PAGE_SIZE));
+    for stream_index in 0..end {
+        rows.push(VisibleRow {
+            row: Row::MonolithicStream {
+                d,
+                g,
+                c,
+                n,
+                member,
+                stream_index,
+            },
+            indent,
+        });
+    }
+    if end < streams.len() {
+        rows.push(VisibleRow {
+            row: Row::MonolithicStreamsMore {
+                d,
+                g,
+                c,
+                n,
+                member,
+                next_page: pages,
+                remaining: streams.len() - end,
+            },
+            indent,
+        });
+    }
+}
+
 /// Whether a node keyed by `key` is currently open: an explicit user choice
 /// if present in `toggles`, otherwise the node kind's default.
 fn is_open(toggles: &HashMap<String, bool>, key: &str, default_open: bool) -> bool {
@@ -857,8 +991,8 @@ fn parent_row_index(rows: &[VisibleRow], index: usize) -> Option<usize> {
 }
 
 /// The expand/collapse toggle key and default-open state of a row, if the
-/// row is expandable at all (file rows are not).
-fn row_toggle_key(tree: &[TopGroup], row: Row) -> Option<(String, bool)> {
+/// row is expandable at all.
+fn row_toggle_key(tree: &[TopGroup], findings: &[FindingItem], row: Row) -> Option<(String, bool)> {
     match row {
         Row::Top { d } => Some((top_key(&tree[d].key), true)),
         Row::Game { d, g } => Some((game_key(&tree[d].key, tree[d].games[g].game_id), false)),
@@ -887,7 +1021,19 @@ fn row_toggle_key(tree: &[TopGroup], row: Row) -> Option<(String, bool)> {
                 false,
             ))
         }
-        Row::File { .. } => None,
+        Row::File { d, g, c, n, member } => {
+            let index = file_row_index(tree, d, g, c, n, member);
+            let row = &findings[index].row;
+            if row.is_monolithic_archive() && !row.action.streams().is_empty() {
+                Some((
+                    monolith_key(&tree[d].key, tree[d].games[g].game_id, &row.rel_path),
+                    false,
+                ))
+            } else {
+                None
+            }
+        }
+        Row::MonolithicStream { .. } | Row::MonolithicStreamsMore { .. } => None,
     }
 }
 
@@ -909,7 +1055,7 @@ fn file_row_index(
 
 /// Toggles the selection of whatever the row represents: the whole group
 /// for header rows, the single file for file rows.
-fn toggle_row_selection(tree: &[TopGroup], findings: &mut [FindingItem], row: Row) {
+fn toggle_row_selection(tree: &[TopGroup], findings: &mut [FindingItem], row: Row) -> bool {
     match row {
         Row::Top { d } => toggle_group(findings, &tree[d].all_indices),
         Row::Game { d, g } => toggle_group(findings, &tree[d].games[g].all_indices),
@@ -919,15 +1065,24 @@ fn toggle_row_selection(tree: &[TopGroup], findings: &mut [FindingItem], row: Ro
         Row::Folder { d, g, c, n } => {
             if let TreeNode::Folder { item_indices, .. } = &tree[d].games[g].categories[c].nodes[n]
             {
-                toggle_group(findings, item_indices);
+                toggle_group(findings, item_indices)
+            } else {
+                false
             }
         }
         Row::File { d, g, c, n, member } => {
             let index = file_row_index(tree, d, g, c, n, member);
-            if findings[index].row.deletion_block_reason.is_none() {
+            if findings[index].row.individually_selectable() {
                 findings[index].selected = !findings[index].selected;
+                true
+            } else {
+                false
             }
         }
+        // A stream is explanatory detail of its container, not its own
+        // independently removable file. Mouse clicks only focus it, so the
+        // keyboard must not silently toggle the parent container either.
+        Row::MonolithicStream { .. } | Row::MonolithicStreamsMore { .. } => false,
     }
 }
 
@@ -944,6 +1099,15 @@ struct TreeKeys {
     collapse: bool,
 }
 
+/// The two independent results of keyboard handling. Moving a cursor can
+/// request a scroll without changing the flattened rows; expanding or
+/// collapsing needs a single rebuild before this frame is painted.
+#[derive(Default)]
+struct KeyboardResult {
+    scroll_override: Option<f32>,
+    visibility_changed: bool,
+}
+
 /// Handles keyboard navigation over the flattened row list. Returns a new
 /// scroll offset when the view must jump (PgUp/PgDn scrolling, or keeping
 /// the moved cursor visible); `None` leaves the scroll position alone.
@@ -952,14 +1116,14 @@ fn handle_keyboard(
     ui: &egui::Ui,
     rows: &[VisibleRow],
     row_stride: f32,
-) -> Option<f32> {
+) -> KeyboardResult {
     if rows.is_empty() {
-        return None;
+        return KeyboardResult::default();
     }
     // A focused widget (button, checkbox, ...) owns the keyboard - don't
     // fight it over Space/Enter/arrows.
     if ui.ctx().memory(|memory| memory.focused().is_some()) {
-        return None;
+        return KeyboardResult::default();
     }
 
     let keys = ui.input(|input| TreeKeys {
@@ -980,16 +1144,28 @@ fn handle_keyboard(
     // Without an active cursor, the paging/jump keys scroll the list as-is.
     if app.tree_cursor.is_none() {
         if keys.page_down {
-            return Some(app.tree_scroll_offset + app.tree_viewport_height);
+            return KeyboardResult {
+                scroll_override: Some(app.tree_scroll_offset + app.tree_viewport_height),
+                ..KeyboardResult::default()
+            };
         }
         if keys.page_up {
-            return Some((app.tree_scroll_offset - app.tree_viewport_height).max(0.0));
+            return KeyboardResult {
+                scroll_override: Some((app.tree_scroll_offset - app.tree_viewport_height).max(0.0)),
+                ..KeyboardResult::default()
+            };
         }
         if keys.home {
-            return Some(0.0);
+            return KeyboardResult {
+                scroll_override: Some(0.0),
+                ..KeyboardResult::default()
+            };
         }
         if keys.end {
-            return Some(rows.len() as f32 * row_stride);
+            return KeyboardResult {
+                scroll_override: Some(rows.len() as f32 * row_stride),
+                ..KeyboardResult::default()
+            };
         }
     }
 
@@ -1025,19 +1201,22 @@ fn handle_keyboard(
         moved = true;
     }
 
+    let mut visibility_changed = false;
     if let Some(current) = cursor {
         let row = rows[current.min(last)].row;
-        if keys.toggle_select {
-            toggle_row_selection(&app.tree, &mut app.findings, row);
+        if keys.toggle_select && toggle_row_selection(&app.tree, &mut app.findings, row) {
+            app.mark_selection_custom();
         }
         if keys.expand || keys.collapse {
-            match row_toggle_key(&app.tree, row) {
+            match row_toggle_key(&app.tree, &app.findings, row) {
                 Some((key, default_open)) => {
                     let open = is_open(&app.tree_toggles, &key, default_open);
                     if keys.expand && !open {
                         app.tree_toggles.insert(key, true);
+                        visibility_changed = true;
                     } else if keys.collapse && open {
                         app.tree_toggles.insert(key, false);
+                        visibility_changed = true;
                     } else if keys.collapse {
                         // Already collapsed: jump to the parent instead.
                         if let Some(parent) = parent_row_index(rows, current) {
@@ -1061,18 +1240,32 @@ fn handle_keyboard(
     app.tree_cursor = cursor;
 
     if moved {
-        let current = cursor?;
+        let Some(current) = cursor else {
+            return KeyboardResult {
+                scroll_override: None,
+                visibility_changed,
+            };
+        };
         let top = current as f32 * row_stride;
         let bottom = top + row_stride;
         let view_height = app.tree_viewport_height.max(row_stride);
         if top < app.tree_scroll_offset {
-            return Some(top);
+            return KeyboardResult {
+                scroll_override: Some(top),
+                visibility_changed,
+            };
         }
         if bottom > app.tree_scroll_offset + view_height {
-            return Some(bottom - view_height);
+            return KeyboardResult {
+                scroll_override: Some(bottom - view_height),
+                visibility_changed,
+            };
         }
     }
-    None
+    KeyboardResult {
+        scroll_override: None,
+        visibility_changed,
+    }
 }
 
 /// What every row of one frame needs and no row owns: the axis the tree is cut
@@ -1101,6 +1294,9 @@ struct RowCtx<'a> {
     /// borrow is released. Last click of a frame wins, which is the only
     /// thing that can happen anyway: the menu closes on click.
     keep_request: &'a std::cell::Cell<Option<usize>>,
+    /// Set by each direct checkbox/context-menu mutation, avoiding an O(N)
+    /// scan of selection state around every rendered frame.
+    selection_changed: &'a std::cell::Cell<bool>,
     /// Map of recently updated games from background monitoring.
     updated_games: &'a std::collections::HashMap<String, String>,
 }
@@ -1157,7 +1353,7 @@ fn show_row(
         // and it is undone by clicking again; ticking, per this module's
         // header, stays out of reach of a stray click. File rows have nothing
         // to fold and keep cursor-only behaviour.
-        if let Some((key, default_open)) = row_toggle_key(tree, row) {
+        if let Some((key, default_open)) = row_toggle_key(tree, findings, row) {
             let open = is_open(toggles, &key, default_open);
             toggles.insert(key, !open);
         }
@@ -1177,7 +1373,41 @@ fn show_row(
             ui, tree, findings, toggles, cursor, d, g, c, n, row_index, indent, ctx,
         ),
         Row::File { d, g, c, n, member } => show_file_row(
-            ui, tree, findings, cursor, d, g, c, n, member, row_index, indent, ctx,
+            ui, tree, findings, toggles, cursor, d, g, c, n, member, row_index, indent, ctx,
+        ),
+        Row::MonolithicStream {
+            d,
+            g,
+            c,
+            n,
+            member,
+            stream_index,
+        } => show_monolithic_stream_row(
+            ui,
+            tree,
+            findings,
+            cursor,
+            d,
+            g,
+            c,
+            n,
+            member,
+            stream_index,
+            row_index,
+            indent,
+            ctx,
+        ),
+        Row::MonolithicStreamsMore {
+            d,
+            g,
+            c,
+            n,
+            member,
+            next_page,
+            remaining,
+        } => show_monolithic_stream_more_row(
+            ui, tree, findings, toggles, cursor, d, g, c, n, member, next_page, remaining,
+            row_index, indent, ctx,
         ),
     }
 }
@@ -1229,6 +1459,7 @@ fn show_top_row(
         top_group.total_bytes,
         name,
         lang,
+        ctx.selection_changed,
     );
     let target = top_shell_target(&top_group.key);
     let response = match &target {
@@ -1240,14 +1471,18 @@ fn show_top_row(
             .button(i18n::select_all_in_group(lang, &top_group.key))
             .clicked()
         {
-            set_group_selection(findings, &top_group.all_indices, true);
+            if set_group_selection(findings, &top_group.all_indices, true) {
+                ctx.selection_changed.set(true);
+            }
             ui.close();
         }
         if ui
             .button(i18n::deselect_all_in_group(lang, &top_group.key))
             .clicked()
         {
-            set_group_selection(findings, &top_group.all_indices, false);
+            if set_group_selection(findings, &top_group.all_indices, false) {
+                ctx.selection_changed.set(true);
+            }
             ui.close();
         }
     });
@@ -1320,6 +1555,7 @@ fn show_game_row(
         game.total_bytes,
         name,
         lang,
+        ctx.selection_changed,
     );
     // The game's install dir, taken from any of its findings (they all share
     // it). Absent on the orphan branch (orphan-residue safety): its findings are residue from
@@ -1369,11 +1605,15 @@ fn show_game_row(
 
     row_context_menu(&response, lang, target, |ui| {
         if ui.button(select).clicked() {
-            set_group_selection(findings, &game.all_indices, true);
+            if set_group_selection(findings, &game.all_indices, true) {
+                ctx.selection_changed.set(true);
+            }
             ui.close();
         }
         if ui.button(deselect).clicked() {
-            set_group_selection(findings, &game.all_indices, false);
+            if set_group_selection(findings, &game.all_indices, false) {
+                ctx.selection_changed.set(true);
+            }
             ui.close();
         }
     });
@@ -1445,6 +1685,7 @@ fn show_category_row(
         category_node.total_bytes,
         name,
         lang,
+        ctx.selection_changed,
     );
     // A category is a slice of one game, so it stands for that game's install
     // dir - the same folder its parent row opens.
@@ -1465,7 +1706,9 @@ fn show_category_row(
             .clicked()
         {
             let indices = category_indices_in_group(top_group, category);
-            set_group_selection(findings, &indices, true);
+            if set_group_selection(findings, &indices, true) {
+                ctx.selection_changed.set(true);
+            }
             ui.close();
         }
         if ui
@@ -1477,7 +1720,9 @@ fn show_category_row(
             .clicked()
         {
             let indices = category_indices_in_group(top_group, category);
-            set_group_selection(findings, &indices, false);
+            if set_group_selection(findings, &indices, false) {
+                ctx.selection_changed.set(true);
+            }
             ui.close();
         }
     });
@@ -1534,6 +1779,7 @@ fn show_folder_row(
         *total_bytes,
         name,
         lang,
+        ctx.selection_changed,
     );
 
     // The folder's absolute path comes from any member (they all share the
@@ -1570,6 +1816,7 @@ fn show_header_row(
     total_bytes: u64,
     name: impl Into<egui::WidgetText>,
     lang: Lang,
+    selection_changed: &std::cell::Cell<bool>,
 ) -> egui::Response {
     let mut name_response = None;
 
@@ -1590,8 +1837,8 @@ fn show_header_row(
             let response = ui.add(
                 egui::Checkbox::new(&mut checked, "").indeterminate(any_selected && !all_selected),
             );
-            if response.clicked() {
-                toggle_group(findings, indices);
+            if response.clicked() && toggle_group(findings, indices) {
+                selection_changed.set(true);
             }
 
             let open = is_open(toggles, key, default_open);
@@ -1743,6 +1990,7 @@ fn show_file_row(
     ui: &mut egui::Ui,
     tree: &[TopGroup],
     findings: &mut [FindingItem],
+    toggles: &mut HashMap<String, bool>,
     cursor: &mut Option<usize>,
     d: usize,
     g: usize,
@@ -1767,14 +2015,29 @@ fn show_file_row(
             Some(m),
         ) => {
             let index = item_indices[m];
-            let rel_path = &findings[index].row.rel_path;
+            let row = &findings[index].row;
+            let rel_path = &row.rel_path;
             // Members render under their folder header - repeating the
             // folder prefix on every line would defeat the grouping.
             let name = rel_path
                 .strip_prefix(&format!("{group_dir}\\"))
                 .unwrap_or(rel_path)
                 .to_string();
-            (index, vec![Part::searched(name)])
+            let mut parts = vec![Part::searched(name)];
+            if row.is_monolithic_archive() {
+                let badge = if let Some(b) = &row.monolith_badge {
+                    b.clone()
+                } else {
+                    i18n::monolithic_badge(lang, row.size_on_disk, row.size)
+                };
+                parts.push(Part::decoration(" "));
+                parts.push(Part::decoration(badge));
+            }
+            if row.anti_cheat_protected {
+                parts.push(Part::decoration(" "));
+                parts.push(Part::decoration(i18n::anticheat_shield_badge()));
+            }
+            (index, parts)
         }
         (TreeNode::File { index }, None) => {
             let row = &findings[*index].row;
@@ -1783,7 +2046,7 @@ fn show_file_row(
             // all, so a bare relative path would leave a list of "loc_0.pak"
             // with nothing to tell one game's from another's - the row has to
             // carry that itself.
-            let parts = if ctx.axis == GroupAxis::Flat {
+            let mut parts = if ctx.axis == GroupAxis::Flat {
                 let (open, close) = i18n::quote_marks(lang);
                 // On the orphan branch the leading name is a UI heading rather
                 // than a game the search index knows, so it is decoration.
@@ -1802,6 +2065,19 @@ fn show_file_row(
             } else {
                 vec![Part::searched(row.rel_path.clone())]
             };
+            if row.is_monolithic_archive() {
+                let badge = if let Some(b) = &row.monolith_badge {
+                    b.clone()
+                } else {
+                    i18n::monolithic_badge(lang, row.size_on_disk, row.size)
+                };
+                parts.push(Part::decoration(" "));
+                parts.push(Part::decoration(badge));
+            }
+            if row.anti_cheat_protected {
+                parts.push(Part::decoration(" "));
+                parts.push(Part::decoration(i18n::anticheat_shield_badge()));
+            }
             (*index, parts)
         }
         _ => unreachable!("Row::File member/node kind mismatch"),
@@ -1844,6 +2120,13 @@ fn show_file_row(
             &format_size(lang, item.row.size),
         ));
     }
+    if item.row.is_monolithic_archive() {
+        hover.push_str(&i18n::hover_monolith_suffix(lang, &item.row.action));
+    }
+    if item.row.anti_cheat_protected {
+        hover.push_str("\n\n");
+        hover.push_str(i18n::anticheat_shield_tooltip(lang));
+    }
 
     row_columns(
         ui,
@@ -1852,12 +2135,28 @@ fn show_file_row(
         egui::RichText::new(format_size(lang, item.row.size_on_disk)),
         |ui| {
             ui.add_space(INDENT_PX * level as f32);
-            let checkbox = ui.add_enabled(
-                item.row.deletion_block_reason.is_none(),
-                egui::Checkbox::new(&mut item.selected, ""),
-            );
-            if let Some(reason) = &item.row.deletion_block_reason {
+            let is_blocked = !item.row.individually_selectable();
+            let checkbox = ui.add_enabled(!is_blocked, egui::Checkbox::new(&mut item.selected, ""));
+            if checkbox.changed() {
+                ctx.selection_changed.set(true);
+            }
+            if let Some(reason) = item.row.deletion_block_reason.as_deref() {
                 checkbox.on_disabled_hover_text(i18n::deletion_block_reason(lang, reason));
+            } else if !item.row.action_is_executable_by_gui() {
+                checkbox.on_disabled_hover_text(i18n::strings(lang).archive_action_unavailable);
+            } else if item.row.anti_cheat_protected && item.row.is_monolithic_archive() {
+                checkbox.on_disabled_hover_text(i18n::anticheat_shield_tooltip(lang));
+            }
+            if item.row.is_monolithic_archive() && !item.row.action.streams().is_empty() {
+                let m_key =
+                    monolith_key(&tree[d].key, tree[d].games[g].game_id, &item.row.rel_path);
+                let open = is_open(toggles, &m_key, false);
+                if ui
+                    .button(if open { "\u{25bc}" } else { "\u{25b6}" })
+                    .clicked()
+                {
+                    toggles.insert(m_key, !open);
+                }
             }
             show_review_mark(ui, needs_review, review_hint);
             let response = ui
@@ -1880,6 +2179,103 @@ fn show_file_row(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
+fn show_monolithic_stream_row(
+    ui: &mut egui::Ui,
+    tree: &[TopGroup],
+    findings: &[FindingItem],
+    cursor: &mut Option<usize>,
+    d: usize,
+    g: usize,
+    c: usize,
+    n: usize,
+    member: Option<usize>,
+    stream_index: usize,
+    row_index: usize,
+    indent: usize,
+    ctx: RowCtx<'_>,
+) {
+    let lang = ctx.lang;
+    let index = file_row_index(tree, d, g, c, n, member);
+    let finding = &findings[index];
+    let streams = finding.row.action.streams();
+    let Some(stream) = streams.get(stream_index) else {
+        return;
+    };
+
+    let lang_col = egui::RichText::new(format!("[{}]", stream.language));
+    let size_col = egui::RichText::new(format_size(lang, stream.size));
+
+    let stream_desc = format!(
+        "{}\n{}: {}\n{}: {}",
+        stream.name,
+        i18n::strings(lang).col_language,
+        stream.language,
+        i18n::strings(lang).col_size,
+        format_size(lang, stream.size)
+    );
+
+    row_columns(ui, lang_col, egui::RichText::new(""), size_col, |ui| {
+        ui.add_space(INDENT_PX * indent as f32);
+        let response = ui
+            .add(
+                egui::Label::new(
+                    egui::RichText::new(format!("\u{21b3} {}", stream.name))
+                        .color(ui.visuals().weak_text_color()),
+                )
+                .truncate()
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_text(stream_desc);
+        if response.clicked() {
+            *cursor = Some(row_index);
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_monolithic_stream_more_row(
+    ui: &mut egui::Ui,
+    tree: &[TopGroup],
+    findings: &[FindingItem],
+    toggles: &mut HashMap<String, bool>,
+    cursor: &mut Option<usize>,
+    d: usize,
+    g: usize,
+    c: usize,
+    n: usize,
+    member: Option<usize>,
+    next_page: usize,
+    remaining: usize,
+    row_index: usize,
+    indent: usize,
+    _ctx: RowCtx<'_>,
+) {
+    let index = file_row_index(tree, d, g, c, n, member);
+    let finding = &findings[index].row;
+    let key = monolith_key(&tree[d].key, tree[d].games[g].game_id, &finding.rel_path);
+    // Numeric continuation is language-neutral: this row must work in every
+    // bundled locale without introducing a partially translated new label.
+    let label = format!("↳ +{}…", MONOLITHIC_STREAM_PAGE_SIZE.min(remaining));
+
+    row_columns(
+        ui,
+        egui::RichText::new(""),
+        egui::RichText::new(""),
+        egui::RichText::new(""),
+        |ui| {
+            ui.add_space(INDENT_PX * indent as f32);
+            let response = ui
+                .add(egui::Button::new(label).frame(false))
+                .on_hover_text(format!("{remaining}"));
+            if response.clicked() {
+                toggles.insert(monolith_stream_page_key(&key, next_page), true);
+                *cursor = Some(row_index);
+            }
+        },
+    );
+}
+
 /// The file row's own context-menu action: "never touch this file in this
 /// game", which writes a personal exception (a keep rule scoped to the game -
 /// see `gametrimmer_core::rules::RulePolarity`) so the file stops being
@@ -1891,8 +2287,8 @@ fn show_file_row(
 ///
 /// Nothing is written from inside the menu. The click only records the row's
 /// index; the write, the row's removal and the status line all happen in
-/// [`show`] once the tree's borrows are released - the same shape the
-/// selection fingerprint already uses to get a verdict out of this pass.
+/// [`show`] once the tree's borrows are released, after the row pass has
+/// released its disjoint mutable borrow of findings.
 ///
 /// A game with no launcher id cannot be the scope of an exception, so the
 /// entry is shown disabled with the reason on hover rather than hidden: an
@@ -3002,5 +3398,251 @@ mod tests {
         test.run();
         test.assert_label(SEEDED_FILE_NAME);
         test.assert_no_label("movies/intro_logo.bik");
+    }
+
+    #[test]
+    fn monolithic_archive_category_renders_tree_node_category_filter_and_expandable_streams() {
+        use gametrimmer_core::models::{FindingAction, MonolithicStreamInfo};
+
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+        let archives_heading = category_display(lang, DisplayCategory::Archives);
+
+        let savings = 182 * 1024 * 1024;
+        let total_size = 1200 * 1024 * 1024;
+        let streams = vec![
+            MonolithicStreamInfo {
+                name: "French audio stream".to_string(),
+                language: "fr".to_string(),
+                size: 92 * 1024 * 1024,
+            },
+            MonolithicStreamInfo {
+                name: "German audio stream".to_string(),
+                language: "de".to_string(),
+                size: 90 * 1024 * 1024,
+            },
+        ];
+
+        let mut monolith_finding = test.app().findings[0].clone();
+        monolith_finding.row.file_id = 99;
+        monolith_finding.row.rel_path = "sound/voices.pck".to_string();
+        monolith_finding.row.size = total_size;
+        monolith_finding.row.size_on_disk = savings;
+        monolith_finding.row.source =
+            model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
+        monolith_finding.row.rule_desc =
+            "Wwise PCK: Monolithic archive localized streams".to_string();
+        monolith_finding.row.lang_tag = None;
+        monolith_finding.row.action = FindingAction::SparseZero {
+            format: "Audiokinetic Wwise PCK".to_string(),
+            languages: vec!["fr".to_string(), "de".to_string()],
+            stream_count: 2,
+            offsets: vec![(0, 92 * 1024 * 1024), (92 * 1024 * 1024, 90 * 1024 * 1024)],
+            streams,
+            estimated_savings: savings,
+        };
+        monolith_finding.row.monolith_badge =
+            Some(i18n::monolithic_badge(lang, savings, total_size));
+
+        test.app_mut().findings.push(monolith_finding);
+        test.app_mut().rebuild_tree();
+        test.app_mut().clear_search();
+        open_every_branch(&mut test);
+
+        test.assert_label(archives_heading);
+        test.assert_label_containing("sound/voices.pck");
+        test.assert_label_containing("📦");
+
+        // Before expanding monolithic container, stream rows are not visible
+        test.assert_no_label_containing("French audio stream");
+
+        // Expand the monolithic container
+        let top_key = &test.app().tree[0].key;
+        let game_id = test.app().tree[0].games[0].game_id;
+        let m_key = monolith_key(top_key, game_id, "sound/voices.pck");
+        test.app_mut().tree_toggles.insert(m_key, true);
+        test.run();
+
+        // After expanding, stream rows are visible
+        test.assert_label_containing("French audio stream");
+        test.assert_label_containing("German audio stream");
+
+        // Filtering by Archives category shows voices.pck and hides regular locs
+        test.app_mut()
+            .set_category_filter(Some(DisplayCategory::Archives));
+        test.run();
+        test.assert_label_containing("sound/voices.pck");
+        test.assert_no_label(SEEDED_FILE_NAME);
+    }
+
+    #[test]
+    fn expanded_monolith_materializes_streams_in_bounded_pages() {
+        use gametrimmer_core::models::{FindingAction, MonolithicStreamInfo};
+
+        let mut test = tree_of_files([90; 2]);
+        let mut monolith = test.app().findings[0].clone();
+        monolith.row.file_id = 200;
+        monolith.row.rel_path = "sound/large.pck".to_string();
+        monolith.row.source =
+            model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
+        let streams: Vec<_> = (0..(MONOLITHIC_STREAM_PAGE_SIZE * 2 + 1))
+            .map(|index| MonolithicStreamInfo {
+                name: format!("stream {index}"),
+                language: "de".to_string(),
+                size: 1,
+            })
+            .collect();
+        monolith.row.action = FindingAction::SparseZero {
+            format: "Wwise".to_string(),
+            languages: vec!["de".to_string()],
+            stream_count: streams.len(),
+            offsets: vec![(0, streams.len() as u64)],
+            streams,
+            estimated_savings: 1,
+        };
+
+        test.app_mut().findings.push(monolith);
+        test.app_mut().rebuild_tree();
+        test.app_mut().clear_search();
+        open_every_branch(&mut test);
+
+        let (top_key, game_id) = test
+            .app()
+            .tree
+            .iter()
+            .flat_map(|top| {
+                top.games
+                    .iter()
+                    .map(move |game| (top.key.clone(), game.game_id))
+            })
+            .find(|(_, game_id)| *game_id == 0)
+            .expect("the seeded game remains in the tree");
+        let key = monolith_key(&top_key, game_id, "sound/large.pck");
+        test.app_mut().tree_toggles.insert(key.clone(), true);
+
+        let rows = build_visible_rows(
+            &test.app().tree,
+            &test.app().findings,
+            test.app().tree_axis,
+            &test.app().tree_toggles,
+            test.app().tree_category_filter,
+            &test.app().tree_search_index,
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row.row, Row::MonolithicStream { .. }))
+                .count(),
+            MONOLITHIC_STREAM_PAGE_SIZE,
+            "one expanded archive may not materialize every stream at once"
+        );
+        assert!(rows.iter().any(|row| {
+            matches!(
+                row.row,
+                Row::MonolithicStreamsMore { remaining, .. }
+                    if remaining == MONOLITHIC_STREAM_PAGE_SIZE + 1
+            )
+        }));
+
+        test.app_mut()
+            .tree_toggles
+            .insert(monolith_stream_page_key(&key, 1), true);
+        let rows = build_visible_rows(
+            &test.app().tree,
+            &test.app().findings,
+            test.app().tree_axis,
+            &test.app().tree_toggles,
+            test.app().tree_category_filter,
+            &test.app().tree_search_index,
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row.row, Row::MonolithicStream { .. }))
+                .count(),
+            MONOLITHIC_STREAM_PAGE_SIZE * 2,
+        );
+        assert!(rows
+            .iter()
+            .any(|row| { matches!(row.row, Row::MonolithicStreamsMore { remaining: 1, .. }) }));
+    }
+
+    #[test]
+    fn keyboard_cannot_select_a_protected_monolith_or_its_stream_detail() {
+        use gametrimmer_core::models::{FindingAction, MonolithicStreamInfo};
+
+        let mut test = tree_of_files([90; 2]);
+        let mut monolith = test.app().findings[0].clone();
+        monolith.row.file_id = 201;
+        monolith.row.rel_path = "sound/protected.pck".to_string();
+        monolith.row.source =
+            model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
+        monolith.row.anti_cheat_protected = true;
+        monolith.row.action = FindingAction::SparseZero {
+            format: "Wwise".to_string(),
+            languages: vec!["de".to_string()],
+            stream_count: 1,
+            offsets: vec![(0, 1)],
+            streams: vec![MonolithicStreamInfo {
+                name: "protected stream".to_string(),
+                language: "de".to_string(),
+                size: 1,
+            }],
+            estimated_savings: 1,
+        };
+        monolith.selected = false;
+
+        test.app_mut().findings.push(monolith);
+        test.app_mut().rebuild_tree();
+        test.app_mut().clear_search();
+        open_every_branch(&mut test);
+
+        let (top_key, game_id) = test
+            .app()
+            .tree
+            .iter()
+            .flat_map(|top| {
+                top.games
+                    .iter()
+                    .map(move |game| (top.key.clone(), game.game_id))
+            })
+            .find(|(_, game_id)| *game_id == 0)
+            .expect("the seeded game remains in the tree");
+        let key = monolith_key(&top_key, game_id, "sound/protected.pck");
+        test.app_mut().tree_toggles.insert(key, true);
+
+        let rows = build_visible_rows(
+            &test.app().tree,
+            &test.app().findings,
+            test.app().tree_axis,
+            &test.app().tree_toggles,
+            test.app().tree_category_filter,
+            &test.app().tree_search_index,
+        );
+        let protected_file = rows
+            .iter()
+            .find_map(|visible| match visible.row {
+                Row::File {
+                    d, g, c, n, member, ..
+                } if file_row_index(&test.app().tree, d, g, c, n, member) == 2 => Some(visible.row),
+                _ => None,
+            })
+            .expect("protected monolith file row");
+        let stream = rows
+            .iter()
+            .find_map(|visible| match visible.row {
+                Row::MonolithicStream { .. } => Some(visible.row),
+                _ => None,
+            })
+            .expect("monolith stream detail row");
+
+        {
+            let app = test.app_mut();
+            let (tree, findings) = (&app.tree, &mut app.findings);
+            assert!(!toggle_row_selection(tree, findings, protected_file));
+            assert!(!toggle_row_selection(tree, findings, stream));
+        }
+        assert!(
+            !test.app().findings[2].selected,
+            "no keyboard route may select the protected container"
+        );
     }
 }

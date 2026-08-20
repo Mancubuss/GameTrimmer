@@ -27,7 +27,7 @@ fn all_locales_json_exist_and_match_keys() {
     let en_raw = fs::read_to_string(&en_p).expect("read en.json");
     let en_loc: LocaleJson = serde_json::from_str(&en_raw).expect("parse en.json");
     assert_eq!(en_loc.id, "en");
-    assert_eq!(en_loc.strings.len(), 254, "en.json should have 254 strings");
+    assert_eq!(en_loc.strings.len(), 266, "en.json should have 266 strings");
 
     let entries = fs::read_dir(locales_dir).expect("read locales dir");
     let mut checked_count = 0;
@@ -52,8 +52,8 @@ fn all_locales_json_exist_and_match_keys() {
             );
             assert_eq!(
                 loc.strings.len(),
-                254,
-                "{file_name} has {} strings, expected 254",
+                266,
+                "{file_name} has {} strings, expected 266",
                 loc.strings.len()
             );
 

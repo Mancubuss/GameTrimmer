@@ -11,10 +11,11 @@ use crate::safety::{
     current_identity, normalize_relative_path, validate_delete_plan, DeleteBlockReason, DeletePlan,
     FileIdentity, SafetySnapshot, TargetKind,
 };
+use crate::settings::DeleteMethod;
 
 /// Abstraction over the actual removal mechanism so tests never touch the
 /// real Recycle Bin or filesystem.
-pub trait Remover {
+pub(crate) trait Remover {
     fn remove(&self, path: &Path) -> Result<()>;
     /// Stable action name journaled into the `operations` table.
     fn action(&self) -> &'static str;
@@ -37,7 +38,7 @@ pub trait Remover {
 /// Recoverable remover: sends paths to the Windows Recycle Bin via the
 /// `trash` crate. Slower than [`PermanentDelete`] (each file goes through
 /// the shell), but recoverable.
-pub struct RecycleBin;
+pub(crate) struct RecycleBin;
 
 impl Remover for RecycleBin {
     fn remove(&self, path: &Path) -> Result<()> {
@@ -60,7 +61,7 @@ impl Remover for RecycleBin {
 /// Fast remover: deletes files/directories permanently via `std::fs`, with
 /// no way to recover. The default for game libraries - anything removed by
 /// mistake can always be re-downloaded from the store.
-pub struct PermanentDelete;
+pub(crate) struct PermanentDelete;
 
 impl Remover for PermanentDelete {
     fn remove(&self, path: &Path) -> Result<()> {
@@ -255,7 +256,20 @@ pub fn reconcile_pending_operations(conn: &mut Connection) -> Result<Vec<Reconci
 pub fn prepare_delete_plans(
     conn: &Connection,
     file_ids: &[i64],
+    method: DeleteMethod,
+) -> Result<Vec<DeletePlan>> {
+    let action = match method {
+        DeleteMethod::Permanent => "delete",
+        DeleteMethod::RecycleBin => "recycle",
+    };
+    prepare_delete_plans_for_action(conn, file_ids, action, false)
+}
+
+fn prepare_delete_plans_for_action(
+    conn: &Connection,
+    file_ids: &[i64],
     action: &str,
+    allow_missing: bool,
 ) -> Result<Vec<DeletePlan>> {
     if !matches!(action, "delete" | "recycle") {
         return Err(crate::error::CoreError::Other(format!(
@@ -270,6 +284,7 @@ pub fn prepare_delete_plans(
     }
     let mut plans = Vec::with_capacity(file_ids.len());
     for file_id in file_ids {
+        validate_persisted_direct_delete_contract(conn, *file_id)?;
         let row = conn.query_row(
             "SELECT f.scan_id, f.game_id, fs.trusted_root, fs.rel_path,
                     fs.root_identity, fs.target_identity, fs.target_kind,
@@ -357,6 +372,11 @@ pub fn prepare_delete_plans(
                 DeleteBlockReason::MissingSafetyEvidence
             )));
         };
+        if crate::worker::is_candidate_archive_path(&rel_path) {
+            return Err(crate::error::CoreError::Other(format!(
+                "delete preflight blocked file_id {file_id}: monolithic archive candidates cannot be whole-file deleted"
+            )));
+        }
         let root_identity = FileIdentity::decode(root_identity.as_deref().ok_or_else(|| {
             crate::error::CoreError::Other(format!(
                 "delete preflight blocked file_id {file_id}: missing root identity"
@@ -381,7 +401,7 @@ pub fn prepare_delete_plans(
                 "delete preflight blocked file_id {file_id}: target kind mismatch"
             )));
         }
-        plans.push(DeletePlan {
+        let plan = DeletePlan {
             file_id: *file_id,
             scan_id,
             action: action.to_string(),
@@ -392,15 +412,101 @@ pub fn prepare_delete_plans(
                 target_identity,
                 tree_fingerprint,
             },
-        });
+        };
+        if plan.snapshot.target_identity.kind == TargetKind::File {
+            let target = match crate::safety::validate_delete_plan(&plan) {
+                Ok(target) => Some(target),
+                Err(DeleteBlockReason::Missing) if allow_missing => None,
+                Err(error) => {
+                    return Err(crate::error::CoreError::Other(format!(
+                        "delete preflight blocked file_id {file_id}: archive type probe could not verify the target: {error}"
+                    )));
+                }
+            };
+            let Some(target) = target else {
+                plans.push(plan);
+                continue;
+            };
+            let detected = archive_trimmer::formats::FormatDetector::detect_file(&target)
+                .map_err(|error| {
+                    crate::error::CoreError::Other(format!(
+                        "delete preflight blocked file_id {file_id}: archive type probe failed: {error}"
+                    ))
+                })?;
+            if let Some(archive_type) = detected {
+                return Err(crate::error::CoreError::Other(format!(
+                    "delete preflight blocked file_id {file_id}: detected {archive_type}; supported archive containers cannot be whole-file deleted"
+                )));
+            }
+            crate::safety::validate_delete_plan(&plan).map_err(|error| {
+                crate::error::CoreError::Other(format!(
+                    "delete preflight blocked file_id {file_id}: target changed during archive type probe: {error}"
+                ))
+            })?;
+        }
+        plans.push(plan);
     }
     Ok(plans)
+}
+
+/// Authoritative persisted contract gate for every whole-file removal path.
+/// All finding rows attached to the file must be recognized ordinary
+/// direct-delete contracts. One monolithic, malformed, unknown or conflicting
+/// row blocks the file and therefore the whole plan batch.
+fn validate_persisted_direct_delete_contract(conn: &Connection, file_id: i64) -> Result<()> {
+    let mut stmt = conn.prepare("SELECT category, action FROM findings WHERE file_id = ?1")?;
+    let rows = stmt.query_map([file_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    let mut found = false;
+    for row in rows {
+        found = true;
+        let (category, raw_action) = row?;
+        let action =
+            crate::models::FindingAction::from_persisted_contract(&category, raw_action.as_deref())
+                .map_err(|error| {
+                    crate::error::CoreError::Other(format!(
+                "delete preflight blocked file_id {file_id}: invalid finding contract: {error}"
+            ))
+                })?;
+        if action != crate::models::FindingAction::DirectDelete {
+            return Err(crate::error::CoreError::Other(format!(
+                "delete preflight blocked file_id {file_id}: archive action is not a whole-file deletion"
+            )));
+        }
+    }
+    if !found {
+        return Err(crate::error::CoreError::Other(format!(
+            "delete preflight blocked file_id {file_id}: no finding contract"
+        )));
+    }
+    Ok(())
 }
 
 /// Executes a preflighted batch. The whole batch is validated before the first
 /// mutation, then each row and live identity is checked again immediately
 /// before its own operation.
 pub fn execute_delete_plans_observed(
+    conn: &mut Connection,
+    method: DeleteMethod,
+    plans: &[DeletePlan],
+    mut on_progress: impl FnMut(usize, usize, &Path),
+    mut on_outcome: impl FnMut(usize, &OpOutcome),
+) -> Result<Vec<OpOutcome>> {
+    let remover: &dyn Remover = match method {
+        DeleteMethod::Permanent => &PermanentDelete,
+        DeleteMethod::RecycleBin => &RecycleBin,
+    };
+    execute_delete_plans_with_remover_observed(
+        conn,
+        remover,
+        plans,
+        &mut on_progress,
+        &mut on_outcome,
+    )
+}
+
+fn execute_delete_plans_with_remover_observed(
     conn: &mut Connection,
     remover: &dyn Remover,
     plans: &[DeletePlan],
@@ -410,7 +516,7 @@ pub fn execute_delete_plans_observed(
     conn.pragma_update(None, "synchronous", "FULL")?;
 
     let ids: Vec<i64> = plans.iter().map(|plan| plan.file_id).collect();
-    let current = prepare_delete_plans(conn, &ids, remover.action())?;
+    let current = prepare_delete_plans_for_action(conn, &ids, remover.action(), true)?;
     if current != plans {
         return Err(crate::error::CoreError::Other(
             DeleteBlockReason::StaleDatabaseRow.to_string(),
@@ -432,7 +538,8 @@ pub fn execute_delete_plans_observed(
         let nominal_path = plan.snapshot.trusted_root.join(&plan.snapshot.rel_path);
         on_progress(index + 1, plans.len(), &nominal_path);
 
-        let refreshed = prepare_delete_plans(conn, &[plan.file_id], remover.action());
+        let refreshed =
+            prepare_delete_plans_for_action(conn, &[plan.file_id], remover.action(), true);
         if refreshed.as_ref().ok().and_then(|rows| rows.first()) != Some(plan) {
             let outcome = OpOutcome {
                 path: nominal_path,
@@ -741,11 +848,11 @@ mod tests {
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
         let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "gone.bin", "one");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
-        let plans = prepare_delete_plans(&conn, &[file_id], "delete").unwrap();
+        let plans = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap();
         std::fs::remove_file(temp.path().join("gone.bin")).unwrap();
         let outcomes = execute_delete_plans_observed(
             &mut conn,
-            &PermanentDelete,
+            DeleteMethod::Permanent,
             &plans,
             |_, _, _| {},
             |_, _| {},
@@ -787,9 +894,9 @@ mod tests {
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
         let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "locked.bin", "one");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
-        let plans = prepare_delete_plans(&conn, &[file_id], "delete").unwrap();
+        let plans = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap();
 
-        let outcomes = execute_delete_plans_observed(
+        let outcomes = execute_delete_plans_with_remover_observed(
             &mut conn,
             &RefusingRemover,
             &plans,
@@ -828,14 +935,14 @@ mod tests {
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
         let file_id = insert_safe_finding(&conn, scan_id, &root, "leftover.bin", "one");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
-        let plans = prepare_delete_plans(&conn, &[file_id], "delete").unwrap();
+        let plans = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap();
 
         // The volume goes away between planning and execution.
         std::fs::remove_dir_all(&root).unwrap();
 
         let result = execute_delete_plans_observed(
             &mut conn,
-            &PermanentDelete,
+            DeleteMethod::Permanent,
             &plans,
             |_, _, _| {},
             |_, _| {},
@@ -1113,12 +1220,12 @@ mod tests {
         let safe = insert_safe_finding(&conn, scan_id, temp.path(), "safe.bin", "one");
         let swapped = insert_safe_finding(&conn, scan_id, temp.path(), "swapped.bin", "two");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
-        let plans = prepare_delete_plans(&conn, &[safe, swapped], "delete").unwrap();
+        let plans = prepare_delete_plans(&conn, &[safe, swapped], DeleteMethod::Permanent).unwrap();
         std::fs::remove_file(temp.path().join("swapped.bin")).unwrap();
         std::fs::write(temp.path().join("swapped.bin"), b"replacement").unwrap();
         assert!(execute_delete_plans_observed(
             &mut conn,
-            &PermanentDelete,
+            DeleteMethod::Permanent,
             &plans,
             |_, _, _| {},
             |_, _| {},
@@ -1141,7 +1248,7 @@ mod tests {
         )
         .unwrap();
 
-        let error = prepare_delete_plans(&conn, &[file_id], "delete").unwrap_err();
+        let error = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap_err();
         assert!(error.to_string().contains("filesystem identity is missing"));
         assert!(temp.path().join("target.bin").is_file());
     }
@@ -1155,9 +1262,123 @@ mod tests {
         let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "target.bin", "one");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
-        let error = prepare_delete_plans(&conn, &[file_id, file_id], "delete").unwrap_err();
+        let error =
+            prepare_delete_plans(&conn, &[file_id, file_id], DeleteMethod::Permanent).unwrap_err();
         assert!(error.to_string().contains("duplicate file id"));
         assert!(temp.path().join("target.bin").is_file());
+    }
+
+    #[test]
+    fn monolithic_category_with_null_action_cannot_prepare_a_direct_delete() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("archive.pck"), b"archive").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "archive.pck", "archive");
+        conn.execute(
+            "UPDATE findings SET category = 'monolithic_archive', action = NULL \
+             WHERE file_id = ?1",
+            [file_id],
+        )
+        .unwrap();
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        let error = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap_err();
+        assert!(error.to_string().contains("invalid finding contract"));
+        assert!(temp.path().join("archive.pck").is_file());
+    }
+
+    #[test]
+    fn ordinary_category_cannot_smuggle_archive_candidate_into_direct_delete() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("EasyAntiCheat")).unwrap();
+        std::fs::write(temp.path().join("voices.pck"), b"container").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "voices.pck", "archive");
+        conn.execute(
+            "UPDATE findings SET category = 'docs_file', provenance = 'imported_untrusted', \
+             action = NULL WHERE file_id = ?1",
+            [file_id],
+        )
+        .unwrap();
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        let error = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap_err();
+        assert!(error.to_string().contains("monolithic archive candidates"));
+        assert!(temp.path().join("voices.pck").is_file());
+    }
+
+    #[test]
+    fn archive_magic_blocks_misleading_language_and_text_filenames() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = archive_trimmer::formats::wwise::create_synthetic_wwise_pck(
+            &[(0, "English(US)"), (1, "French")],
+            &[(10, 0, 64), (11, 1, 64)],
+        );
+        std::fs::write(temp.path().join("sounds_fra.pck"), &bytes).unwrap();
+        std::fs::write(temp.path().join("manual.txt"), &bytes).unwrap();
+        assert!(!crate::worker::is_candidate_archive_path("sounds_fra.pck"));
+        assert!(!crate::worker::is_candidate_archive_path("manual.txt"));
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let language_named = insert_safe_finding(
+            &conn,
+            scan_id,
+            temp.path(),
+            "sounds_fra.pck",
+            "language-named",
+        );
+        let text_named =
+            insert_safe_finding(&conn, scan_id, temp.path(), "manual.txt", "text-named");
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        for (file_id, name) in [
+            (language_named, "sounds_fra.pck"),
+            (text_named, "manual.txt"),
+        ] {
+            let error =
+                prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("detected Audiokinetic Wwise PCK"));
+            assert!(temp.path().join(name).is_file(), "{name} must survive");
+        }
+    }
+
+    #[test]
+    fn execution_rechecks_all_contracts_before_mutating_a_stale_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("first.bin"), b"first").unwrap();
+        std::fs::write(temp.path().join("second.bin"), b"second").unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let first_id = insert_safe_finding(&conn, scan_id, temp.path(), "first.bin", "first");
+        let archive_id = insert_safe_finding(&conn, scan_id, temp.path(), "second.bin", "second");
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+        let plans =
+            prepare_delete_plans(&conn, &[first_id, archive_id], DeleteMethod::Permanent).unwrap();
+
+        conn.execute(
+            "UPDATE findings SET category = 'monolithic_archive', action = NULL \
+             WHERE file_id = ?1",
+            [archive_id],
+        )
+        .unwrap();
+        assert!(execute_delete_plans_observed(
+            &mut conn,
+            DeleteMethod::Permanent,
+            &plans,
+            |_, _, _| {},
+            |_, _| {},
+        )
+        .is_err());
+        assert!(
+            temp.path().join("first.bin").is_file(),
+            "batch contract recheck must happen before the first mutation"
+        );
+        assert!(temp.path().join("second.bin").is_file());
     }
 
     #[test]
@@ -1172,7 +1393,7 @@ mod tests {
         for status in ["failed", "unexpected"] {
             crate::db::record_scan_library_evidence(&conn, scan_id, temp.path(), "test", status)
                 .unwrap();
-            assert!(prepare_delete_plans(&conn, &[file_id], "delete").is_err());
+            assert!(prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).is_err());
         }
         assert!(temp.path().join("target.bin").is_file());
     }
@@ -1192,7 +1413,7 @@ mod tests {
         let file_id = conn.last_insert_rowid();
         conn.execute(
             "INSERT INTO findings (file_id, category, confidence)
-             VALUES (?1, 'orphan', 90)",
+             VALUES (?1, 'orphan_folder', 90)",
             [file_id],
         )
         .unwrap();
@@ -1219,10 +1440,10 @@ mod tests {
             .unwrap();
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
-        assert!(prepare_delete_plans(&conn, &[file_id], "delete").is_err());
+        assert!(prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).is_err());
         crate::db::record_scan_library_evidence(&conn, scan_id, temp.path(), "test", "complete")
             .unwrap();
-        assert!(prepare_delete_plans(&conn, &[file_id], "delete").is_ok());
+        assert!(prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).is_ok());
     }
 
     /// Mock remover for testing that never touches the real Recycle Bin.

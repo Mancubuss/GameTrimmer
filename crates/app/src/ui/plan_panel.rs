@@ -40,7 +40,8 @@ pub(crate) const CLEAR_SEARCH_GLYPH: &str = "\u{d7}";
 /// enclosing panel). A no-op when there are no findings, so nothing is drawn -
 /// and no separator - on the empty startup screen.
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
-    let cards = model::plan_cards(&app.findings);
+    let aggregates = crate::ui::frame_ui_aggregates(ui.ctx(), &app.findings);
+    let cards = aggregates.cards;
     if cards.is_empty() {
         return;
     }
@@ -48,7 +49,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
     let s = i18n::strings(lang);
     let active_filter = app.tree_category_filter;
-    let totals = model::plan_totals(&app.findings);
+    let totals = aggregates.totals;
 
     // Deferred actions: collected while `app` is borrowed read-only for
     // rendering, applied only after the widgets are laid out.

@@ -38,7 +38,8 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
     let s = i18n::strings(lang);
 
-    let has_findings = app.findings.iter().any(|item| !item.removed);
+    let aggregates = crate::ui::frame_ui_aggregates(ui.ctx(), &app.findings);
+    let has_findings = aggregates.totals.finding_count > 0;
     // Before the first scan there is nothing to select and nothing to delete,
     // so the panel showed zeroed totals and a row of dead buttons under an
     // empty screen. The scan-timing readout is the one thing
@@ -53,12 +54,11 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         ui.add_space(4.0);
 
         if has_findings {
-            let selection = crate::deletion_controller::selection_summary(&app.findings);
-            let selected_count = selection.count;
+            let selected_count = aggregates.selected_count;
             // On-disk allocation (allocated-size accounting): the honest "space that will be
             // freed" figure, matching the per-row and per-node totals and the
             // occupancy denominator (both on-disk).
-            let selected_bytes = selection.bytes_on_disk;
+            let selected_bytes = aggregates.selected_bytes_on_disk;
 
             let busy = app.busy.then_some(s.disabled_busy);
             let needs_selection = busy

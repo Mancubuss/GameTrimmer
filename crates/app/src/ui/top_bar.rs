@@ -79,7 +79,66 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             ui.colored_label(ui.visuals().error_fg_color, db_error);
         }
 
-        if let Some(progress) = app.progress.clone() {
+        if let Some(phase_state) = &app.scan_phase_state {
+            ui.add_space(2.0);
+            let overall_pct = (phase_state.overall_fraction * 100.0) as u32;
+            let overall_text = format!("{}: {}%", s.scan_overall_title, overall_pct);
+            ui.add(egui::ProgressBar::new(phase_state.overall_fraction).text(overall_text));
+
+            if let Some(p1) = &phase_state.phase1 {
+                let frac = if p1.total > 0 {
+                    p1.current as f32 / p1.total as f32
+                } else {
+                    0.0
+                };
+                let label = if !p1.detail.is_empty() {
+                    format!(
+                        "{}: {}",
+                        i18n::scan_phase_1_label(lang, p1.current, p1.total),
+                        p1.detail
+                    )
+                } else {
+                    i18n::scan_phase_1_label(lang, p1.current, p1.total)
+                };
+                ui.add(egui::ProgressBar::new(frac).text(label));
+            }
+
+            if let Some(p2) = &phase_state.phase2 {
+                let frac = if p2.total > 0 {
+                    p2.current as f32 / p2.total as f32
+                } else {
+                    0.0
+                };
+                let label = if !p2.detail.is_empty() {
+                    format!(
+                        "{}: {}",
+                        i18n::scan_phase_2_label(lang, p2.current, p2.total),
+                        p2.detail
+                    )
+                } else {
+                    i18n::scan_phase_2_label(lang, p2.current, p2.total)
+                };
+                ui.add(egui::ProgressBar::new(frac).text(label));
+            }
+
+            if let Some(p3) = &phase_state.phase3 {
+                let frac = if p3.total > 0 {
+                    p3.current as f32 / p3.total as f32
+                } else {
+                    0.0
+                };
+                let label = if !p3.detail.is_empty() {
+                    format!(
+                        "{}: {}",
+                        i18n::scan_phase_3_label(lang, p3.current, p3.total),
+                        p3.detail
+                    )
+                } else {
+                    i18n::scan_phase_3_label(lang, p3.current, p3.total)
+                };
+                ui.add(egui::ProgressBar::new(frac).text(label));
+            }
+        } else if let Some(progress) = app.progress.clone() {
             let fraction = if progress.total == 0 {
                 0.0
             } else {

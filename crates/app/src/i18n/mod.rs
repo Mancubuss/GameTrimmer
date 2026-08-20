@@ -615,6 +615,7 @@ pub struct Strings {
     pub category_docs: &'static str,
     pub category_bonus: &'static str,
     pub category_loc: &'static str,
+    pub category_archives: &'static str,
     pub category_other: &'static str,
     pub category_orphan: &'static str,
     pub category_workshop: &'static str,
@@ -651,6 +652,19 @@ pub struct Strings {
     /// The body text is interpolated (whether the window could be raised),
     /// so it lives in `messages::already_running_body` instead.
     pub already_running_title: &'static str,
+
+    // -- monolithic archives & 3-phase scanning --
+    pub monolithic_archives_label: &'static str,
+    pub scan_monolithic_archives_checkbox: &'static str,
+    pub scan_monolithic_archives_subtitle: &'static str,
+    pub scan_phase_1_title: &'static str,
+    pub scan_phase_2_title: &'static str,
+    pub scan_phase_3_title: &'static str,
+    pub scan_overall_title: &'static str,
+    pub badge_monolith: &'static str,
+    pub badge_anticheat_shield: &'static str,
+    pub anticheat_shield_tooltip: &'static str,
+    pub archive_action_unavailable: &'static str,
 }
 
 impl Strings {
@@ -1346,6 +1360,9 @@ impl Strings {
         if let Some(val) = map.get("category_loc") {
             s.category_loc = Box::leak(val.clone().into_boxed_str());
         }
+        if let Some(val) = map.get("category_archives") {
+            s.category_archives = Box::leak(val.clone().into_boxed_str());
+        }
         if let Some(val) = map.get("category_other") {
             s.category_other = Box::leak(val.clone().into_boxed_str());
         }
@@ -1417,6 +1434,39 @@ impl Strings {
         }
         if let Some(val) = map.get("already_running_title") {
             s.already_running_title = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("monolithic_archives_label") {
+            s.monolithic_archives_label = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("scan_monolithic_archives_checkbox") {
+            s.scan_monolithic_archives_checkbox = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("scan_monolithic_archives_subtitle") {
+            s.scan_monolithic_archives_subtitle = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("scan_phase_1_title") {
+            s.scan_phase_1_title = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("scan_phase_2_title") {
+            s.scan_phase_2_title = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("scan_phase_3_title") {
+            s.scan_phase_3_title = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("scan_overall_title") {
+            s.scan_overall_title = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("badge_monolith") {
+            s.badge_monolith = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("badge_anticheat_shield") {
+            s.badge_anticheat_shield = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("anticheat_shield_tooltip") {
+            s.anticheat_shield_tooltip = Box::leak(val.clone().into_boxed_str());
+        }
+        if let Some(val) = map.get("archive_action_unavailable") {
+            s.archive_action_unavailable = Box::leak(val.clone().into_boxed_str());
         }
         s
     }
@@ -1740,6 +1790,7 @@ impl Strings {
             ("category_docs", self.category_docs),
             ("category_bonus", self.category_bonus),
             ("category_loc", self.category_loc),
+            ("category_archives", self.category_archives),
             ("category_other", self.category_other),
             ("category_orphan", self.category_orphan),
             ("category_workshop", self.category_workshop),
@@ -1764,6 +1815,26 @@ impl Strings {
             ("csv_yes", self.csv_yes),
             ("csv_no", self.csv_no),
             ("already_running_title", self.already_running_title),
+            ("monolithic_archives_label", self.monolithic_archives_label),
+            (
+                "scan_monolithic_archives_checkbox",
+                self.scan_monolithic_archives_checkbox,
+            ),
+            (
+                "scan_monolithic_archives_subtitle",
+                self.scan_monolithic_archives_subtitle,
+            ),
+            ("scan_phase_1_title", self.scan_phase_1_title),
+            ("scan_phase_2_title", self.scan_phase_2_title),
+            ("scan_phase_3_title", self.scan_phase_3_title),
+            ("scan_overall_title", self.scan_overall_title),
+            ("badge_monolith", self.badge_monolith),
+            ("badge_anticheat_shield", self.badge_anticheat_shield),
+            ("anticheat_shield_tooltip", self.anticheat_shield_tooltip),
+            (
+                "archive_action_unavailable",
+                self.archive_action_unavailable,
+            ),
         ]
     }
 }

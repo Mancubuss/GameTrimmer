@@ -80,12 +80,31 @@ pub struct ConfirmDelete {
 /// {detail}"` for scan/delete, or `"{verb} {percent}%"` when `detail` is
 /// empty (compaction, which has no per-item detail to show). See
 /// `WorkerMsg::Progress` for the field meanings.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgressState {
     pub verb: i18n::Verb,
     pub current: usize,
     pub total: usize,
     pub detail: String,
+}
+
+/// Progress state of one phase in the 3-phase scanning architecture.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PhaseProgress {
+    pub current: usize,
+    pub total: usize,
+    pub detail: String,
+    pub extra_count: usize,
+}
+
+/// Aggregate 3-phase scanning progress state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScanPhaseState {
+    pub phase1: Option<PhaseProgress>,
+    pub phase2: Option<PhaseProgress>,
+    pub phase3: Option<PhaseProgress>,
+    pub overall_fraction: f32,
+    pub overall_message: String,
 }
 
 pub struct GameTrimmerApp {
@@ -164,6 +183,8 @@ pub struct GameTrimmerApp {
     /// a user is most likely to want to abort.
     cancellable_job: bool,
     pub progress: Option<ProgressState>,
+    /// Granular 3-phase scan progress.
+    pub scan_phase_state: Option<ScanPhaseState>,
     pub status_message: String,
     /// UI-only animation state for the progress line: the `progress.detail`
     /// shown last frame and the animation-clock time (`egui`'s input `time`)
@@ -485,6 +506,7 @@ impl GameTrimmerApp {
             busy: false,
             cancellable_job: false,
             progress: None,
+            scan_phase_state: None,
             status_message: String::new(),
             last_progress_detail: String::new(),
             last_progress_detail_at: 0.0,
@@ -996,6 +1018,7 @@ impl GameTrimmerApp {
         self.cancel.store(false, Ordering::Relaxed);
         self.begin_job(true);
         self.progress = None;
+        self.scan_phase_state = None;
         self.status_message.clear();
         self.remove_summary = None;
         self.last_scan_timing = None;
@@ -1011,6 +1034,7 @@ impl GameTrimmerApp {
                 keep_languages: self.settings.keep_languages.clone(),
                 enabled_categories: self.settings.enabled_categories.clone(),
                 excluded_libraries: self.settings.excluded_libraries.clone(),
+                scan_monolithic_archives: self.settings.scan_monolithic_archives,
             },
         );
         self._worker = Some(handle);
@@ -1272,6 +1296,7 @@ impl GameTrimmerApp {
                 DeleteItem {
                     file_id: row.file_id,
                     size_on_disk: row.size_on_disk,
+                    action: row.action.clone(),
                 }
             })
             .collect();
@@ -1531,6 +1556,18 @@ impl GameTrimmerApp {
         }
         self.settings = Settings {
             excluded_libraries,
+            ..self.settings.clone()
+        };
+        self.persist_settings();
+    }
+
+    /// Sets whether to inspect and trim monolithic archives on the next scan.
+    pub fn set_scan_monolithic_archives(&mut self, scan_monolithic_archives: bool) {
+        if self.settings.scan_monolithic_archives == scan_monolithic_archives {
+            return;
+        }
+        self.settings = Settings {
+            scan_monolithic_archives,
             ..self.settings.clone()
         };
         self.persist_settings();
@@ -1848,6 +1885,79 @@ impl GameTrimmerApp {
                     detail,
                 });
             }
+            WorkerMsg::ScanPhaseProgress(phase_progress) => {
+                let state = self
+                    .scan_phase_state
+                    .get_or_insert_with(ScanPhaseState::default);
+                match phase_progress {
+                    gametrimmer_core::worker::WorkerProgress::ScanPhase1 {
+                        current,
+                        total,
+                        game_name,
+                    } => {
+                        state.phase1 = Some(PhaseProgress {
+                            current,
+                            total,
+                            detail: game_name,
+                            extra_count: 0,
+                        });
+                        let frac = if total > 0 {
+                            current as f32 / total as f32
+                        } else {
+                            0.0
+                        };
+                        state.overall_fraction = (frac * 0.33).clamp(0.0, 1.0);
+                        state.overall_message = format!("{}/{}", current, total);
+                    }
+                    gametrimmer_core::worker::WorkerProgress::ScanPhase2 {
+                        current,
+                        total,
+                        file_name,
+                        findings_count,
+                    } => {
+                        state.phase2 = Some(PhaseProgress {
+                            current,
+                            total,
+                            detail: file_name,
+                            extra_count: findings_count,
+                        });
+                        let frac = if total > 0 {
+                            current as f32 / total as f32
+                        } else {
+                            0.0
+                        };
+                        state.overall_fraction = (0.33 + frac * 0.34).clamp(0.0, 1.0);
+                        state.overall_message = format!("{}/{}", current, total);
+                    }
+                    gametrimmer_core::worker::WorkerProgress::ScanPhase3 {
+                        current,
+                        total,
+                        archive_name,
+                        monoliths_count,
+                    } => {
+                        state.phase3 = Some(PhaseProgress {
+                            current,
+                            total,
+                            detail: archive_name,
+                            extra_count: monoliths_count,
+                        });
+                        let frac = if total > 0 {
+                            current as f32 / total as f32
+                        } else {
+                            0.0
+                        };
+                        state.overall_fraction = (0.67 + frac * 0.33).clamp(0.0, 1.0);
+                        state.overall_message = format!("{}/{}", current, total);
+                    }
+                    gametrimmer_core::worker::WorkerProgress::OverallProgress {
+                        fraction,
+                        message,
+                    } => {
+                        state.overall_fraction = fraction.clamp(0.0, 1.0);
+                        state.overall_message = message;
+                    }
+                }
+            }
             WorkerMsg::Done {
                 findings,
                 scan_summary,
@@ -1861,6 +1971,7 @@ impl GameTrimmerApp {
                 self.refresh_descriptions();
                 self.end_job();
                 self.progress = None;
+                self.scan_phase_state = None;
                 self._worker = None;
                 self.last_scan_timing = timing;
                 self.last_routing_breakdown = routing_breakdown;
@@ -2013,6 +2124,7 @@ impl GameTrimmerApp {
                 self.bundle_active = false;
                 self.end_job();
                 self.progress = None;
+                self.scan_phase_state = None;
                 self._worker = None;
                 self.status_message = i18n::strings(lang).scan_cancelled.to_string();
             }
@@ -2020,6 +2132,7 @@ impl GameTrimmerApp {
                 self.bundle_active = false;
                 self.end_job();
                 self.progress = None;
+                self.scan_phase_state = None;
                 self._worker = None;
                 self.bundle_result = match (&path, error) {
                     (_, Some(error)) => {
@@ -2043,6 +2156,7 @@ impl GameTrimmerApp {
                 // place both languages are still available.
                 self.end_job();
                 self.progress = None;
+                self.scan_phase_state = None;
                 self._worker = None;
                 self.status_message = i18n::error_prefixed(lang, msg);
             }
@@ -2547,6 +2661,9 @@ mod tests {
                 deletion_block_reason: None,
                 imported_untrusted: false,
                 library: None,
+                action: gametrimmer_core::models::FindingAction::DirectDelete,
+                anti_cheat_protected: false,
+                monolith_badge: None,
             },
             selected: true,
             removed: false,

@@ -16,6 +16,40 @@ pub mod tree_view;
 use eframe::egui;
 
 use crate::i18n;
+use crate::model::{self, FindingItem, UiAggregates};
+
+#[derive(Clone)]
+struct FrameUiAggregates {
+    frame: u64,
+    value: UiAggregates,
+}
+
+/// Returns the one findings roll-up shared by every summary surface in this
+/// egui frame. The bottom bar is rendered before the central tree/plan row,
+/// so it populates the cache and the plan row reuses it instead of launching
+/// two more whole-findings scans. The frame number is the invalidation
+/// boundary: any selection/removal mutation is visible on the next repaint.
+pub(crate) fn frame_ui_aggregates(ctx: &egui::Context, findings: &[FindingItem]) -> UiAggregates {
+    let frame = ctx.cumulative_frame_nr();
+    let cache_id = egui::Id::new("gametrimmer.frame_ui_aggregates");
+    if let Some(cached) = ctx.data(|data| data.get_temp::<FrameUiAggregates>(cache_id)) {
+        if cached.frame == frame {
+            return cached.value;
+        }
+    }
+
+    let value = model::ui_aggregates(findings);
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            cache_id,
+            FrameUiAggregates {
+                frame,
+                value: value.clone(),
+            },
+        );
+    });
+    value
+}
 
 /// Who this is built on. Small text, an acknowledgement rather than a banner.
 ///
@@ -79,4 +113,60 @@ pub fn danger_frame(ui: &mut egui::Ui, label: &str, contents: impl FnOnce(&mut e
             ui.add_space(6.0);
             contents(ui);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{FindingRow, FindingSource};
+    use gametrimmer_core::models::FindingAction;
+    use gametrimmer_core::rules::Category;
+    use std::path::PathBuf;
+
+    #[test]
+    fn frame_aggregate_cache_reuses_then_invalidates_on_the_next_frame() {
+        let ctx = egui::Context::default();
+        let mut findings = vec![FindingItem {
+            row: FindingRow {
+                file_id: 1,
+                game_id: 1,
+                game_name: "Game".to_string(),
+                app_id: None,
+                install_dir: PathBuf::from("C:/Game"),
+                rel_path: "bonus.bin".to_string(),
+                size: 100,
+                size_on_disk: 40,
+                source: FindingSource::Rule(Category::Bonus),
+                rule_desc: String::new(),
+                confidence: 80,
+                lang_tag: None,
+                group_dir: None,
+                deletion_block_reason: None,
+                imported_untrusted: false,
+                library: None,
+                action: FindingAction::DirectDelete,
+                anti_cheat_protected: false,
+                monolith_badge: None,
+            },
+            selected: false,
+            removed: false,
+        }];
+
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(frame_ui_aggregates(ui.ctx(), &findings).selected_count, 0);
+            findings[0].selected = true;
+            assert_eq!(
+                frame_ui_aggregates(ui.ctx(), &findings).selected_count,
+                0,
+                "both summary surfaces reuse the same frame snapshot"
+            );
+        });
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(
+                frame_ui_aggregates(ui.ctx(), &findings).selected_count,
+                1,
+                "the next frame invalidates after a selection mutation"
+            );
+        });
+    }
 }

@@ -9,9 +9,9 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 use gametrimmer_core::db;
+use gametrimmer_core::models::FindingAction;
 use gametrimmer_core::ops::{
-    execute_delete_plans_observed, prepare_delete_plans, FsOutcome, OpOutcome, PermanentDelete,
-    RecycleBin, Remover,
+    execute_delete_plans_observed, prepare_delete_plans, FsOutcome, OpOutcome,
 };
 use gametrimmer_core::settings::DeleteMethod;
 
@@ -25,6 +25,9 @@ use super::{Notifier, RemoveOutcome, WorkerMsg};
 pub struct DeleteItem {
     pub file_id: i64,
     pub size_on_disk: u64,
+    /// The exact action shown to the user. Archive actions are not file
+    /// deletions and must never be silently routed through this worker.
+    pub action: FindingAction,
 }
 
 /// `ctx` is the app's `egui::Context` (see `Notifier`) so per-file delete
@@ -58,10 +61,10 @@ fn run_delete(
         }
     };
 
-    let remover: &dyn Remover = match method {
-        DeleteMethod::Permanent => &PermanentDelete,
-        DeleteMethod::RecycleBin => &RecycleBin,
-    };
+    if let Err(err) = validate_direct_delete_batch(&conn, &items) {
+        notifier.report_error(i18n::Reported::new(lang, |l| i18n::delete_failed(l, &err)));
+        return;
+    }
 
     let file_ids: Vec<i64> = items.iter().map(|item| item.file_id).collect();
     let intro_file_ids: HashSet<i64> = {
@@ -128,7 +131,7 @@ fn run_delete(
         set
     };
 
-    let plans = match prepare_delete_plans(&conn, &file_ids, remover.action()) {
+    let plans = match prepare_delete_plans(&conn, &file_ids, method) {
         Ok(plans) if plans.len() == items.len() => plans,
         Ok(_) => {
             notifier.report_error(i18n::Reported::new(lang, |l| {
@@ -148,7 +151,7 @@ fn run_delete(
             .iter()
             .enumerate()
             .filter(|(idx, _)| save_file_ids.contains(&items[*idx].file_id))
-            .map(|(_, plan)| plan.snapshot.trusted_root.join(&plan.snapshot.rel_path))
+            .map(|(_, plan)| plan.target_path())
             .collect();
 
         if !save_paths.is_empty() {
@@ -199,7 +202,7 @@ fn run_delete(
             execute_stub.push(None);
             continue;
         }
-        let nominal_path = plan.snapshot.trusted_root.join(&plan.snapshot.rel_path);
+        let nominal_path = plan.target_path();
         match gametrimmer_core::stub::detect_stub_bytes(&nominal_path) {
             Some(bytes) => {
                 execute_plans.push(plan.clone());
@@ -239,7 +242,7 @@ fn run_delete(
     let mut stub_failures: Vec<(usize, String)> = Vec::new();
     let filtered_outcomes = match execute_delete_plans_observed(
         &mut conn,
-        remover,
+        method,
         &execute_plans,
         |current, total, path| {
             // Slow removers (the Recycle Bin goes through the shell per file) can
@@ -430,6 +433,59 @@ fn report_stub_write_failure_if_any(
     Some(detail)
 }
 
+/// Proves that the whole batch is made only of ordinary file deletions and
+/// that the persisted action still agrees with the UI model. Validation is
+/// all-or-nothing and happens before save backups, delete-plan preparation or
+/// any filesystem mutation.
+fn validate_direct_delete_batch(
+    conn: &rusqlite::Connection,
+    items: &[DeleteItem],
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT category, action FROM findings WHERE file_id = ?1")
+        .map_err(|err| format!("could not verify finding action: {err}"))?;
+    for item in items {
+        if item.action != FindingAction::DirectDelete {
+            return Err(format!(
+                "file_id {} uses an archive action; whole-file deletion is blocked",
+                item.file_id
+            ));
+        }
+
+        let raw_actions = stmt
+            .query_map([item.file_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|err| format!("could not read finding action: {err}"))?;
+        let mut found = false;
+        for persisted_row in raw_actions {
+            found = true;
+            let (category, raw) =
+                persisted_row.map_err(|err| format!("could not read finding action: {err}"))?;
+            let persisted = FindingAction::from_persisted_contract(&category, raw.as_deref())
+                .map_err(|err| {
+                format!(
+                    "file_id {} has an invalid persisted finding contract; deletion is blocked: {err}",
+                    item.file_id
+                )
+            })?;
+            if persisted != item.action {
+                return Err(format!(
+                    "file_id {} has inconsistent queued and persisted actions; whole-file deletion is blocked",
+                    item.file_id
+                ));
+            }
+        }
+        if !found {
+            return Err(format!(
+                "file_id {} has no finding row; deletion is blocked",
+                item.file_id
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Writes the batch's space accounting where it outlives the dialog that
 /// shows it.
 ///
@@ -531,7 +587,7 @@ pub(crate) fn space_tally(method: DeleteMethod, outcomes: &[RemoveOutcome]) -> S
     let mut pending_items = Vec::new();
 
     for outcome in outcomes {
-        tally.expected += outcome.size_on_disk;
+        tally.expected = tally.expected.saturating_add(outcome.size_on_disk);
         if outcome.error.is_some() {
             continue;
         }
@@ -746,6 +802,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn space_tally_saturates_corrupt_persisted_sizes() {
+        let outcomes = [
+            removed(u64::MAX, Some("blocked"), false),
+            removed(1, Some("blocked"), false),
+        ];
+
+        assert_eq!(
+            space_tally(DeleteMethod::Permanent, &outcomes).expected,
+            u64::MAX
+        );
+    }
+
     fn insert_test_finding(
         conn: &rusqlite::Connection,
         scan_id: i64,
@@ -835,10 +904,12 @@ mod tests {
             DeleteItem {
                 file_id: intro_file_id,
                 size_on_disk: 1000,
+                action: FindingAction::DirectDelete,
             },
             DeleteItem {
                 file_id: docs_file_id,
                 size_on_disk: 1000,
+                action: FindingAction::DirectDelete,
             },
         ];
 
@@ -905,6 +976,7 @@ mod tests {
         let items = vec![DeleteItem {
             file_id,
             size_on_disk: 1000,
+            action: FindingAction::DirectDelete,
         }];
 
         run_delete(
@@ -960,6 +1032,7 @@ mod tests {
         let items = vec![DeleteItem {
             file_id,
             size_on_disk: 1000,
+            action: FindingAction::DirectDelete,
         }];
 
         run_delete(
@@ -1046,10 +1119,12 @@ mod tests {
             DeleteItem {
                 file_id: skipped_id,
                 size_on_disk: 1000,
+                action: FindingAction::DirectDelete,
             },
             DeleteItem {
                 file_id: deleted_id,
                 size_on_disk: 2000,
+                action: FindingAction::DirectDelete,
             },
         ];
 

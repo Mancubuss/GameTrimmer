@@ -235,6 +235,7 @@
     "category_docs": "الوثائق والمواد المرجعية",
     "category_bonus": "المحتوى الإضافي",
     "category_loc": "ملفات اللغات والترجمة",
+    "category_archives": "الأرشيفات المترابطة",
     "category_other": "أخرى",
     "category_orphan": "ملفات متروكة",
     "orphan_branch_label": "بقايا متروكة",
@@ -258,6 +259,17 @@
     "saves_retention_slider": "الاحتفاظ بأحدث عمليات الحفظ السريع لكل لعبة",
     "saves_auto_backup_label": "نسخ احتياطي تلقائي بتنسيق ZIP قبل الحذف",
     "saves_backup_success": "تم إنشاء النسخة الاحتياطية لملفات الحفظ بنجاح",
-    "saves_total_prunable": "تم العثور على عمليات حفظ تلقائي قابلة للتقليم"
+    "saves_total_prunable": "تم العثور على عمليات حفظ تلقائي قابلة للتقليم",
+    "monolithic_archives_label": "Monolithic archives",
+    "scan_monolithic_archives_checkbox": "Deep scan monolithic archives (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
+    "scan_monolithic_archives_subtitle": "Read-only inspection of container internals. Trimming is unavailable until safe rollback is implemented.",
+    "scan_phase_1_title": "1. Disks & libraries discovery",
+    "scan_phase_2_title": "2. Regular file analysis",
+    "scan_phase_3_title": "3. Monolithic archives inspection",
+    "scan_overall_title": "Overall progress",
+    "badge_monolith": "Monolith",
+    "badge_anticheat_shield": "🛡️ Anti-Cheat",
+    "anticheat_shield_tooltip": "Game protected by anti-cheat; modification disabled for safety",
+    "archive_action_unavailable": "Archive trimming is unavailable until safe rollback is implemented"
   }
 }

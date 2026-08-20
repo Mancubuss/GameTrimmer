@@ -344,9 +344,13 @@ pub(super) fn persist_prepared_game(
     let mut sql = std::time::Duration::ZERO;
     let sql_started = std::time::Instant::now();
 
-    // `findings.file_id` has no `ON DELETE CASCADE`, and `store_files_no_tx`
-    // is about to delete this game's old `files` rows - drop their findings
-    // first, while the old ids are still known.
+    // `findings.file_id` and `file_safety.file_id` have no `ON DELETE CASCADE`, and
+    // `store_files_no_tx` is about to delete this game's old `files` rows - drop their
+    // findings and safety records first, while the old ids are still known.
+    conn.execute(
+        "DELETE FROM file_safety WHERE file_id IN (SELECT id FROM files WHERE game_id = ?1)",
+        params![prepared.game_id],
+    )?;
     conn.execute(
         "DELETE FROM findings WHERE file_id IN (SELECT id FROM files WHERE game_id = ?1)",
         params![prepared.game_id],
@@ -361,20 +365,11 @@ pub(super) fn persist_prepared_game(
     // files"), which the totals alone never showed.
     let stats = ScanStats::of(&prepared.entries);
 
-    // Only the flagged files get a row. `files` used to hold every file of
-    // every game - 4.9 million rows against 720 thousand findings - and the
-    // only reader that ever looked at an unflagged one was the rule-import
-    // impact preview, which has been removed (importing rules now asks for a
-    // rescan). Everything else reaches this table through
-    // `JOIN files f ON f.id = fi.file_id`.
-    //
+    // Only the flagged files and unflagged candidate archive files get a row in `files`.
     // The findings are in strictly ascending `entry_index` order, one per
     // entry, because `classify_game` builds them by walking `entries` once -
     // so handing their files over in that order makes `file_ids[i]` the id of
-    // `prepared.findings[i]`'s file. That positional contract is what replaced
-    // selecting every row back out and keying it by `rel_path` into a
-    // `HashMap`: 4.9 million owned strings and a measured 3.6 s per scan to
-    // rediscover ids the insert already reported.
+    // `prepared.findings[i]`'s file.
     debug_assert!(
         prepared
             .findings
@@ -382,12 +377,27 @@ pub(super) fn persist_prepared_game(
             .all(|pair| pair[0].entry_index < pair[1].entry_index),
         "findings must be in strictly ascending entry order for positional file ids"
     );
-    let flagged = prepared
+    let flagged_indices: HashSet<usize> = prepared.findings.iter().map(|f| f.entry_index).collect();
+
+    let candidate_archives: Vec<&FileEntry> = prepared
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(idx, entry)| {
+            !flagged_indices.contains(idx)
+                && gametrimmer_core::worker::is_candidate_archive_path(&entry.rel_path)
+        })
+        .map(|(_, entry)| entry)
+        .collect();
+
+    let all_entries = prepared
         .findings
         .iter()
-        .map(|finding| &prepared.entries[finding.entry_index]);
+        .map(|finding| &prepared.entries[finding.entry_index])
+        .chain(candidate_archives);
+
     let sql_started = std::time::Instant::now();
-    let file_ids = store_files_no_tx(conn, scan_id, prepared.game_id, flagged)?;
+    let file_ids = store_files_no_tx(conn, scan_id, prepared.game_id, all_entries)?;
     conn.execute(
         "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4 WHERE id = ?1",
         params![
@@ -436,8 +446,8 @@ pub(super) fn persist_prepared_game(
     let mut rows = Vec::with_capacity(prepared.findings.len());
     let mut insert_finding = conn.prepare_cached(
         "INSERT INTO findings
-         (file_id, category, rule_id, confidence, lang_tag, group_dir, provenance) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         (file_id, category, rule_id, confidence, lang_tag, group_dir, provenance, action) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     let mut insert_safety = conn.prepare_cached(
         "INSERT OR REPLACE INTO file_safety
@@ -455,16 +465,16 @@ pub(super) fn persist_prepared_game(
     // per row it inserted, so there is no longer a case in which a finding
     // has no row. The `debug_assert` pins that invariant where it is set up
     // instead of re-checking it 720 000 times in release.
-    debug_assert_eq!(
-        file_ids.len(),
-        prepared.findings.len(),
-        "store_files_no_tx must return one id per finding, in finding order"
+    debug_assert!(
+        file_ids.len() >= prepared.findings.len(),
+        "store_files_no_tx must return at least one id per finding, in finding order"
     );
 
     for (position, finding) in prepared.findings.iter().enumerate() {
         let file_id = file_ids[position];
 
         let sql_started = std::time::Instant::now();
+        let action_json = finding.action.to_json();
         insert_finding.execute(params![
             file_id,
             source_key(finding.source),
@@ -476,6 +486,7 @@ pub(super) fn persist_prepared_game(
                 RuleProvenance::Builtin => "builtin",
                 RuleProvenance::ImportedUntrusted => "imported_untrusted",
             },
+            action_json,
         ])?;
         sql += sql_started.elapsed();
 
@@ -544,6 +555,9 @@ pub(super) fn persist_prepared_game(
             deletion_block_reason,
             imported_untrusted: finding.provenance == RuleProvenance::ImportedUntrusted,
             library: Some(library.clone()),
+            action: finding.action.clone(),
+            anti_cheat_protected: prepared.anti_cheat_protected,
+            monolith_badge: None,
         });
     }
 

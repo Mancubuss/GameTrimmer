@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS findings (
     confidence INTEGER NOT NULL,
     lang_tag   TEXT,
     group_dir  TEXT,
-    provenance TEXT NOT NULL DEFAULT 'builtin'
+    provenance TEXT NOT NULL DEFAULT 'builtin',
+    action     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS operations (
@@ -310,6 +311,7 @@ fn migrate_v1(conn: &Connection) -> Result<()> {
         "provenance",
         "TEXT NOT NULL DEFAULT 'builtin'",
     )?;
+    add_column_if_missing(conn, "findings", "action", "TEXT")?;
     // `files.size_on_disk` (allocated-size accounting): the on-disk allocated size, added so
     // sizes shown and reported match Explorer's "Size on disk" instead of the
     // logical total. `NULL` for every file indexed by an earlier build; load

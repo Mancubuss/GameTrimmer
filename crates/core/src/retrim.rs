@@ -248,6 +248,7 @@ pub fn retrim_game_with_new_build(
     }
 
     let mut candidates = Vec::new();
+    let mut imported_match = false;
 
     for (index, entry) in entries.iter().enumerate() {
         let verdict = rule_engine.classify(&entry.rel_path, game.app_id.as_deref());
@@ -257,6 +258,13 @@ pub fn retrim_game_with_new_build(
                 continue;
             }
             crate::rules::Verdict::Flagged(finding) => {
+                if finding.provenance == crate::rules::RuleProvenance::ImportedUntrusted {
+                    // Re-trim runs automatically after a game update. Imported
+                    // community rules require an explicit per-finding human
+                    // review and must never cross this unattended boundary.
+                    imported_match = true;
+                    continue;
+                }
                 candidates.push(Candidate {
                     entry,
                     category: finding.category.as_str(),
@@ -279,6 +287,13 @@ pub fn retrim_game_with_new_build(
                 }
             }
         }
+    }
+
+    if imported_match {
+        return Err(CoreError::Other(
+            "automatic re-trim blocked: an imported rule matched and requires explicit review"
+                .to_string(),
+        ));
     }
 
     if candidates.is_empty() {
@@ -339,12 +354,7 @@ pub fn retrim_game_with_new_build(
     conn.execute("DELETE FROM files WHERE game_id = ?1", [game.id])?;
 
     // 6. Build safety snapshots and delete plans
-    let remover: Box<dyn crate::ops::Remover> = match delete_method {
-        DeleteMethod::Permanent => Box::new(crate::ops::PermanentDelete),
-        DeleteMethod::RecycleBin => Box::new(crate::ops::RecycleBin),
-    };
-
-    let mut plans = Vec::new();
+    let mut candidate_file_ids = Vec::new();
     let mut candidate_sizes = Vec::new();
     let mut candidate_sizes_on_disk = Vec::new();
 
@@ -411,15 +421,10 @@ pub fn retrim_game_with_new_build(
 
         candidate_sizes.push(candidate.entry.size);
         candidate_sizes_on_disk.push(candidate.entry.size_on_disk);
-        plans.push(crate::safety::DeletePlan {
-            file_id,
-            scan_id,
-            action: remover.action().to_string(),
-            snapshot,
-        });
+        candidate_file_ids.push(file_id);
     }
 
-    if plans.is_empty() {
+    if candidate_file_ids.is_empty() {
         let final_build_id = new_build_id.or(game.build_id.as_deref());
         conn.execute(
             "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4, build_id = ?5 WHERE id = ?1",
@@ -442,9 +447,10 @@ pub fn retrim_game_with_new_build(
     }
 
     // 7. Execute delete plans
+    let plans = crate::ops::prepare_delete_plans(conn, &candidate_file_ids, delete_method)?;
     let outcomes = crate::ops::execute_delete_plans_observed(
         conn,
-        remover.as_ref(),
+        delete_method,
         &plans,
         |_current, _total, _path| {},
         |_index, _outcome| {},
@@ -452,8 +458,8 @@ pub fn retrim_game_with_new_build(
 
     // 8. Tally results
     let mut files_deleted = 0;
-    let mut bytes_freed = 0;
-    let mut bytes_on_disk_freed = 0;
+    let mut bytes_freed = 0u64;
+    let mut bytes_on_disk_freed = 0u64;
     let mut errors = Vec::new();
 
     for (idx, outcome) in outcomes.iter().enumerate() {
@@ -462,8 +468,8 @@ pub fn retrim_game_with_new_build(
             crate::ops::FsOutcome::Removed | crate::ops::FsOutcome::AlreadyAbsent
         ) {
             files_deleted += 1;
-            bytes_freed += candidate_sizes[idx];
-            bytes_on_disk_freed += candidate_sizes_on_disk[idx];
+            bytes_freed = bytes_freed.saturating_add(candidate_sizes[idx]);
+            bytes_on_disk_freed = bytes_on_disk_freed.saturating_add(candidate_sizes_on_disk[idx]);
         }
         if let Some(err) = &outcome.error {
             errors.push(format!("{}: {}", outcome.path.display(), err));
@@ -502,6 +508,23 @@ pub fn retrim_game_with_new_build(
 mod tests {
     use super::*;
     use std::fs;
+
+    fn setup_game(temp_dir: &tempfile::TempDir, game_dir: &Path) -> Connection {
+        fs::create_dir_all(game_dir).expect("create game dir");
+        let conn = crate::db::open_in_memory().expect("open memory db");
+        conn.execute(
+            "INSERT INTO game_libraries (id, vendor, path) VALUES (1, 'steam', ?1)",
+            [temp_dir.path().to_string_lossy()],
+        )
+        .expect("insert library");
+        conn.execute(
+            "INSERT INTO games (id, library_id, name, install_dir, app_id, build_id)
+             VALUES (10, 1, 'Test Game', ?1, 'test-app', '100')",
+            [game_dir.to_string_lossy()],
+        )
+        .expect("insert game");
+        conn
+    }
 
     #[test]
     fn retrim_game_deletes_flagged_files_and_updates_database() {
@@ -624,5 +647,104 @@ mod tests {
         assert!(RunningCheck::Running.blocks_deletion());
         assert!(RunningCheck::Unknown.blocks_deletion());
         assert!(!RunningCheck::NotRunning.blocks_deletion());
+    }
+
+    #[test]
+    fn imported_rule_match_blocks_automatic_retrim_without_deleting() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Imported Rule Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+        let target = game_dir.join("manual.txt");
+        fs::write(&target, b"ordinary document").expect("write target");
+        let rules = format!(
+            r#"{{"version":{},"rules":[{{"category":"docs_file","pattern":"^manual\\.txt$","desc":"Imported docs rule","confidence":90,"provenance":"imported_untrusted"}}]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse imported rule");
+
+        let error = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::new(),
+            DeleteMethod::Permanent,
+        )
+        .expect_err("imported match must block unattended re-trim");
+
+        assert!(error.to_string().contains("imported rule matched"));
+        assert!(target.is_file());
+    }
+
+    #[test]
+    fn archive_magic_in_eac_game_blocks_direct_delete() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("EAC Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+        fs::create_dir_all(game_dir.join("EasyAntiCheat")).expect("create EAC marker");
+        fs::write(
+            game_dir.join("EasyAntiCheat").join("EasyAntiCheat.exe"),
+            b"MZ",
+        )
+        .expect("write EAC marker");
+        let target = game_dir.join("manual.txt");
+        let archive = archive_trimmer::formats::wwise::create_synthetic_wwise_pck(
+            &[(1, "English(US)"), (2, "French")],
+            &[(1, 1, 128), (2, 2, 128)],
+        );
+        fs::write(&target, archive).expect("write disguised archive");
+        let rules = format!(
+            r#"{{"version":{},"rules":[{{"category":"docs_file","pattern":"^manual\\.txt$","desc":"Trusted docs rule","confidence":90}}]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse trusted rule");
+
+        let error = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::new(),
+            DeleteMethod::Permanent,
+        )
+        .expect_err("supported archive magic must block whole-file deletion");
+
+        assert!(error.to_string().contains("Wwise PCK"), "{error}");
+        assert!(target.is_file());
+    }
+
+    #[test]
+    fn ordinary_localization_category_remains_retrim_deletable() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Localized Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+        let target = game_dir
+            .join("localization")
+            .join("french")
+            .join("captions.json");
+        fs::create_dir_all(target.parent().expect("localization parent"))
+            .expect("create localization tree");
+        fs::write(&target, br#"{"caption":"bonjour"}"#).expect("write localization");
+        let rules = format!(
+            r#"{{"version":{},"rules":[]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse empty rule pack");
+
+        let report = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::new(),
+            DeleteMethod::Permanent,
+        )
+        .expect("valid localization cleanup remains supported");
+
+        assert_eq!(report.files_deleted, 1);
+        assert!(!target.exists());
+        let category: String = conn
+            .query_row("SELECT category FROM findings LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .expect("persisted localization finding");
+        assert_eq!(category, "localization");
     }
 }

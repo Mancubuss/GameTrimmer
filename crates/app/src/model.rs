@@ -39,6 +39,7 @@ pub enum DisplayCategory {
     Docs,
     Bonus,
     Loc,
+    Archives,
     Other,
     /// Orphaned launcher residue (orphan-residue safety) - shown under the per-disk pseudo-game
     /// branch ([`ORPHAN_GAME_ID`]), never mixed into a real game's categories.
@@ -138,6 +139,12 @@ pub struct FindingRow {
     /// [`GroupAxis`]) and by nothing else - in particular by nothing on the
     /// deletion path, per [`LibraryOrigin`]'s own boundary.
     pub library: Option<LibraryOrigin>,
+    /// The action to be taken for this finding (DirectDelete, SparseZero, Repack).
+    pub action: gametrimmer_core::models::FindingAction,
+    /// Whether the owning game has active anti-cheat protection.
+    pub anti_cheat_protected: bool,
+    /// Precomputed monolithic container badge text.
+    pub monolith_badge: Option<String>,
 }
 
 impl FindingRow {
@@ -146,13 +153,40 @@ impl FindingRow {
         display_category(self.source)
     }
 
+    /// Whether this finding targets localized streams inside a monolithic container.
+    pub fn is_monolithic_archive(&self) -> bool {
+        self.action.is_monolithic_archive()
+    }
+
+    /// The GUI deletion worker currently executes only whole-file deletes.
+    /// Archive actions remain visible for audit/review, but cannot be queued
+    /// until their rollback-capable executor is available.
+    pub fn action_is_executable_by_gui(&self) -> bool {
+        matches!(
+            self.action,
+            gametrimmer_core::models::FindingAction::DirectDelete
+        )
+    }
+
+    /// Whether the user may select this individual finding for a deletion
+    /// request. This is deliberately narrower than [`Self::bulk_selectable`]:
+    /// imported rows still require an explicit individual decision, but a
+    /// protected monolithic archive may never be selected through either the
+    /// mouse or keyboard.
+    pub fn individually_selectable(&self) -> bool {
+        self.deletion_block_reason.is_none()
+            && self.action_is_executable_by_gui()
+            && !(self.anti_cheat_protected && self.is_monolithic_archive())
+    }
+
     /// A row may be taken by *bulk* selection (select-all, profile
     /// auto-select) only when nothing blocks its deletion and its safety
     /// evidence came from this scan. `imported_untrusted` rows carry evidence
     /// an older database supplied and this scan never re-checked, so they
-    /// must be ticked one at a time, deliberately.
+    /// must be ticked one at a time, deliberately. Anti-cheat protected
+    /// monolithic archives are never bulk-selectable to prevent accidental trimming.
     pub fn bulk_selectable(&self) -> bool {
-        self.deletion_block_reason.is_none() && !self.imported_untrusted
+        self.individually_selectable() && !self.imported_untrusted
     }
 }
 
@@ -173,12 +207,13 @@ pub struct FindingItem {
 /// [`ORPHAN_GAME_ID`]), never inside a real game, so its position relative to
 /// the other six is immaterial - but it must still be listed so the settings
 /// dialog offers a checkbox for it and [`category_enabled`] can gate it.
-pub const CATEGORY_ORDER: [DisplayCategory; 12] = [
+pub const CATEGORY_ORDER: [DisplayCategory; 13] = [
     DisplayCategory::Redist,
     DisplayCategory::Intro,
     DisplayCategory::Docs,
     DisplayCategory::Bonus,
     DisplayCategory::Loc,
+    DisplayCategory::Archives,
     DisplayCategory::Other,
     DisplayCategory::Orphan,
     DisplayCategory::Workshop,
@@ -208,6 +243,7 @@ impl DisplayCategory {
             DisplayCategory::Intro
             | DisplayCategory::Bonus
             | DisplayCategory::Loc
+            | DisplayCategory::Archives
             | DisplayCategory::Other
             | DisplayCategory::Orphan
             | DisplayCategory::Workshop => SafetyBadge::Review,
@@ -319,6 +355,7 @@ pub fn display_category(source: FindingSource) -> DisplayCategory {
             DisplayCategory::Docs
         }
         FindingSource::Rule(Category::Bonus) => DisplayCategory::Bonus,
+        FindingSource::Rule(Category::MonolithicArchive) => DisplayCategory::Archives,
         FindingSource::Rule(Category::DevLeftovers) => DisplayCategory::Other,
         FindingSource::Rule(Category::Intro) => DisplayCategory::Intro,
         FindingSource::Rule(Category::WorkshopOrphan) => DisplayCategory::Workshop,
@@ -343,6 +380,7 @@ pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &
         DisplayCategory::Docs => s.category_docs,
         DisplayCategory::Bonus => s.category_bonus,
         DisplayCategory::Loc => s.category_loc,
+        DisplayCategory::Archives => s.category_archives,
         DisplayCategory::Other => s.category_other,
         DisplayCategory::Orphan => s.category_orphan,
         DisplayCategory::Workshop => s.category_workshop,
@@ -365,6 +403,7 @@ pub fn source_key(source: FindingSource) -> &'static str {
         FindingSource::Rule(Category::DocsFolder) => "docs_folder",
         FindingSource::Rule(Category::DocsFile) => "docs_file",
         FindingSource::Rule(Category::Bonus) => "bonus",
+        FindingSource::Rule(Category::MonolithicArchive) => "monolithic_archive",
         FindingSource::Rule(Category::DevLeftovers) => "dev_leftovers",
         FindingSource::Rule(Category::Intro) => "intro",
         FindingSource::Rule(Category::WorkshopOrphan) => "workshop_orphan",
@@ -401,6 +440,7 @@ pub fn parse_source_key(key: &str) -> Option<FindingSource> {
         "docs_folder" => Some(FindingSource::Rule(Category::DocsFolder)),
         "docs_file" => Some(FindingSource::Rule(Category::DocsFile)),
         "bonus" => Some(FindingSource::Rule(Category::Bonus)),
+        "monolithic_archive" => Some(FindingSource::Rule(Category::MonolithicArchive)),
         "dev_leftovers" => Some(FindingSource::Rule(Category::DevLeftovers)),
         "intro" => Some(FindingSource::Rule(Category::Intro)),
         "workshop_orphan" => Some(FindingSource::Rule(Category::WorkshopOrphan)),
@@ -433,6 +473,7 @@ pub fn category_ui_key(category: DisplayCategory) -> &'static str {
         DisplayCategory::Docs => "docs",
         DisplayCategory::Bonus => "bonus",
         DisplayCategory::Loc => "loc",
+        DisplayCategory::Archives => "archives",
         DisplayCategory::Other => "other",
         DisplayCategory::Orphan => "orphan",
         DisplayCategory::Workshop => "workshop",
@@ -556,6 +597,7 @@ pub fn category_risk(category: DisplayCategory) -> RiskLevel {
         | DisplayCategory::Docs
         | DisplayCategory::Loc
         | DisplayCategory::Intro
+        | DisplayCategory::Archives
         | DisplayCategory::Workshop => RiskLevel::Low,
         // Dev leftovers and saves: review / backup recommended
         DisplayCategory::Other | DisplayCategory::Saves => RiskLevel::Medium,
@@ -579,27 +621,49 @@ pub struct PlanCard {
     pub risk: RiskLevel,
 }
 
-/// Rolls the current findings up into one [`PlanCard`] per non-empty display
-/// category, ordered "benefit ÷ risk": least-risky first, and within a risk
-/// band the biggest reclaim first. Removed items are excluded (they are gone).
-/// A pure function of the findings, so it is cheap to recompute each frame and
-/// unit-testable without any UI.
-pub fn plan_cards(items: &[FindingItem]) -> Vec<PlanCard> {
+/// Everything the plan row and bottom bar need from the findings collection.
+/// Building these values together keeps those two per-frame surfaces to one
+/// findings pass instead of independently walking the whole scan result.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UiAggregates {
+    pub cards: Vec<PlanCard>,
+    pub totals: PlanTotals,
+    pub selected_count: usize,
+    pub selected_bytes_on_disk: u64,
+}
+
+/// Rolls the current findings up for both summary surfaces in one pass.
+/// Removed items are excluded from every value.
+pub fn ui_aggregates(items: &[FindingItem]) -> UiAggregates {
     use std::collections::HashSet;
 
-    // (total_on_disk, finding_count, distinct game ids) per category.
-    let mut totals: HashMap<DisplayCategory, (u64, usize, HashSet<i64>)> = HashMap::new();
+    let mut by_category: HashMap<DisplayCategory, (u64, usize, HashSet<i64>)> = HashMap::new();
+    let mut games = HashSet::new();
+    let mut aggregates = UiAggregates::default();
+
     for item in items {
         if item.removed {
             continue;
         }
-        let entry = totals.entry(item.row.display_category()).or_default();
-        entry.0 += item.row.size_on_disk;
+
+        aggregates.totals.finding_count += 1;
+        games.insert(item.row.game_id);
+
+        let entry = by_category.entry(item.row.display_category()).or_default();
+        entry.0 = entry.0.saturating_add(item.row.size_on_disk);
         entry.1 += 1;
         entry.2.insert(item.row.game_id);
+
+        if item.selected {
+            aggregates.selected_count += 1;
+            aggregates.selected_bytes_on_disk = aggregates
+                .selected_bytes_on_disk
+                .saturating_add(item.row.size_on_disk);
+        }
     }
 
-    let mut cards: Vec<PlanCard> = totals
+    aggregates.totals.game_count = games.len();
+    aggregates.cards = by_category
         .into_iter()
         .map(|(category, (size, count, games))| PlanCard {
             category,
@@ -609,15 +673,19 @@ pub fn plan_cards(items: &[FindingItem]) -> Vec<PlanCard> {
             risk: category_risk(category),
         })
         .collect();
-
-    // Least-risky first (RiskLevel is ordered), then biggest reclaim first
-    // within a band - so a zero-risk, high-payoff card leads the plan.
-    cards.sort_by(|a, b| {
+    aggregates.cards.sort_by(|a, b| {
         a.risk
             .cmp(&b.risk)
             .then(b.total_size_on_disk.cmp(&a.total_size_on_disk))
     });
-    cards
+    aggregates
+}
+
+/// Rolls the current findings up into one [`PlanCard`] per non-empty display
+/// category, ordered "benefit ÷ risk": least-risky first, and within a risk
+/// band the biggest reclaim first. Removed items are excluded (they are gone).
+pub fn plan_cards(items: &[FindingItem]) -> Vec<PlanCard> {
+    ui_aggregates(items).cards
 }
 
 /// The whole-plan roll-up behind the one-line summary above the tree
@@ -635,22 +703,9 @@ pub struct PlanTotals {
 /// Rolls every finding up into one line's worth of numbers. Removed items are
 /// excluded (they are gone), matching [`plan_cards`]. Pure, so it is cheap to
 /// recompute each frame and unit-testable without any UI.
+#[cfg(test)]
 pub fn plan_totals(items: &[FindingItem]) -> PlanTotals {
-    use std::collections::HashSet;
-
-    let live = items.iter().filter(|item| !item.removed);
-    let mut games: HashSet<i64> = HashSet::new();
-    let mut finding_count = 0usize;
-
-    for item in live {
-        finding_count += 1;
-        games.insert(item.row.game_id);
-    }
-
-    PlanTotals {
-        finding_count,
-        game_count: games.len(),
-    }
+    ui_aggregates(items).totals
 }
 
 /// One node in the tree, either a collapsed folder (every file under it is
@@ -911,7 +966,8 @@ fn majority_category(items: &[FindingItem], indices: &[usize]) -> DisplayCategor
     let mut bytes_by_category: HashMap<DisplayCategory, u64> = HashMap::new();
     for &index in indices {
         let row = &items[index].row;
-        *bytes_by_category.entry(row.display_category()).or_insert(0) += row.size_on_disk;
+        let total = bytes_by_category.entry(row.display_category()).or_insert(0);
+        *total = total.saturating_add(row.size_on_disk);
     }
 
     let mut best = CATEGORY_ORDER[0];
@@ -1096,33 +1152,6 @@ fn build_game_categories(
 /// when the tree is drawn, not when it is built, so the export, the totals and
 /// the sort keep working unchanged.
 ///
-/// Order-sensitive fingerprint of which findings are currently checked.
-///
-/// Used to notice that the user edited the selection without having to hook
-/// every place that can edit it. The tree mutates `findings` through a
-/// disjoint borrow in a dozen places - per-file checkbox, tri-state group
-/// checkboxes at four levels, keyboard toggle, four context-menu actions -
-/// none of which has `&mut GameTrimmerApp` to call a setter on. Enumerating
-/// them is exactly the kind of hand-maintained list that goes stale (see
-/// `GameTrimmerApp::any_modal_open` for the same lesson), so `ui::tree_view`
-/// compares this before and after its own rendering pass instead.
-///
-/// FNV-1a over one byte per finding: one cheap pass, and the tree already
-/// walks every finding each frame to flatten its visible rows.
-///
-/// `removed` is folded in as its own bit so a mid-delete `FileRemoved` is not
-/// mistaken for a hand-edit - though in practice those arrive in
-/// `drain_messages`, outside the window this is compared across.
-pub fn selection_fingerprint(items: &[FindingItem]) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    items.iter().fold(FNV_OFFSET, |hash, item| {
-        let bits = u64::from(item.selected) | (u64::from(item.removed) << 1);
-        (hash ^ bits).wrapping_mul(FNV_PRIME)
-    })
-}
-
 /// Which top-level branch one row belongs to under `axis`.
 ///
 /// Only the disk is derived from the file's own path; the launcher and the
@@ -1462,35 +1491,47 @@ fn cmp_member_files(
 /// Whether every / any item in `indices` is currently selected. Used to
 /// drive the tri-state checkbox on category and game headers.
 pub fn group_selection_state(items: &[FindingItem], indices: &[usize]) -> (bool, bool) {
-    if indices.is_empty() {
-        return (false, false);
+    let mut selectable_count = 0usize;
+    let mut selected_count = 0usize;
+    for &index in indices {
+        if items[index].row.bulk_selectable() {
+            selectable_count += 1;
+            selected_count += usize::from(items[index].selected);
+        }
     }
-    let selected_count = indices.iter().filter(|&&i| items[i].selected).count();
-    (selected_count == indices.len(), selected_count > 0)
+    (
+        selectable_count > 0 && selected_count == selectable_count,
+        selected_count > 0,
+    )
 }
 
 /// Flips the selection of a whole group: selects all if not all are
 /// currently selected, otherwise deselects all.
-pub fn toggle_group(items: &mut [FindingItem], indices: &[usize]) {
+pub fn toggle_group(items: &mut [FindingItem], indices: &[usize]) -> bool {
     let (all_selected, _) = group_selection_state(items, indices);
-    set_group_selection(items, indices, !all_selected);
+    set_group_selection(items, indices, !all_selected)
 }
 
 /// Sets every item in `indices` to the given selection state. Used by the
 /// bulk-selection actions (select all on a disk, all of a category, ...), so
 /// selecting honours [`FindingRow::bulk_selectable`]. Deselecting never does:
 /// clearing a row is always allowed, whatever put it there.
-pub fn set_group_selection(items: &mut [FindingItem], indices: &[usize], selected: bool) {
+pub fn set_group_selection(items: &mut [FindingItem], indices: &[usize], selected: bool) -> bool {
+    let mut changed = false;
     for &index in indices {
-        if !selected || items[index].row.bulk_selectable() {
+        if (!selected || items[index].row.bulk_selectable()) && items[index].selected != selected {
             items[index].selected = selected;
+            changed = true;
         }
     }
+    changed
 }
 
 /// Total size in bytes of the selected, non-removed items in `indices`.
 pub fn group_size_bytes(items: &[FindingItem], indices: &[usize]) -> u64 {
-    indices.iter().map(|&i| items[i].row.size).sum()
+    indices.iter().fold(0, |total, &index| {
+        total.saturating_add(items[index].row.size_on_disk)
+    })
 }
 
 /// Live disk-usage snapshot produced at scan/load time (see
@@ -1511,7 +1552,9 @@ impl Occupancy {
     /// `gametrimmer_core::db::occupied_by_library`, deriving `total` as the
     /// sum of every library's bytes.
     pub fn from_by_library(by_library: HashMap<i64, u64>) -> Self {
-        let total = by_library.values().sum();
+        let total = by_library
+            .values()
+            .fold(0u64, |total, &bytes| total.saturating_add(bytes));
         Self { total, by_library }
     }
 
@@ -1658,6 +1701,9 @@ mod tests {
                 deletion_block_reason: None,
                 imported_untrusted: false,
                 library: None,
+                action: gametrimmer_core::models::FindingAction::DirectDelete,
+                anti_cheat_protected: false,
+                monolith_badge: None,
             },
             selected: default_selected(confidence),
             removed: false,
@@ -1742,6 +1788,10 @@ mod tests {
             DisplayCategory::Bonus
         );
         assert_eq!(
+            display_category(FindingSource::Rule(Category::MonolithicArchive)),
+            DisplayCategory::Archives
+        );
+        assert_eq!(
             display_category(FindingSource::Rule(Category::DevLeftovers)),
             DisplayCategory::Other
         );
@@ -1786,6 +1836,35 @@ mod tests {
         let mut untrusted = item(1, "Game", FindingSource::Rule(Category::Bonus), 90, 10);
         untrusted.row.imported_untrusted = true;
         assert!(!untrusted.row.bulk_selectable());
+
+        let mut protected_monolith = item(
+            1,
+            "Game",
+            FindingSource::Rule(Category::MonolithicArchive),
+            90,
+            10,
+        );
+        protected_monolith.row.anti_cheat_protected = true;
+        protected_monolith.row.action = gametrimmer_core::models::FindingAction::SparseZero {
+            format: "Wwise".to_string(),
+            languages: vec!["de".to_string()],
+            stream_count: 1,
+            offsets: vec![(0, 1)],
+            streams: vec![],
+            estimated_savings: 1,
+        };
+        assert!(
+            !protected_monolith.row.individually_selectable(),
+            "the keyboard and per-row checkbox must share this rejection"
+        );
+        assert!(!protected_monolith.row.bulk_selectable());
+        let mut unsupported_archive = protected_monolith.clone();
+        unsupported_archive.row.anti_cheat_protected = false;
+        assert!(
+            !unsupported_archive.row.individually_selectable(),
+            "an unprotected archive action is still not executable by this GUI"
+        );
+        assert!(!unsupported_archive.row.bulk_selectable());
     }
 
     #[test]
@@ -1807,6 +1886,10 @@ mod tests {
             "docs_file"
         );
         assert_eq!(source_key(FindingSource::Rule(Category::Bonus)), "bonus");
+        assert_eq!(
+            source_key(FindingSource::Rule(Category::MonolithicArchive)),
+            "monolithic_archive"
+        );
         assert_eq!(
             source_key(FindingSource::Rule(Category::DevLeftovers)),
             "dev_leftovers"
@@ -1838,6 +1921,7 @@ mod tests {
             FindingSource::Rule(Category::DocsFolder),
             FindingSource::Rule(Category::DocsFile),
             FindingSource::Rule(Category::Bonus),
+            FindingSource::Rule(Category::MonolithicArchive),
             FindingSource::Rule(Category::DevLeftovers),
             FindingSource::Rule(Category::Intro),
             FindingSource::Loc(LangKind::Audio),
@@ -1875,6 +1959,7 @@ mod tests {
                 "docs",
                 "bonus",
                 "loc",
+                "archives",
                 "other",
                 "orphan",
                 "workshop",
@@ -3122,6 +3207,64 @@ mod tests {
     }
 
     #[test]
+    fn ui_aggregates_share_one_consistent_live_reclaimable_snapshot() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 1_000),
+            item(2, "Game B", FindingSource::Loc(LangKind::Audio), 90, 500),
+            item(
+                3,
+                "Removed",
+                FindingSource::Rule(Category::DocsFile),
+                90,
+                900,
+            ),
+        ];
+        items[0].row.size_on_disk = 120;
+        items[0].selected = true;
+        items[1].row.size_on_disk = 80;
+        items[1].selected = false;
+        items[2].removed = true;
+        items[2].selected = true;
+
+        let aggregates = ui_aggregates(&items);
+
+        assert_eq!(aggregates.totals.finding_count, 2);
+        assert_eq!(aggregates.totals.game_count, 2);
+        assert_eq!(aggregates.selected_count, 1);
+        assert_eq!(aggregates.selected_bytes_on_disk, 120);
+        assert_eq!(
+            aggregates
+                .cards
+                .iter()
+                .map(|card| card.total_size_on_disk)
+                .sum::<u64>(),
+            200,
+            "cards and the selection summary use reclaimable bytes from the same snapshot"
+        );
+    }
+
+    #[test]
+    fn persisted_size_aggregates_saturate_instead_of_wrapping() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 1),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 1),
+        ];
+        for item in &mut items {
+            item.selected = true;
+            item.row.size_on_disk = u64::MAX;
+        }
+
+        let aggregates = ui_aggregates(&items);
+        assert_eq!(aggregates.cards[0].total_size_on_disk, u64::MAX);
+        assert_eq!(aggregates.selected_bytes_on_disk, u64::MAX);
+        assert_eq!(group_size_bytes(&items, &[0, 1]), u64::MAX);
+        assert_eq!(
+            Occupancy::from_by_library(HashMap::from([(1, u64::MAX), (2, 1)])).total,
+            u64::MAX
+        );
+    }
+
+    #[test]
     fn toggle_group_selects_all_then_deselects_all() {
         let mut items = vec![
             item(1, "Game A", FindingSource::Rule(Category::Bonus), 50, 10),
@@ -3162,12 +3305,17 @@ mod tests {
         toggle_group(&mut items, &indices);
         assert!(items[0].selected);
         assert!(!items[1].selected, "the untrusted row stays untouched");
+        assert_eq!(
+            group_selection_state(&items, &indices),
+            (true, true),
+            "blocked rows do not leave an otherwise fully-selected group indeterminate"
+        );
 
         items[1].selected = true;
-        set_group_selection(&mut items, &indices, false);
+        toggle_group(&mut items, &indices);
         assert!(
             items.iter().all(|i| !i.selected),
-            "deselecting a group clears the untrusted row too"
+            "the second group toggle deselects both selectable and stale blocked selections"
         );
     }
 
@@ -3183,6 +3331,20 @@ mod tests {
         let (all, any) = group_selection_state(&items, &[0, 1]);
         assert!(!all);
         assert!(any);
+    }
+
+    #[test]
+    fn group_size_uses_reclaimable_on_disk_bytes_not_logical_archive_size() {
+        let mut items = vec![item(
+            1,
+            "Game A",
+            FindingSource::Rule(Category::MonolithicArchive),
+            90,
+            10_000,
+        )];
+        items[0].row.size_on_disk = 750;
+
+        assert_eq!(group_size_bytes(&items, &[0]), 750);
     }
 
     #[test]
@@ -3215,6 +3377,10 @@ mod tests {
             category_display(Lang::Uk, DisplayCategory::Loc),
             "Файли локалізацій"
         );
+        assert_eq!(
+            category_display(Lang::Uk, DisplayCategory::Archives),
+            "Монолітні архіви"
+        );
         assert_eq!(category_display(Lang::Uk, DisplayCategory::Other), "Інше");
         assert_eq!(
             category_display(Lang::Uk, DisplayCategory::Orphan),
@@ -3223,6 +3389,10 @@ mod tests {
         assert_eq!(
             category_display(Lang::En, DisplayCategory::Redist),
             "Redistributables"
+        );
+        assert_eq!(
+            category_display(Lang::En, DisplayCategory::Archives),
+            "Monolithic Archives"
         );
         assert_eq!(
             category_display(Lang::En, DisplayCategory::Orphan),
@@ -3384,62 +3554,6 @@ mod tests {
         assert_eq!(
             format_duration(std::time::Duration::from_millis(3999)),
             "3s"
-        );
-    }
-
-    /// The fingerprint exists to tell a hand-edit from everything else, so it
-    /// has to move when a checkbox moves and stay put when nothing does.
-    #[test]
-    fn selection_fingerprint_tracks_checkbox_state() {
-        let mut items = vec![
-            item(1, "A", FindingSource::Rule(Category::RedistFolder), 90, 10),
-            item(2, "B", FindingSource::Rule(Category::RedistFolder), 90, 20),
-        ];
-        let baseline = selection_fingerprint(&items);
-
-        assert_eq!(selection_fingerprint(&items), baseline, "pure function");
-
-        items[0].selected = !items[0].selected;
-        let after_toggle = selection_fingerprint(&items);
-        assert_ne!(after_toggle, baseline, "a toggled checkbox must show up");
-
-        items[0].selected = !items[0].selected;
-        assert_eq!(
-            selection_fingerprint(&items),
-            baseline,
-            "toggling back must return to the same fingerprint",
-        );
-    }
-
-    /// Deletion marks findings `removed`, which must not read as a hand-edit
-    /// of the selection - it is folded in as its own bit rather than sharing
-    /// one with `selected`.
-    #[test]
-    fn selection_fingerprint_separates_removal_from_deselection() {
-        let mut removed = vec![item(
-            1,
-            "A",
-            FindingSource::Rule(Category::RedistFolder),
-            90,
-            10,
-        )];
-        removed[0].selected = true;
-        removed[0].removed = true;
-
-        let mut deselected = vec![item(
-            1,
-            "A",
-            FindingSource::Rule(Category::RedistFolder),
-            90,
-            10,
-        )];
-        deselected[0].selected = false;
-        deselected[0].removed = false;
-
-        assert_ne!(
-            selection_fingerprint(&removed),
-            selection_fingerprint(&deselected),
-            "a removed-but-checked finding is not the same as an unchecked one",
         );
     }
 
