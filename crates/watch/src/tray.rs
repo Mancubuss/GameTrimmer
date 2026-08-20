@@ -18,10 +18,9 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, GetWindowLongPtrW, LoadIconW, PostMessageW, RegisterClassExW,
-    SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenuEx, GWLP_USERDATA, HMENU,
-    IDI_APPLICATION, MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINDOW_EX_STYLE,
-    WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_USER, WNDCLASSEXW,
-    WS_OVERLAPPED,
+    SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenuEx, GWLP_USERDATA, HMENU, MF_SEPARATOR,
+    MF_STRING, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_COMMAND, WM_DESTROY,
+    WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_USER, WNDCLASSEXW, WS_OVERLAPPED,
 };
 
 use crate::i18n::WatchStrings;
@@ -36,6 +35,7 @@ pub const IDM_PAUSE: usize = 1003;
 pub const IDM_EXIT: usize = 1004;
 
 const WINDOW_CLASS_NAME: &str = "GameTrimmerWatchHiddenWindowClass";
+const WATCHER_ICON_RESOURCE_ID: u16 = 1;
 
 /// Recovers from a poisoned `RwLock` instead of panicking.
 ///
@@ -154,7 +154,10 @@ impl TrayIcon {
     }
 
     fn add_icon(&mut self, tooltip: &str) -> std::io::Result<()> {
-        let icon = unsafe { LoadIconW(None, IDI_APPLICATION) }
+        let module = unsafe { GetModuleHandleW(None) }
+            .map_err(|e| std::io::Error::other(format!("GetModuleHandleW: {e}")))?;
+        let resource_id = PCWSTR::from_raw(WATCHER_ICON_RESOURCE_ID as usize as *const u16);
+        let icon = unsafe { LoadIconW(Some(module.into()), resource_id) }
             .map_err(|e| std::io::Error::other(format!("LoadIconW: {e}")))?;
 
         let mut nid = NOTIFYICONDATAW {

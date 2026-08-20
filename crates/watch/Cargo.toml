@@ -3,6 +3,9 @@ name = "gametrimmer-watch"
 version.workspace = true
 edition.workspace = true
 
+[build-dependencies]
+winresource = "0.1.23"
+
 [dependencies]
 gametrimmer-core = { path = "../core" }
 windows = { version = "0.62.2", features = [
