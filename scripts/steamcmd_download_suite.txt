@@ -1,0 +1,137 @@
+// SteamCMD script for downloading GameTrimmer test suite
+// Run with: steamcmd +runscript steamcmd_download_suite.txt
+login <YOUR_STEAM_USERNAME>
+force_install_dir ./steam_test_games/
+// Apex Legends (Source (Modified) - 65 GB)
+app_update 1172470 validate
+// Destiny 2 (Tiger Engine - 105 GB)
+app_update 1085660 validate
+// Overwatch 2 (Tank Engine (Blizzard) - 50 GB)
+app_update 2357570 validate
+// Marvel Rivals (Unreal Engine 5 - 40 GB)
+app_update 2767030 validate
+// PUBG: BATTLEGROUNDS (Unreal Engine 4 - 35 GB)
+app_update 578080 validate
+// THE FINALS (Unreal Engine 5 - 20 GB)
+app_update 2073850 validate
+// Halo Infinite (Slipspace Engine - 35 GB)
+app_update 1240440 validate
+// The First Descendant (Unreal Engine 5 - 45 GB)
+app_update 2074920 validate
+// Delta Force (Unreal Engine 5 - 50 GB)
+app_update 2507950 validate
+// Shatterline (CryEngine / Lumberyard - 25 GB)
+app_update 2087030 validate
+// Splitgate (Unreal Engine 4 - 20 GB)
+app_update 677620 validate
+// Vampire: The Masquerade - Bloodhunt (Unreal Engine 4 - 30 GB)
+app_update 760160 validate
+// Counter-Strike 2 (Source 2 - 35 GB)
+app_update 730 validate
+// Dota 2 (Source 2 - 45 GB)
+app_update 570 validate
+// Team Fortress 2 (Source - 22 GB)
+app_update 440 validate
+// Path of Exile (Proprietary - 40 GB)
+app_update 238960 validate
+// Warframe (Evolution Engine - 40 GB)
+app_update 230410 validate
+// Lost Ark (Unreal Engine 3 - 75 GB)
+app_update 1599340 validate
+// THRONE AND LIBERTY (Unreal Engine 4 - 60 GB)
+app_update 2429640 validate
+// Once Human (NeoX Engine - 55 GB)
+app_update 2139460 validate
+// STAR WARS: The Old Republic (HeroEngine - 50 GB)
+app_update 1286830 validate
+// Guild Wars 2 (Proprietary - 70 GB)
+app_update 1985790 validate
+// EVE Online (Carbon Engine - 30 GB)
+app_update 8500 validate
+// Albion Online (Unity - 15 GB)
+app_update 761890 validate
+// Tower of Fantasy (Unreal Engine 4 - 35 GB)
+app_update 2064650 validate
+// Star Trek Online (Cryptic Engine - 25 GB)
+app_update 9900 validate
+// Neverwinter (Cryptic Engine - 25 GB)
+app_update 109600 validate
+// DC Universe Online (Unreal Engine 3 - 35 GB)
+app_update 24200 validate
+// War Thunder (Dagor Engine - 55 GB)
+app_update 236390 validate
+// World of Tanks (Core Engine - 60 GB)
+app_update 1407200 validate
+// World of Warships (BigWorld Engine - 65 GB)
+app_update 552990 validate
+// World of Warplanes (BigWorld Engine - 35 GB)
+app_update 790710 validate
+// Enlisted (Dagor Engine - 40 GB)
+app_update 2055400 validate
+// Crossout (Targem Engine - 15 GB)
+app_update 386180 validate
+// Star Conflict (Targem Engine - 15 GB)
+app_update 212070 validate
+// Paladins (Unreal Engine 3 - 28 GB)
+app_update 444090 validate
+// SMITE (Unreal Engine 3 - 30 GB)
+app_update 386360 validate
+// Predecessor (Unreal Engine 5 - 25 GB)
+app_update 961200 validate
+// NARAKA: BLADEPOINT (Unity - 35 GB)
+app_update 1203220 validate
+// Century: Age of Ashes (Unreal Engine 4 - 15 GB)
+app_update 918450 validate
+// Unturned (Unity - 5 GB)
+app_update 304930 validate
+// Brawlhalla (Proprietary - 2 GB)
+app_update 291550 validate
+// The Sims 4 (SmartSim - 20 GB)
+app_update 1222670 validate
+// Crusader Kings II (Clausewitz - 5 GB)
+app_update 203770 validate
+// Disney Speedstorm (Unreal Engine 4 - 18 GB)
+app_update 1537830 validate
+// KartRider: Drift (Unreal Engine 4 - 25 GB)
+app_update 1184140 validate
+// Supermarket Together (Unity - 4 GB)
+app_update 2708450 validate
+// Goose Goose Duck (Unity - 3 GB)
+app_update 1568590 validate
+// Black Myth: Wukong Benchmark Tool (Unreal Engine 5 - 8 GB)
+app_update 3132990 validate
+// 3DMark Demo (Proprietary - 6 GB)
+app_update 231350 validate
+// Blender (Open Source 3D - 1.5 GB)
+app_update 365670 validate
+// FINAL FANTASY XVI DEMO (Proprietary - 18 GB)
+app_update 2738000 validate
+// Metaphor: ReFantazio Prologue Demo (GFD Engine (Atlus) - 30 GB)
+app_update 2679460 validate
+// Street Fighter 6 Demo (RE Engine - 16 GB)
+app_update 2154900 validate
+// Resident Evil 4 Chainsaw Demo (RE Engine - 11 GB)
+app_update 2243880 validate
+// Detroit: Become Human Demo (Quantic Dream Engine - 10 GB)
+app_update 1105510 validate
+// RoboCop: Rogue City Demo (Unreal Engine 5 - 25 GB)
+app_update 2515080 validate
+// Lies of P Demo (Unreal Engine 4 - 20 GB)
+app_update 2384010 validate
+// Ghostrunner 2 Demo (Unreal Engine 5 - 12 GB)
+app_update 2518420 validate
+// The Talos Principle 2 Demo (Unreal Engine 5 - 15 GB)
+app_update 2577610 validate
+// Pacific Drive Demo (Unreal Engine 4 - 14 GB)
+app_update 2769490 validate
+// Visions of Mana Demo (Unreal Engine 4 - 15 GB)
+app_update 2898490 validate
+// Kunitsu-Gami: Path of the Goddess Demo (RE Engine - 8 GB)
+app_update 2908860 validate
+// OUTRIDERS Demo (Unreal Engine 4 - 22 GB)
+app_update 1433600 validate
+// DRAGON QUEST XI S Demo (Unreal Engine 4 - 15 GB)
+app_update 1354890 validate
+// Life is Strange (Episode 1) (Unreal Engine 3 - 3 GB)
+app_update 319630 validate
+quit
