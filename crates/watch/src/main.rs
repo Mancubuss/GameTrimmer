@@ -29,12 +29,15 @@ pub mod toast;
 pub mod tray;
 pub mod watcher;
 
-use fsm::FsmDebouncer;
+use fsm::{FsmDebouncer, VerifiedGameUpdate};
 use i18n::WatchStrings;
 use ipc::{IpcRequest, IpcResponse, IpcServer};
 use toast::format_game_updated_toast;
 use tray::{TrayCommand, TrayIcon};
-use watcher::{discover_watch_directories, ManifestWatcher};
+use watcher::{
+    discover_watch_directories, enumerate_manifest_files, LauncherKind, ManifestEvent,
+    ManifestWatcher, WatcherAction,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const APP_TITLE: &str = "GameTrimmer";
@@ -150,6 +153,62 @@ fn open_local_db(db_path: &Path) -> Option<Connection> {
     } else {
         None
     }
+}
+
+/// Recovers from a lost `ReadDirectoryChangesW` buffer (GT-202) by
+/// re-enumerating the manifest files that currently exist in each
+/// overflowed directory and feeding them into the FSM as synthetic events.
+///
+/// An overflow means the real events are gone - `fsm.pending` stays empty
+/// because there was nothing to record them from, so `check_settled` alone
+/// (which only ever iterates `pending`) has nothing to do and the "forced
+/// rescan" silently no-ops. Recording one synthetic `Modified` event per
+/// manifest file currently on disk gives the debouncer something to settle
+/// on, so the normal settle-and-verify pass (the one already running every
+/// loop iteration whenever `fsm.has_pending()`) picks these up exactly like
+/// it would any other real change.
+fn recover_from_overflow(fsm: &mut FsmDebouncer, overflowed_dirs: &[(PathBuf, LauncherKind)]) {
+    for (dir, launcher) in overflowed_dirs {
+        for file_path in enumerate_manifest_files(dir, *launcher) {
+            let file_name = file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            fsm.record_event(ManifestEvent {
+                dir_path: dir.clone(),
+                file_path,
+                file_name,
+                action: WatcherAction::Modified,
+                launcher: *launcher,
+            });
+        }
+    }
+}
+
+/// Formats each verified game update as a (title, body) toast pair.
+///
+/// Pulled out of the main loop so the mapping from `check_settled`'s return
+/// value to what actually gets shown can be unit-tested without a live
+/// tray HWND, and so both the normal settle path and the GT-202
+/// overflow-recovery path (which now shares the same settle-and-notify code
+/// in the main loop rather than duplicating it) are provably not throwing
+/// the updates away.
+fn updates_to_toasts(
+    strings: &WatchStrings,
+    updates: Vec<VerifiedGameUpdate>,
+) -> Vec<(String, String)> {
+    updates
+        .into_iter()
+        .map(|update| {
+            format_game_updated_toast(
+                strings,
+                &update.name,
+                &update.launcher,
+                update.old_build_id.as_deref(),
+                update.new_build_id.as_deref(),
+            )
+        })
+        .collect()
 }
 
 fn main() {
@@ -331,37 +390,34 @@ fn main() {
             // Events were lost for these directories - see
             // `watcher::PollResult` - so the FSM's incremental picture of
             // them can no longer be trusted. Log it (the daemon has no
-            // console and no other way to surface this) and force a
-            // settle-check sweep now, rather than waiting for the FSM's own
-            // debounce window, which only fires on events it actually
-            // received.
-            for dir in &poll_result.overflowed_dirs {
+            // console and no other way to surface this) and re-enumerate
+            // each directory's manifest files from disk, feeding them into
+            // the FSM as synthetic events. `check_settled` only ever looks
+            // at `fsm.pending`, which an overflow leaves empty by
+            // definition, so a rescan has to repopulate it before the
+            // settle-and-verify pass below (step E) has anything to do.
+            for (dir, _launcher) in &poll_result.overflowed_dirs {
                 log_line(
                     &exe_dir,
                     &format!(
-                        "watch buffer overflow on {} - directory changes may have been missed, forcing a rescan",
+                        "watch buffer overflow on {} - directory changes may have been missed, re-enumerating its manifests",
                         dir.display()
                     ),
                 );
             }
-            let db_conn = open_local_db(&db_path);
-            let _ = fsm.check_settled(db_conn.as_ref());
-            drop(db_conn);
+            recover_from_overflow(&mut fsm, &poll_result.overflowed_dirs);
         }
 
         // E. Check FSM settling window and verify states (only opens DB if events are pending)
+        // This also handles the updates produced by the overflow-recovery
+        // events recorded above once they finish settling - there is no
+        // separate check_settled call in the overflow branch, so there is
+        // nothing to discard there.
         if fsm.has_pending() {
             let db_conn = open_local_db(&db_path);
             let updates = fsm.check_settled(db_conn.as_ref());
             drop(db_conn);
-            for update in updates {
-                let (title, body) = format_game_updated_toast(
-                    &strings,
-                    &update.name,
-                    &update.launcher,
-                    update.old_build_id.as_deref(),
-                    update.new_build_id.as_deref(),
-                );
+            for (title, body) in updates_to_toasts(&strings, updates) {
                 tray.show_notification(&title, &body);
             }
             if !fsm.has_pending() {
@@ -374,5 +430,92 @@ fn main() {
             minimize_working_set();
             last_trim_time = Instant::now();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recover_from_overflow_produces_pending_work_from_an_empty_fsm() {
+        // GT-202: the bug this guards against was that after an overflow,
+        // `fsm.pending` is empty (the events that would have populated it
+        // were lost), so `check_settled` - which only iterates `pending` -
+        // silently did nothing. This proves the recovery path actually
+        // repopulates `pending` from what is on disk, rather than leaving
+        // the FSM as empty as it found it.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let steamapps = temp_dir.path().join("steamapps");
+        std::fs::create_dir_all(&steamapps).expect("create steamapps");
+        std::fs::write(steamapps.join("appmanifest_730.acf"), "").expect("write manifest");
+
+        let mut fsm = FsmDebouncer::new();
+        assert!(!fsm.has_pending(), "sanity: fresh FSM starts empty");
+
+        let overflowed_dirs = vec![(steamapps.clone(), LauncherKind::Steam)];
+        recover_from_overflow(&mut fsm, &overflowed_dirs);
+
+        assert!(
+            fsm.has_pending(),
+            "recovery from an overflow on a directory with a manifest file on disk \
+             must produce pending work, not leave the FSM empty"
+        );
+    }
+
+    #[test]
+    fn recover_from_overflow_ignores_directories_with_no_manifest_files() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let empty_dir = temp_dir.path().join("steamapps");
+        std::fs::create_dir_all(&empty_dir).expect("create dir");
+
+        let mut fsm = FsmDebouncer::new();
+        let overflowed_dirs = vec![(empty_dir, LauncherKind::Steam)];
+        recover_from_overflow(&mut fsm, &overflowed_dirs);
+
+        assert!(!fsm.has_pending());
+    }
+
+    #[test]
+    fn updates_to_toasts_does_not_discard_returned_updates() {
+        // Guards against the other half of GT-202: `let _ =
+        // fsm.check_settled(...)` used to throw away whatever
+        // `Vec<VerifiedGameUpdate>` it returned. This proves the mapping
+        // from updates to toast (title, body) pairs actually carries every
+        // update through instead of dropping it on the floor.
+        let strings = WatchStrings::english();
+        let updates = vec![
+            VerifiedGameUpdate {
+                app_id: "730".to_string(),
+                name: "Counter-Strike 2".to_string(),
+                old_build_id: Some("100".to_string()),
+                new_build_id: Some("200".to_string()),
+                launcher: "steam".to_string(),
+                install_dir: None,
+            },
+            VerifiedGameUpdate {
+                app_id: "Fortnite".to_string(),
+                name: "Fortnite".to_string(),
+                old_build_id: None,
+                new_build_id: Some("v29.40".to_string()),
+                launcher: "epic".to_string(),
+                install_dir: None,
+            },
+        ];
+
+        let toasts = updates_to_toasts(&strings, updates);
+
+        assert_eq!(toasts.len(), 2, "no update should be dropped");
+        assert!(toasts[0].1.contains("Counter-Strike 2"));
+        assert!(toasts[0].1.contains("100"));
+        assert!(toasts[0].1.contains("200"));
+        assert!(toasts[1].1.contains("Fortnite"));
+        assert!(toasts[1].1.contains("v29.40"));
+    }
+
+    #[test]
+    fn updates_to_toasts_returns_empty_for_no_updates() {
+        let strings = WatchStrings::english();
+        assert!(updates_to_toasts(&strings, Vec::new()).is_empty());
     }
 }

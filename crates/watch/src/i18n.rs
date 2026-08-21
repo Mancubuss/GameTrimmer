@@ -41,12 +41,13 @@ impl WatchStrings {
             tray_menu_resume: "Resume monitoring".to_string(),
             tray_menu_exit: "Exit".to_string(),
             toast_updated_transition:
-                "{name} was updated ({old} → {new}). Click to re-trim and reclaim space."
+                "{name} was updated ({old} → {new}). Click to open GameTrimmer and reclaim space."
                     .to_string(),
             toast_updated_build:
-                "{name} was updated (build {new}). Click to re-trim and reclaim space.".to_string(),
-            toast_files_changed: "{name} files changed. Click to re-trim and reclaim space."
-                .to_string(),
+                "{name} was updated (build {new}). Click to open GameTrimmer and reclaim space."
+                    .to_string(),
+            toast_files_changed:
+                "{name} files changed. Click to open GameTrimmer and reclaim space.".to_string(),
             toast_daemon_title: "GameTrimmer Watcher".to_string(),
         }
     }
@@ -61,10 +62,10 @@ impl WatchStrings {
             tray_menu_resume: "Відновити моніторинг".to_string(),
             tray_menu_exit: "Вийти".to_string(),
             toast_updated_transition:
-                "{name} оновлено ({old} → {new}). Натисніть, щоб очистити рештки.".to_string(),
-            toast_updated_build: "{name} оновлено (білд {new}). Натисніть, щоб очистити рештки."
-                .to_string(),
-            toast_files_changed: "Файли гри {name} змінилися. Натисніть, щоб очистити рештки."
+                "{name} оновлено ({old} → {new}). Натисніть, щоб відкрити GameTrimmer.".to_string(),
+            toast_updated_build:
+                "{name} оновлено (білд {new}). Натисніть, щоб відкрити GameTrimmer.".to_string(),
+            toast_files_changed: "Файли гри {name} змінилися. Натисніть, щоб відкрити GameTrimmer."
                 .to_string(),
             toast_daemon_title: "Фоновий монітор GameTrimmer".to_string(),
         }

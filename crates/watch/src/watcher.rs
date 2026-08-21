@@ -166,11 +166,15 @@ impl Drop for WatchedDirectory {
 /// Overflow means events were lost for that directory - there is no way to
 /// get them back - so the caller's job is not to recover them but to notice
 /// and fall back to a full rescan of that directory instead of continuing
-/// to trust an IOCP stream it now knows is incomplete.
+/// to trust an IOCP stream it now knows is incomplete. The `LauncherKind` is
+/// carried alongside each path because a rescan needs it to know which
+/// manifest file names to look for (see `enumerate_manifest_files`), and
+/// `PollResult` is the only place that still remembers which launcher a
+/// given directory belongs to once the completion has been classified.
 #[derive(Debug, Default)]
 pub struct PollResult {
     pub events: Vec<ManifestEvent>,
-    pub overflowed_dirs: Vec<PathBuf>,
+    pub overflowed_dirs: Vec<(PathBuf, LauncherKind)>,
 }
 
 /// What one `GetQueuedCompletionStatus` completion means for the directory
@@ -299,7 +303,9 @@ impl ManifestWatcher {
             // The events inside this window are gone for good; surface the
             // directory so the caller can fall back to a full rescan instead
             // of silently trusting a stream that just lost data.
-            result.overflowed_dirs.push(dir.path.clone());
+            result
+                .overflowed_dirs
+                .push((dir.path.clone(), dir.launcher));
         } else {
             let buffer_slice = &dir.buffer.0[..bytes_transferred as usize];
             result.events = parse_notify_records(buffer_slice, &dir.path, dir.launcher);
@@ -311,8 +317,10 @@ impl ManifestWatcher {
         // re-arm itself fails (e.g. the directory was removed), treat that
         // the same as an overflow: either way the caller's picture of this
         // directory can no longer be trusted without a rescan.
-        if dir.arm_read().is_err() && !result.overflowed_dirs.contains(&dir.path) {
-            result.overflowed_dirs.push(dir.path.clone());
+        if dir.arm_read().is_err() && !result.overflowed_dirs.iter().any(|(p, _)| p == &dir.path) {
+            result
+                .overflowed_dirs
+                .push((dir.path.clone(), dir.launcher));
         }
 
         result
@@ -421,6 +429,32 @@ pub fn is_manifest_file(file_name: &str, launcher: LauncherKind) -> bool {
                 || name_lower.ends_with(".manifest")
         }
     }
+}
+
+/// Re-enumerates manifest files directly from disk for a directory whose
+/// `ReadDirectoryChangesW` buffer overflowed.
+///
+/// This is the recovery path for GT-202: an overflow means the change
+/// events themselves are gone for good, so there is nothing left to replay
+/// from the notification stream. Looking at what manifest files currently
+/// exist in the directory and treating each one as a candidate is the only
+/// way left to notice the state changes that were missed. Best-effort: a
+/// directory that has vanished, or that cannot currently be listed, simply
+/// yields no files rather than propagating an error the caller has no way
+/// to act on differently.
+pub fn enumerate_manifest_files(dir: &Path, launcher: LauncherKind) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            is_manifest_file(&file_name, launcher).then(|| entry.path())
+        })
+        .collect()
 }
 
 /// Discovers all manifest directories across Steam, Epic, GOG, and custom DB libraries.
@@ -638,5 +672,36 @@ mod tests {
             ManifestWatcher::classify_completion(true, 128),
             CompletionOutcome::Data
         );
+    }
+
+    #[test]
+    fn enumerate_manifest_files_finds_only_matching_files_on_disk() {
+        // GT-202 recovery path: after an overflow there are no events left
+        // to replay, so `enumerate_manifest_files` has to reconstruct the
+        // candidate list straight from the filesystem instead.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let steamapps = temp_dir.path().join("steamapps");
+        std::fs::create_dir_all(&steamapps).expect("create steamapps");
+
+        std::fs::write(steamapps.join("appmanifest_730.acf"), "").expect("write manifest");
+        std::fs::write(steamapps.join("appmanifest_440.acf"), "").expect("write manifest");
+        std::fs::write(steamapps.join("libraryfolders.vdf"), "").expect("write unrelated file");
+
+        let mut found = enumerate_manifest_files(&steamapps, LauncherKind::Steam);
+        found.sort();
+
+        let mut expected = vec![
+            steamapps.join("appmanifest_440.acf"),
+            steamapps.join("appmanifest_730.acf"),
+        ];
+        expected.sort();
+
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn enumerate_manifest_files_returns_empty_for_missing_directory() {
+        let missing = Path::new(r"Z:\definitely\does\not\exist\gametrimmer-test");
+        assert!(enumerate_manifest_files(missing, LauncherKind::Steam).is_empty());
     }
 }

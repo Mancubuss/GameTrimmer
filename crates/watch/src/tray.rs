@@ -29,6 +29,14 @@ use crate::toast::show_tray_balloon;
 pub const WM_TRAYICON: u32 = WM_USER + 1;
 pub const TRAY_ICON_ID: u32 = 1;
 
+/// Sent as the `lParam` low-word event code of `WM_TRAYICON` when the user
+/// clicks the body of a balloon/toast notification shown via
+/// `Shell_NotifyIconW`. Not exposed by the `windows` crate bindings this
+/// crate uses, so it is defined locally the same way `WM_TRAYICON` itself
+/// is derived from `WM_USER`. See the Win32 `NOTIFYICON_INFOTIP_FLAGS`
+/// documentation for `Shell_NotifyIconW`.
+pub const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
+
 pub const IDM_OPEN: usize = 1001;
 pub const IDM_CHECK: usize = 1002;
 pub const IDM_PAUSE: usize = 1003;
@@ -255,6 +263,29 @@ fn create_hidden_window(class_name: &str, user_data: &WindowUserData) -> std::io
     Ok(hwnd)
 }
 
+/// Maps a `WM_TRAYICON` event code to the `TrayCommand` it should raise, if
+/// any.
+///
+/// Split out from `wnd_proc` so the mapping can be unit-tested without a
+/// live HWND, following the same pattern as
+/// `watcher::ManifestWatcher::classify_completion`. This is also where
+/// GT-200 is fixed: `NIN_BALLOONUSERCLICK` (a click on the balloon/toast
+/// body itself, as opposed to the tray icon) previously had no handler at
+/// all, so the "Click to re-trim and reclaim space" toast text was a
+/// promise the daemon never kept. It intentionally maps to `OpenUi` and
+/// nothing more destructive: AutoTrim is deliberately disabled in this
+/// build, and a background daemon must never start an unattended deletion
+/// just because the user clicked a notification bubble. `WM_RBUTTONUP` is
+/// deliberately excluded here - it opens the context menu via
+/// `show_popup_menu`, not a `TrayCommand`, so it is handled separately in
+/// `wnd_proc` and must not also match this function's fallback `None`.
+fn tray_click_command(event_type: u32) -> Option<TrayCommand> {
+    match event_type {
+        WM_LBUTTONDBLCLK | NIN_BALLOONUSERCLICK => Some(TrayCommand::OpenUi),
+        _ => None,
+    }
+}
+
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -270,8 +301,8 @@ unsafe extern "system" fn wnd_proc(
 
                 if event_type == WM_RBUTTONUP {
                     show_popup_menu(hwnd, user_data);
-                } else if event_type == WM_LBUTTONDBLCLK {
-                    let _ = user_data.command_tx.send(TrayCommand::OpenUi);
+                } else if let Some(cmd) = tray_click_command(event_type) {
+                    let _ = user_data.command_tx.send(cmd);
                 }
             }
             LRESULT(0)
@@ -363,6 +394,34 @@ fn to_wide_capped(s: &str, max_len: usize) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_click_command_maps_balloon_click_to_open_ui_not_a_trim() {
+        // GT-200: clicking the toast body must open the UI, never trigger a
+        // trim directly - AutoTrim is deliberately disabled in this build
+        // and the daemon must not start an unattended deletion.
+        assert_eq!(
+            tray_click_command(NIN_BALLOONUSERCLICK),
+            Some(TrayCommand::OpenUi)
+        );
+    }
+
+    #[test]
+    fn tray_click_command_maps_double_click_to_open_ui() {
+        assert_eq!(
+            tray_click_command(WM_LBUTTONDBLCLK),
+            Some(TrayCommand::OpenUi)
+        );
+    }
+
+    #[test]
+    fn tray_click_command_ignores_right_click_and_unknown_events() {
+        // WM_RBUTTONUP opens the context menu via a separate code path in
+        // `wnd_proc` (`show_popup_menu`), not through this mapping.
+        assert_eq!(tray_click_command(WM_RBUTTONUP), None);
+        assert_eq!(tray_click_command(0), None);
+        assert_eq!(tray_click_command(0xDEAD), None);
+    }
 
     #[test]
     fn tray_icon_creation_and_command_channel() {
