@@ -63,31 +63,38 @@ pub const CANDIDATE_ARCHIVE_EXTENSIONS: &[&str] =
 /// Whether `ext` (without its dot, any case) belongs to the deep archive
 /// inspector. See [`CANDIDATE_ARCHIVE_EXTENSIONS`].
 pub fn is_candidate_archive_extension(ext: &str) -> bool {
-    let lower = ext.to_ascii_lowercase();
-    CANDIDATE_ARCHIVE_EXTENSIONS.contains(&lower.as_str())
+    CANDIDATE_ARCHIVE_EXTENSIONS
+        .iter()
+        .any(|known| ext.eq_ignore_ascii_case(known))
 }
 
 /// Identifies whether a file is a candidate for monolithic archive deep inspection.
+///
+/// The extension is tested first, and it decides almost every call: seven
+/// extensions against a `.exe`, a `.uasset` or a texture is a handful of byte
+/// comparisons, while [`is_external_single_language_file`] walks a hundred
+/// language tags. The order used to be the other way round, which charged
+/// *every file in every game* for a test only an archive can pass - and this
+/// function is called once per file by `RuleEngine::classify`, by the scan's
+/// candidate-archive filter and by the writer. Measured on the real library
+/// (1637 games, 874 k findings) with the old order: 646 s of worker CPU in the
+/// rules stage and 223 s of single-threaded row building in the writer, on a
+/// scan that took 281 s wall.
+///
+/// [`is_external_single_language_file`]: archive_trimmer::formats::is_external_single_language_file
 pub fn is_candidate_archive_path(rel_path: &str) -> bool {
-    // If it's already an external single-language file (e.g., sound_fre.pck, locales/es.pak),
-    // it is a candidate for whole-file deletion in Phase 2, not Phase 3 sparse zeroing.
-    if archive_trimmer::formats::is_external_single_language_file(rel_path) {
+    let filename = rel_path.rsplit(['\\', '/']).next().unwrap_or(rel_path);
+    let Some((_, ext)) = filename.rsplit_once('.') else {
+        return false;
+    };
+    if !is_candidate_archive_extension(ext) {
         return false;
     }
 
-    let clean = rel_path.replace('\\', "/");
-    let lower = clean.to_lowercase();
-    let filename = lower.rsplit('/').next().unwrap_or(&lower);
-
-    if filename.starts_with("re_chunk") && filename.ends_with(".pak") {
-        return true;
-    }
-
-    if let Some((_, ext)) = filename.rsplit_once('.') {
-        is_candidate_archive_extension(ext)
-    } else {
-        false
-    }
+    // An external single-language file (`sound_fre.pck`, `locales/es.pak`) is
+    // a whole-file deletion candidate for Phase 2, never a container for the
+    // deep inspector - even when it carries one of the extensions above.
+    !archive_trimmer::formats::is_external_single_language_file(rel_path)
 }
 
 /// Deeply inspects one monolithic archive for trimmable language streams.

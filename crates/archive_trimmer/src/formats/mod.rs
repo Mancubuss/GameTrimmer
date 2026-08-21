@@ -334,6 +334,65 @@ pub fn is_known_language(language: &str) -> bool {
     canonical_language(language) != "other"
 }
 
+/// Language tags as a filename spells them, shared by the external
+/// single-language test and its corpus test. Module-level so both see one
+/// list: two copies of a table this long drift the moment a tag is added.
+const LANG_CODES: &[&str] = &[
+    "en", "eng", "us", "gb", "fra", "fre", "fr", "ger", "deu", "de", "spa", "esn", "es", "es419",
+    "ita", "it", "rus", "ru", "jpn", "ja", "jap", "zho", "chi", "chn", "zh", "zhcn", "zhtw", "kor",
+    "ko", "pol", "pl", "por", "pt", "ptbr", "bra", "ukr", "uk", "tur", "tr", "cze", "cs", "cz",
+    "hun", "hu", "nld", "nl", "ara", "ar", "dan", "da", "fin", "fi", "nor", "no", "swe", "sv",
+    "ell", "el", "gre", "tha", "th", "vie", "vi", "ind", "id",
+];
+
+const LANG_NAMES: &[&str] = &[
+    "english",
+    "french",
+    "german",
+    "spanish",
+    "italian",
+    "russian",
+    "japanese",
+    "chinese",
+    "korean",
+    "polish",
+    "portuguese",
+    "ukrainian",
+    "turkish",
+    "czech",
+    "hungarian",
+    "dutch",
+    "arabic",
+    "danish",
+    "finnish",
+    "norwegian",
+    "swedish",
+    "greek",
+    "thai",
+    "vietnamese",
+    "indonesian",
+    "francais",
+    "deutsch",
+    "espanol",
+    "italiano",
+    "brazilian",
+];
+
+/// Whether `stem` ends with `tag` preceded by `_` or `-` (`sounds_fra` for
+/// `fra`, `vo-german` for `german`).
+///
+/// Written as a byte check rather than `stem.ends_with(&format!("_{tag}"))`:
+/// the caller runs it against ~100 language tags, twice, for every file in
+/// every game, and the formatted version allocated a `String` per tag per
+/// file - some 400 allocations to answer "is this an ordinary .exe". That was
+/// the single largest cost in a full scan.
+fn ends_with_separated_tag(stem: &str, tag: &str) -> bool {
+    let Some(head) = stem.strip_suffix(tag) else {
+        return false;
+    };
+    matches!(head.as_bytes().last(), Some(b'_') | Some(b'-'))
+}
+
 /// Determines if a file path points to a standalone external single-language file.
 ///
 /// These whole-file localizations are deleted as whole files by GameTrimmer core;
@@ -349,8 +408,21 @@ pub fn is_known_language(language: &str) -> bool {
 /// - `VO_AMICIA_MEDIA.PC.PCK`, `VO_D1_MEDIA.PC.PCK`
 /// - `re_chunk_000.pak`, `app.asar`, `pakchunk0.pak`, `voices.pck`, `soundbanks.pck`, `audio.pck`
 pub fn is_external_single_language_file(path: &str) -> bool {
-    let clean = path.replace('\\', "/");
-    let lower = clean.to_lowercase();
+    // Separator normalization and ASCII-only lowering in one pass, one
+    // allocation instead of two. Every tag compared below is ASCII, so a
+    // non-ASCII character left as it is cannot change any answer - while
+    // `str::to_lowercase` walks the Unicode tables for every character of
+    // every path in the library.
+    let lower: String = path
+        .chars()
+        .map(|c| {
+            if c == '\\' {
+                '/'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect();
 
     // 1. Locales directory match (e.g. 3DMark/bin/x64/locales/ar.pak, locales/en-US.pak, locales/fr.json)
     if lower.starts_with("locales/")
@@ -377,47 +449,6 @@ pub fn is_external_single_language_file(path: &str) -> bool {
         .or_else(|| stem.strip_suffix(".xbox"))
         .unwrap_or(stem);
 
-    const LANG_CODES: &[&str] = &[
-        "en", "eng", "us", "gb", "fra", "fre", "fr", "ger", "deu", "de", "spa", "esn", "es",
-        "es419", "ita", "it", "rus", "ru", "jpn", "ja", "jap", "zho", "chi", "chn", "zh", "zhcn",
-        "zhtw", "kor", "ko", "pol", "pl", "por", "pt", "ptbr", "bra", "ukr", "uk", "tur", "tr",
-        "cze", "cs", "cz", "hun", "hu", "nld", "nl", "ara", "ar", "dan", "da", "fin", "fi", "nor",
-        "no", "swe", "sv", "ell", "el", "gre", "tha", "th", "vie", "vi", "ind", "id",
-    ];
-
-    const LANG_NAMES: &[&str] = &[
-        "english",
-        "french",
-        "german",
-        "spanish",
-        "italian",
-        "russian",
-        "japanese",
-        "chinese",
-        "korean",
-        "polish",
-        "portuguese",
-        "ukrainian",
-        "turkish",
-        "czech",
-        "hungarian",
-        "dutch",
-        "arabic",
-        "danish",
-        "finnish",
-        "norwegian",
-        "swedish",
-        "greek",
-        "thai",
-        "vietnamese",
-        "indonesian",
-        "francais",
-        "deutsch",
-        "espanol",
-        "italiano",
-        "brazilian",
-    ];
-
     for s in [stem, effective_stem] {
         // 2. Exact match on stem (e.g. ar.pak, de.pak, spanish.pak, russian.pck, en-us.pak, zh-cn.pak)
         let clean_s = s.replace(['-', '_'], "");
@@ -430,15 +461,12 @@ pub fn is_external_single_language_file(path: &str) -> bool {
         }
 
         // 3. Suffix with underscore / hyphen (e.g. sounds_fra.pck, vo_german.pak, speech_rus.pck, audio_de.pck)
-        for code in LANG_CODES {
-            if s.ends_with(&format!("_{code}")) || s.ends_with(&format!("-{code}")) {
-                return true;
-            }
-        }
-        for name in LANG_NAMES {
-            if s.ends_with(&format!("_{name}")) || s.ends_with(&format!("-{name}")) {
-                return true;
-            }
+        if LANG_CODES
+            .iter()
+            .chain(LANG_NAMES.iter())
+            .any(|tag| ends_with_separated_tag(s, tag))
+        {
+            return true;
         }
 
         // 4. Suffix without separator for language names (e.g. *German.pck, *French.pck, *Spanish.pck, *Russian.pck)
@@ -447,9 +475,20 @@ pub fn is_external_single_language_file(path: &str) -> bool {
                 return true;
             }
         }
+    }
 
-        // 5. Parent directory is a dedicated localization/audio/language folder and stem is a language code or name
-        // e.g. Localization/Spanish.pak, Sound/Russian.pck, Audio/de.pck, Audio/German.pck
+    // 5. Parent directory is a dedicated localization/audio/language folder and stem is a language code or name
+    // e.g. Localization/Spanish.pak, Sound/Russian.pck, Audio/de.pck, Audio/German.pck
+    //
+    // Outside the stem loop, and last: the folder test is fourteen substring
+    // searches over the whole path and does not depend on the stem, so running
+    // it per stem scanned every path twice for the same answer. The checks
+    // above are pure "does anything match" tests, so the order between them
+    // and this one cannot change the result.
+    if [stem, effective_stem]
+        .iter()
+        .any(|s| LANG_CODES.contains(s) || LANG_NAMES.contains(s))
+    {
         let is_loc_folder = lower.contains("/localization/")
             || lower.contains("/localisation/")
             || lower.contains("/languages/")
@@ -464,8 +503,7 @@ pub fn is_external_single_language_file(path: &str) -> bool {
             || lower.contains("/vo/")
             || lower.contains("/voice/")
             || lower.contains("/voices/");
-
-        if is_loc_folder && (LANG_CODES.contains(&s) || LANG_NAMES.contains(&s)) {
+        if is_loc_folder {
             return true;
         }
     }
@@ -640,6 +678,168 @@ impl FormatDetector {
 
 #[cfg(test)]
 mod tests {
+    /// The shape [`is_external_single_language_file`] had before the
+    /// allocation-free rewrite, kept verbatim so the two can be compared over
+    /// a wide corpus. A file this function misroutes is either a container
+    /// deleted whole or a localization left on disk, so "it looks equivalent"
+    /// is not good enough - see the corpus test below.
+    fn reference_is_external_single_language_file(path: &str) -> bool {
+        let clean = path.replace('\\', "/");
+        let lower = clean.to_lowercase();
+
+        if lower.starts_with("locales/")
+            || lower.starts_with("locale/")
+            || lower.contains("/locales/")
+            || lower.contains("/locale/")
+        {
+            return true;
+        }
+
+        let filename = lower.rsplit('/').next().unwrap_or(&lower);
+        let stem = match filename.rsplit_once('.') {
+            Some((s, _)) => s,
+            None => filename,
+        };
+        let effective_stem = stem
+            .strip_suffix(".pc")
+            .or_else(|| stem.strip_suffix(".win"))
+            .or_else(|| stem.strip_suffix(".windows"))
+            .or_else(|| stem.strip_suffix(".ps4"))
+            .or_else(|| stem.strip_suffix(".xbox"))
+            .unwrap_or(stem);
+
+        for s in [stem, effective_stem] {
+            let clean_s = s.replace(['-', '_'], "");
+            if LANG_CODES.contains(&s)
+                || LANG_CODES.contains(&clean_s.as_str())
+                || LANG_NAMES.contains(&s)
+                || LANG_NAMES.contains(&clean_s.as_str())
+            {
+                return true;
+            }
+            for code in LANG_CODES {
+                if s.ends_with(&format!("_{code}")) || s.ends_with(&format!("-{code}")) {
+                    return true;
+                }
+            }
+            for name in LANG_NAMES {
+                if s.ends_with(&format!("_{name}")) || s.ends_with(&format!("-{name}")) {
+                    return true;
+                }
+            }
+            for name in LANG_NAMES {
+                if s.ends_with(name) {
+                    return true;
+                }
+            }
+            let is_loc_folder = lower.contains("/localization/")
+                || lower.contains("/localisation/")
+                || lower.contains("/languages/")
+                || lower.contains("/language/")
+                || lower.contains("/lang/")
+                || lower.contains("/audio/")
+                || lower.contains("/sound/")
+                || lower.contains("/sounds/")
+                || lower.contains("/speech/")
+                || lower.contains("/dialogue/")
+                || lower.contains("/dialogues/")
+                || lower.contains("/vo/")
+                || lower.contains("/voice/")
+                || lower.contains("/voices/");
+            if is_loc_folder && (LANG_CODES.contains(&s) || LANG_NAMES.contains(&s)) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Every language tag, in every shape a real game writes it, against both
+    /// implementations. ~40 000 paths: the rewrite is a hot-path optimization,
+    /// and the only acceptable difference between the two is none.
+    #[test]
+    fn the_allocation_free_language_test_matches_the_original_over_a_wide_corpus() {
+        const FOLDERS: &[&str] = &[
+            "",
+            "Data/",
+            "Game/Content/Paks/",
+            "Data\\Sound\\",
+            "Engine/Localization/",
+            "bin/x64/locales/",
+            "Data/Audio/",
+            "Data/VO/",
+        ];
+        const EXTENSIONS: &[&str] = &["pck", "bnk", "pak", "asar", "unity3d", "assets", "exe", ""];
+        const STEMS: &[&str] = &[
+            "sounds",
+            "vo",
+            "speech",
+            "audio",
+            "voices",
+            "pakchunk0",
+            "app",
+            "re_chunk_000",
+            "UE4_Logo",
+            "Game",
+            "",
+        ];
+
+        let mut tags: Vec<String> = Vec::new();
+        for tag in LANG_CODES.iter().chain(LANG_NAMES.iter()) {
+            tags.push((*tag).to_string());
+            tags.push(tag.to_uppercase());
+        }
+
+        let mut checked = 0usize;
+        for folder in FOLDERS {
+            for stem in STEMS {
+                for tag in &tags {
+                    for joiner in ["_", "-", "", "."] {
+                        for ext in EXTENSIONS {
+                            let name = format!("{stem}{joiner}{tag}");
+                            let path = if ext.is_empty() {
+                                format!("{folder}{name}")
+                            } else {
+                                format!("{folder}{name}.{ext}")
+                            };
+                            assert_eq!(
+                                is_external_single_language_file(&path),
+                                reference_is_external_single_language_file(&path),
+                                "the two implementations disagree about {path:?}"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // Plus the shapes the tags alone do not produce: platform tags,
+        // bare containers and mixed separators.
+        for path in [
+            "VO_AMICIA_MEDIA.PC.PCK",
+            "sounds_fra.pc.pck",
+            r"Data\Sound\Russian.pck",
+            "Data/Localization/Spanish.pak",
+            "locales/en-US.pak",
+            "Locale/fr.json",
+            "app.asar",
+            "re_chunk_000.pak",
+            "voices.pck",
+            "soundbanks.pck",
+            "zh-cn.pak",
+            "es419.pak",
+            "Binaries/Win64/Game.exe",
+        ] {
+            assert_eq!(
+                is_external_single_language_file(path),
+                reference_is_external_single_language_file(path),
+                "the two implementations disagree about {path:?}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 30_000, "the corpus shrank to {checked} paths");
+    }
+
     use super::*;
     use std::fs;
     use tempfile::tempdir;
