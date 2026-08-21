@@ -2,17 +2,22 @@
 //!
 //! Many game engines load intro, logo, and splash videos at startup and will crash or
 //! hang if the video file is missing or contains 0 bytes when expecting a valid header.
-//! This module provides minimal, 100% valid micro-stubs (1-frame black video or minimal
-//! valid container headers) for common game video formats:
-//! - Bink 1 (`.bik`)
-//! - Bink 2 (`.bk2`)
-//! - MP4 (`.mp4`, `.m4v`)
-//! - WebM / MKV (`.webm`, `.mkv`)
-//! - Ogg Theora (`.ogv`, `.ogg`)
-//! - Windows Media Video (`.wmv`)
-//! - AVI (`.avi`)
-//! - CRI Sofdec USM (`.usm`)
-//! - Generic fallback (0-byte slice)
+//! This module provides minimal micro-stubs (1-frame black video or minimal valid
+//! container headers) for common game video formats. Not all of them are equally
+//! trustworthy:
+//! - MP4 (`.mp4`, `.m4v`), WebM/MKV (`.webm`, `.mkv`), Ogg Theora (`.ogv`, `.ogg`),
+//!   Windows Media Video (`.wmv`), and AVI (`.avi`) are genuine `ffmpeg`-encoded
+//!   1-frame black clips - real container output, decodable by any real player.
+//! - Bink 1 (`.bik`), Bink 2 (`.bk2`), and CRI Sofdec USM (`.usm`) are hand-built
+//!   39-60 byte headers with correct magic bytes and the container-level fields a
+//!   loader checks before touching frame data. No decoder for any of the three
+//!   ships with this project, so these have never been validated against a real
+//!   one - only against the header layouts each format documents.
+//!
+//! There is deliberately no generic fallback stub for a container this module
+//! doesn't recognize. See [`detect_stub_bytes`]: its `None` means the caller must
+//! skip deleting the original file rather than replace it with a guess, or with
+//! nothing - a 0-byte "stub" is the exact crash this module exists to prevent.
 
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -1042,9 +1047,6 @@ pub const USM_STUB: &[u8] = &[
     0x00, 0x40, 0x53, 0x46, 0x56, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// Fallback 0-byte stub for formats without dedicated micro-stubs.
-pub const FALLBACK_STUB: &[u8] = &[];
-
 /// Determines the appropriate micro-stub bytes from the magic signature in an initial byte buffer.
 pub fn stub_for_magic(header: &[u8]) -> Option<&'static [u8]> {
     if header.len() >= 3 && &header[0..3] == b"BIK" {
@@ -1093,9 +1095,11 @@ pub fn stub_for_magic(header: &[u8]) -> Option<&'static [u8]> {
 }
 
 /// Determines the appropriate micro-stub bytes based on file extension.
-pub fn stub_for_extension(ext: &str) -> &'static [u8] {
+/// `None` for anything not in the list below - see [`detect_stub_bytes`] for why
+/// that must not become a 0-byte write.
+pub fn stub_for_extension(ext: &str) -> Option<&'static [u8]> {
     let lower = ext.to_ascii_lowercase();
-    match lower.as_str() {
+    Some(match lower.as_str() {
         "bik" => BIK1_STUB,
         "bk2" => BINK2_STUB,
         "mp4" | "m4v" => MP4_STUB,
@@ -1104,37 +1108,57 @@ pub fn stub_for_extension(ext: &str) -> &'static [u8] {
         "wmv" => WMV_STUB,
         "avi" => AVI_STUB,
         "usm" => USM_STUB,
-        _ => FALLBACK_STUB,
-    }
+        _ => return None,
+    })
 }
 
-/// Detects the appropriate stub bytes for a given file path:
-/// 1. Tries to read the first 16+ bytes of the file to check its magic header.
-/// 2. If the file cannot be read or magic is unknown, falls back to the file extension.
-/// 3. If extension is unknown, returns `FALLBACK_STUB` (&[]).
-pub fn detect_stub_bytes(path: &Path) -> &'static [u8] {
+/// Identifies the micro-stub bytes for the video at `path`, or `None` if its
+/// container cannot be identified with confidence:
+/// 1. Reads the first bytes of the file and checks them against known magic
+///    signatures ([`stub_for_magic`]).
+/// 2. If the file cannot be opened, is empty, or its magic is unrecognized,
+///    falls back to matching the extension ([`stub_for_extension`]).
+/// 3. If neither identifies a known container, returns `None`.
+///
+/// Must be called *before* the file at `path` is removed. Step 1 needs the
+/// file to still exist - `File::open` on an already-deleted path always
+/// fails, silently reducing this to extension-only matching, which is wrong
+/// for a video whose extension does not match its real container. Callers in
+/// the delete pipeline call this ahead of the removal and carry the result
+/// through to [`write_stub`] afterwards; see `worker::delete::run_delete`.
+///
+/// `None` must never be papered over with an empty write: a rule pack -
+/// especially an imported, untrusted one - can tag a container this module
+/// has no stub for as an intro, and deleting that file anyway recreates the
+/// exact boot crash this module exists to prevent. A caller getting `None`
+/// must skip deleting the original file, not fall back to replacing it with
+/// nothing.
+pub fn detect_stub_bytes(path: &Path) -> Option<&'static [u8]> {
     if let Ok(mut file) = File::open(path) {
         let mut buf = [0u8; 32];
         if let Ok(n) = file.read(&mut buf) {
             if n > 0 {
                 if let Some(stub) = stub_for_magic(&buf[..n]) {
-                    return stub;
+                    return Some(stub);
                 }
             }
         }
     }
 
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        return stub_for_extension(ext);
-    }
-
-    FALLBACK_STUB
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(stub_for_extension)
 }
 
-/// Writes the format-appropriate stub bytes to `path`, creating or replacing the file.
-/// Returns the number of bytes written.
-pub fn write_stub(path: &Path) -> io::Result<usize> {
-    let bytes = detect_stub_bytes(path);
+/// Writes `bytes` to `path`, creating or replacing the file. Returns the number
+/// of bytes written.
+///
+/// Takes the stub bytes as a parameter rather than deriving them from `path`,
+/// because deriving them means reading `path` - and by the time the delete
+/// pipeline reaches this call, the original file is already gone. Callers
+/// identify the container with [`detect_stub_bytes`] *before* removing the
+/// file and pass the result here afterwards.
+pub fn write_stub(path: &Path, bytes: &[u8]) -> io::Result<usize> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1172,8 +1196,6 @@ mod tests {
 
         assert!(!USM_STUB.is_empty());
         assert_eq!(&USM_STUB[0..5], b"@CRID");
-
-        assert!(FALLBACK_STUB.is_empty());
     }
 
     #[test]
@@ -1193,39 +1215,48 @@ mod tests {
 
     #[test]
     fn stub_for_extension_resolves_all_supported_video_formats() {
-        assert_eq!(stub_for_extension("bik"), BIK1_STUB);
-        assert_eq!(stub_for_extension("BIK"), BIK1_STUB);
-        assert_eq!(stub_for_extension("bk2"), BINK2_STUB);
-        assert_eq!(stub_for_extension("BK2"), BINK2_STUB);
-        assert_eq!(stub_for_extension("mp4"), MP4_STUB);
-        assert_eq!(stub_for_extension("m4v"), MP4_STUB);
-        assert_eq!(stub_for_extension("webm"), WEBM_STUB);
-        assert_eq!(stub_for_extension("mkv"), WEBM_STUB);
-        assert_eq!(stub_for_extension("ogv"), OGG_THEORA_STUB);
-        assert_eq!(stub_for_extension("ogg"), OGG_THEORA_STUB);
-        assert_eq!(stub_for_extension("wmv"), WMV_STUB);
-        assert_eq!(stub_for_extension("avi"), AVI_STUB);
-        assert_eq!(stub_for_extension("usm"), USM_STUB);
-        assert_eq!(stub_for_extension("txt"), FALLBACK_STUB);
-        assert_eq!(stub_for_extension("exe"), FALLBACK_STUB);
+        assert_eq!(stub_for_extension("bik"), Some(BIK1_STUB));
+        assert_eq!(stub_for_extension("BIK"), Some(BIK1_STUB));
+        assert_eq!(stub_for_extension("bk2"), Some(BINK2_STUB));
+        assert_eq!(stub_for_extension("BK2"), Some(BINK2_STUB));
+        assert_eq!(stub_for_extension("mp4"), Some(MP4_STUB));
+        assert_eq!(stub_for_extension("m4v"), Some(MP4_STUB));
+        assert_eq!(stub_for_extension("webm"), Some(WEBM_STUB));
+        assert_eq!(stub_for_extension("mkv"), Some(WEBM_STUB));
+        assert_eq!(stub_for_extension("ogv"), Some(OGG_THEORA_STUB));
+        assert_eq!(stub_for_extension("ogg"), Some(OGG_THEORA_STUB));
+        assert_eq!(stub_for_extension("wmv"), Some(WMV_STUB));
+        assert_eq!(stub_for_extension("avi"), Some(AVI_STUB));
+        assert_eq!(stub_for_extension("usm"), Some(USM_STUB));
+    }
+
+    #[test]
+    fn stub_for_extension_returns_none_for_unknown_extensions() {
+        // Neither a plain unrelated extension nor a plausible-looking but
+        // unsupported video container may resolve to a stub - the caller must
+        // treat both the same way: skip, don't guess.
+        assert_eq!(stub_for_extension("txt"), None);
+        assert_eq!(stub_for_extension("exe"), None);
+        assert_eq!(stub_for_extension("smk"), None);
+        assert_eq!(stub_for_extension("vp6"), None);
     }
 
     #[test]
     fn detect_stub_bytes_falls_back_to_extension_when_file_does_not_exist() {
         let path = Path::new("non_existent/video.bik");
-        assert_eq!(detect_stub_bytes(path), BIK1_STUB);
+        assert_eq!(detect_stub_bytes(path), Some(BIK1_STUB));
 
         let path = Path::new("non_existent/video.bk2");
-        assert_eq!(detect_stub_bytes(path), BINK2_STUB);
+        assert_eq!(detect_stub_bytes(path), Some(BINK2_STUB));
 
         let path = Path::new("non_existent/video.mp4");
-        assert_eq!(detect_stub_bytes(path), MP4_STUB);
+        assert_eq!(detect_stub_bytes(path), Some(MP4_STUB));
 
         let path = Path::new("non_existent/video.webm");
-        assert_eq!(detect_stub_bytes(path), WEBM_STUB);
+        assert_eq!(detect_stub_bytes(path), Some(WEBM_STUB));
 
         let path = Path::new("non_existent/video.ogv");
-        assert_eq!(detect_stub_bytes(path), OGG_THEORA_STUB);
+        assert_eq!(detect_stub_bytes(path), Some(OGG_THEORA_STUB));
     }
 
     #[test]
@@ -1235,15 +1266,40 @@ mod tests {
 
         // Write BIK1 bytes to a .dat file
         fs::write(&file_path, BIK1_STUB).unwrap();
-        assert_eq!(detect_stub_bytes(&file_path), BIK1_STUB);
+        assert_eq!(detect_stub_bytes(&file_path), Some(BIK1_STUB));
 
         // Write MP4 bytes to a .dat file
         fs::write(&file_path, MP4_STUB).unwrap();
-        assert_eq!(detect_stub_bytes(&file_path), MP4_STUB);
+        assert_eq!(detect_stub_bytes(&file_path), Some(MP4_STUB));
 
         // Write WebM bytes to a .dat file
         fs::write(&file_path, WEBM_STUB).unwrap();
-        assert_eq!(detect_stub_bytes(&file_path), WEBM_STUB);
+        assert_eq!(detect_stub_bytes(&file_path), Some(WEBM_STUB));
+    }
+
+    #[test]
+    fn detect_stub_bytes_trusts_magic_over_a_misleading_extension() {
+        // Named like an MP4, but the bytes on disk are really a WebM/Matroska
+        // header. The engine's own loader reads bytes, not the file name, so
+        // the stub must match what is actually there.
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("intro.mp4");
+        fs::write(&file_path, WEBM_STUB).unwrap();
+        assert_eq!(detect_stub_bytes(&file_path), Some(WEBM_STUB));
+    }
+
+    #[test]
+    fn detect_stub_bytes_fails_closed_for_an_unrecognized_container() {
+        let dir = tempdir().unwrap();
+        // Neither the bytes nor the extension match anything this module
+        // knows how to stub.
+        let file_path = dir.path().join("mystery.smk");
+        fs::write(&file_path, b"not a container this module recognizes").unwrap();
+        assert_eq!(
+            detect_stub_bytes(&file_path),
+            None,
+            "an unidentifiable container must fail closed, never fall back to a guess"
+        );
     }
 
     #[test]
@@ -1251,11 +1307,29 @@ mod tests {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("intro.bk2");
 
-        let written = write_stub(&file_path).expect("write_stub should succeed");
+        let written = write_stub(&file_path, BINK2_STUB).expect("write_stub should succeed");
         assert_eq!(written, BINK2_STUB.len());
         assert!(file_path.exists());
 
         let contents = fs::read(&file_path).unwrap();
         assert_eq!(contents, BINK2_STUB);
+    }
+
+    #[test]
+    fn write_stub_surfaces_an_io_error_instead_of_panicking() {
+        let dir = tempdir().unwrap();
+        // A plain file where the stub's parent directory would need to exist
+        // blocks `create_dir_all`, so the write must fail cleanly rather than
+        // panic - the caller (worker::delete::run_delete) depends on this
+        // being a reportable `Err`, not an abort.
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, b"not a directory").unwrap();
+        let file_path = blocker.join("intro.mp4");
+
+        let result = write_stub(&file_path, MP4_STUB);
+        assert!(
+            result.is_err(),
+            "writing a stub under a file (not a directory) must fail, not panic"
+        );
     }
 }

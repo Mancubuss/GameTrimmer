@@ -66,15 +66,31 @@ fn run_delete(
     let file_ids: Vec<i64> = items.iter().map(|item| item.file_id).collect();
     let intro_file_ids: HashSet<i64> = {
         let mut set = HashSet::new();
-        if let Ok(mut stmt) = conn.prepare("SELECT file_id FROM findings WHERE category = 'intro'")
-        {
-            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i64>(0)) {
-                let batch_set: HashSet<i64> = file_ids.iter().copied().collect();
-                for id in rows.flatten() {
-                    if batch_set.contains(&id) {
-                        set.insert(id);
+        match conn.prepare("SELECT file_id FROM findings WHERE category = 'intro'") {
+            Ok(mut stmt) => match stmt.query_map([], |row| row.get::<_, i64>(0)) {
+                Ok(rows) => {
+                    let batch_set: HashSet<i64> = file_ids.iter().copied().collect();
+                    for id in rows.flatten() {
+                        if batch_set.contains(&id) {
+                            set.insert(id);
+                        }
                     }
                 }
+                Err(err) => {
+                    notifier.report_error(i18n::Reported::new(lang, |l| {
+                        i18n::delete_failed(l, format!("the intro findings lookup failed: {err}"))
+                    }));
+                    return;
+                }
+            },
+            Err(err) => {
+                notifier.report_error(i18n::Reported::new(lang, |l| {
+                    i18n::delete_failed(
+                        l,
+                        format!("the intro findings lookup could not be prepared: {err}"),
+                    )
+                }));
+                return;
             }
         }
         set
@@ -82,16 +98,31 @@ fn run_delete(
 
     let save_file_ids: HashSet<i64> = {
         let mut set = HashSet::new();
-        if let Ok(mut stmt) =
-            conn.prepare("SELECT file_id FROM findings WHERE category = 'save_bloat'")
-        {
-            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i64>(0)) {
-                let batch_set: HashSet<i64> = file_ids.iter().copied().collect();
-                for id in rows.flatten() {
-                    if batch_set.contains(&id) {
-                        set.insert(id);
+        match conn.prepare("SELECT file_id FROM findings WHERE category = 'save_bloat'") {
+            Ok(mut stmt) => match stmt.query_map([], |row| row.get::<_, i64>(0)) {
+                Ok(rows) => {
+                    let batch_set: HashSet<i64> = file_ids.iter().copied().collect();
+                    for id in rows.flatten() {
+                        if batch_set.contains(&id) {
+                            set.insert(id);
+                        }
                     }
                 }
+                Err(err) => {
+                    notifier.report_error(i18n::Reported::new(lang, |l| {
+                        i18n::delete_failed(l, format!("the save findings lookup failed: {err}"))
+                    }));
+                    return;
+                }
+            },
+            Err(err) => {
+                notifier.report_error(i18n::Reported::new(lang, |l| {
+                    i18n::delete_failed(
+                        l,
+                        format!("the save findings lookup could not be prepared: {err}"),
+                    )
+                }));
+                return;
             }
         }
         set
@@ -143,10 +174,73 @@ fn run_delete(
         }
     }
 
-    let outcomes = match execute_delete_plans_observed(
+    // Identify each intro file's real container while it still exists on disk.
+    // `remover.remove` (inside `execute_delete_plans_observed`) leaves nothing
+    // left to open, so this has to happen before that call, not from within
+    // its `on_outcome` callback - see `gametrimmer_core::stub::detect_stub_bytes`.
+    // A container this build has no stub for is excluded from the batch
+    // entirely rather than deleted and left stub-less: a video replaced by
+    // nothing is the exact boot crash this feature exists to prevent.
+    //
+    // `execute_plans`/`execute_origin`/`execute_stub` stay parallel: index i in
+    // all three describes the same queued deletion, and `execute_origin[i]` is
+    // that deletion's position in `items`/`plans`, so the callbacks below
+    // (which only see a position within this filtered slice) can report back
+    // against the right `DeleteItem`.
+    let mut execute_plans = Vec::with_capacity(plans.len());
+    let mut execute_origin = Vec::with_capacity(plans.len());
+    let mut execute_stub: Vec<Option<&'static [u8]>> = Vec::with_capacity(plans.len());
+    let mut skipped_outcomes: Vec<(usize, OpOutcome)> = Vec::new();
+
+    for (origin, plan) in plans.iter().enumerate() {
+        if !intro_file_ids.contains(&items[origin].file_id) {
+            execute_plans.push(plan.clone());
+            execute_origin.push(origin);
+            execute_stub.push(None);
+            continue;
+        }
+        let nominal_path = plan.snapshot.trusted_root.join(&plan.snapshot.rel_path);
+        match gametrimmer_core::stub::detect_stub_bytes(&nominal_path) {
+            Some(bytes) => {
+                execute_plans.push(plan.clone());
+                execute_origin.push(origin);
+                execute_stub.push(Some(bytes));
+            }
+            None => {
+                notifier.report_warning(i18n::Reported::new(lang, |_l| {
+                    format!(
+                        "Skipped deleting intro file {} - its video container is not \
+                         one this build has a micro-stub for, and deleting it would \
+                         leave the game with no file there at all",
+                        nominal_path.display()
+                    )
+                }));
+                skipped_outcomes.push((
+                    origin,
+                    OpOutcome {
+                        path: nominal_path,
+                        error: Some(
+                            "unrecognized video container; kept to avoid an unbootable game"
+                                .to_string(),
+                        ),
+                        status: FsOutcome::Blocked,
+                        journal_error: None,
+                        share: None,
+                    },
+                ));
+            }
+        }
+    }
+
+    // A micro-stub that fails to land leaves the game with no file at that
+    // path - the exact outcome the stub exists to prevent - so it is collected
+    // here and folded into the batch's outcomes below. `WorkerMsg::Warning`
+    // alone would not do: the window drops it, and only the log would know.
+    let mut stub_failures: Vec<(usize, String)> = Vec::new();
+    let filtered_outcomes = match execute_delete_plans_observed(
         &mut conn,
         remover,
-        &plans,
+        &execute_plans,
         |current, total, path| {
             // Slow removers (the Recycle Bin goes through the shell per file) can
             // take a noticeable moment per item, so the file currently being
@@ -165,13 +259,11 @@ fn run_delete(
         },
         |index, outcome| {
             if outcome.status == FsOutcome::Removed {
-                let file_id = items[index].file_id;
-                if intro_file_ids.contains(&file_id) {
-                    if let Err(err) = gametrimmer_core::stub::write_stub(&outcome.path) {
-                        crate::logger::error(&format!(
-                            "Failed to write micro-stub for intro file {}: {err}",
-                            outcome.path.display()
-                        ));
+                if let Some(bytes) = execute_stub[index] {
+                    if let Some(err) =
+                        report_stub_write_failure_if_any(notifier, lang, &outcome.path, bytes)
+                    {
+                        stub_failures.push((index, err));
                     }
                 }
             }
@@ -184,7 +276,7 @@ fn run_delete(
                 FsOutcome::Removed | FsOutcome::AlreadyAbsent
             ) {
                 notifier.send(WorkerMsg::FileRemoved {
-                    file_id: items[index].file_id,
+                    file_id: items[execute_origin[index]].file_id,
                 });
             }
             if let Some(journal_error) = &outcome.journal_error {
@@ -200,6 +292,40 @@ fn run_delete(
             return;
         }
     };
+    let mut filtered_outcomes = filtered_outcomes;
+    for (index, err) in stub_failures {
+        if let Some(outcome) = filtered_outcomes.get_mut(index) {
+            outcome.error = Some(err);
+        }
+    }
+
+    // Reassemble `plans`' original order out of the two disjoint,
+    // origin-sorted sources above: every plan index is either in
+    // `execute_origin` (attempted, possibly failed) or in `skipped_outcomes`
+    // (never attempted at all), and both lists stay in increasing origin order
+    // because the loop that built them visited origins 0..plans.len() in
+    // order. `Peekable::next_if` walks that merge without ever indexing past
+    // what a `peek` already confirmed.
+    let mut outcomes = Vec::with_capacity(plans.len());
+    let mut executed = execute_origin.into_iter().zip(filtered_outcomes).peekable();
+    let mut skipped = skipped_outcomes.into_iter().peekable();
+    for origin in 0..plans.len() {
+        if let Some((_, outcome)) = executed.next_if(|(o, _)| *o == origin) {
+            outcomes.push(outcome);
+        } else if let Some((_, outcome)) = skipped.next_if(|(o, _)| *o == origin) {
+            outcomes.push(outcome);
+        }
+    }
+    // Every index below pairs `items[i]` with `outcomes[i]`. A short merge
+    // would not fail loudly, it would shift every later pairing and attribute
+    // one file's result to the next file's row - including what gets purged.
+    debug_assert_eq!(outcomes.len(), plans.len());
+    if outcomes.len() != plans.len() {
+        notifier.report_error(i18n::Reported::new(lang, |l| {
+            i18n::delete_failed(l, "delete outcomes could not be matched to their files")
+        }));
+        return;
+    }
 
     // For a Recycle Bin batch, list the bin once and cross-reference: a
     // reported-success path that is not actually in the bin was permanently
@@ -278,6 +404,30 @@ fn run_delete(
         occupancy,
         method,
     });
+}
+
+/// Writes the intro micro-stub `bytes` at `path` - already vacated by the
+/// delete this runs after - and returns the failure text when it does not
+/// land, so the caller can put it on the file's own outcome. A warning alone
+/// would be dropped by the window, and the batch would report a clean success
+/// over a game left with no file at that path at all.
+fn report_stub_write_failure_if_any(
+    notifier: &Notifier,
+    lang: Lang,
+    path: &Path,
+    bytes: &[u8],
+) -> Option<String> {
+    let err = gametrimmer_core::stub::write_stub(path, bytes).err()?;
+    let detail = format!(
+        "the intro micro-stub could not be written after the delete, so the game may not start: {err}"
+    );
+    notifier.report_warning(i18n::Reported::new(lang, |_l| {
+        format!(
+            "Failed to write the micro-stub for intro file {} after deleting it; the game may fail to start until this is fixed: {err}",
+            path.display()
+        )
+    }));
+    Some(detail)
 }
 
 /// Writes the batch's space accounting where it outlives the dialog that
@@ -733,5 +883,213 @@ mod tests {
             !docs_path.exists(),
             "docs file should be deleted without stub"
         );
+    }
+
+    #[test]
+    fn intro_with_unrecognized_container_is_not_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        // Neither the bytes nor the extension match a container this build
+        // has a stub for.
+        let mystery_path = temp.path().join("intro.smk");
+        std::fs::write(&mystery_path, b"NOT A KNOWN CONTAINER AT ALL").unwrap();
+
+        let db_path = temp.path().join("test.db");
+        let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
+        let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
+        let file_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.smk", "intro");
+        gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
+        drop(conn);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notifier = Notifier::new(tx, egui::Context::default());
+        let items = vec![DeleteItem {
+            file_id,
+            size_on_disk: 1000,
+        }];
+
+        run_delete(
+            &db_path,
+            items,
+            DeleteMethod::Permanent,
+            &notifier,
+            Lang::En,
+        );
+
+        let mut done = false;
+        for msg in rx {
+            if let WorkerMsg::RemoveDone { outcomes, .. } = msg {
+                assert_eq!(outcomes.len(), 1);
+                assert!(
+                    !outcomes[0].purged,
+                    "an unidentifiable intro container must not be deleted"
+                );
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "run_delete must emit RemoveDone");
+
+        assert!(
+            mystery_path.exists(),
+            "the original file must survive when its container cannot be identified"
+        );
+        assert_eq!(
+            std::fs::read(&mystery_path).unwrap(),
+            b"NOT A KNOWN CONTAINER AT ALL"
+        );
+    }
+
+    #[test]
+    fn intro_stub_uses_the_real_container_even_when_the_extension_lies() {
+        let temp = tempfile::tempdir().unwrap();
+        // Named like an MP4, but the bytes on disk are really a WebM header -
+        // the engine's own loader reads bytes, not the file name, so the stub
+        // written after deletion must match what was actually there.
+        let intro_path = temp.path().join("intro.mp4");
+        std::fs::write(&intro_path, gametrimmer_core::stub::WEBM_STUB).unwrap();
+
+        let db_path = temp.path().join("test.db");
+        let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
+        let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
+        let file_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.mp4", "intro");
+        gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
+        drop(conn);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notifier = Notifier::new(tx, egui::Context::default());
+        let items = vec![DeleteItem {
+            file_id,
+            size_on_disk: 1000,
+        }];
+
+        run_delete(
+            &db_path,
+            items,
+            DeleteMethod::Permanent,
+            &notifier,
+            Lang::En,
+        );
+
+        let mut done = false;
+        for msg in rx {
+            if let WorkerMsg::RemoveDone { outcomes, .. } = msg {
+                assert!(outcomes[0].purged);
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "run_delete must emit RemoveDone");
+
+        let contents = std::fs::read(&intro_path).unwrap();
+        assert_eq!(
+            contents,
+            gametrimmer_core::stub::WEBM_STUB,
+            "must stub with the sniffed container, not the misleading .mp4 extension"
+        );
+    }
+
+    #[test]
+    fn stub_write_failure_is_reported_as_a_warning_not_only_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        // A plain file where the stub's directory would need to exist blocks
+        // the write, forcing the failure path deterministically.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let bogus_path = blocker.join("intro.mp4");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notifier = Notifier::new(tx, egui::Context::default());
+
+        let detail = report_stub_write_failure_if_any(
+            &notifier,
+            Lang::En,
+            &bogus_path,
+            gametrimmer_core::stub::MP4_STUB,
+        );
+
+        let msg = rx
+            .try_recv()
+            .expect("a failed stub write must be reported, not silently dropped");
+        assert!(
+            matches!(msg, WorkerMsg::Warning { .. }),
+            "must surface as a WorkerMsg the UI can show, not just a log line"
+        );
+        assert!(
+            detail.is_some(),
+            "the failure text must come back for the file's own outcome - the              window drops a bare Warning, so that is the only channel the              summary dialog ever sees"
+        );
+    }
+
+    #[test]
+    fn a_skipped_file_does_not_shift_the_next_file_s_outcome() {
+        let temp = tempfile::tempdir().unwrap();
+        // Index 0 is skipped (no stub for its container), index 1 is deleted.
+        // The two travel through separate lists and are merged back by
+        // origin, so this is the batch shape that would expose a merge that
+        // pairs `items[i]` with the wrong outcome.
+        let skipped_path = temp.path().join("intro.smk");
+        std::fs::write(&skipped_path, b"NOT A KNOWN CONTAINER AT ALL").unwrap();
+        let deleted_path = temp.path().join("manual.pdf");
+        std::fs::write(&deleted_path, b"a document with no stub involved").unwrap();
+
+        let db_path = temp.path().join("test.db");
+        let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
+        let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
+        let skipped_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.smk", "intro");
+        let deleted_id = insert_test_finding(&conn, scan_id, temp.path(), "manual.pdf", "docs");
+        gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
+        drop(conn);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notifier = Notifier::new(tx, egui::Context::default());
+        let items = vec![
+            DeleteItem {
+                file_id: skipped_id,
+                size_on_disk: 1000,
+            },
+            DeleteItem {
+                file_id: deleted_id,
+                size_on_disk: 2000,
+            },
+        ];
+
+        run_delete(
+            &db_path,
+            items,
+            DeleteMethod::Permanent,
+            &notifier,
+            Lang::En,
+        );
+
+        let mut done = false;
+        for msg in rx {
+            if let WorkerMsg::RemoveDone { outcomes, .. } = msg {
+                assert_eq!(outcomes.len(), 2, "every file needs its own outcome");
+                let skipped = outcomes
+                    .iter()
+                    .find(|outcome| outcome.file_id == skipped_id)
+                    .expect("the skipped file must still be in the batch");
+                let deleted = outcomes
+                    .iter()
+                    .find(|outcome| outcome.file_id == deleted_id)
+                    .expect("the deleted file must still be in the batch");
+                assert!(
+                    !skipped.purged && skipped.error.is_some(),
+                    "the skipped intro must carry its own refusal, not the other file's result"
+                );
+                assert!(
+                    deleted.purged && deleted.error.is_none(),
+                    "the deleted document must carry its own success"
+                );
+                assert!(skipped.path.ends_with("intro.smk"));
+                assert!(deleted.path.ends_with("manual.pdf"));
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "run_delete must emit RemoveDone");
+
+        assert!(skipped_path.exists(), "the skipped file must survive");
+        assert!(!deleted_path.exists(), "the deletable file must be gone");
     }
 }
