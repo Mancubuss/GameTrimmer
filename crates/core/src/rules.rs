@@ -1080,10 +1080,52 @@ mod tests {
         assert_eq!(crashes.category, Category::CrashDump);
 
         let logos = engine
-            .classify(r"MyGame\Content\Movies\Logos\publisher.bik", None)
+            .classify(r"MyGame\Content\Movies\Logos\publisher.mp4", None)
             .flagged()
             .expect("a Logos folder three segments down is still an intro folder");
         assert_eq!(logos.category, Category::Intro);
+    }
+
+    /// GT-EP10 vs GT-EP12 collision, recorded rather than hidden.
+    ///
+    /// `classify` returns `Unmatched` for every archive-shaped path so that
+    /// a container can only ever be claimed by the deep archive inspector,
+    /// which emits an explicit SparseZero/Repack contract. That list includes
+    /// `bik` and `bk2` - and Bink is the single most common intro container
+    /// in PC games, matched by seven of the eight intro rules in rules.json.
+    ///
+    /// The effect is that a Bink intro is not merely undeletable, it is
+    /// invisible: it never becomes a finding at all. This test exists so the
+    /// blackout is a stated, reviewable decision instead of an absence nobody
+    /// notices. Deleting this test is part of resolving the collision, not a
+    /// way around it.
+    #[test]
+    fn an_intro_in_a_bink_container_is_currently_invisible_to_the_rule_engine() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        for rel_path in [
+            r"Data\Movies\boot_sequence.bik",
+            r"Engine\Binaries\nvidia_logo.bik",
+            r"Whiplash\GameSDK\Videos\LegalScreens.bk2",
+        ] {
+            assert_eq!(
+                engine.classify(rel_path, None),
+                Verdict::Unmatched,
+                "{rel_path} is claimed by the archive inspector, so no intro rule can see it"
+            );
+        }
+
+        // The same names in a container the archive inspector does not claim
+        // still match, which is what makes the loss specific to Bink rather
+        // than a general intro regression.
+        assert_eq!(
+            engine
+                .classify(r"Data\Movies\boot_sequence.mp4", None)
+                .flagged()
+                .expect("the same intro in an mp4 container is still found")
+                .category,
+            Category::Intro
+        );
     }
 
     /// GT bug: the `crashes|crashdumps|minidumps` folder rule carried

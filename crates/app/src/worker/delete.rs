@@ -878,12 +878,12 @@ mod tests {
     #[test]
     fn deleting_intro_finding_creates_micro_stub_while_docs_finding_does_not() {
         let temp = tempfile::tempdir().unwrap();
-        let intro_path = temp.path().join("intro.bik");
+        let intro_path = temp.path().join("intro.mp4");
         let docs_path = temp.path().join("manual.pdf");
 
         std::fs::write(
             &intro_path,
-            b"ORIGINAL BIK VIDEO WITH LOTS OF BYTES 1234567890",
+            b"ORIGINAL MP4 VIDEO WITH LOTS OF BYTES 1234567890",
         )
         .unwrap();
         std::fs::write(&docs_path, b"ORIGINAL PDF MANUAL DOCUMENTATION 1234567890").unwrap();
@@ -891,7 +891,7 @@ mod tests {
         let db_path = temp.path().join("test.db");
         let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
         let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
-        let intro_file_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.bik", "intro");
+        let intro_file_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.mp4", "intro");
         let docs_file_id =
             insert_test_finding(&conn, scan_id, temp.path(), "manual.pdf", "docs_file");
         gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
@@ -933,20 +933,20 @@ mod tests {
         }
         assert!(done, "run_delete must emit RemoveDone");
 
-        // The intro file should exist and contain the BIK micro-stub
+        // The intro file should exist and contain the MP4 micro-stub
         assert!(
             intro_path.exists(),
             "intro file should be replaced with micro-stub"
         );
         let intro_content = std::fs::read(&intro_path).unwrap();
         assert_eq!(
-            &intro_content[0..4],
-            b"BIKi",
-            "intro stub should have BIK magic bytes"
+            &intro_content[4..8],
+            b"ftyp",
+            "intro stub should have MP4 ftyp bytes"
         );
         assert_ne!(
             intro_content,
-            b"ORIGINAL BIK VIDEO WITH LOTS OF BYTES 1234567890"
+            b"ORIGINAL MP4 VIDEO WITH LOTS OF BYTES 1234567890"
         );
 
         // The docs file should be completely removed (not stubbed)
@@ -1109,7 +1109,8 @@ mod tests {
         let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
         let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
         let skipped_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.smk", "intro");
-        let deleted_id = insert_test_finding(&conn, scan_id, temp.path(), "manual.pdf", "docs");
+        let deleted_id =
+            insert_test_finding(&conn, scan_id, temp.path(), "manual.pdf", "docs_file");
         gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
         drop(conn);
 
