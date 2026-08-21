@@ -169,8 +169,8 @@ fn run_delete(
                 &backup_base,
                 "Saves_AutoBackup",
             ) {
-                notifier.report_error(i18n::Reported::new(lang, move |_l| {
-                    format!("Zero-Data-Loss Shield: Failed to create save backup ZIP archive ({err}). Deletion aborted to protect save files.")
+                notifier.report_error(i18n::Reported::new(lang, move |l| {
+                    i18n::save_backup_zip_failed(l, &err)
                 }));
                 return;
             }
@@ -210,13 +210,8 @@ fn run_delete(
                 execute_stub.push(Some(bytes));
             }
             None => {
-                notifier.report_warning(i18n::Reported::new(lang, |_l| {
-                    format!(
-                        "Skipped deleting intro file {} - its video container is not \
-                         one this build has a micro-stub for, and deleting it would \
-                         leave the game with no file there at all",
-                        nominal_path.display()
-                    )
+                notifier.report_warning(i18n::Reported::new(lang, |l| {
+                    i18n::intro_stub_unsupported_skip(l, nominal_path.display())
                 }));
                 skipped_outcomes.push((
                     origin,
@@ -424,11 +419,8 @@ fn report_stub_write_failure_if_any(
     let detail = format!(
         "the intro micro-stub could not be written after the delete, so the game may not start: {err}"
     );
-    notifier.report_warning(i18n::Reported::new(lang, |_l| {
-        format!(
-            "Failed to write the micro-stub for intro file {} after deleting it; the game may fail to start until this is fixed: {err}",
-            path.display()
-        )
+    notifier.report_warning(i18n::Reported::new(lang, |l| {
+        i18n::intro_stub_write_failed(l, path.display(), &err)
     }));
     Some(detail)
 }

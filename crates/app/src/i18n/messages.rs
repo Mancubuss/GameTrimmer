@@ -607,6 +607,61 @@ pub fn pending_delete_reconciled(lang: Lang, count: usize) -> String {
     }
 }
 
+/// Zero-Data-Loss Shield: the pre-delete save backup ZIP could not be
+/// created, so the whole batch was aborted rather than risking a save file
+/// with no backup at all.
+pub fn save_backup_zip_failed(lang: Lang, err: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En | Lang::Custom(_) => format!(
+            "Zero-Data-Loss Shield: Failed to create save backup ZIP archive ({err}). \
+             Deletion aborted to protect save files."
+        ),
+        Lang::Uk => format!(
+            "Захист нульової втрати даних: не вдалося створити ZIP-архів резервної копії \
+             збережень ({err}). Видалення скасовано, щоб захистити файли збережень."
+        ),
+    }
+}
+
+/// An intro file was left in place rather than deleted, because its video
+/// container has no micro-stub in this build - deleting it outright would
+/// leave the game with no file at that path at all. See
+/// `gametrimmer_core::stub::detect_stub_bytes`.
+pub fn intro_stub_unsupported_skip(lang: Lang, path: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En | Lang::Custom(_) => format!(
+            "Skipped deleting intro file {path} - its video container is not one this \
+             build has a micro-stub for, and deleting it would leave the game with no \
+             file there at all"
+        ),
+        Lang::Uk => format!(
+            "Пропущено видалення інтро-файлу {path} - для цього відеоконтейнера в цій \
+             збірці немає мікрозаглушки, і видалення залишило б гру взагалі без файлу \
+             за цим шляхом"
+        ),
+    }
+}
+
+/// The intro file was deleted, but writing its replacement micro-stub failed
+/// afterward - the exact "no file left at all" outcome the stub exists to
+/// prevent, so this needs to reach the user, not just the log.
+pub fn intro_stub_write_failed(
+    lang: Lang,
+    path: impl std::fmt::Display,
+    err: impl std::fmt::Display,
+) -> String {
+    match lang {
+        Lang::En | Lang::Custom(_) => format!(
+            "Failed to write the micro-stub for intro file {path} after deleting it; \
+             the game may fail to start until this is fixed: {err}"
+        ),
+        Lang::Uk => format!(
+            "Не вдалося записати мікрозаглушку для інтро-файлу {path} після його \
+             видалення; гра може не запуститися, поки це не буде виправлено: {err}"
+        ),
+    }
+}
+
 // -- worker::compact --
 
 // -- worker::bundle --
