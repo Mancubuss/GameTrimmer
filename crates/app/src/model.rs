@@ -500,11 +500,12 @@ pub fn profile_auto_selects(
     );
     match profile {
         SelectionProfile::Cautious => is_safe_category,
-        SelectionProfile::Balanced => {
-            is_safe_category
-                || category == DisplayCategory::Loc
-                || category == DisplayCategory::Intro
-        }
+        // Intro is deliberately absent here: unlike Bonus/Docs/Loc, a false
+        // positive on an intro rule destroys a unique video with nothing to
+        // re-download it from (see `RiskLevel::Low` on `DisplayCategory::Intro`
+        // below), so the default profile leaves it for the user to opt into
+        // rather than pre-checking it at any confidence.
+        SelectionProfile::Balanced => is_safe_category || category == DisplayCategory::Loc,
         SelectionProfile::Aggressive => {
             is_safe_category
                 || category == DisplayCategory::Loc
@@ -541,16 +542,20 @@ pub fn category_risk(category: DisplayCategory) -> RiskLevel {
     match category {
         // Orphaned residue: the game is already uninstalled. Redist: MSVC/DX
         // installers a game re-runs or the store re-fetches on demand.
-        // Intro: micro-stubs safely replace intro videos for instant launch.
         DisplayCategory::Orphan
         | DisplayCategory::Redist
-        | DisplayCategory::Intro
         | DisplayCategory::ShaderCache
         | DisplayCategory::Crashes
         | DisplayCategory::LauncherCache => RiskLevel::None,
+        // Intro: usually a safe micro-stub swap, but - unlike Redist/Orphan,
+        // which lose nothing by construction - a false-positive match here
+        // destroys a unique video with no upstream copy to re-fetch it from,
+        // so it sits with the re-downloadable-but-inconvenient tier rather
+        // than the zero-risk one.
         DisplayCategory::Bonus
         | DisplayCategory::Docs
         | DisplayCategory::Loc
+        | DisplayCategory::Intro
         | DisplayCategory::Workshop => RiskLevel::Low,
         // Dev leftovers and saves: review / backup recommended
         DisplayCategory::Other | DisplayCategory::Saves => RiskLevel::Medium,
@@ -2848,10 +2853,10 @@ mod tests {
     }
 
     #[test]
-    fn balanced_profile_adds_localization_and_intro_to_cautious() {
+    fn balanced_profile_adds_localization_to_cautious() {
         use DisplayCategory::*;
-        // Everything Cautious selects, plus Loc and Intro at any confidence.
-        for category in [Bonus, Docs, Orphan, Loc, Intro] {
+        // Everything Cautious selects, plus Loc at any confidence.
+        for category in [Bonus, Docs, Orphan, Loc] {
             assert!(profile_auto_selects(
                 SelectionProfile::Balanced,
                 category,
@@ -2865,6 +2870,23 @@ mod tests {
             95
         ));
         assert!(!profile_auto_selects(SelectionProfile::Balanced, Other, 95));
+    }
+
+    /// The bug this guards against: a false-positive intro match is a unique
+    /// video destroyed with no upstream copy, yet `Balanced` - the default
+    /// profile - used to auto-select it at *any* confidence, same as the
+    /// re-downloadable categories. Not even a maximal confidence should tick
+    /// it under the default profile; only `Aggressive`, an explicit user
+    /// escalation, may.
+    #[test]
+    fn balanced_profile_never_auto_selects_intro_regardless_of_confidence() {
+        use DisplayCategory::Intro;
+        assert!(!profile_auto_selects(SelectionProfile::Balanced, Intro, 10));
+        assert!(!profile_auto_selects(
+            SelectionProfile::Balanced,
+            Intro,
+            100
+        ));
     }
 
     #[test]
@@ -2957,10 +2979,14 @@ mod tests {
         use DisplayCategory::*;
         assert_eq!(category_risk(Orphan), RiskLevel::None);
         assert_eq!(category_risk(Redist), RiskLevel::None);
-        assert_eq!(category_risk(Intro), RiskLevel::None);
         assert_eq!(category_risk(Bonus), RiskLevel::Low);
         assert_eq!(category_risk(Docs), RiskLevel::Low);
         assert_eq!(category_risk(Loc), RiskLevel::Low);
+        assert_eq!(
+            category_risk(Intro),
+            RiskLevel::Low,
+            "a false-positive intro match destroys a unique video, unlike the zero-risk categories"
+        );
         assert_eq!(category_risk(Other), RiskLevel::Medium);
     }
 

@@ -146,12 +146,45 @@ impl Category {
         )
     }
 
+    /// Whether rules of this category are *also* tested against the file
+    /// name, on top of the folder-segment test [`matches_folder_segments`]
+    /// already runs for them. A handful of folder-segment categories mix a
+    /// folder-name rule (a `CrashDumps` folder, a `Logos` folder) with a
+    /// file-name rule under the very same category (a bare `*.dmp`, a bare
+    /// `nvidia_logo.bik`) - without this, the file-name rule can only ever
+    /// match a directory that happens to be named after a file, which is to
+    /// say never. Every other folder-segment category writes folder-name
+    /// patterns exclusively, so leaving them out here costs them nothing.
+    fn matches_file_names(self) -> bool {
+        matches!(
+            self,
+            Category::Intro | Category::CrashDump | Category::DiagnosticLogs
+        )
+    }
+
     /// Whether rules of this category are restricted to shallow matches
     /// (see [`MAX_SHALLOW_DEPTH`]).
+    ///
+    /// Intro, CrashDump and DiagnosticLogs joined this list once their rules
+    /// turned out to reach an unbounded number of segments deep into an asset
+    /// tree - a broad, case-insensitive prefix regex like `unreal.*\.bik` is
+    /// safe next to a `Movies` folder and a false-positive match on a unique
+    /// cutscene anywhere else. [`MAX_SHALLOW_DEPTH`] alone is tighter than the
+    /// video/log/dump file rules in these three categories actually need
+    /// (`Whiplash\GameSDK\Videos\LegalScreens.bk2`, `Saved\Crashes\*.dmp`,
+    /// `Saved\Logs\player.log` all sit one segment past it), so those rules
+    /// carry their own [`Rule::max_depth`] override rather than the category
+    /// default - the same mechanism the redist file rules already use for a
+    /// nested `Support\Software\VCRedist\` layout.
     fn is_depth_limited(self) -> bool {
         matches!(
             self,
-            Category::RedistFolder | Category::RedistFile | Category::Bonus
+            Category::RedistFolder
+                | Category::RedistFile
+                | Category::Bonus
+                | Category::Intro
+                | Category::CrashDump
+                | Category::DiagnosticLogs
         )
     }
 
@@ -235,7 +268,8 @@ pub struct Rule {
     #[serde(default, skip_serializing_if = "is_builtin_provenance")]
     pub provenance: RuleProvenance,
     /// Optional per-rule override of the category's default depth limit
-    /// ([`MAX_SHALLOW_DEPTH`] for redist/bonus rules, unlimited otherwise).
+    /// ([`MAX_SHALLOW_DEPTH`] for the categories [`Category::is_depth_limited`]
+    /// names, unlimited for the rest).
     /// Lets a highly specific pattern (e.g. `vc_redist.*.exe`) match inside
     /// nested vendor folders like `Support\Software\VCRedist\` without
     /// loosening the shallow default that keeps generic patterns away from
@@ -639,7 +673,7 @@ impl RuleEngine {
                     let depth = i + 1;
                     depth <= rule.max_depth && rule.regex.is_match(segment)
                 });
-                let file_match = if rule.category == Category::Intro {
+                let file_match = if rule.category.matches_file_names() {
                     let file_depth = folder_segments.len() + 1;
                     file_depth <= rule.max_depth && rule.regex.is_match(file_name)
                 } else {
@@ -952,6 +986,106 @@ mod tests {
             .flagged()
             .expect("nvidia_logo inside Extras should be classified as intro rather than bonus");
         assert_eq!(finding.category, Category::Intro);
+    }
+
+    /// GT bug: an intro rule's broad, case-insensitive prefix regex
+    /// (`unreal.*\.bik`, `.*_logos?\.mp4`, ...) used to have no depth limit
+    /// at all, so it could reach a unique cutscene or gameplay asset buried
+    /// deep in the tree. Depth-limiting the category (with a per-rule
+    /// override for the realistic, somewhat deeper video locations - see
+    /// `Category::is_depth_limited`) must keep it out of a tree this deep.
+    #[test]
+    fn classify_ignores_intro_looking_file_buried_deep_in_the_tree() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        assert_eq!(
+            engine
+                .classify(
+                    r"Game\Content\Assets\Cinematics\Deep\Nested\nvidia_logo.bik",
+                    None,
+                )
+                .flagged(),
+            None,
+            "an intro-looking file six segments deep is real content, not a startup video"
+        );
+    }
+
+    /// GT bug: `crash_dump` and `diagnostic_logs` are folder-segment
+    /// categories (see `Category::matches_folder_segments`), and the file
+    /// branch used to be hardcoded to `Category::Intro` alone - so their
+    /// `*.dmp` and `player.log` FILE rules were tested only against
+    /// directory names and could never match a real file.
+    #[test]
+    fn classify_matches_a_real_crash_dump_and_diagnostic_log_file() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        let dump = engine
+            .classify(r"Saved\Crashes\report.dmp", None)
+            .flagged()
+            .expect(".dmp file should be classified as a crash dump");
+        assert_eq!(dump.category, Category::CrashDump);
+        assert_eq!(dump.confidence, 95);
+
+        let log = engine
+            .classify(r"Saved\Logs\player.log", None)
+            .flagged()
+            .expect("player.log should be classified as a diagnostic log");
+        assert_eq!(log.category, Category::DiagnosticLogs);
+        assert_eq!(log.confidence, 90);
+    }
+
+    /// The other half of the same bug, the other direction: the crash-dump
+    /// folder rule must keep matching folder names as before - the file-name
+    /// branch is additive, not a replacement.
+    #[test]
+    fn classify_still_matches_a_crash_dump_folder_by_name() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        let finding = engine
+            .classify(r"Saved\Crashes\dummy.txt", None)
+            .flagged()
+            .expect("a file inside a Crashes folder should be classified via the folder rule");
+        assert_eq!(finding.category, Category::CrashDump);
+    }
+
+    /// The depth limit has to clear the layout Unreal actually ships:
+    /// `<Game>\<Project>\Saved\Crashes` puts the folder three segments
+    /// down, one past the shared shallow default, and `Content\Movies\Logos`
+    /// does the same for intro. Capping these two folder rules at the default
+    /// would have silenced both without anything noticing.
+    #[test]
+    fn classify_still_matches_the_folder_layouts_games_actually_ship() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        let crashes = engine
+            .classify(r"MyGame\Saved\Crashes\dummy.txt", None)
+            .flagged()
+            .expect("Unreal's own crash folder sits three segments down");
+        assert_eq!(crashes.category, Category::CrashDump);
+
+        let logos = engine
+            .classify(r"MyGame\Content\Movies\Logos\publisher.bik", None)
+            .flagged()
+            .expect("a Logos folder three segments down is still an intro folder");
+        assert_eq!(logos.category, Category::Intro);
+    }
+
+    /// GT bug: the `crashes|crashdumps|minidumps` folder rule carried
+    /// confidence 95 with no depth limit, so any folder with that name
+    /// anywhere in a game tree - not just the shallow `Saved\Crashes` /
+    /// `CrashDumps` locations the real crash-log janitor scopes itself to
+    /// (see `janitor::crashes`) - was a confidence-95 finding.
+    #[test]
+    fn classify_ignores_a_crash_dump_folder_buried_deep_in_the_tree() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        assert_eq!(
+            engine
+                .classify(r"Data\Mods\Community\Assets\Crashes\dummy.txt", None)
+                .flagged(),
+            None,
+            "a folder named Crashes five segments deep is not the game's own crash log folder"
+        );
     }
 
     #[test]

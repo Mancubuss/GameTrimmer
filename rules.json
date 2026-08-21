@@ -382,7 +382,8 @@
         "en": "Engine, middleware or hardware vendor logo video (NVIDIA, AMD, Bink, Unreal, Havok, etc.)",
         "uk": "Відео логотипу рушія, технологій або обладнання (NVIDIA, AMD, Bink, Unreal, Havok тощо)"
       },
-      "confidence": 95
+      "confidence": 95,
+      "max_depth": 4
     },
     {
       "category": "intro",
@@ -391,7 +392,8 @@
         "en": "Publisher startup logo video (Ubisoft, EA, Bethesda, Sony, 2K, etc.)",
         "uk": "Відео стартового логотипу видавця (Ubisoft, EA, Bethesda, Sony, 2K тощо)"
       },
-      "confidence": 95
+      "confidence": 95,
+      "max_depth": 4
     },
     {
       "category": "intro",
@@ -400,7 +402,8 @@
         "en": "Development studio startup logo video",
         "uk": "Відео стартового логотипу студії розробника"
       },
-      "confidence": 95
+      "confidence": 95,
+      "max_depth": 4
     },
     {
       "category": "intro",
@@ -409,7 +412,8 @@
         "en": "Partner studio startup ident video",
         "uk": "Відео стартового логотипу партнерів"
       },
-      "confidence": 95
+      "confidence": 95,
+      "max_depth": 4
     },
     {
       "category": "intro",
@@ -418,7 +422,8 @@
         "en": "Startup logo video file",
         "uk": "Відеофайл логотипу заставки"
       },
-      "confidence": 95
+      "confidence": 95,
+      "max_depth": 4
     },
     {
       "category": "intro",
@@ -427,7 +432,8 @@
         "en": "Legal disclaimer, health & safety, or age rating video screen",
         "uk": "Юридичні дисклеймери, застереження про здоров'я або вікові рейтинги"
       },
-      "confidence": 95
+      "confidence": 95,
+      "max_depth": 4
     },
     {
       "category": "intro",
@@ -436,7 +442,8 @@
         "en": "Startup splash screen, bumper, stinger or boot sequence video",
         "uk": "Стартова заставка, бампер або ролик послідовності завантаження"
       },
-      "confidence": 90
+      "confidence": 90,
+      "max_depth": 4
     },
     {
       "category": "intro",
@@ -459,7 +466,8 @@
         "mkv",
         "m4v",
         "mov"
-      ]
+      ],
+      "max_depth": 4
     },
     {
       "category": "crash_dump",
@@ -468,7 +476,8 @@
         "en": "Crash dump reports and minidump folder",
         "uk": "Тека звітів про падіння та мінідампів"
       },
-      "confidence": 95
+      "confidence": 95,
+      "max_depth": 4
     },
     {
       "category": "crash_dump",
@@ -477,7 +486,8 @@
         "en": "Minidump crash state memory dump file",
         "uk": "Файл мінідампу пам'яті аварійного завершення"
       },
-      "confidence": 95
+      "confidence": 95,
+      "max_depth": 3
     },
     {
       "category": "diagnostic_logs",
@@ -486,7 +496,8 @@
         "en": "Game engine runtime diagnostic log file",
         "uk": "Діагностичний лог-файл ігрового рушія"
       },
-      "confidence": 90
+      "confidence": 90,
+      "max_depth": 3
     }
   ]
 }
