@@ -271,9 +271,16 @@ fn games() -> Vec<(&'static str, Vec<Case>)> {
                 c("build\\pc\\cache\\M06_CS_05.bik", Nothing),
                 c("build\\pc\\cache\\M13_CS_14_MO_WBarge.bik", Nothing),
                 c("build\\pc\\cache\\Q01_CS_04.bik", Nothing),
-                // Bink containers are reserved for Phase 3; ordinary rules
-                // must not turn one into a whole-file delete finding.
-                c("build\\pc\\cache\\legal_hd_no_esrb.bik", Nothing),
+                // This label has been flipped twice and is worth a note. It was
+                // `Nothing` when written, correctly: no intro rules existed yet.
+                // GT-EP12 changed it to `Intro` after a human looked at the file
+                // - a legal screen is exactly what the intro feature removes.
+                // GT-EP10 then changed it back, justifying it by its own new
+                // policy that Bink is reserved for the archive inspector. That was
+                // ground truth being edited to agree with code, which is the one
+                // thing this corpus must never do. Bink 1 is an intro video again
+                // (GT-204), so the human judgement stands.
+                c("build\\pc\\cache\\legal_hd_no_esrb.bik", Rule(Category::Intro)),
                 c("build\\pc\\cache\\RF4_MainMenuBG.bik", Nothing),
                 c("build\\dlc04\\pc\\cache\\dlc04_voices_AR.vpp_pc", LocAny),
                 c("build\\dlc04\\pc\\cache\\dlc04_voices_DE.vpp_pc", Loc("de")),

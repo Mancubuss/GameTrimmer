@@ -539,14 +539,18 @@ impl FormatDetector {
             return Ok(Some(ArchiveType::CapcomRePak));
         }
 
-        // 4. Bink Video: Signatures 'BIKi', 'BIKb', 'BIKf', 'BIKg', 'BIKh', 'KB2a'..'KB2k'
+        // 4. Bink 2 only: signatures 'KB2a'..'KB2n'.
+        //
+        // Bink 1 ('BIKb', 'BIKf', 'BIKg', 'BIKh', 'BIKi') used to be claimed
+        // here too, by magic and by extension. It is a plain video, not a
+        // container of separable language streams - the Bink handler reports
+        // zero trimmable bytes for it and refuses to trim it - so claiming it
+        // only had the effect of blocking whole-file deletion, which is exactly
+        // what the intro rules need to do to it. Bink 2 stays claimed until a
+        // stub for it has been validated against a real game; see GT-204.
         if header_slice.len() >= 4 {
             let sig = &header_slice[0..4];
-            if sig.starts_with(b"BIK")
-                || (sig[0] == b'K' && sig[1] == b'B' && sig[2] == b'2')
-                || ext == "bik"
-                || ext == "bk2"
-            {
+            if (sig[0] == b'K' && sig[1] == b'B' && sig[2] == b'2') || ext == "bk2" {
                 return Ok(Some(ArchiveType::BinkVideo));
             }
         }
@@ -611,7 +615,7 @@ impl FormatDetector {
                 }
             }
             "asar" => Ok(Some(ArchiveType::ElectronAsar)),
-            "bik" | "bk2" => Ok(Some(ArchiveType::BinkVideo)),
+            "bk2" => Ok(Some(ArchiveType::BinkVideo)),
             "bundle" | "assets" | "unity3d" => Ok(Some(ArchiveType::UnityAssetBundle)),
             _ => Ok(None),
         }

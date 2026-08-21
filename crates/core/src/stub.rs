@@ -23,12 +23,43 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
 
+/// One black 16x16 frame in a Bink 1 container, 68 bytes.
+///
+/// The frame payload is 16 zero bytes and that number is load-bearing. The
+/// first version of this constant carried four, and the difference is not
+/// cosmetic: a real Bink decoder parses the header of a 4-byte-frame file
+/// happily, reports the stream, and then fails to decode the single frame,
+/// producing a file that looks valid to anything checking the signature and
+/// is not a video. The unit tests here checked exactly that signature, which
+/// is why it survived. Measured against ffmpeg's Bink decoder across
+/// resolution, flag and payload-size combinations, the payload size was the
+/// only variable that mattered - four bytes never decoded, sixteen always did,
+/// at every resolution and with either flag value.
+///
+/// 16x16 rather than the 1x1 it used to be: both decode, but a single frame
+/// smaller than one 8x8 Bink macroblock is a needless thing to hand an
+/// unfamiliar decoder when the larger size costs nothing.
 pub const BIK1_STUB: &[u8] = &[
-    0x42, 0x49, 0x4b, 0x69, 0x30, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,
+    0x42, 0x49, 0x4b, 0x69, 0x3c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x35, 0x00, 0x00, 0x00,
-    0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 ];
+/// A Bink 2 container stub - unverified, and currently unreachable.
+///
+/// This is the Bink 1 stub with a `KB2k` signature glued over its magic, and
+/// there is real doubt it is a Bink 2 file at all: a genuine `KB2n` header
+/// from a shipped game carries a 16-byte-per-track descriptor block that Bink
+/// 1 does not have, so the frame table does not begin where this layout says
+/// it does. The doubt cannot be resolved with the tools to hand - ffmpeg
+/// rejects real, working Bink 2 files outright, so it can neither confirm nor
+/// condemn this one.
+///
+/// Nothing reaches these bytes today: `bk2` is still claimed by the archive
+/// inspector, so no Bink 2 file ever becomes an intro finding. Resolving that
+/// means testing a stub in a real game - see GT-201 and GT-204 - and this
+/// constant should be corrected from what that test shows, not from a guess.
 pub const BINK2_STUB: &[u8] = &[
     0x4b, 0x42, 0x32, 0x6b, 0x30, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
     0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,
@@ -1170,6 +1201,57 @@ pub fn write_stub(path: &Path, bytes: &[u8]) -> io::Result<usize> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// The signature assertions below are what let a Bink stub that no decoder
+    /// would accept sit in this file: `BIKi` was all they ever checked, and the
+    /// four bytes of frame payload behind it were never a frame. This reads the
+    /// header the way a demuxer does and holds it to its own declarations.
+    #[test]
+    fn the_bink_stub_describes_a_frame_that_is_actually_there() {
+        fn le_u32(bytes: &[u8], at: usize) -> u32 {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        }
+
+        let stub = BIK1_STUB;
+        let len = stub.len() as u32;
+
+        assert_eq!(
+            le_u32(stub, 4),
+            len - 8,
+            "the size field must describe this file, minus the 8 bytes before it"
+        );
+        assert_eq!(le_u32(stub, 8), 1, "a stub is one frame");
+        assert_eq!(le_u32(stub, 16), 1, "and says so twice, as the format does");
+        assert_eq!(
+            le_u32(stub, 40),
+            0,
+            "no audio tracks, so no track block follows"
+        );
+
+        // With no audio tracks the frame table sits at 44 and holds one entry
+        // per frame plus a terminator, so the frame itself starts at 52.
+        let first = le_u32(stub, 44);
+        assert_eq!(first & 1, 1, "the only frame must be flagged a keyframe");
+        assert_eq!(first & !1, 52, "the frame starts where the table ends");
+        assert_eq!(
+            le_u32(stub, 48),
+            len,
+            "the terminator must be the end of the file"
+        );
+
+        let payload = len - (first & !1);
+        assert_eq!(
+            le_u32(stub, 12),
+            payload,
+            "the largest-frame field must match the frame that is really there"
+        );
+        assert!(
+            payload >= 16,
+            "a Bink frame payload under 16 bytes parses as a stream and then \
+             fails to decode - the exact shape of the bug this test exists for, \
+             found at 4 bytes; got {payload}"
+        );
+    }
 
     #[test]
     fn stub_constants_have_expected_signatures_and_non_zero_lengths() {

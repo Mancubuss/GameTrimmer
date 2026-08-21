@@ -2220,15 +2220,14 @@ fn should_probe_archive_contents(provenance: RuleProvenance, rel_path: &str) -> 
     if provenance == RuleProvenance::ImportedUntrusted {
         return true;
     }
+    // The same list the classifier refuses to touch - see
+    // `gametrimmer_core::worker::CANDIDATE_ARCHIVE_EXTENSIONS`. It was spelled
+    // out here as well until the two copies had to change together and one of
+    // them would have been forgotten.
     Path::new(rel_path)
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "pck" | "bnk" | "pak" | "asar" | "bik" | "bk2" | "bundle" | "unity3d" | "assets"
-            )
-        })
+        .is_some_and(gametrimmer_core::worker::is_candidate_archive_extension)
 }
 
 /// Assigns each flagged file (identified by its index into `entries`) the
@@ -5451,7 +5450,13 @@ mod tests {
         )
         .expect("compile rule");
         let install = tempfile::tempdir().expect("create install dir");
-        let mut bink = b"BIKi".to_vec();
+        // `KB2n`, not the `BIKi` this used to use. The subject is a file a rule
+        // claims by name whose *content* belongs to the deep archive inspector,
+        // and Bink 1 is no longer such a content: it is a plain video that the
+        // intro rules are meant to replace with a stub, so a `BIKi` payload here
+        // now produces an ordinary, deletable finding. Bink 2 is still claimed,
+        // so it still demonstrates the block. See GT-204.
+        let mut bink = b"KB2n".to_vec();
         bink.resize(64, 0);
         write_file(&install.path().join("trailer.dat"), &bink);
 

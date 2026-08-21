@@ -39,6 +39,34 @@ pub enum WorkerProgress {
     OverallProgress { fraction: f32, message: String },
 }
 
+/// Extensions the deep archive inspector claims, to the exclusion of every
+/// other path in the application.
+///
+/// A file whose extension is on this list is refused by [`crate::rules::RuleEngine::classify`]
+/// and blocked at delete preflight, so that a container holding data the user
+/// wants can never be deleted whole because a rule matched its name. That
+/// guard is worth its bluntness for a 40 GB archive; it was not worth it for
+/// `bik`, which used to be here.
+///
+/// Bink 1 is a video, not a container of separable language streams: the
+/// archive handler reports zero trimmable bytes for it and refuses to trim it,
+/// so listing it here bought nothing and cost the intro rules - seven of the
+/// eight match `.bik` - every file they exist for. `bk2` stays until a stub
+/// for it has been tried in a real game; see GT-204.
+///
+/// One list, read by both the classifier and the content prober. It used to be
+/// written out twice, in two crates, with no constant between them.
+pub const CANDIDATE_ARCHIVE_EXTENSIONS: &[&str] = &[
+    "pck", "bnk", "pak", "asar", "bk2", "bundle", "unity3d", "assets",
+];
+
+/// Whether `ext` (without its dot, any case) belongs to the deep archive
+/// inspector. See [`CANDIDATE_ARCHIVE_EXTENSIONS`].
+pub fn is_candidate_archive_extension(ext: &str) -> bool {
+    let lower = ext.to_ascii_lowercase();
+    CANDIDATE_ARCHIVE_EXTENSIONS.contains(&lower.as_str())
+}
+
 /// Identifies whether a file is a candidate for monolithic archive deep inspection.
 pub fn is_candidate_archive_path(rel_path: &str) -> bool {
     // If it's already an external single-language file (e.g., sound_fre.pck, locales/es.pak),
@@ -56,10 +84,7 @@ pub fn is_candidate_archive_path(rel_path: &str) -> bool {
     }
 
     if let Some((_, ext)) = filename.rsplit_once('.') {
-        matches!(
-            ext,
-            "pck" | "bnk" | "pak" | "asar" | "bik" | "bk2" | "bundle" | "unity3d" | "assets"
-        )
+        is_candidate_archive_extension(ext)
     } else {
         false
     }

@@ -7,7 +7,7 @@
 //! Common videos (logos, splash screens, intros) without language markers are
 //! safely preserved with 0 trimmable bytes to avoid false duplicate calculations.
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -405,60 +405,68 @@ pub fn parse_bink_header(file: &mut File, file_len: u64) -> Result<BinkHeader, A
     })
 }
 
-/// Generates an experimental 1-frame-like Bink fixture (~1 KiB).
-///
-/// This output has not passed independent `BinkOpen()`/decoder validation and
-/// must not be used as a production replacement.
-pub fn generate_bink_micro_stub(signature: &[u8; 4], width: u32, height: u32, fps: u32) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(512);
-
-    // Signature: 'BIKi' or 'KB2i'
-    buf.extend_from_slice(signature);
-
-    // Placeholders for header fields
-    let file_size_pos = buf.len();
-    buf.write_u32::<LittleEndian>(0).unwrap(); // file_size - 8
-    buf.write_u32::<LittleEndian>(1).unwrap(); // frame_count = 1
-    buf.write_u32::<LittleEndian>(64).unwrap(); // max_frame_size = 64
-    buf.write_u32::<LittleEndian>(1).unwrap(); // frame_count dup
-    buf.write_u32::<LittleEndian>(width.max(16)).unwrap();
-    buf.write_u32::<LittleEndian>(height.max(16)).unwrap();
-    buf.write_u32::<LittleEndian>(fps.saturating_mul(1000))
-        .unwrap(); // fps_num
-    buf.write_u32::<LittleEndian>(1000).unwrap(); // fps_den
-    buf.write_u32::<LittleEndian>(0x00080000).unwrap(); // flags (standard 24/32-bit video)
-    buf.write_u32::<LittleEndian>(0).unwrap(); // audio_tracks = 0
-
-    // Frame size table: 1 entry (offset/length with keyframe bit set)
-    buf.write_u32::<LittleEndian>(64 | 1).unwrap(); // 64 bytes + keyframe bit
-
-    // Seek table / frame index
-    buf.write_u32::<LittleEndian>(buf.len() as u32 + 4).unwrap();
-
-    // 1-frame dummy payload (blank compressed frame)
-    let payload = vec![0u8; 64];
-    buf.extend_from_slice(&payload);
-
-    // Fix up file_size field (file_size - 8 as expected by Bink container)
-    let total_len = buf.len() as u32;
-    let size_val = total_len.saturating_sub(8);
-    buf[file_size_pos..file_size_pos + 4].copy_from_slice(&size_val.to_le_bytes());
-
-    buf
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byteorder::WriteBytesExt;
     use std::fs;
     use tempfile::tempdir;
+
+    /// Builds a header-shaped Bink fixture for the parser tests in this
+    /// module. It is not a micro-stub and must never be used as one.
+    ///
+    /// It used to be `pub fn generate_bink_micro_stub`, a second production
+    /// stub generator standing beside `gametrimmer_core::stub`, and the two
+    /// were wrong in different ways: that one writes a frame *size* into the
+    /// frame table where an absolute offset belongs, and gets away with it
+    /// only because a one-frame file takes its last frame's end from the file
+    /// length, so the bad entry is never read. Two generators for one format,
+    /// one of them accidentally correct, is a divergence waiting to happen.
+    /// The stub a real video is replaced with lives in one place now.
+    fn synthetic_bink_fixture(signature: &[u8; 4], width: u32, height: u32, fps: u32) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(512);
+
+        // Signature: 'BIKi' or 'KB2i'
+        buf.extend_from_slice(signature);
+
+        // Placeholders for header fields
+        let file_size_pos = buf.len();
+        buf.write_u32::<LittleEndian>(0).unwrap(); // file_size - 8
+        buf.write_u32::<LittleEndian>(1).unwrap(); // frame_count = 1
+        buf.write_u32::<LittleEndian>(64).unwrap(); // max_frame_size = 64
+        buf.write_u32::<LittleEndian>(1).unwrap(); // frame_count dup
+        buf.write_u32::<LittleEndian>(width.max(16)).unwrap();
+        buf.write_u32::<LittleEndian>(height.max(16)).unwrap();
+        buf.write_u32::<LittleEndian>(fps.saturating_mul(1000))
+            .unwrap(); // fps_num
+        buf.write_u32::<LittleEndian>(1000).unwrap(); // fps_den
+        buf.write_u32::<LittleEndian>(0x00080000).unwrap(); // flags (standard 24/32-bit video)
+        buf.write_u32::<LittleEndian>(0).unwrap(); // audio_tracks = 0
+
+        // Frame size table: 1 entry (offset/length with keyframe bit set)
+        buf.write_u32::<LittleEndian>(64 | 1).unwrap(); // 64 bytes + keyframe bit
+
+        // Seek table / frame index
+        buf.write_u32::<LittleEndian>(buf.len() as u32 + 4).unwrap();
+
+        // 1-frame dummy payload (blank compressed frame)
+        let payload = vec![0u8; 64];
+        buf.extend_from_slice(&payload);
+
+        // Fix up file_size field (file_size - 8 as expected by Bink container)
+        let total_len = buf.len() as u32;
+        let size_val = total_len.saturating_sub(8);
+        buf[file_size_pos..file_size_pos + 4].copy_from_slice(&size_val.to_le_bytes());
+
+        buf
+    }
 
     #[test]
     fn test_bink_micro_stub_generation_and_parsing() {
         let dir = tempdir().expect("tempdir");
         let bik_path = dir.path().join("intro_fra.bik");
 
-        let stub_bytes = generate_bink_micro_stub(b"BIKi", 1920, 1080, 30);
+        let stub_bytes = synthetic_bink_fixture(b"BIKi", 1920, 1080, 30);
         fs::write(&bik_path, &stub_bytes).expect("write stub");
 
         let handler = BinkHandler;
@@ -482,7 +490,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let bik_path = dir.path().join("unreal_engine_logo.bik");
 
-        let stub_bytes = generate_bink_micro_stub(b"BIKi", 1920, 1080, 30);
+        let stub_bytes = synthetic_bink_fixture(b"BIKi", 1920, 1080, 30);
         fs::write(&bik_path, &stub_bytes).expect("write stub");
 
         let handler = BinkHandler;
@@ -576,7 +584,7 @@ mod tests {
 
         // 3. Bink 2 (KB2k) is detected, but destructive replacement remains disabled.
         let bk2_path = dir.path().join("movie_fre.bk2");
-        let bk2_stub = generate_bink_micro_stub(b"KB2k", 1280, 720, 60);
+        let bk2_stub = synthetic_bink_fixture(b"KB2k", 1280, 720, 60);
         fs::write(&bk2_path, &bk2_stub).expect("write bk2");
 
         let options = TrimOptions::default();

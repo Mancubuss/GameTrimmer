@@ -1086,45 +1086,42 @@ mod tests {
         assert_eq!(logos.category, Category::Intro);
     }
 
-    /// GT-EP10 vs GT-EP12 collision, recorded rather than hidden.
+    /// GT-204, resolved for Bink 1 and still open for Bink 2.
     ///
-    /// `classify` returns `Unmatched` for every archive-shaped path so that
-    /// a container can only ever be claimed by the deep archive inspector,
-    /// which emits an explicit SparseZero/Repack contract. That list includes
-    /// `bik` and `bk2` - and Bink is the single most common intro container
-    /// in PC games, matched by seven of the eight intro rules in rules.json.
+    /// `classify` returns `Unmatched` for every archive-shaped path so a
+    /// container can only be claimed by the deep archive inspector, which emits
+    /// an explicit SparseZero/Repack contract. `bik` was on that list and should
+    /// not have been: a Bink 1 file is a video, not a container of separable
+    /// language streams, and the archive handler reports zero trimmable bytes
+    /// for it. Claiming it only blocked the intro rules - seven of the eight
+    /// match `.bik` - from ever seeing the files they exist for.
     ///
-    /// The effect is that a Bink intro is not merely undeletable, it is
-    /// invisible: it never becomes a finding at all. This test exists so the
-    /// blackout is a stated, reviewable decision instead of an absence nobody
-    /// notices. Deleting this test is part of resolving the collision, not a
-    /// way around it.
+    /// `bk2` is still claimed, deliberately. The stub for it has never been
+    /// through a decoder, and it cannot be: ffmpeg rejects genuine, working
+    /// Bink 2 files, so it can neither confirm nor condemn ours. That one is
+    /// settled by trying a stub in a real game, not by a test.
     #[test]
-    fn an_intro_in_a_bink_container_is_currently_invisible_to_the_rule_engine() {
+    fn bink_1_is_an_intro_video_again_while_bink_2_stays_with_the_archive_inspector() {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
         for rel_path in [
             r"Data\Movies\boot_sequence.bik",
             r"Engine\Binaries\nvidia_logo.bik",
-            r"Whiplash\GameSDK\Videos\LegalScreens.bk2",
         ] {
             assert_eq!(
-                engine.classify(rel_path, None),
-                Verdict::Unmatched,
-                "{rel_path} is claimed by the archive inspector, so no intro rule can see it"
+                engine
+                    .classify(rel_path, None)
+                    .flagged()
+                    .unwrap_or_else(|| panic!("{rel_path} must reach the intro rules"))
+                    .category,
+                Category::Intro,
             );
         }
 
-        // The same names in a container the archive inspector does not claim
-        // still match, which is what makes the loss specific to Bink rather
-        // than a general intro regression.
         assert_eq!(
-            engine
-                .classify(r"Data\Movies\boot_sequence.mp4", None)
-                .flagged()
-                .expect("the same intro in an mp4 container is still found")
-                .category,
-            Category::Intro
+            engine.classify(r"Whiplash\GameSDK\Videos\LegalScreens.bk2", None),
+            Verdict::Unmatched,
+            "Bink 2 stays with the archive inspector until a stub is proven in a real game"
         );
     }
 
