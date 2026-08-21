@@ -975,12 +975,14 @@ mod tests {
         assert_eq!(unreal_file.category, Category::Intro);
         assert_eq!(unreal_file.confidence, 95);
 
-        // Game-specific rule with app_id (Prey 2017)
-        assert_eq!(
-            engine.classify(r"Whiplash\GameSDK\Videos\LegalScreens.bk2", Some("480490")),
-            Verdict::Unmatched,
-            "Bink containers are reserved for archive inspection"
-        );
+        // Game-specific rule with app_id (Prey 2017) - Bink 2 reaches the
+        // intro rules the same as any other container now that its
+        // header-derived stub is verified live; see GT-204.
+        let prey_file = engine
+            .classify(r"Whiplash\GameSDK\Videos\LegalScreens.bk2", Some("480490"))
+            .flagged()
+            .expect("LegalScreens.bk2 should be classified as intro");
+        assert_eq!(prey_file.category, Category::Intro);
 
         // Crucial safety checks: credits and story cinematics are NOT intro videos
         let credits_file = engine.classify(r"Movies\credits.bk2", None).flagged();
@@ -1101,12 +1103,17 @@ mod tests {
     /// Bink 2 files, so it can neither confirm nor condemn ours. That one is
     /// settled by trying a stub in a real game, not by a test.
     #[test]
-    fn bink_1_is_an_intro_video_again_while_bink_2_stays_with_the_archive_inspector() {
+    fn bink_1_and_bink_2_are_both_intro_videos() {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
+        // Bink 2's header-derived stub was verified live in a real game
+        // (Scars Above, variant B) - see GT-204 - so it now reaches the
+        // intro rules the same as Bink 1, instead of being claimed by the
+        // archive inspector.
         for rel_path in [
             r"Data\Movies\boot_sequence.bik",
             r"Engine\Binaries\nvidia_logo.bik",
+            r"Whiplash\GameSDK\Videos\LegalScreens.bk2",
         ] {
             assert_eq!(
                 engine
@@ -1117,12 +1124,6 @@ mod tests {
                 Category::Intro,
             );
         }
-
-        assert_eq!(
-            engine.classify(r"Whiplash\GameSDK\Videos\LegalScreens.bk2", None),
-            Verdict::Unmatched,
-            "Bink 2 stays with the archive inspector until a stub is proven in a real game"
-        );
     }
 
     /// GT bug: the `crashes|crashdumps|minidumps` folder rule carried

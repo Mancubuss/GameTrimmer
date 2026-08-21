@@ -305,7 +305,7 @@ pub fn retrim_game_with_new_build(
     // contract exists to prevent, and retrim runs unattended with no human
     // watching to catch it. Non-"intro" candidates are untouched by this step.
     let mut retained_candidates = Vec::with_capacity(candidates.len());
-    let mut candidate_stub_bytes: Vec<Option<&'static [u8]>> = Vec::with_capacity(candidates.len());
+    let mut candidate_stub_bytes: Vec<Option<Vec<u8>>> = Vec::with_capacity(candidates.len());
     let mut skipped_intro_errors = Vec::new();
 
     for candidate in candidates {
@@ -396,7 +396,7 @@ pub fn retrim_game_with_new_build(
     // below), not with the original `candidates`/`candidate_stub_bytes` - a
     // candidate whose safety snapshot fails never gets a row, and its stub
     // entry must not shift every later candidate's stub out of place.
-    let mut candidate_stubs: Vec<Option<&'static [u8]>> = Vec::new();
+    let mut candidate_stubs: Vec<Option<Vec<u8>>> = Vec::new();
 
     for (candidate, stub) in candidates.into_iter().zip(candidate_stub_bytes) {
         let snapshot = match crate::safety::capture_safety_snapshot(
@@ -503,7 +503,7 @@ pub fn retrim_game_with_new_build(
         |_current, _total, _path| {},
         |index, outcome| {
             if outcome.status == crate::ops::FsOutcome::Removed {
-                if let Some(bytes) = candidate_stubs[index] {
+                if let Some(bytes) = &candidate_stubs[index] {
                     if let Err(err) = crate::stub::write_stub(&outcome.path, bytes) {
                         stub_write_failures.push(format!(
                             "{}: the intro micro-stub could not be written after the delete, \

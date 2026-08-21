@@ -48,17 +48,17 @@ pub enum WorkerProgress {
 /// guard is worth its bluntness for a 40 GB archive; it was not worth it for
 /// `bik`, which used to be here.
 ///
-/// Bink 1 is a video, not a container of separable language streams: the
-/// archive handler reports zero trimmable bytes for it and refuses to trim it,
-/// so listing it here bought nothing and cost the intro rules - seven of the
-/// eight match `.bik` - every file they exist for. `bk2` stays until a stub
-/// for it has been tried in a real game; see GT-204.
+/// Bink 1 and Bink 2 are videos, not containers of separable language
+/// streams: the archive handler reports zero trimmable bytes for both and
+/// refuses to trim them, so listing either here bought nothing and cost the
+/// intro rules - seven of the eight match `.bik`/`.bk2` - every file they
+/// exist for. `bk2` stayed until a header-derived stub for it was verified
+/// live in a real game (Scars Above, variant B); see GT-204.
 ///
 /// One list, read by both the classifier and the content prober. It used to be
 /// written out twice, in two crates, with no constant between them.
-pub const CANDIDATE_ARCHIVE_EXTENSIONS: &[&str] = &[
-    "pck", "bnk", "pak", "asar", "bk2", "bundle", "unity3d", "assets",
-];
+pub const CANDIDATE_ARCHIVE_EXTENSIONS: &[&str] =
+    &["pck", "bnk", "pak", "asar", "bundle", "unity3d", "assets"];
 
 /// Whether `ext` (without its dot, any case) belongs to the deep archive
 /// inspector. See [`CANDIDATE_ARCHIVE_EXTENSIONS`].
@@ -202,7 +202,6 @@ mod tests {
             "Content/Paks/pakchunk0-WindowsNoEditor.pak"
         ));
         assert!(is_candidate_archive_path("resources/app.asar"));
-        assert!(is_candidate_archive_path("movies/intro.bk2"));
         assert!(is_candidate_archive_path("re_chunk_000.pak"));
 
         // Standalone external single-language files must NOT be treated as monolithic archives
@@ -213,6 +212,12 @@ mod tests {
         // Non-archives
         assert!(!is_candidate_archive_path("bin/game.exe"));
         assert!(!is_candidate_archive_path("readme.txt"));
+
+        // Bink 1 and Bink 2 are videos, not archives of separable language
+        // streams - both now belong to the intro rules, not the archive
+        // inspector. See GT-204.
+        assert!(!is_candidate_archive_path("movies/intro.bik"));
+        assert!(!is_candidate_archive_path("movies/intro.bk2"));
     }
 
     #[test]

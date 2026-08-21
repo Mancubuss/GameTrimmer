@@ -192,7 +192,7 @@ fn run_delete(
     // against the right `DeleteItem`.
     let mut execute_plans = Vec::with_capacity(plans.len());
     let mut execute_origin = Vec::with_capacity(plans.len());
-    let mut execute_stub: Vec<Option<&'static [u8]>> = Vec::with_capacity(plans.len());
+    let mut execute_stub: Vec<Option<Vec<u8>>> = Vec::with_capacity(plans.len());
     let mut skipped_outcomes: Vec<(usize, OpOutcome)> = Vec::new();
 
     for (origin, plan) in plans.iter().enumerate() {
@@ -257,7 +257,7 @@ fn run_delete(
         },
         |index, outcome| {
             if outcome.status == FsOutcome::Removed {
-                if let Some(bytes) = execute_stub[index] {
+                if let Some(bytes) = &execute_stub[index] {
                     if let Some(err) =
                         report_stub_write_failure_if_any(notifier, lang, &outcome.path, bytes)
                     {

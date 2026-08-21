@@ -46,26 +46,85 @@ pub const BIK1_STUB: &[u8] = &[
     0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00,
 ];
-/// A Bink 2 container stub - unverified, and currently unreachable.
+/// A constant-layout Bink 2 container stub - the fallback used when a real
+/// header cannot be read from the file being replaced. Verified on Scars
+/// Above (UE4, `KB2n`) as variant D: the game starts, but the frame decodes
+/// to a visible colour flash, unlike a header-derived stub (variant B) which
+/// was invisible. So this constant is a safety net, not the preferred path -
+/// see [`detect_stub_bytes`] and `build_bink2_stub_from_header`.
 ///
-/// This is the Bink 1 stub with a `KB2k` signature glued over its magic, and
-/// there is real doubt it is a Bink 2 file at all: a genuine `KB2n` header
-/// from a shipped game carries a 16-byte-per-track descriptor block that Bink
-/// 1 does not have, so the frame table does not begin where this layout says
-/// it does. The doubt cannot be resolved with the tools to hand - ffmpeg
-/// rejects real, working Bink 2 files outright, so it can neither confirm nor
-/// condemn this one.
-///
-/// Nothing reaches these bytes today: `bk2` is still claimed by the archive
-/// inspector, so no Bink 2 file ever becomes an intro finding. Resolving that
-/// means testing a stub in a real game - see GT-201 and GT-204 - and this
-/// constant should be corrected from what that test shows, not from a guess.
+/// Layout, established by reading three real `KB2n`/`KB2j` files byte-for-byte
+/// (see GT-204 handoff, 21.08.2026): the Bink 2 header is 48 bytes, not the
+/// 44 of Bink 1 - four bytes wider even with zero audio tracks - followed by
+/// 12 bytes per audio track, then the `num_frames + 1` entry frame table.
+/// This constant has zero tracks, so its header is the full 48 bytes with no
+/// track descriptors after it.
 pub const BINK2_STUB: &[u8] = &[
-    0x4b, 0x42, 0x32, 0x6b, 0x30, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,
-    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x35, 0x00, 0x00, 0x00,
-    0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x4b, 0x42, 0x32, 0x69, 0x40, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x39, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
+
+/// Builds a Bink 2 micro-stub from a real file's header instead of the
+/// constant [`BINK2_STUB`] layout, the way the Bink 1 stub cannot: a Bink 2
+/// loader is pickier about resolution/fps/flags/track layout matching what it
+/// expects, and [`BINK2_STUB`]'s zeroed placeholders are exactly what showed
+/// a visible colour flash in the Scars Above test (variant D) that a
+/// header-derived stub (variant B) did not.
+///
+/// `header` must hold at least the file's first `48 + 12 * num_audio_tracks`
+/// bytes - everything up to and including the last audio track descriptor.
+/// Returns `None` if it is too short, the magic does not match, or the
+/// declared track count is implausible (a corrupt or truncated header lying
+/// about its own track count must not turn into an oversized allocation).
+///
+/// Bytes `[0..20)` (signature, file size, frame count x2, max frame size) and
+/// the trailing frame table are synthetic - one frame, 16 zero bytes, the
+/// same payload size proven safe for Bink 1 (see [`BIK1_STUB`]). Bytes
+/// `[20..header_len)` - resolution, fps, video flags, track count, the
+/// four-byte field after it, and every track descriptor - are copied
+/// verbatim from the source file, matching the "variant B" shape verified
+/// live on Scars Above.
+fn build_bink2_stub_from_header(header: &[u8]) -> Option<Vec<u8>> {
+    const BASE_HEADER_LEN: usize = 48;
+    const TRACK_DESCRIPTOR_LEN: usize = 12;
+    const MAX_AUDIO_TRACKS: usize = 32;
+    const FRAME_PAYLOAD: [u8; 16] = [0u8; 16];
+
+    if header.len() < BASE_HEADER_LEN || &header[0..3] != b"KB2" {
+        return None;
+    }
+    let num_tracks = u32::from_le_bytes(header[40..44].try_into().ok()?) as usize;
+    if num_tracks > MAX_AUDIO_TRACKS {
+        return None;
+    }
+    let header_len = BASE_HEADER_LEN + num_tracks * TRACK_DESCRIPTOR_LEN;
+    if header.len() < header_len {
+        return None;
+    }
+
+    let mut stub = Vec::with_capacity(header_len + 8 + FRAME_PAYLOAD.len());
+    stub.extend_from_slice(&header[0..4]); // signature, incl. codec revision
+    stub.extend_from_slice(&[0u8; 4]); // file size - 8, patched below
+    stub.extend_from_slice(&1u32.to_le_bytes()); // num_frames
+    stub.extend_from_slice(&(FRAME_PAYLOAD.len() as u32).to_le_bytes()); // max_frame_size
+    stub.extend_from_slice(&1u32.to_le_bytes()); // num_frames, repeated
+                                                 // width, height, fps num/denom, video flags, audio track count, the
+                                                 // four-byte field after it, and every track descriptor - verbatim.
+    stub.extend_from_slice(&header[20..header_len]);
+
+    let table_end = (header_len + 8) as u32; // 2 entries x 4 bytes
+    stub.extend_from_slice(&(table_end | 1).to_le_bytes()); // frame 0, keyframe bit set
+    stub.extend_from_slice(&(table_end + FRAME_PAYLOAD.len() as u32).to_le_bytes()); // table's end marker
+    stub.extend_from_slice(&FRAME_PAYLOAD);
+
+    let file_size_field = (stub.len() as u32).checked_sub(8)?;
+    stub[4..8].copy_from_slice(&file_size_field.to_le_bytes());
+
+    Some(stub)
+}
 pub const MP4_STUB: &[u8] = &[
     0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x02, 0x00,
     0x69, 0x73, 0x6f, 0x6d, 0x69, 0x73, 0x6f, 0x32, 0x61, 0x76, 0x63, 0x31, 0x6d, 0x70, 0x34, 0x31,
@@ -1079,18 +1138,24 @@ pub const USM_STUB: &[u8] = &[
 ];
 
 /// Determines the appropriate micro-stub bytes from the magic signature in an initial byte buffer.
-pub fn stub_for_magic(header: &[u8]) -> Option<&'static [u8]> {
+///
+/// For Bink 2, `header` doubles as the source for [`build_bink2_stub_from_header`]:
+/// when it holds enough bytes to derive a stub from the real file, that
+/// derived stub is returned; otherwise this falls back to [`BINK2_STUB`].
+/// Every other format still returns its constant, just now owned rather than
+/// `'static`, so the return type is uniform for callers.
+pub fn stub_for_magic(header: &[u8]) -> Option<Vec<u8>> {
     if header.len() >= 3 && &header[0..3] == b"BIK" {
-        return Some(BIK1_STUB);
+        return Some(BIK1_STUB.to_vec());
     }
     if header.len() >= 3 && &header[0..3] == b"KB2" {
-        return Some(BINK2_STUB);
+        return Some(build_bink2_stub_from_header(header).unwrap_or_else(|| BINK2_STUB.to_vec()));
     }
     if header.len() >= 4 && header[0..4] == [0x1a, 0x45, 0xdf, 0xa3] {
-        return Some(WEBM_STUB);
+        return Some(WEBM_STUB.to_vec());
     }
     if header.len() >= 4 && &header[0..4] == b"OggS" {
-        return Some(OGG_THEORA_STUB);
+        return Some(OGG_THEORA_STUB.to_vec());
     }
     if header.len() >= 8 {
         let tag = &header[4..8];
@@ -1101,14 +1166,14 @@ pub fn stub_for_magic(header: &[u8]) -> Option<&'static [u8]> {
             || tag == b"free"
             || tag == b"skip"
         {
-            return Some(MP4_STUB);
+            return Some(MP4_STUB.to_vec());
         }
     }
     if header.len() >= 12
         && &header[0..4] == b"RIFF"
         && (&header[8..12] == b"AVI " || &header[8..12] == b"AVIX")
     {
-        return Some(AVI_STUB);
+        return Some(AVI_STUB.to_vec());
     }
     if header.len() >= 16
         && header[0..16]
@@ -1117,10 +1182,10 @@ pub fn stub_for_magic(header: &[u8]) -> Option<&'static [u8]> {
                 0xce, 0x6c,
             ]
     {
-        return Some(WMV_STUB);
+        return Some(WMV_STUB.to_vec());
     }
     if header.len() >= 5 && &header[0..5] == b"@CRID" {
-        return Some(USM_STUB);
+        return Some(USM_STUB.to_vec());
     }
     None
 }
@@ -1146,10 +1211,16 @@ pub fn stub_for_extension(ext: &str) -> Option<&'static [u8]> {
 /// Identifies the micro-stub bytes for the video at `path`, or `None` if its
 /// container cannot be identified with confidence:
 /// 1. Reads the first bytes of the file and checks them against known magic
-///    signatures ([`stub_for_magic`]).
+///    signatures ([`stub_for_magic`]), which - for Bink 2 - tries to derive
+///    the stub from those same bytes before falling back to a constant.
 /// 2. If the file cannot be opened, is empty, or its magic is unrecognized,
-///    falls back to matching the extension ([`stub_for_extension`]).
+///    falls back to matching the extension ([`stub_for_extension`]), always
+///    the constant layout since there is no header left to read from.
 /// 3. If neither identifies a known container, returns `None`.
+///
+/// Returns owned bytes rather than `&'static [u8]`: a header-derived stub is
+/// built fresh from the source file's own bytes, so it cannot borrow from a
+/// `static`.
 ///
 /// Must be called *before* the file at `path` is removed. Step 1 needs the
 /// file to still exist - `File::open` on an already-deleted path always
@@ -1164,9 +1235,12 @@ pub fn stub_for_extension(ext: &str) -> Option<&'static [u8]> {
 /// exact boot crash this module exists to prevent. A caller getting `None`
 /// must skip deleting the original file, not fall back to replacing it with
 /// nothing.
-pub fn detect_stub_bytes(path: &Path) -> Option<&'static [u8]> {
+pub fn detect_stub_bytes(path: &Path) -> Option<Vec<u8>> {
     if let Ok(mut file) = File::open(path) {
-        let mut buf = [0u8; 32];
+        // Wide enough for a Bink 2 header derivation (48 bytes + up to 32
+        // audio tracks x 12 bytes = 432, see `build_bink2_stub_from_header`);
+        // every other format here needs at most 16 bytes to identify.
+        let mut buf = [0u8; 512];
         if let Ok(n) = file.read(&mut buf) {
             if n > 0 {
                 if let Some(stub) = stub_for_magic(&buf[..n]) {
@@ -1179,6 +1253,7 @@ pub fn detect_stub_bytes(path: &Path) -> Option<&'static [u8]> {
     path.extension()
         .and_then(|ext| ext.to_str())
         .and_then(stub_for_extension)
+        .map(|bytes| bytes.to_vec())
 }
 
 /// Writes `bytes` to `path`, creating or replacing the file. Returns the number
@@ -1259,7 +1334,7 @@ mod tests {
         assert_eq!(&BIK1_STUB[0..4], b"BIKi");
 
         assert!(!BINK2_STUB.is_empty());
-        assert_eq!(&BINK2_STUB[0..4], b"KB2k");
+        assert_eq!(&BINK2_STUB[0..4], b"KB2i");
 
         assert!(!MP4_STUB.is_empty());
         assert_eq!(&MP4_STUB[4..8], b"ftyp");
@@ -1282,17 +1357,85 @@ mod tests {
 
     #[test]
     fn stub_for_magic_identifies_all_stub_types() {
-        assert_eq!(stub_for_magic(BIK1_STUB), Some(BIK1_STUB));
-        assert_eq!(stub_for_magic(b"BIKh_some_other_data"), Some(BIK1_STUB));
-        assert_eq!(stub_for_magic(BINK2_STUB), Some(BINK2_STUB));
-        assert_eq!(stub_for_magic(b"KB2d_some_other_data"), Some(BINK2_STUB));
-        assert_eq!(stub_for_magic(MP4_STUB), Some(MP4_STUB));
-        assert_eq!(stub_for_magic(WEBM_STUB), Some(WEBM_STUB));
-        assert_eq!(stub_for_magic(OGG_THEORA_STUB), Some(OGG_THEORA_STUB));
-        assert_eq!(stub_for_magic(WMV_STUB), Some(WMV_STUB));
-        assert_eq!(stub_for_magic(AVI_STUB), Some(AVI_STUB));
-        assert_eq!(stub_for_magic(USM_STUB), Some(USM_STUB));
+        assert_eq!(stub_for_magic(BIK1_STUB), Some(BIK1_STUB.to_vec()));
+        assert_eq!(
+            stub_for_magic(b"BIKh_some_other_data"),
+            Some(BIK1_STUB.to_vec())
+        );
+        // BINK2_STUB has zero audio tracks, so its own bytes are a valid
+        // 48-byte header and re-derive back to themselves.
+        assert_eq!(stub_for_magic(BINK2_STUB), Some(BINK2_STUB.to_vec()));
+        // Too short to hold a full header - falls back to the constant.
+        assert_eq!(
+            stub_for_magic(b"KB2d_some_other_data"),
+            Some(BINK2_STUB.to_vec())
+        );
+        assert_eq!(stub_for_magic(MP4_STUB), Some(MP4_STUB.to_vec()));
+        assert_eq!(stub_for_magic(WEBM_STUB), Some(WEBM_STUB.to_vec()));
+        assert_eq!(
+            stub_for_magic(OGG_THEORA_STUB),
+            Some(OGG_THEORA_STUB.to_vec())
+        );
+        assert_eq!(stub_for_magic(WMV_STUB), Some(WMV_STUB.to_vec()));
+        assert_eq!(stub_for_magic(AVI_STUB), Some(AVI_STUB.to_vec()));
+        assert_eq!(stub_for_magic(USM_STUB), Some(USM_STUB.to_vec()));
         assert_eq!(stub_for_magic(b"UNKNOWN_DATA"), None);
+    }
+
+    #[test]
+    fn stub_for_magic_derives_bink2_stub_from_a_real_header() {
+        // Bytes read from Scars Above's `UE4_Logo.bk2` (KB2n, 1 audio track,
+        // 1920x1080, 30fps) - see GameTrimmer-bk2-test/ScarsAbove. Only the
+        // first 60 bytes (48-byte header + one 12-byte track descriptor)
+        // matter; anything past that is frame data this function never reads.
+        let real_header: [u8; 60] = [
+            0x4b, 0x42, 0x32, 0x6e, 0x2c, 0x9d, 0x02, 0x00, 0x53, 0x00, 0x00, 0x00, 0x74, 0x12,
+            0x00, 0x00, 0x53, 0x00, 0x00, 0x00, 0x80, 0x07, 0x00, 0x00, 0x38, 0x04, 0x00, 0x00,
+            0x1e, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x13, 0x00, 0x04, 0x00, 0x01, 0x00,
+            0x00, 0x00, 0x01, 0x0b, 0xe5, 0x87, 0x00, 0x3a, 0x02, 0x00, 0x80, 0xbb, 0x00, 0x70,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        fn le_u32(bytes: &[u8], at: usize) -> u32 {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        }
+
+        let stub = stub_for_magic(&real_header).expect("KB2 magic must resolve to a stub");
+
+        assert_eq!(&stub[0..4], b"KB2n", "signature must come from the source");
+        assert_eq!(
+            &stub[20..48],
+            &real_header[20..48],
+            "resolution, fps, flags, track count and its descriptor must be \
+             copied verbatim, matching the header-derived shape verified live \
+             on Scars Above (variant B)"
+        );
+        assert_eq!(le_u32(&stub, 8), 1, "num_frames must be synthesized to 1");
+        assert_eq!(
+            le_u32(&stub, 12),
+            16,
+            "max_frame_size must match the synthetic 16-byte payload"
+        );
+        assert_eq!(
+            le_u32(&stub, 4),
+            stub.len() as u32 - 8,
+            "file size field must reflect the stub's real, shorter length"
+        );
+        assert_eq!(
+            &stub[stub.len() - 16..],
+            &[0u8; 16],
+            "frame payload must be the same 16 zero bytes proven safe for Bink 1"
+        );
+    }
+
+    #[test]
+    fn stub_for_magic_falls_back_to_constant_when_bink2_header_is_truncated() {
+        // Claims one audio track (offset 40..44 = 1) but the bytes for that
+        // track's 12-byte descriptor are missing - a corrupt or truncated
+        // read must not panic or index out of bounds, and must not silently
+        // synthesize garbage from bytes that were never really there.
+        let mut header = BINK2_STUB[0..48].to_vec();
+        header[40..44].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(stub_for_magic(&header), Some(BINK2_STUB.to_vec()));
     }
 
     #[test]
@@ -1326,19 +1469,19 @@ mod tests {
     #[test]
     fn detect_stub_bytes_falls_back_to_extension_when_file_does_not_exist() {
         let path = Path::new("non_existent/video.bik");
-        assert_eq!(detect_stub_bytes(path), Some(BIK1_STUB));
+        assert_eq!(detect_stub_bytes(path), Some(BIK1_STUB.to_vec()));
 
         let path = Path::new("non_existent/video.bk2");
-        assert_eq!(detect_stub_bytes(path), Some(BINK2_STUB));
+        assert_eq!(detect_stub_bytes(path), Some(BINK2_STUB.to_vec()));
 
         let path = Path::new("non_existent/video.mp4");
-        assert_eq!(detect_stub_bytes(path), Some(MP4_STUB));
+        assert_eq!(detect_stub_bytes(path), Some(MP4_STUB.to_vec()));
 
         let path = Path::new("non_existent/video.webm");
-        assert_eq!(detect_stub_bytes(path), Some(WEBM_STUB));
+        assert_eq!(detect_stub_bytes(path), Some(WEBM_STUB.to_vec()));
 
         let path = Path::new("non_existent/video.ogv");
-        assert_eq!(detect_stub_bytes(path), Some(OGG_THEORA_STUB));
+        assert_eq!(detect_stub_bytes(path), Some(OGG_THEORA_STUB.to_vec()));
     }
 
     #[test]
@@ -1348,15 +1491,15 @@ mod tests {
 
         // Write BIK1 bytes to a .dat file
         fs::write(&file_path, BIK1_STUB).unwrap();
-        assert_eq!(detect_stub_bytes(&file_path), Some(BIK1_STUB));
+        assert_eq!(detect_stub_bytes(&file_path), Some(BIK1_STUB.to_vec()));
 
         // Write MP4 bytes to a .dat file
         fs::write(&file_path, MP4_STUB).unwrap();
-        assert_eq!(detect_stub_bytes(&file_path), Some(MP4_STUB));
+        assert_eq!(detect_stub_bytes(&file_path), Some(MP4_STUB.to_vec()));
 
         // Write WebM bytes to a .dat file
         fs::write(&file_path, WEBM_STUB).unwrap();
-        assert_eq!(detect_stub_bytes(&file_path), Some(WEBM_STUB));
+        assert_eq!(detect_stub_bytes(&file_path), Some(WEBM_STUB.to_vec()));
     }
 
     #[test]
@@ -1367,7 +1510,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("intro.mp4");
         fs::write(&file_path, WEBM_STUB).unwrap();
-        assert_eq!(detect_stub_bytes(&file_path), Some(WEBM_STUB));
+        assert_eq!(detect_stub_bytes(&file_path), Some(WEBM_STUB.to_vec()));
     }
 
     #[test]
