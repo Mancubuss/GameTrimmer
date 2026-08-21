@@ -174,8 +174,13 @@ pub fn ping_daemon(pipe_name: Option<&str>) -> bool {
 }
 
 /// Notifies the daemon to reload its configuration from `gametrimmer.ini`.
-pub fn reload_daemon_settings(pipe_name: Option<&str>) {
-    let _ = send_ipc_request(&IpcRequest::ReloadSettings, pipe_name);
+///
+/// Returns the outcome rather than discarding it - the caller
+/// (`GameTrimmerApp::persist_settings`) decides what a failure is worth
+/// (logged, not shown to the user: the daemon simply not running is the
+/// ordinary case, not an error).
+pub fn reload_daemon_settings(pipe_name: Option<&str>) -> Result<(), String> {
+    send_ipc_request(&IpcRequest::ReloadSettings, pipe_name).map(|_| ())
 }
 
 /// Requests an immediate rescan/check of all watched libraries from the daemon.

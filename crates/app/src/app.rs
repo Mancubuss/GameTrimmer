@@ -154,6 +154,19 @@ pub struct GameTrimmerApp {
     /// dialog's "Saved" indicator; cleared when the dialog closes, so it
     /// always describes a change made in the session the user can see.
     pub settings_saved: bool,
+    /// Snapshot of [`Self::settings`] as of the last time the watch daemon
+    /// was notified over IPC (or as loaded at startup, before any notify has
+    /// happened this session) - see `persist_settings` and
+    /// `watch_relevant_settings_changed`. Compared against the current
+    /// settings on every save so a change to a setting the daemon has no use
+    /// for (theme, delete method, ...) does not pay for a pipe round trip at
+    /// all. Updated optimistically right before the notify is spawned, not
+    /// after it succeeds - the notify has no way back to this struct from its
+    /// background thread, and the settings themselves are already durably
+    /// saved to `gametrimmer.ini` by the time this is read, so a dropped
+    /// notify only means the daemon finds out later than the file did, not
+    /// that this snapshot lies about what was saved.
+    watch_synced_settings: Settings,
 
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
@@ -490,6 +503,7 @@ impl GameTrimmerApp {
             settings_path,
             log_path,
             db_error,
+            watch_synced_settings: settings.clone(),
             settings,
             system_lang,
             show_settings: false,
@@ -1764,10 +1778,54 @@ impl GameTrimmerApp {
             return;
         };
         let result = gametrimmer_core::settings::save_file(&settings_path, &self.settings);
-        // Synchronize autostart in Windows registry
-        let _ = gametrimmer_core::autostart::set_autostart(self.settings.watch_autostart, None);
-        // Notify daemon over IPC if active
-        crate::ipc::reload_daemon_settings(None);
+
+        // Synchronize autostart in the Windows registry. Kept synchronous,
+        // unlike the daemon notify below: `RegSetValueEx` is a local kernel
+        // call with no counterpart that can leave it hanging the way an
+        // unresponsive daemon can leave a named-pipe read hanging - there is
+        // no timeout to design around here, only an error to stop
+        // discarding. Best-effort and logged rather than fed into
+        // `record_settings_save` - a failure here is not a failure to save
+        // the settings the user is looking at, and must not make the dialog
+        // claim otherwise.
+        if let Err(err) =
+            gametrimmer_core::autostart::set_autostart(self.settings.watch_autostart, None)
+        {
+            crate::logger::error(&format!(
+                "failed to sync watch_autostart to the Windows registry: {err}"
+            ));
+        }
+
+        // Notify the watch daemon over IPC, off the UI thread and only when
+        // a setting it actually cares about changed - see
+        // `watch_relevant_settings_changed`. Every other settings save
+        // (theme, delete method, confirm behavior, ...) used to pay for a
+        // pipe round trip capped at `ipc::CLIENT_TIMEOUT` (2500ms) for a
+        // daemon that had nothing to do with it; now the pipe is only
+        // touched when there is something for the daemon to reload, and
+        // never on the thread the window is painted from.
+        if watch_relevant_settings_changed(&self.watch_synced_settings, &self.settings) {
+            self.watch_synced_settings = self.settings.clone();
+            // Nothing is captured: `reload_daemon_settings` takes no
+            // settings payload of its own, it only tells the daemon to go
+            // re-read `gametrimmer.ini` for itself, so there is nothing here
+            // that needs to outlive `self`.
+            std::thread::spawn(|| {
+                if let Err(err) = crate::ipc::reload_daemon_settings(None) {
+                    // Not shown to the user: the daemon simply not running is
+                    // the ordinary state for anyone who has not turned on
+                    // background monitoring, and this notify is best-effort
+                    // by design (the daemon re-reads `gametrimmer.ini` itself
+                    // on its own schedule regardless). Logged so a daemon
+                    // that *is* running but wedged is still visible to
+                    // whoever reads `gametrimmer.log`, rather than failing
+                    // silently.
+                    crate::logger::log(&format!(
+                        "watch daemon settings-reload notify failed (daemon likely not running): {err}"
+                    ));
+                }
+            });
+        }
 
         match result {
             Ok(()) => self.record_settings_save(Ok(())),
@@ -2287,6 +2345,35 @@ impl GameTrimmerApp {
             }
         }
     }
+}
+
+/// Whether `old` and `new` differ on a setting the watch daemon's
+/// `ReloadSettings` handler has any use for, deciding whether
+/// `persist_settings` bothers notifying it at all.
+///
+/// `watch_enabled` and `watch_mode` describe whether and how the daemon
+/// should act; `excluded_libraries` describes which of the registered
+/// libraries it should leave alone. Deliberately conservative (compares
+/// three fields, not "did anything change") - the alternative was notifying
+/// on every save regardless of content, which is the exact waste this
+/// exists to avoid. Everything else in [`Settings`] (theme, delete method,
+/// selection profile, logging, ...) is either purely a UI/scan concern the
+/// daemon never reads, or - like `watch_autostart` - governs the Windows
+/// registry entry that decides whether the daemon gets *launched* at boot,
+/// not anything the already-running daemon needs to hear about over IPC.
+///
+/// Note: as of this writing the daemon's `ReloadSettings` handler
+/// (`gametrimmer_watch::main`) does not actually consult `excluded_libraries`
+/// when re-enumerating directories to watch (see
+/// `gametrimmer_watch::watcher::discover_watch_directories`, which reads the
+/// `game_libraries` table directly and applies no exclusion filter) - it is
+/// included here on the strength of what the field means, not what the
+/// daemon currently does with it, so this stays correct if that gap is
+/// closed without anyone having to remember to widen this comparison too.
+fn watch_relevant_settings_changed(old: &Settings, new: &Settings) -> bool {
+    old.watch_enabled != new.watch_enabled
+        || old.watch_mode != new.watch_mode
+        || old.excluded_libraries != new.excluded_libraries
 }
 
 /// Gathers the per-volume media-kind data `scan_route::should_offer_elevation`
@@ -2811,5 +2898,74 @@ mod tests {
             app.settings.default_selection_profile,
             SelectionProfile::Aggressive,
         );
+    }
+
+    /// A save that touches nothing the daemon reads (theme, in this case)
+    /// must not be reported as worth notifying it over - this is the
+    /// property that keeps `persist_settings` from paying for a pipe round
+    /// trip on every settings change.
+    #[test]
+    fn watch_relevant_settings_changed_ignores_unrelated_fields() {
+        let old = Settings::default();
+        let new = Settings {
+            theme: Theme::Dark,
+            delete_method: DeleteMethod::RecycleBin,
+            logging_enabled: !old.logging_enabled,
+            ..old.clone()
+        };
+        assert_ne!(old.delete_method, new.delete_method);
+
+        assert!(!watch_relevant_settings_changed(&old, &new));
+    }
+
+    /// `watch_enabled` flips whether the daemon should be doing anything at
+    /// all - the daemon must be told.
+    #[test]
+    fn watch_relevant_settings_changed_true_for_watch_enabled() {
+        let old = Settings::default();
+        let new = Settings {
+            watch_enabled: !old.watch_enabled,
+            ..old.clone()
+        };
+
+        assert!(watch_relevant_settings_changed(&old, &new));
+    }
+
+    /// `watch_mode` decides how the daemon reacts to an update - also worth
+    /// telling it about.
+    #[test]
+    fn watch_relevant_settings_changed_true_for_watch_mode() {
+        let old = Settings::default();
+        let new = Settings {
+            watch_mode: gametrimmer_core::settings::WatchMode::AutoTrim,
+            ..old.clone()
+        };
+        assert_ne!(old.watch_mode, new.watch_mode);
+
+        assert!(watch_relevant_settings_changed(&old, &new));
+    }
+
+    /// `excluded_libraries` names which registered libraries the daemon
+    /// should leave alone - also worth telling it about, even though (see
+    /// `watch_relevant_settings_changed`'s doc comment) the daemon does not
+    /// currently act on it.
+    #[test]
+    fn watch_relevant_settings_changed_true_for_excluded_libraries() {
+        let old = Settings::default();
+        let new = Settings {
+            excluded_libraries: vec!["c:\\games\\somelib".to_string()],
+            ..old.clone()
+        };
+
+        assert!(watch_relevant_settings_changed(&old, &new));
+    }
+
+    /// Identical settings (the degenerate case of a save that changed
+    /// nothing at all) must never be reported as worth a notify.
+    #[test]
+    fn watch_relevant_settings_changed_false_for_identical_settings() {
+        let settings = Settings::default();
+
+        assert!(!watch_relevant_settings_changed(&settings, &settings));
     }
 }
