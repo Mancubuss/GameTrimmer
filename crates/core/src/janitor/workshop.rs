@@ -182,6 +182,7 @@ pub fn scan_steam_workshop_orphans(
                         requires_backup: false,
                         app_id: Some(app_id.clone()),
                         game_title: None,
+                        group_dir: None,
                     });
                 }
             }

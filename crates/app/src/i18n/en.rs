@@ -350,6 +350,8 @@ pub(super) const STRINGS: Strings = Strings {
 
     orphan_branch_label: "Orphaned residue",
 
+    system_branch_label: "System and launcher files",
+
     unit_gb: "GB",
     unit_mb: "MB",
     unit_kb: "KB",

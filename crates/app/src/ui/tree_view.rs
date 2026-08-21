@@ -1510,9 +1510,9 @@ fn show_game_row(
     // off the sentinel id, so it follows the current UI language even though
     // the stored `game_name` is empty.
     let label = game_branch_label(lang, game);
-    let unclaimed =
-        !is_orphan_branch(game.game_id) && !game_has_launcher_id(findings, &game.all_indices);
-    let name = if is_orphan_branch(game.game_id) {
+    let unclaimed = !model::is_pseudo_branch(game.game_id)
+        && !game_has_launcher_id(findings, &game.all_indices);
+    let name = if model::is_pseudo_branch(game.game_id) {
         // A UI string, not a name the search index holds: drawn as decoration
         // so a query that happens to occur in it tints nothing.
         highlight::strong_name(ui, &[Part::decoration(label.as_str())], ctx.query)
@@ -1528,7 +1528,7 @@ fn show_game_row(
             // not tint anything, and the marker is not part of the name.
             parts.push(Part::decoration(" ◇"));
         }
-        let is_updated = !is_orphan_branch(game.game_id)
+        let is_updated = !model::is_pseudo_branch(game.game_id)
             && (ctx.updated_games.contains_key(&game.game_name)
                 || game
                     .all_indices
@@ -1560,7 +1560,7 @@ fn show_game_row(
     // The game's install dir, taken from any of its findings (they all share
     // it). Absent on the orphan branch (orphan-residue safety): its findings are residue from
     // different games, so there is no one folder the row could stand for.
-    let target = if is_orphan_branch(game.game_id) {
+    let target = if model::is_pseudo_branch(game.game_id) {
         None
     } else {
         install_dir_of(findings, &game.all_indices).map(ShellTarget::Folder)
@@ -1619,14 +1619,23 @@ fn show_game_row(
     });
 }
 
-/// The label shown for a game node: the orphan branch's localized
-/// "orphaned residue" heading (orphan-residue safety) when this is the synthetic orphan
-/// pseudo-game, otherwise the real game's own name.
+/// The label shown for a game node: a localized heading for each synthetic
+/// branch - "orphaned residue" (orphan-residue safety) or the system and
+/// launcher files that live outside every game - and otherwise the real
+/// game's own name.
 fn game_branch_label(lang: Lang, game: &GameNode) -> String {
-    if is_orphan_branch(game.game_id) {
-        i18n::strings(lang).orphan_branch_label.to_string()
+    pseudo_branch_label(lang, game.game_id).unwrap_or_else(|| game.game_name.clone())
+}
+
+/// The heading for a synthetic branch, or `None` for a real game.
+fn pseudo_branch_label(lang: Lang, game_id: i64) -> Option<String> {
+    let strings = i18n::strings(lang);
+    if is_orphan_branch(game_id) {
+        Some(strings.orphan_branch_label.to_string())
+    } else if model::is_system_branch(game_id) {
+        Some(strings.system_branch_label.to_string())
     } else {
-        game.game_name.clone()
+        None
     }
 }
 
@@ -1689,7 +1698,7 @@ fn show_category_row(
     );
     // A category is a slice of one game, so it stands for that game's install
     // dir - the same folder its parent row opens.
-    let target = if is_orphan_branch(game.game_id) {
+    let target = if model::is_pseudo_branch(game.game_id) {
         None
     } else {
         install_dir_of(findings, &category_node.all_indices).map(ShellTarget::Folder)
@@ -2050,10 +2059,9 @@ fn show_file_row(
                 let (open, close) = i18n::quote_marks(lang);
                 // On the orphan branch the leading name is a UI heading rather
                 // than a game the search index knows, so it is decoration.
-                let game = if is_orphan_branch(row.game_id) {
-                    Part::decoration(i18n::strings(lang).orphan_branch_label.to_string())
-                } else {
-                    Part::searched(row.game_name.clone())
+                let game = match pseudo_branch_label(lang, row.game_id) {
+                    Some(label) => Part::decoration(label),
+                    None => Part::searched(row.game_name.clone()),
                 };
                 vec![
                     Part::decoration(open),
@@ -2421,6 +2429,32 @@ mod tests {
                         game.game_id,
                         category_node.category,
                     ));
+                }
+            }
+        }
+        for key in keys {
+            test.app_mut().tree_toggles.insert(key, true);
+        }
+        test.run();
+    }
+
+    /// Opens every folder node as well - `open_every_branch` stops at the
+    /// category level, and a folder's member rows only exist once it is open.
+    fn open_every_folder(test: &mut UiTest) {
+        let mut keys = Vec::new();
+        for top_group in &test.app().tree {
+            for game in &top_group.games {
+                for category_node in &game.categories {
+                    for node in &category_node.nodes {
+                        if let model::TreeNode::Folder { group_dir, .. } = node {
+                            keys.push(folder_key(
+                                &top_group.key,
+                                game.game_id,
+                                category_node.category,
+                                group_dir,
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -3279,6 +3313,77 @@ mod tests {
         test.assert_label(category_display(lang, DisplayCategory::Orphan));
         test.assert_no_label(branch_label);
         test.assert_label("downloading");
+    }
+
+    /// A janitor artifact - a crash dump, a shader cache, a launcher cache, a
+    /// save - is not launcher residue, and must not be filed under the heading
+    /// that says it is. It gets its own branch, and keeps its own category.
+    #[test]
+    fn a_janitor_finding_sits_under_the_system_branch_and_not_the_orphan_one() {
+        let mut test = tree_of_files([90; 2]);
+        let lang = test.app().lang();
+        let orphan_label = test.strings().orphan_branch_label;
+        let system_label = test.strings().system_branch_label;
+
+        let mut dump = test.app().findings[0].clone();
+        dump.row.file_id = 98;
+        dump.row.game_id = model::SYSTEM_GAME_ID;
+        dump.row.game_name = String::new();
+        dump.row.install_dir = std::path::PathBuf::from(r"C:\Users\Test\AppData\Local\CrashDumps");
+        dump.row.rel_path = "game.exe.4242.dmp".to_string();
+        dump.row.source = model::FindingSource::Rule(gametrimmer_core::rules::Category::CrashDump);
+        dump.row.lang_tag = None;
+        test.app_mut().findings.push(dump);
+        test.app_mut().rebuild_tree();
+        test.app_mut().clear_search();
+        open_every_branch(&mut test);
+
+        test.assert_label(system_label);
+        test.assert_no_label(orphan_label);
+        test.assert_label("game.exe.4242.dmp");
+
+        regroup(&mut test, model::GroupAxis::Category);
+
+        // Under the category axis it keeps its own heading - unlike the orphan
+        // branch, "Crashes / System and launcher files" says two different
+        // things, so neither row is redundant.
+        test.assert_label(category_display(lang, DisplayCategory::Crashes));
+        test.assert_label(system_label);
+    }
+
+    /// A save area is hundreds of files across dozens of games. Listing them
+    /// loose under one heading is a list nobody can answer "which of these do
+    /// I want gone" from - each one has to sit under the game that wrote it,
+    /// which is what the row's `group_dir` is for.
+    #[test]
+    fn saves_are_drawn_under_the_game_folder_that_holds_them() {
+        let mut test = tree_of_files([90; 2]);
+        let system_label = test.strings().system_branch_label;
+
+        for (file_id, name) in [(101, "autosave1.ess"), (102, "autosave2.ess")] {
+            let mut save = test.app().findings[0].clone();
+            save.row.file_id = file_id;
+            save.row.game_id = model::SYSTEM_GAME_ID;
+            save.row.game_name = String::new();
+            save.row.install_dir = std::path::PathBuf::from(r"E:\Documents\My Games");
+            save.row.rel_path = format!(r"Skyrim Special Edition\Saves\{name}");
+            save.row.group_dir = Some("Skyrim Special Edition".to_string());
+            save.row.source =
+                model::FindingSource::Rule(gametrimmer_core::rules::Category::SaveBloat);
+            save.row.lang_tag = None;
+            test.app_mut().findings.push(save);
+        }
+        test.app_mut().rebuild_tree();
+        test.app_mut().clear_search();
+        open_every_branch(&mut test);
+        open_every_folder(&mut test);
+
+        test.assert_label(system_label);
+        // The game's folder is a heading of its own...
+        test.assert_label(r"Skyrim Special Edition\");
+        // ...and the rows below it drop that prefix rather than repeating it.
+        test.assert_label(r"Saves\autosave1.ess");
+        test.assert_no_label(r"Skyrim Special Edition\Saves\autosave1.ess");
     }
 
     /// The flat axis draws no headings at all, and its file rows have to carry

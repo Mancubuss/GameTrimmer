@@ -7,17 +7,60 @@ use gametrimmer_core::providers::steam;
 
 use super::*;
 
-/// One orphaned-residue folder (orphan-residue safety) ready to persist: its absolute path,
-/// total size on disk (the sum of the files under it), and why it is residue.
-pub(super) struct PreparedOrphan {
+/// One finding that belongs to no game row (orphan-residue safety, and the
+/// janitor areas that live outside every install directory): its absolute
+/// path, its measured size, and the classification to persist.
+///
+/// Orphaned residue and a janitor artifact differ in where they were found and
+/// in nothing that the writer below does with them - both are stored with a
+/// `NULL` `files.game_id`, a full path in `files.rel_path`, and a safety
+/// snapshot captured from the parent directory. Keeping one struct is what
+/// keeps that agreement from drifting into two half-equal ones.
+pub(super) struct PreparedRootless {
     pub(super) full_path: PathBuf,
+    /// The area whose enumeration is this finding's discovery evidence: the
+    /// library root for residue, the scanned janitor directory otherwise. The
+    /// delete preflight resolves it back to a `scan_library_evidence` row, so
+    /// it is never blank.
     pub(super) evidence_library_path: PathBuf,
     /// Logical size (sum of the leftover's files' logical sizes).
     pub(super) size: u64,
     /// On-disk allocated size (allocated-size accounting) - the honest reclaimable figure, shown
     /// and summed as primary.
     pub(super) size_on_disk: u64,
-    pub(super) kind: OrphanKind,
+    pub(super) source: FindingSource,
+    /// English description, as stored in `findings.rule_id`; the window
+    /// re-derives an orphan's sentence from its kind (see
+    /// `worker::descriptions`) and shows a janitor artifact's text as written.
+    pub(super) reason: String,
+    pub(super) confidence: u8,
+    /// The folder this row is grouped under in the tree, relative to whatever
+    /// directory the finder walked (`Fumi Games\MOUSE`). `None` leaves the row
+    /// loose, which is what launcher residue and one-bucket janitor areas want.
+    pub(super) group_dir: Option<String>,
+}
+
+impl PreparedRootless {
+    /// Orphaned launcher residue: confidence and reason both follow from the
+    /// kind, so no caller gets to invent either.
+    pub(super) fn orphan(
+        full_path: PathBuf,
+        evidence_library_path: PathBuf,
+        size: u64,
+        size_on_disk: u64,
+        kind: OrphanKind,
+    ) -> Self {
+        Self {
+            full_path,
+            evidence_library_path,
+            size,
+            size_on_disk,
+            source: FindingSource::Orphan(kind),
+            reason: i18n::orphan_reason(Lang::En, kind).to_string(),
+            confidence: orphan_confidence(kind),
+            group_dir: None,
+        }
+    }
 }
 
 pub(super) struct OrphanCollectionIssue {
@@ -30,7 +73,7 @@ pub(super) struct OrphanCollectionIssue {
 
 #[derive(Default)]
 pub(super) struct OrphanCollection {
-    pub(super) orphans: Vec<PreparedOrphan>,
+    pub(super) orphans: Vec<PreparedRootless>,
     pub(super) issues: Vec<OrphanCollectionIssue>,
 }
 
@@ -137,13 +180,13 @@ pub(super) fn collect_orphans(
                     break;
                 }
             };
-            library_orphans.push(PreparedOrphan {
-                full_path: candidate.path,
-                evidence_library_path: library.path.clone(),
+            library_orphans.push(PreparedRootless::orphan(
+                candidate.path,
+                library.path.clone(),
                 size,
                 size_on_disk,
-                kind: candidate.kind,
-            });
+                candidate.kind,
+            ));
         }
         if !incomplete {
             collection.orphans.extend(library_orphans);
@@ -362,13 +405,13 @@ fn push_measured_orphans(
                 .map_err(|err| err.to_string())
         };
         match measured {
-            Ok((size, size_on_disk)) => collection.orphans.push(PreparedOrphan {
-                full_path: candidate.path,
-                evidence_library_path: evidence_library_path.to_path_buf(),
+            Ok((size, size_on_disk)) => collection.orphans.push(PreparedRootless::orphan(
+                candidate.path,
+                evidence_library_path.to_path_buf(),
                 size,
                 size_on_disk,
-                kind: candidate.kind,
-            }),
+                candidate.kind,
+            )),
             Err(message) => {
                 if !cancel.load(Ordering::Relaxed) {
                     collection.issues.push(OrphanCollectionIssue {
@@ -386,7 +429,7 @@ fn push_measured_orphans(
 
 /// Logical + on-disk size of a single file - the [`scan_dir_cancellable`]
 /// equivalent for a candidate that is a file rather than a directory.
-fn measure_single_file(path: &Path) -> Result<(u64, u64), String> {
+pub(super) fn measure_single_file(path: &Path) -> Result<(u64, u64), String> {
     let metadata = std::fs::metadata(path).map_err(|err| err.to_string())?;
     let logical = metadata.len();
     let cluster = ondisk::cluster_size(path);
@@ -394,20 +437,24 @@ fn measure_single_file(path: &Path) -> Result<(u64, u64), String> {
     Ok((logical, size_on_disk))
 }
 
-/// Persists the detected orphaned residue and returns it as [`FindingRow`]s for
-/// the UI. Orphan rows have no game, so they are stored with a `NULL`
-/// `files.game_id` and reconstructed with the synthetic [`ORPHAN_GAME_ID`] here
-/// and in `worker::load`.
+/// Persists every finding that has no game behind it - orphaned residue and
+/// janitor artifacts alike - and returns them as [`FindingRow`]s for the UI.
+/// Such rows are stored with a `NULL` `files.game_id` and reconstructed with
+/// the synthetic [`ORPHAN_GAME_ID`] here and in `worker::load`.
 ///
 /// The whole set of `NULL`-game rows is replaced each call: `persist_libraries`
 /// only ever wipes rows tied to a game, so without this these rows would
 /// accumulate across scans (a leftover deleted or a game reinstalled since the
-/// last scan would otherwise linger). Passing an empty `orphans` therefore
-/// doubles as "clear all orphan residue" - used when the category is disabled.
-/// One transaction so a mid-write failure can't leave a half-replaced set.
-pub(super) fn persist_orphans(
+/// last scan would otherwise linger). Passing an empty slice therefore doubles
+/// as "clear all rootless findings" - used when every such category is
+/// disabled. One transaction so a mid-write failure can't leave a
+/// half-replaced set.
+///
+/// Both kinds go through this one call for that same reason: two writers, each
+/// clearing `NULL`-game rows, would delete each other's work.
+pub(super) fn persist_rootless(
     conn: &mut Connection,
-    orphans: &[PreparedOrphan],
+    findings: &[PreparedRootless],
     scan_id: i64,
 ) -> CoreResult<Vec<FindingRow>> {
     let tx = conn.transaction()?;
@@ -428,7 +475,7 @@ pub(super) fn persist_orphans(
         [scan_id],
     )?;
 
-    let mut rows = Vec::with_capacity(orphans.len());
+    let mut rows = Vec::with_capacity(findings.len());
     {
         let mut insert_file = tx.prepare_cached(
             "INSERT INTO files (scan_id, game_id, rel_path, size, size_on_disk, mtime) \
@@ -437,7 +484,7 @@ pub(super) fn persist_orphans(
         let mut insert_finding = tx.prepare_cached(
             "INSERT INTO findings
              (file_id, category, rule_id, confidence, lang_tag, group_dir, provenance) \
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL, 'builtin')",
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'builtin')",
         )?;
         let mut insert_safety = tx.prepare_cached(
             "INSERT OR REPLACE INTO file_safety
@@ -456,13 +503,14 @@ pub(super) fn persist_orphans(
         // per root, since every orphan of one library shares it.
         let mut vendor_by_root: HashMap<PathBuf, Option<String>> = HashMap::new();
 
-        for orphan in orphans {
-            let source = FindingSource::Orphan(orphan.kind);
-            let confidence = orphan_confidence(orphan.kind);
+        for orphan in findings {
+            let source = orphan.source;
+            let confidence = orphan.confidence;
             // Stored in English like every other description in the database;
-            // `worker::descriptions` rebuilds the localized sentence from
-            // `orphan.kind` when the row is drawn.
-            let reason = i18n::orphan_reason(Lang::En, orphan.kind);
+            // `worker::descriptions` rebuilds the localized sentence from an
+            // orphan's kind when the row is drawn, and shows a janitor
+            // artifact's own text unchanged.
+            let reason = orphan.reason.clone();
 
             // Stored full-path-in-`rel_path`: an orphan has no game row to hold
             // its `install_dir`, so the row must be self-contained. `load`
@@ -475,7 +523,18 @@ pub(super) fn persist_orphans(
                 orphan.size_on_disk as i64
             ])?;
             let file_id = tx.last_insert_rowid();
-            insert_finding.execute(params![file_id, source_key(source), &reason, confidence])?;
+            // The split has to happen before the insert: a group the path does
+            // not actually contain is dropped, and the column must record what
+            // the row was really built with, not what was asked for.
+            let (install_dir, rel_path, group_dir) =
+                rootless_split(&orphan.full_path, orphan.group_dir.as_deref());
+            insert_finding.execute(params![
+                file_id,
+                source_key(source),
+                &reason,
+                confidence,
+                group_dir.as_deref()
+            ])?;
 
             let vendor = match vendor_by_root.get(&orphan.evidence_library_path) {
                 Some(vendor) => vendor.clone(),
@@ -492,7 +551,6 @@ pub(super) fn persist_orphans(
                 }
             };
 
-            let (install_dir, rel_path) = orphan_install_dir_and_name(&orphan.full_path);
             // An orphan is a leftover *directory*, found by comparing launcher
             // manifests against what is on disk rather than by walking the
             // `$MFT`, so there is no record here to quote and the capture
@@ -532,7 +590,7 @@ pub(super) fn persist_orphans(
             };
             rows.push(FindingRow {
                 file_id,
-                game_id: ORPHAN_GAME_ID,
+                game_id: rootless_branch_id(source),
                 game_name: String::new(),
                 app_id: None,
                 install_dir,
@@ -543,7 +601,7 @@ pub(super) fn persist_orphans(
                 rule_desc: reason,
                 confidence,
                 lang_tag: None,
-                group_dir: None,
+                group_dir,
                 deletion_block_reason,
                 imported_untrusted: false,
                 library: Some(LibraryOrigin {

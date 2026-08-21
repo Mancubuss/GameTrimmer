@@ -264,10 +264,24 @@ pub const ORPHAN_GAME_ID: i64 = i64::MIN;
 
 /// Synthetic `game_id` for the single node [`GroupAxis::Flat`] hangs every
 /// finding from. Reserved and negative for the same reason
-/// [`ORPHAN_GAME_ID`] is - no SQLite rowid can collide with it - and one apart
-/// from that sentinel so the two synthetic nodes are never mistaken for each
-/// other. Never drawn: the flat axis folds the game level away.
+/// [`ORPHAN_GAME_ID`] is - no SQLite rowid can collide with it - and distinct
+/// from the other sentinels so the synthetic nodes are never mistaken for one
+/// another. Never drawn: the flat axis folds the game level away.
 pub const FLAT_GAME_ID: i64 = i64::MIN + 1;
+
+/// Synthetic `game_id` for the findings that live outside every game and
+/// every launcher container: Windows crash dumps, GPU shader caches, launcher
+/// web caches, mod-manager downloads and save bloat (see
+/// `worker::scan::janitor_pass`).
+///
+/// Separate from [`ORPHAN_GAME_ID`] because the two answer different
+/// questions. Orphaned residue is what a launcher stopped managing - a game
+/// that was uninstalled and left its folder. A shader cache or a save file is
+/// nobody's residue: it belongs to a game that is installed and being played,
+/// it just does not live under the game's directory. Filing them together put
+/// a crash dump under a heading that read "Orphaned residue", which is not
+/// what the user is looking at.
+pub const SYSTEM_GAME_ID: i64 = i64::MIN + 2;
 
 /// Whether `game_id` is the orphan-branch sentinel (see [`ORPHAN_GAME_ID`]) -
 /// the tree renders such a node with a localized branch label instead of a
@@ -276,8 +290,39 @@ pub fn is_orphan_branch(game_id: i64) -> bool {
     game_id == ORPHAN_GAME_ID
 }
 
-/// Whether `game_id` stands for a real game rather than one of the two
-/// synthetic nodes ([`ORPHAN_GAME_ID`], [`FLAT_GAME_ID`]).
+/// Whether `game_id` is the system-branch sentinel (see [`SYSTEM_GAME_ID`]).
+pub fn is_system_branch(game_id: i64) -> bool {
+    game_id == SYSTEM_GAME_ID
+}
+
+/// Whether `game_id` stands for a drawn pseudo-game branch rather than a real
+/// game: the orphan branch or the system branch.
+///
+/// The tree asks this wherever "there is no real game behind this node" is the
+/// actual question - no quoted title to render, no single install directory to
+/// open. Asking it once, by name, is what kept the second sentinel from having
+/// to be threaded through six separate `is_orphan_branch` tests that each
+/// meant this instead.
+pub fn is_pseudo_branch(game_id: i64) -> bool {
+    is_orphan_branch(game_id) || is_system_branch(game_id)
+}
+
+/// Which synthetic branch a finding with no game row belongs under: launcher
+/// residue in the orphan branch ([`ORPHAN_GAME_ID`]), everything the janitor
+/// found outside the games in the system branch ([`SYSTEM_GAME_ID`]).
+///
+/// Derived from the finding's own source rather than stored, so the scan that
+/// writes the row and the load that reads it back cannot disagree - both call
+/// this, on the same value.
+pub fn rootless_branch_id(source: FindingSource) -> i64 {
+    match source {
+        FindingSource::Orphan(_) => ORPHAN_GAME_ID,
+        FindingSource::Rule(_) | FindingSource::Loc(_) => SYSTEM_GAME_ID,
+    }
+}
+
+/// Whether `game_id` stands for a real game rather than one of the three
+/// synthetic nodes ([`ORPHAN_GAME_ID`], [`SYSTEM_GAME_ID`], [`FLAT_GAME_ID`]).
 ///
 /// Real ids are SQLite rowids and therefore always `>= 1`, so this is one test
 /// rather than a list of sentinels that a third one could silently fall off.
@@ -343,6 +388,48 @@ pub fn orphan_install_dir_and_name(full_path: &Path) -> (PathBuf, String) {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| full_path.to_string_lossy().into_owned());
     (parent, name)
+}
+
+/// The `(install_dir, rel_path, group_dir)` triple a rootless [`FindingRow`]
+/// carries, given its absolute path and the folder it is grouped under.
+///
+/// Without a group this is [`orphan_install_dir_and_name`] - parent plus name,
+/// the shape orphan rows have always had. With one, the split moves up to the
+/// group's *parent*, so `install_dir.join(group_dir)` is the group's real
+/// directory and `rel_path` starts with `group_dir` - the two things the tree
+/// needs to draw one folder header per game and strip that prefix off the rows
+/// beneath it (see `ui::tree_view::show_folder_row`).
+///
+/// The group is found by walking up from the file rather than trusted
+/// positionally: it is stored as a relative path (`Fumi Games\MOUSE`), and the
+/// deepest ancestor ending in it is the one meant. A group that does not
+/// appear in the path at all is discarded rather than believed - the row then
+/// simply renders ungrouped.
+pub fn rootless_split(
+    full_path: &Path,
+    group_dir: Option<&str>,
+) -> (PathBuf, String, Option<String>) {
+    if let Some(group) = group_dir.filter(|group| !group.is_empty()) {
+        let depth = Path::new(group).components().count();
+        for ancestor in full_path.ancestors().skip(1) {
+            if !ancestor.ends_with(group) {
+                continue;
+            }
+            let Some(install_dir) = ancestor.ancestors().nth(depth) else {
+                continue;
+            };
+            let Ok(rel_path) = full_path.strip_prefix(install_dir) else {
+                continue;
+            };
+            return (
+                install_dir.to_path_buf(),
+                rel_path.to_string_lossy().into_owned(),
+                Some(group.to_string()),
+            );
+        }
+    }
+    let (install_dir, name) = orphan_install_dir_and_name(full_path);
+    (install_dir, name, None)
 }
 
 /// Maps a granular finding source onto its top-level display category.

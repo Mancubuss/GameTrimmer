@@ -8,8 +8,8 @@ use std::path::Path;
 
 use crate::i18n::{self, Lang};
 use crate::model::{
-    category_display, disk_label, format_size, is_orphan_branch, source_key, DisplayCategory,
-    FindingItem, TopGroup, TreeNode,
+    category_display, disk_label, format_size, is_orphan_branch, is_system_branch, source_key,
+    DisplayCategory, FindingItem, TopGroup, TreeNode,
 };
 
 /// Builds the full CSV text (UTF-8 with a leading BOM, `;`-separated, CRLF
@@ -38,11 +38,13 @@ pub fn export_csv(
 
     for top_group in tree {
         for game in &top_group.games {
-            // Orphan-branch findings have no real game name (see
-            // `ORPHAN_GAME_ID`); label the CSV's Game column with the localized
-            // branch heading so an exported orphan row isn't left blank there.
+            // A synthetic branch has no real game name (see `ORPHAN_GAME_ID`
+            // and `SYSTEM_GAME_ID`); label the CSV's Game column with the
+            // localized branch heading so such a row isn't left blank there.
             let game_name = if is_orphan_branch(game.game_id) {
                 i18n::strings(lang).orphan_branch_label
+            } else if is_system_branch(game.game_id) {
+                i18n::strings(lang).system_branch_label
             } else {
                 game.game_name.as_str()
             };

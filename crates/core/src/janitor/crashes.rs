@@ -62,6 +62,7 @@ pub fn scan_windows_wer_crash_dumps() -> Vec<JanitorArtifact> {
                         requires_backup: false,
                         app_id: None,
                         game_title: None,
+                        group_dir: None,
                     });
                 }
             }
@@ -113,6 +114,7 @@ pub fn scan_game_engine_crashes(
                     requires_backup: false,
                     app_id: None,
                     game_title: game_title.map(|s| s.to_string()),
+                    group_dir: None,
                 });
             }
         }
@@ -134,6 +136,7 @@ pub fn scan_game_engine_crashes(
                     requires_backup: false,
                     app_id: None,
                     game_title: game_title.map(|s| s.to_string()),
+                    group_dir: None,
                 });
             }
         }
@@ -192,6 +195,7 @@ pub fn scan_unity_logs() -> Vec<JanitorArtifact> {
                                     requires_backup: false,
                                     app_id: None,
                                     game_title: Some(g_name.to_string()),
+                                    group_dir: None,
                                 });
                             }
                         }

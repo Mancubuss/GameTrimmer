@@ -11,6 +11,7 @@ pub mod error;
 pub mod gamestate;
 pub mod hardlink;
 pub mod janitor;
+pub mod knownfolders;
 pub mod langdetect;
 pub mod localized;
 pub mod mftscan;

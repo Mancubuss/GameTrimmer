@@ -94,6 +94,7 @@ pub fn scan_steam_downloading(library_root: &Path) -> Vec<JanitorArtifact> {
             requires_backup: false,
             app_id: if is_appid { Some(name) } else { None },
             game_title: None,
+            group_dir: None,
         });
     }
 
@@ -117,6 +118,7 @@ pub fn scan_egs_pending(manifest_or_install_root: &Path) -> Vec<JanitorArtifact>
                 requires_backup: false,
                 app_id: None,
                 game_title: None,
+                group_dir: None,
             });
         }
     }

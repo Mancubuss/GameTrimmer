@@ -636,6 +636,11 @@ pub struct Strings {
     // -- tree_view.rs: the synthetic orphan-branch pseudo-game label (orphan-residue safety) --
     pub orphan_branch_label: &'static str,
 
+    // -- tree_view.rs: the synthetic system-branch pseudo-game label - crash
+    // dumps, shader caches, launcher caches and save bloat, none of which sit
+    // inside a game --
+    pub system_branch_label: &'static str,
+
     // -- model.rs: size units --
     pub unit_gb: &'static str,
     pub unit_mb: &'static str,
@@ -1414,6 +1419,9 @@ impl Strings {
         if let Some(val) = map.get("orphan_branch_label") {
             s.orphan_branch_label = Box::leak(val.clone().into_boxed_str());
         }
+        if let Some(val) = map.get("system_branch_label") {
+            s.system_branch_label = Box::leak(val.clone().into_boxed_str());
+        }
         if let Some(val) = map.get("unit_gb") {
             s.unit_gb = Box::leak(val.clone().into_boxed_str());
         }
@@ -1808,6 +1816,7 @@ impl Strings {
             ("saves_backup_success", self.saves_backup_success),
             ("saves_total_prunable", self.saves_total_prunable),
             ("orphan_branch_label", self.orphan_branch_label),
+            ("system_branch_label", self.system_branch_label),
             ("unit_gb", self.unit_gb),
             ("unit_mb", self.unit_mb),
             ("unit_kb", self.unit_kb),

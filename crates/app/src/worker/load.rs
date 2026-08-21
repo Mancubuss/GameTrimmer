@@ -17,11 +17,12 @@ use rusqlite::Connection;
 
 use crate::i18n::{self, Lang};
 use crate::model::{
-    orphan_install_dir_and_name, parse_source_key, FindingRow, FindingSource, LibraryOrigin,
-    ORPHAN_GAME_ID,
+    parse_source_key, rootless_branch_id, rootless_split, FindingRow, FindingSource, LibraryOrigin,
 };
 
 use super::{Notifier, WorkerMsg};
+#[cfg(test)]
+use crate::model::ORPHAN_GAME_ID;
 
 /// Spawns the load job on a new thread. `ctx` is the app's `egui::Context`
 /// (see `Notifier`) so the UI keeps repainting - and so draining the
@@ -259,14 +260,25 @@ fn load_findings_with_lang(conn: &Connection, lang: Lang) -> CoreResult<Vec<Find
             root: PathBuf::from(root),
         });
 
-        if matches!(source, FindingSource::Orphan(_)) {
-            // The orphan's full path lives in `rel_path`; split it back into the
-            // parent (`install_dir`) + folder name the UI model expects. Orphan
-            // findings never carry a `group_dir`.
-            let (install_dir, name) = orphan_install_dir_and_name(&PathBuf::from(&rel_path));
+        if is_orphan_row {
+            // A row with no game - orphaned residue or a janitor artifact -
+            // keeps its full path in `rel_path`; split it back into the parent
+            // (`install_dir`) + name the UI model expects - shifted up to the
+            // group's parent when the row carries one, so the tree can draw a
+            // folder header per game over an area that is otherwise hundreds
+            // of loose files.
+            //
+            // Keyed off the row's own `game_id IS NULL`, not off the finding
+            // source: the janitor's artifacts carry ordinary rule categories
+            // (`crash_dump`, `shader_cache`, ...) yet have no game row either,
+            // and matching on the source alone dropped every one of them as a
+            // "finding with no game".
+            let persisted_group: Option<String> = row.get(10)?;
+            let (install_dir, name, group_dir) =
+                rootless_split(&PathBuf::from(&rel_path), persisted_group.as_deref());
             rows.push(FindingRow {
                 file_id,
-                game_id: ORPHAN_GAME_ID,
+                game_id: rootless_branch_id(source),
                 game_name: String::new(),
                 app_id: None,
                 install_dir,
@@ -277,7 +289,7 @@ fn load_findings_with_lang(conn: &Connection, lang: Lang) -> CoreResult<Vec<Find
                 rule_desc,
                 confidence,
                 lang_tag,
-                group_dir: None,
+                group_dir,
                 deletion_block_reason,
                 imported_untrusted,
                 library,

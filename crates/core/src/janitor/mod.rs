@@ -29,6 +29,17 @@ pub struct JanitorArtifact {
     pub requires_backup: bool,
     pub app_id: Option<String>,
     pub game_title: Option<String>,
+    /// The folder that names the game this artifact belongs to, relative to
+    /// the directory that was scanned (`Fumi Games\MOUSE`), or the scanned
+    /// directory's own name when it belongs to one game whole.
+    ///
+    /// The app groups a listing under it instead of drawing a flat list of
+    /// files: a save area is hundreds of files across dozens of games, and
+    /// answering "which of these do I want gone" needs them under the game
+    /// that wrote them. `None` leaves the artifact ungrouped, which is the
+    /// right answer for the areas that are one bucket anyway (crash dumps,
+    /// a launcher's web cache).
+    pub group_dir: Option<String>,
 }
 
 /// Overall configuration for the Janitor scanner.

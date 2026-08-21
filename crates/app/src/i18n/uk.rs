@@ -347,6 +347,8 @@ pub(super) const STRINGS: Strings = Strings {
 
     orphan_branch_label: "Осиротілі рештки",
 
+    system_branch_label: "Файли системи та лаунчерів",
+
     unit_gb: "ГБ",
     unit_mb: "МБ",
     unit_kb: "КБ",

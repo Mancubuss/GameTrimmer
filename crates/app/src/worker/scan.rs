@@ -5,6 +5,7 @@
 
 mod discovery;
 mod generation;
+mod janitor_pass;
 mod orphan_analysis;
 mod persistence;
 
@@ -35,17 +36,20 @@ use rayon::prelude::*;
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang, Verb};
+#[cfg(test)]
+use crate::model::ORPHAN_GAME_ID;
 use crate::model::{
-    category_enabled, display_category, orphan_confidence, orphan_install_dir_and_name, source_key,
-    DisplayCategory, FindingRow, FindingSource, LibraryOrigin, ORPHAN_GAME_ID,
+    category_enabled, display_category, orphan_confidence, rootless_branch_id, rootless_split,
+    source_key, DisplayCategory, FindingRow, FindingSource, LibraryOrigin,
 };
 
 use super::scan_route::{self, ScanRoute};
 use super::{manual, Notifier, WorkerMsg};
 use generation::ScanGenerationGuard;
+use janitor_pass::collect_janitor;
 #[cfg(test)]
-use orphan_analysis::PreparedOrphan;
-use orphan_analysis::{collect_orphans, persist_orphans};
+use orphan_analysis::PreparedRootless;
+use orphan_analysis::{collect_orphans, persist_rootless};
 #[cfg(test)]
 use persistence::persist_prepared_game;
 use persistence::{persist_libraries, run_writer, ScannedGame};
@@ -993,14 +997,19 @@ fn run_scan(
         ));
     }
 
-    // orphan-residue safety: orphaned launcher residue as its own tree branch. Runs after the
-    // per-game writer thread has joined (so `conn` is ours again) and only on a
-    // scan that reached here without cancellation. Detection is Steam-only for
-    // now - see `collect_orphans`. `persist_orphans` always replaces the whole
-    // set of `NULL`-game orphan rows first, so it is called even when the
-    // category is disabled (with an empty list) to clear any stale rows a
-    // prior scan left behind - otherwise disabling the category wouldn't hide
-    // them on the next load.
+    // The findings that belong to no game: orphaned launcher residue
+    // (orphan-residue safety, its own tree branch) and the janitor areas
+    // below. Both run after the per-game writer thread has joined (so `conn`
+    // is ours again) and only on a scan that reached here without
+    // cancellation. Orphan detection is Steam-only for now - see
+    // `collect_orphans`.
+    //
+    // They are collected into one list and written once, because
+    // `persist_rootless` replaces the whole set of `NULL`-game rows: it is
+    // called even when every such category is disabled (with an empty list) to
+    // clear any stale rows a prior scan left behind - otherwise disabling a
+    // category wouldn't hide its findings on the next load.
+    let mut rootless: Vec<orphan_analysis::PreparedRootless> = Vec::new();
     if category_enabled(enabled_categories, DisplayCategory::Orphan) {
         let orphan_collection = collect_orphans(&libraries, cancel);
         if !cancel.load(Ordering::Relaxed) {
@@ -1057,24 +1066,57 @@ fn run_scan(
                     }
                 }
             }
-            match persist_orphans(&mut conn, &orphan_collection.orphans, scan_id) {
-                Ok(mut rows) => {
-                    crate::logger::log(&format!("Orphans: {} found", rows.len()));
-                    findings.append(&mut rows);
-                }
-                Err(err) => {
-                    notifier.report_error(i18n::Reported::new(lang, |l| {
-                        i18n::orphans_persist_failed(l, &err)
-                    }));
-                    return;
-                }
+            crate::logger::log(&format!(
+                "Orphans: {} found",
+                orphan_collection.orphans.len()
+            ));
+            rootless.extend(orphan_collection.orphans);
+        }
+    }
+
+    // The janitor areas: crash dumps, stale GPU shader caches, launcher web
+    // caches and save bloat, none of which sit inside a game or a launcher
+    // container (see `janitor_pass`). Their rows share the orphan rows' shape,
+    // so they share the one writer below - `persist_rootless` replaces every
+    // `NULL`-game row each call, and two writers would erase each other.
+    if !cancel.load(Ordering::Relaxed) {
+        let janitor = collect_janitor(
+            &libraries,
+            enabled_categories,
+            &gametrimmer_core::janitor::JanitorConfig::default(),
+            cancel,
+        );
+        // Each janitor area's own enumeration is the discovery evidence behind
+        // its findings, and the delete preflight refuses a row that has none.
+        for root in &janitor.evidence_roots {
+            if let Err(err) =
+                db::record_scan_library_evidence(&conn, scan_id, root, "janitor", "complete")
+            {
+                notifier.report_error(i18n::Reported::new(lang, |l| {
+                    i18n::libraries_write_failed(l, &err)
+                }));
+                return;
             }
         }
-    } else if let Err(err) = persist_orphans(&mut conn, &[], scan_id) {
-        notifier.report_error(i18n::Reported::new(lang, |l| {
-            i18n::orphans_persist_failed(l, &err)
-        }));
-        return;
+        crate::logger::log(&format!(
+            "Janitor: {} artifacts found",
+            janitor.findings.len()
+        ));
+        rootless.extend(janitor.findings);
+    }
+
+    // Called even when every rootless category is disabled: the empty write is
+    // what clears the rows a previous scan left behind.
+    if !cancel.load(Ordering::Relaxed) {
+        match persist_rootless(&mut conn, &rootless, scan_id) {
+            Ok(mut rows) => findings.append(&mut rows),
+            Err(err) => {
+                notifier.report_error(i18n::Reported::new(lang, |l| {
+                    i18n::orphans_persist_failed(l, &err)
+                }));
+                return;
+            }
+        }
     }
 
     if cancel.load(Ordering::Relaxed) {
@@ -2953,14 +2995,14 @@ mod tests {
         };
         persist_libraries(&conn, std::slice::from_ref(&library), 0).expect("persist library");
 
-        let orphans = vec![PreparedOrphan {
-            full_path: library_root.join(r"steamapps\common\Leftover"),
-            evidence_library_path: library_root.clone(),
-            size: 10,
-            size_on_disk: 4096,
-            kind: OrphanKind::UnmanagedFolder,
-        }];
-        let scanned = persist_orphans(&mut conn, &orphans, 0).expect("persist should succeed");
+        let orphans = vec![PreparedRootless::orphan(
+            library_root.join(r"steamapps\common\Leftover"),
+            library_root.clone(),
+            10,
+            4096,
+            OrphanKind::UnmanagedFolder,
+        )];
+        let scanned = persist_rootless(&mut conn, &orphans, 0).expect("persist should succeed");
 
         let expected = Some(LibraryOrigin {
             vendor: Some("steam".to_string()),
@@ -4582,16 +4624,18 @@ mod tests {
             .iter()
             .find(|o| o.full_path == leftover)
             .expect("the leftover folder must be detected");
-        assert_eq!(unmanaged.kind, OrphanKind::UnmanagedFolder);
+        assert_eq!(
+            unmanaged.source,
+            FindingSource::Orphan(OrphanKind::UnmanagedFolder)
+        );
         assert_eq!(
             unmanaged.size, 7,
             "the leftover's size is the sum of its files (4 + 3)"
         );
 
         assert!(
-            orphans
-                .iter()
-                .any(|o| o.full_path == downloading && o.kind == OrphanKind::ServiceFolder),
+            orphans.iter().any(|o| o.full_path == downloading
+                && o.source == FindingSource::Orphan(OrphanKind::ServiceFolder)),
             "the downloading/ service folder must be detected"
         );
         assert!(
@@ -4645,9 +4689,8 @@ mod tests {
         assert!(collection.issues.is_empty());
 
         assert!(
-            orphans
-                .iter()
-                .any(|o| o.full_path == leftover && o.kind == OrphanKind::UnmanagedFolder),
+            orphans.iter().any(|o| o.full_path == leftover
+                && o.source == FindingSource::Orphan(OrphanKind::UnmanagedFolder)),
             "an XboxGames folder with no live game must be flagged"
         );
         assert!(
@@ -4691,9 +4734,8 @@ mod tests {
         assert!(collection.issues.is_empty());
 
         assert!(
-            orphans
-                .iter()
-                .any(|o| o.full_path == leftover && o.kind == OrphanKind::UnmanagedFolder),
+            orphans.iter().any(|o| o.full_path == leftover
+                && o.source == FindingSource::Orphan(OrphanKind::UnmanagedFolder)),
             "a receipt-bearing itch folder with no live cave must be flagged"
         );
         assert!(
@@ -4859,7 +4901,10 @@ mod tests {
         );
 
         for orphan in &orphans {
-            assert_eq!(orphan.kind, OrphanKind::UnmanagedFolder);
+            assert_eq!(
+                orphan.source,
+                FindingSource::Orphan(OrphanKind::UnmanagedFolder)
+            );
         }
     }
 
@@ -4954,7 +4999,10 @@ mod tests {
             .iter()
             .find(|o| o.full_path == depotcache.join("621_111222333.manifest"))
             .expect("the manifest no installed app names must be flagged");
-        assert_eq!(stale.kind, OrphanKind::UnreferencedFile);
+        assert_eq!(
+            stale.source,
+            FindingSource::Orphan(OrphanKind::UnreferencedFile)
+        );
 
         assert!(
             !orphans
@@ -4997,7 +5045,7 @@ mod tests {
             collection
                 .orphans
                 .iter()
-                .all(|o| o.kind != OrphanKind::UnreferencedFile),
+                .all(|o| o.source != FindingSource::Orphan(OrphanKind::UnreferencedFile)),
             "unreadable installed-depot evidence must flag nothing in depotcache, \
              never fall back to an empty needed set"
         );
@@ -5044,20 +5092,18 @@ mod tests {
     }
 
     #[test]
-    fn persist_orphans_writes_null_game_rows_that_load_back_as_the_orphan_branch() {
+    fn persist_rootless_writes_null_game_rows_that_load_back_as_the_orphan_branch() {
         let mut conn = db::open_in_memory().expect("open in-memory db");
         let full_path = PathBuf::from(r"F:\SteamLibrary\steamapps\common\Leftover");
-        let orphans = vec![PreparedOrphan {
-            full_path: full_path.clone(),
-            evidence_library_path: PathBuf::from(r"F:\SteamLibrary"),
-            size: 3000,
-            // Deliberately distinct from the logical size: many small files
-            // round up to more clusters on disk (allocated-size accounting).
-            size_on_disk: 4096,
-            kind: OrphanKind::UnmanagedFolder,
-        }];
+        let orphans = vec![PreparedRootless::orphan(
+            full_path.clone(),
+            PathBuf::from(r"F:\SteamLibrary"),
+            3000,
+            4096,
+            OrphanKind::UnmanagedFolder,
+        )];
 
-        let rows = persist_orphans(&mut conn, &orphans, 0).expect("persist should succeed");
+        let rows = persist_rootless(&mut conn, &orphans, 0).expect("persist should succeed");
 
         // The returned row is shaped for the UI: sentinel game id, empty name,
         // container as install_dir, folder name as rel_path.
@@ -5104,28 +5150,143 @@ mod tests {
         );
     }
 
+    /// A grouped rootless row - a save under `My Games\<game>` - has to come
+    /// back from the load path split the same way the scan split it, or the
+    /// tree draws the folder header over one set of rows and the reload over
+    /// another.
     #[test]
-    fn persist_orphans_replaces_the_previous_orphan_set_each_call() {
+    fn a_grouped_rootless_row_is_split_the_same_way_by_the_scan_and_the_load() {
+        let temp = tempfile::tempdir().expect("create temp root");
+        let saves = temp.path().join("Skyrim Special Edition").join("Saves");
+        std::fs::create_dir_all(&saves).expect("create save folder");
+        let save = saves.join("autosave1.ess");
+        std::fs::write(&save, vec![0u8; 1024]).expect("write save");
+
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
+        db::record_scan_library_evidence(&conn, scan_id, &saves, "janitor", "complete")
+            .expect("record janitor evidence");
+
+        let artifacts = vec![orphan_analysis::PreparedRootless {
+            full_path: save.clone(),
+            evidence_library_path: saves.clone(),
+            size: 1024,
+            size_on_disk: 1024,
+            source: FindingSource::Rule(gametrimmer_core::rules::Category::SaveBloat),
+            reason: "Save file in Skyrim Special Edition (autosave1.ess)".to_string(),
+            confidence: 60,
+            group_dir: Some("Skyrim Special Edition".to_string()),
+        }];
+        let rows = persist_rootless(&mut conn, &artifacts, scan_id).expect("persist");
+        assert_eq!(
+            rows[0].group_dir.as_deref(),
+            Some("Skyrim Special Edition"),
+            "the row is grouped under the game's folder, not left loose"
+        );
+        assert_eq!(rows[0].install_dir, temp.path());
+        assert_eq!(rows[0].install_dir.join(&rows[0].rel_path), save);
+
+        db::activate_scan(&mut conn, scan_id).expect("activate scan");
+        let loaded = crate::worker::load::load_findings(&conn).expect("load should succeed");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].group_dir, rows[0].group_dir);
+        assert_eq!(loaded[0].install_dir, rows[0].install_dir);
+        assert_eq!(loaded[0].rel_path, rows[0].rel_path);
+        assert!(
+            loaded[0].rel_path.starts_with("Skyrim Special Edition"),
+            "a member row is drawn by stripping the folder header off its path"
+        );
+    }
+
+    /// The janitor half of the rootless contract: an artifact that lives in no
+    /// game and in no library must survive persistence, come back from the
+    /// load path under its own category, and be accepted by the delete
+    /// preflight. Each of the three used to fail for a different reason -
+    /// the load dropped it as a "finding with no game", and the preflight
+    /// refused it for having no discovery evidence.
+    #[test]
+    fn a_janitor_artifact_persists_loads_and_passes_the_delete_preflight() {
+        let temp = tempfile::tempdir().expect("create temp root");
+        let dump = temp.path().join("game.exe.4242.dmp");
+        std::fs::write(&dump, vec![0u8; 2048]).expect("write dump");
+
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
+        // What the janitor pass records for the directory it read.
+        db::record_scan_library_evidence(&conn, scan_id, temp.path(), "janitor", "complete")
+            .expect("record janitor evidence");
+
+        let artifacts = vec![orphan_analysis::PreparedRootless {
+            full_path: dump.clone(),
+            evidence_library_path: temp.path().to_path_buf(),
+            size: 2048,
+            size_on_disk: 2048,
+            source: FindingSource::Rule(gametrimmer_core::rules::Category::CrashDump),
+            reason: "Windows WER Minidump (game.exe.4242.dmp)".to_string(),
+            confidence: 80,
+            group_dir: None,
+        }];
+        let rows = persist_rootless(&mut conn, &artifacts, scan_id).expect("persist");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].game_id,
+            crate::model::SYSTEM_GAME_ID,
+            "a crash dump is not launcher residue and must not land in the orphan branch"
+        );
+        assert_eq!(
+            rows[0].deletion_block_reason, None,
+            "a measured janitor artifact with recorded evidence is deletable"
+        );
+
+        db::activate_scan(&mut conn, scan_id).expect("activate scan");
+
+        let loaded = crate::worker::load::load_findings(&conn).expect("load should succeed");
+        assert_eq!(loaded.len(), 1, "a janitor row must survive the load path");
+        assert_eq!(
+            loaded[0].game_id,
+            crate::model::SYSTEM_GAME_ID,
+            "the scan and the load must put the row in the same branch"
+        );
+        assert_eq!(loaded[0].install_dir.join(&loaded[0].rel_path), dump);
+        assert_eq!(
+            loaded[0].source,
+            FindingSource::Rule(gametrimmer_core::rules::Category::CrashDump),
+            "the artifact keeps its own category rather than becoming residue"
+        );
+        assert_eq!(loaded[0].deletion_block_reason, None);
+
+        let plans = gametrimmer_core::ops::prepare_delete_plans(
+            &conn,
+            &[loaded[0].file_id],
+            gametrimmer_core::settings::DeleteMethod::RecycleBin,
+        )
+        .expect("the delete preflight must accept a janitor row");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].target_path(), dump);
+    }
+
+    #[test]
+    fn persist_rootless_replaces_the_previous_orphan_set_each_call() {
         let mut conn = db::open_in_memory().expect("open in-memory db");
 
-        let first = vec![PreparedOrphan {
-            full_path: PathBuf::from(r"F:\lib\steamapps\common\OldLeftover"),
-            evidence_library_path: PathBuf::from(r"F:\lib"),
-            size: 10,
-            size_on_disk: 10,
-            kind: OrphanKind::UnmanagedFolder,
-        }];
-        persist_orphans(&mut conn, &first, 0).expect("first persist");
+        let first = vec![PreparedRootless::orphan(
+            PathBuf::from(r"F:\lib\steamapps\common\OldLeftover"),
+            PathBuf::from(r"F:\lib"),
+            10,
+            10,
+            OrphanKind::UnmanagedFolder,
+        )];
+        persist_rootless(&mut conn, &first, 0).expect("first persist");
 
         // A later scan finds a different leftover; the old one is gone.
-        let second = vec![PreparedOrphan {
-            full_path: PathBuf::from(r"F:\lib\steamapps\common\NewLeftover"),
-            evidence_library_path: PathBuf::from(r"F:\lib"),
-            size: 20,
-            size_on_disk: 20,
-            kind: OrphanKind::UnmanagedFolder,
-        }];
-        persist_orphans(&mut conn, &second, 0).expect("second persist");
+        let second = vec![PreparedRootless::orphan(
+            PathBuf::from(r"F:\lib\steamapps\common\NewLeftover"),
+            PathBuf::from(r"F:\lib"),
+            20,
+            20,
+            OrphanKind::UnmanagedFolder,
+        )];
+        persist_rootless(&mut conn, &second, 0).expect("second persist");
 
         let paths: Vec<String> = {
             let mut stmt = conn.prepare("SELECT rel_path FROM files").expect("prepare");
@@ -5144,20 +5305,20 @@ mod tests {
     }
 
     #[test]
-    fn persist_orphans_with_empty_list_clears_stale_orphan_rows() {
+    fn persist_rootless_with_empty_list_clears_stale_orphan_rows() {
         let mut conn = db::open_in_memory().expect("open in-memory db");
 
-        let existing = vec![PreparedOrphan {
-            full_path: PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
-            evidence_library_path: PathBuf::from(r"F:\lib"),
-            size: 10,
-            size_on_disk: 10,
-            kind: OrphanKind::UnmanagedFolder,
-        }];
-        persist_orphans(&mut conn, &existing, 0).expect("seed orphan rows");
+        let existing = vec![PreparedRootless::orphan(
+            PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
+            PathBuf::from(r"F:\lib"),
+            10,
+            10,
+            OrphanKind::UnmanagedFolder,
+        )];
+        persist_rootless(&mut conn, &existing, 0).expect("seed orphan rows");
 
         // The empty-list call is how a disabled category clears residue.
-        let rows = persist_orphans(&mut conn, &[], 0).expect("clear should succeed");
+        let rows = persist_rootless(&mut conn, &[], 0).expect("clear should succeed");
         assert!(rows.is_empty());
 
         let file_count: i64 = conn
@@ -5174,7 +5335,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_orphans_leaves_real_game_files_untouched() {
+    fn persist_rootless_leaves_real_game_files_untouched() {
         let mut conn = db::open_in_memory().expect("open in-memory db");
         // A normal game file (non-NULL game_id) must survive the orphan wipe.
         conn.execute(
@@ -5194,15 +5355,15 @@ mod tests {
         )
         .expect("insert game file");
 
-        persist_orphans(
+        persist_rootless(
             &mut conn,
-            &[PreparedOrphan {
-                full_path: PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
-                evidence_library_path: PathBuf::from(r"F:\lib"),
-                size: 10,
-                size_on_disk: 10,
-                kind: OrphanKind::UnmanagedFolder,
-            }],
+            &[PreparedRootless::orphan(
+                PathBuf::from(r"F:\lib\steamapps\common\Leftover"),
+                PathBuf::from(r"F:\lib"),
+                10,
+                10,
+                OrphanKind::UnmanagedFolder,
+            )],
             0,
         )
         .expect("persist");

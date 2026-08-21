@@ -239,6 +239,7 @@
     "category_other": "Other",
     "category_orphan": "Orphaned",
     "orphan_branch_label": "Orphaned residue",
+    "system_branch_label": "System and launcher files",
     "unit_gb": "GB",
     "unit_mb": "MB",
     "unit_kb": "KB",

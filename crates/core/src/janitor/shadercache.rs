@@ -15,7 +15,15 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// Recursively measures size of files in `path` that were modified more than `stale_days` ago.
+/// Reports every file in `dir_path` last modified more than `stale_days` ago
+/// as its own artifact.
+///
+/// One artifact per file, not one per directory: a GPU cache directory holds
+/// stale and fresh entries side by side, and a directory-shaped artifact whose
+/// size counted only the stale half would hand the deletion path a target
+/// bigger than the thing that was measured - the fresh shaders of a game
+/// played yesterday included. What is measured here is exactly what a later
+/// deletion removes.
 pub fn scan_stale_cache_files(
     dir_path: &Path,
     stale_days: u32,
@@ -29,42 +37,40 @@ pub fn scan_stale_cache_files(
     let cutoff_duration = Duration::from_secs(stale_days as u64 * 86400);
     let now = SystemTime::now();
 
-    let mut total_stale_size = 0u64;
-    let mut stale_file_count = 0usize;
+    let Ok(entries) = std::fs::read_dir(dir_path) else {
+        return artifacts;
+    };
 
-    if let Ok(entries) = std::fs::read_dir(dir_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Ok(meta) = entry.metadata() {
-                    let is_stale = meta
-                        .modified()
-                        .ok()
-                        .and_then(|mtime| now.duration_since(mtime).ok())
-                        .map(|elapsed| elapsed >= cutoff_duration)
-                        .unwrap_or(false);
-
-                    if is_stale {
-                        total_stale_size += meta.len();
-                        stale_file_count += 1;
-                    }
-                }
-            }
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
         }
-    }
-
-    if total_stale_size > 0 {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let is_stale = meta
+            .modified()
+            .ok()
+            .and_then(|mtime| now.duration_since(mtime).ok())
+            .map(|elapsed| elapsed >= cutoff_duration)
+            .unwrap_or(false);
+        if !is_stale || meta.len() == 0 {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
         artifacts.push(JanitorArtifact {
-            path: dir_path.to_path_buf(),
+            path,
             category: Category::ShaderCache,
-            size_bytes: total_stale_size,
+            size_bytes: meta.len(),
             description: format!(
-                "{desc_prefix} ({stale_file_count} stale cache files > {stale_days} days old)"
+                "{desc_prefix} - stale cache file {name} (> {stale_days} days old)"
             ),
             is_safe_default: true,
             requires_backup: false,
             app_id: None,
             game_title: None,
+            group_dir: None,
         });
     }
 
@@ -165,6 +171,7 @@ pub fn scan_steam_shader_cache(
                     requires_backup: false,
                     app_id: Some(app_id),
                     game_title: None,
+                    group_dir: None,
                 });
             }
         }
@@ -213,5 +220,31 @@ mod tests {
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].size_bytes, 2048);
         assert_eq!(artifacts[0].app_id.as_deref(), Some("999999"));
+    }
+
+    #[test]
+    fn stale_cache_files_are_reported_one_per_file_at_their_own_size() {
+        // A cache directory is never deleted whole: each stale file is its own
+        // artifact, so what a later deletion removes is what was measured.
+        let temp = tempdir().unwrap();
+        std::fs::write(temp.path().join("a.bin"), vec![0u8; 1024]).unwrap();
+        std::fs::write(temp.path().join("b.bin"), vec![0u8; 2048]).unwrap();
+        std::fs::write(temp.path().join("empty.bin"), Vec::new()).unwrap();
+        std::fs::create_dir(temp.path().join("nested")).unwrap();
+
+        // `stale_days: 0` makes every file stale, which is what isolates the
+        // shape of the result from the clock.
+        let mut artifacts = scan_stale_cache_files(temp.path(), 0, "Test cache");
+        artifacts.sort_by_key(|artifact| artifact.size_bytes);
+
+        assert_eq!(
+            artifacts.len(),
+            2,
+            "an empty file and a directory are not artifacts"
+        );
+        assert_eq!(artifacts[0].path, temp.path().join("a.bin"));
+        assert_eq!(artifacts[0].size_bytes, 1024);
+        assert_eq!(artifacts[1].path, temp.path().join("b.bin"));
+        assert_eq!(artifacts[1].size_bytes, 2048);
     }
 }
