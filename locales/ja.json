@@ -26,7 +26,7 @@
     "watch_mode_interactive": "対話型通知",
     "watch_mode_interactive_hint": "再ダウンロードされた不要ファイルをクリーンアップするボタン付きトースト通知を表示します。",
     "watch_mode_autotrim": "サイレント自動クリーンアップ",
-    "watch_mode_autotrim_hint": "確認メッセージを表示せず、新しく更新されたゲームの不要ファイルをバックグラウンドで自動削除します。",
+    "watch_mode_autotrim_hint": "確認メッセージを表示せず、新しく更新されたゲームの不要ファイルをバックグラウンドで自動削除します。 まだ有効ではありません。",
     "watch_mode_passive": "バッジ表示のみ（パッシブ）",
     "watch_mode_passive_hint": "トースト通知や自動削除は行わず、GameTrimmer 内のステータスバッジのみを更新します。",
     "watch_daemon_status_running": "稼働中（IPC 接続中）",

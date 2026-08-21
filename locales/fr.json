@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Notification interactive",
     "watch_mode_interactive_hint": "Affiche une notification toast Windows avec un bouton pour nettoyer les fichiers retéléchargés.",
     "watch_mode_autotrim": "Nettoyage automatique silencieux",
-    "watch_mode_autotrim_hint": "Nettoie automatiquement et en silence les jeux récemment mis à jour, sans confirmation.",
+    "watch_mode_autotrim_hint": "Nettoie automatiquement et en silence les jeux récemment mis à jour, sans confirmation. Pas encore actif.",
     "watch_mode_passive": "Badge passif uniquement",
     "watch_mode_passive_hint": "Met à jour les badges d'état dans GameTrimmer sans suppression automatique ni notifications toast.",
     "watch_daemon_status_running": "Actif (IPC connecté)",

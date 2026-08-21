@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Interaktív értesítés",
     "watch_mode_interactive_hint": "Windows Toast értesítést jelenít meg egy gombbal az újratöltött fájlok megtisztításához.",
     "watch_mode_autotrim": "Csendes automatikus tisztítás",
-    "watch_mode_autotrim_hint": "Kérdés nélkül, csendben újratisztítja a frissen frissített játékokat.",
+    "watch_mode_autotrim_hint": "Kérdés nélkül, csendben újratisztítja a frissen frissített játékokat. Még nem aktív.",
     "watch_mode_passive": "Csak passzív állapotjelző",
     "watch_mode_passive_hint": "Frissíti az állapotjelzőket a GameTrimmerben automatikus törlés vagy értesítések nélkül.",
     "watch_daemon_status_running": "Aktív (IPC csatlakoztatva)",

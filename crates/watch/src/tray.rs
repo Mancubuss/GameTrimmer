@@ -37,6 +37,30 @@ pub const IDM_EXIT: usize = 1004;
 
 const WINDOW_CLASS_NAME: &str = "GameTrimmerWatchHiddenWindowClass";
 
+/// Recovers from a poisoned `RwLock` instead of panicking.
+///
+/// This daemon's entire job is to keep running unattended; a panic on one
+/// thread while it held `strings` (formatting a toast, say) must not also
+/// take down the tray icon's next redraw. The strings themselves cannot be
+/// left half-written by a panic - `WatchStrings` is replaced wholesale by
+/// `update_i18n`, never mutated field-by-field - so the recovered guard's
+/// data is exactly as usable as an unpoisoned one's.
+trait PoisonTolerant<T> {
+    fn read_poison_tolerant(&self) -> std::sync::RwLockReadGuard<'_, T>;
+    fn write_poison_tolerant(&self) -> std::sync::RwLockWriteGuard<'_, T>;
+}
+
+impl<T> PoisonTolerant<T> for RwLock<T> {
+    fn read_poison_tolerant(&self) -> std::sync::RwLockReadGuard<'_, T> {
+        self.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write_poison_tolerant(&self) -> std::sync::RwLockWriteGuard<'_, T> {
+        self.write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// Tray menu actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -84,7 +108,11 @@ impl TrayIcon {
             _user_data: user_data,
         };
 
-        let initial_tip = tray.strings.read().unwrap().tray_tooltip_active.clone();
+        let initial_tip = tray
+            .strings
+            .read_poison_tolerant()
+            .tray_tooltip_active
+            .clone();
         tray.add_icon(&initial_tip)?;
         Ok(tray)
     }
@@ -96,7 +124,7 @@ impl TrayIcon {
 
     pub fn set_paused(&mut self, paused: bool) {
         self.is_paused.store(paused, Ordering::SeqCst);
-        let strings = self.strings.read().unwrap();
+        let strings = self.strings.read_poison_tolerant();
         let tip = if paused {
             &strings.tray_tooltip_paused
         } else {
@@ -107,7 +135,7 @@ impl TrayIcon {
 
     pub fn update_i18n(&mut self, new_strings: WatchStrings) {
         {
-            let mut s = self.strings.write().unwrap();
+            let mut s = self.strings.write_poison_tolerant();
             *s = new_strings;
         }
         self.set_paused(self.is_paused());
@@ -280,7 +308,7 @@ fn show_popup_menu(hwnd: HWND, user_data: &WindowUserData) {
     };
 
     let is_paused = user_data.is_paused.load(Ordering::SeqCst);
-    let strings = user_data.strings.read().unwrap();
+    let strings = user_data.strings.read_poison_tolerant();
     let pause_label = if is_paused {
         &strings.tray_menu_resume
     } else {

@@ -26,7 +26,7 @@
     "watch_mode_interactive": "互動式通知",
     "watch_mode_interactive_hint": "快顯 Windows 浮條通知，附帶一鍵清理重新下載之多餘檔案的按鈕。",
     "watch_mode_autotrim": "無訊息自動清理",
-    "watch_mode_autotrim_hint": "在背景自動清理新更新的遊戲，無需任何確認對話方塊。",
+    "watch_mode_autotrim_hint": "在背景自動清理新更新的遊戲，無需任何確認對話方塊。 尚未啟用。",
     "watch_mode_passive": "僅標記徽章",
     "watch_mode_passive_hint": "僅更新 GameTrimmer 介面中的狀態徽章，不執行自動刪除也不傳送快顯通知。",
     "watch_daemon_status_running": "執行中（IPC 已連線）",

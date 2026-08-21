@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Notificare interactivă",
     "watch_mode_interactive_hint": "Afișează o notificare Windows Toast cu un buton pentru curățarea fișierelor descărcate din nou.",
     "watch_mode_autotrim": "Curățare automată silențioasă",
-    "watch_mode_autotrim_hint": "Curăță silențios jocurile nou actualizate, fără confirmări suplimentare.",
+    "watch_mode_autotrim_hint": "Curăță silențios jocurile nou actualizate, fără confirmări suplimentare. Încă nu este activ.",
     "watch_mode_passive": "Doar insignă pasivă",
     "watch_mode_passive_hint": "Actualizează insignele de stare în GameTrimmer fără ștergere automată sau notificări.",
     "watch_daemon_status_running": "Activ (conectat prin IPC)",

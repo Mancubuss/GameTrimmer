@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Interaktiivinen ilmoitus",
     "watch_mode_interactive_hint": "Näyttää Windows Toast -ilmoituksen painikkeella uudelleen ladattujen tiedostojen karsimiseksi.",
     "watch_mode_autotrim": "Hiljainen automaattinen karsinta",
-    "watch_mode_autotrim_hint": "Karsii päivitetyt pelit taustalla kysymättä vahvistusta.",
+    "watch_mode_autotrim_hint": "Karsii päivitetyt pelit taustalla kysymättä vahvistusta. Ei vielä käytössä.",
     "watch_mode_passive": "Vain passiivinen tilamerkki",
     "watch_mode_passive_hint": "Päivittää tilamerkit GameTrimmerissä ilman automaattista poistoa tai ilmoituksia.",
     "watch_daemon_status_running": "Aktiivinen (IPC yhdistetty)",

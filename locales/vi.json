@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Thông báo tương tác",
     "watch_mode_interactive_hint": "Hiển thị thông báo Windows Toast kèm nút để dọn dẹp các tệp vừa tải lại.",
     "watch_mode_autotrim": "Tự động dọn dẹp âm thầm",
-    "watch_mode_autotrim_hint": "Âm thầm dọn dẹp lại các trò chơi vừa cập nhật mà không cần hỏi.",
+    "watch_mode_autotrim_hint": "Âm thầm dọn dẹp lại các trò chơi vừa cập nhật mà không cần hỏi. Chưa hoạt động.",
     "watch_mode_passive": "Chỉ hiện huy hiệu thụ động",
     "watch_mode_passive_hint": "Cập nhật huy hiệu trạng thái trong GameTrimmer mà không tự động xóa hoặc hiện thông báo Toast.",
     "watch_daemon_status_running": "Đang hoạt động (Đã kết nối IPC)",

@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Etkileşimli bildirim",
     "watch_mode_interactive_hint": "Yeniden indirilen dosyaları temizlemek için bir düğme içeren Windows Bildirimi gösterir.",
     "watch_mode_autotrim": "Sessiz otomatik temizleme",
-    "watch_mode_autotrim_hint": "Yeni güncellenen oyunları sormadan sessizce yeniden temizler.",
+    "watch_mode_autotrim_hint": "Yeni güncellenen oyunları sormadan sessizce yeniden temizler. Henüz etkin değil.",
     "watch_mode_passive": "Yalnızca pasif rozet",
     "watch_mode_passive_hint": "Otomatik silme veya bildirim olmadan GameTrimmer'daki durum rozetlerini günceller.",
     "watch_daemon_status_running": "Etkin (IPC bağlandı)",

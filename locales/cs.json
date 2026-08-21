@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Interaktivní oznámení",
     "watch_mode_interactive_hint": "Zobrazí oznámení Windows Toast s tlačítkem pro vyčištění znovu stažených souborů.",
     "watch_mode_autotrim": "Tiché automatické čištění",
-    "watch_mode_autotrim_hint": "Automaticky a tiše vyčistí nově aktualizované hry bez dalších dotazů.",
+    "watch_mode_autotrim_hint": "Automaticky a tiše vyčistí nově aktualizované hry bez dalších dotazů. Zatím není aktivní.",
     "watch_mode_passive": "Pouze pasivní odznak",
     "watch_mode_passive_hint": "Aktualizuje stavové odznaky v aplikaci GameTrimmer bez automatického mazání a oznámení.",
     "watch_daemon_status_running": "Aktivní (připojeno přes IPC)",

@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Интерактивное уведомление",
     "watch_mode_interactive_hint": "Показывает уведомление Windows Toast с кнопкой для очистки повторно загруженных файлов.",
     "watch_mode_autotrim": "Тихая автоочистка",
-    "watch_mode_autotrim_hint": "Автоматически и без лишних вопросов очищает обновлённые игры.",
+    "watch_mode_autotrim_hint": "Автоматически и без лишних вопросов очищает обновлённые игры. Пока не работает.",
     "watch_mode_passive": "Только пассивный значок",
     "watch_mode_passive_hint": "Обновляет значки статуса в GameTrimmer без автоматического удаления и уведомлений.",
     "watch_daemon_status_running": "Активен (IPC подключено)",

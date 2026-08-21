@@ -85,6 +85,36 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Appends one timestamped line to `gametrimmer-watch.log`, next to the
+/// executable.
+///
+/// The daemon has no logging framework of its own (unlike the GUI's
+/// `logger` module - too much for a background process this small) and no
+/// console (`windows_subsystem = "windows"`), so this is the only way a
+/// lost `ReadDirectoryChangesW` buffer, today the sole caller, ever becomes
+/// visible to anyone debugging a report of "the tray icon stopped noticing
+/// updates". Best-effort and silent on failure: a diagnostic that can panic
+/// or wedge the daemon over a locked log file would be worse than no
+/// diagnostic at all.
+fn log_line(exe_dir: &Path, message: &str) {
+    use std::io::Write;
+
+    let log_path = exe_dir.join("gametrimmer-watch.log");
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    else {
+        return;
+    };
+
+    let seconds_since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(file, "[{seconds_since_epoch}] {message}");
+}
+
 fn raise_or_launch_gui(exe_dir: &Path) {
     let title_wide = to_wide(APP_TITLE);
     let existing_window = unsafe { FindWindowW(None, PCWSTR::from_raw(title_wide.as_ptr())) };
@@ -293,9 +323,30 @@ fn main() {
 
         // D. Poll IOCP manifest change events with adaptive sleep
         let wait_timeout = if fsm.has_pending() { 100 } else { 250 };
-        let events = watcher.poll_events(wait_timeout);
-        for event in events {
+        let poll_result = watcher.poll_events(wait_timeout);
+        for event in poll_result.events {
             fsm.record_event(event);
+        }
+        if !poll_result.overflowed_dirs.is_empty() {
+            // Events were lost for these directories - see
+            // `watcher::PollResult` - so the FSM's incremental picture of
+            // them can no longer be trusted. Log it (the daemon has no
+            // console and no other way to surface this) and force a
+            // settle-check sweep now, rather than waiting for the FSM's own
+            // debounce window, which only fires on events it actually
+            // received.
+            for dir in &poll_result.overflowed_dirs {
+                log_line(
+                    &exe_dir,
+                    &format!(
+                        "watch buffer overflow on {} - directory changes may have been missed, forcing a rescan",
+                        dir.display()
+                    ),
+                );
+            }
+            let db_conn = open_local_db(&db_path);
+            let _ = fsm.check_settled(db_conn.as_ref());
+            drop(db_conn);
         }
 
         // E. Check FSM settling window and verify states (only opens DB if events are pending)

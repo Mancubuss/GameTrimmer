@@ -120,12 +120,29 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                     s.watch_mode_interactive,
                 )
                 .on_hover_text(s.watch_mode_interactive_hint);
-                ui.radio_value(
-                    &mut picked_watch_mode,
-                    WatchMode::AutoTrim,
-                    s.watch_mode_autotrim,
-                )
-                .on_hover_text(s.watch_mode_autotrim_hint);
+                // `WatchMode::AutoTrim` is persisted end to end - the daemon
+                // accepts it over IPC and stores it - but nothing anywhere
+                // reads it back to actually retrim anything: the wiring from
+                // a detected update to `retrim_game_with_new_build` does not
+                // exist yet. Offering it as a live choice would let someone
+                // pick "silently deletes files for me" and see nothing
+                // happen, then forget they ever turned it on - consent
+                // captured for a feature that was never there to consent to.
+                // Disabled rather than hidden, so the option's *existence*
+                // still communicates the roadmap; greyed out is this file's
+                // only honest way to say "not yet" on its own. The hint says
+                // it in words too - `watch_mode_autotrim_hint` carries the
+                // status in all thirty locales - and it has to be an
+                // `on_disabled_hover_text`, because egui shows no ordinary
+                // hover text on a disabled widget at all.
+                ui.add_enabled_ui(false, |ui| {
+                    ui.radio_value(
+                        &mut picked_watch_mode,
+                        WatchMode::AutoTrim,
+                        s.watch_mode_autotrim,
+                    )
+                    .on_disabled_hover_text(s.watch_mode_autotrim_hint);
+                });
                 ui.radio_value(
                     &mut picked_watch_mode,
                     WatchMode::Passive,
@@ -272,9 +289,11 @@ mod tests {
         assert!(!test.app().settings.watch_autostart);
         assert_eq!(test.app().settings.watch_mode, WatchMode::Interactive);
 
-        test.click(s.watch_mode_autotrim);
-        assert_eq!(test.app().settings.watch_mode, WatchMode::AutoTrim);
-
+        // AutoTrim is offered but disabled - see the section's own comment -
+        // so clicking its label must not move the setting. Covered on its
+        // own in `the_autotrim_mode_is_offered_but_not_selectable`; this
+        // test only needs to confirm it does not disturb the modes that do
+        // work.
         test.click(s.watch_mode_passive);
         assert_eq!(test.app().settings.watch_mode, WatchMode::Passive);
 
@@ -283,6 +302,28 @@ mod tests {
 
         test.click(s.watch_enabled_label);
         assert!(!test.app().settings.watch_enabled);
+    }
+
+    /// The option that does nothing. `WatchMode::AutoTrim` is a real,
+    /// persisted enum variant and reads as a normal choice next to the other
+    /// two - the only thing telling a user it is not live yet is whether the
+    /// control accepts a click at all. Interactive stays selected is the
+    /// part that would silently regress if the control were re-enabled
+    /// before the feature actually exists.
+    #[test]
+    fn the_autotrim_mode_is_offered_but_not_selectable() {
+        let mut test = open_general();
+        let s = test.strings();
+        assert_eq!(test.app().settings.watch_mode, WatchMode::Interactive);
+
+        test.assert_label(s.watch_mode_autotrim);
+        test.click(s.watch_mode_autotrim);
+
+        assert_eq!(
+            test.app().settings.watch_mode,
+            WatchMode::Interactive,
+            "a disabled option must not be selectable by clicking its label",
+        );
     }
 
     #[test]

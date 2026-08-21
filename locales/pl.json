@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Powiadomienie interaktywne",
     "watch_mode_interactive_hint": "Wyświetla powiadomienie Windows Toast z przyciskiem do oczyszczenia ponownie pobranych plików.",
     "watch_mode_autotrim": "Ciche automatyczne czyszczenie",
-    "watch_mode_autotrim_hint": "Automatycznie i po cichu oczyszcza zaktualizowane gry bez pytania.",
+    "watch_mode_autotrim_hint": "Automatycznie i po cichu oczyszcza zaktualizowane gry bez pytania. Jeszcze nieaktywne.",
     "watch_mode_passive": "Tylko pasywna plakietka",
     "watch_mode_passive_hint": "Aktualizuje plakietki stanu w GameTrimmerze bez automatycznego usuwania i powiadomień.",
     "watch_daemon_status_running": "Aktywny (połączono przez IPC)",

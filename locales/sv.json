@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Interaktiv avisering",
     "watch_mode_interactive_hint": "Visar en Windows Toast-avisering med en knapp för att rensa nedladdade filer.",
     "watch_mode_autotrim": "Tyst automatisk trimning",
-    "watch_mode_autotrim_hint": "Trimmar nyligen uppdaterade spel i bakgrunden utan att fråga.",
+    "watch_mode_autotrim_hint": "Trimmar nyligen uppdaterade spel i bakgrunden utan att fråga. Inte aktivt ännu.",
     "watch_mode_passive": "Endast passiv badge",
     "watch_mode_passive_hint": "Uppdaterar statusmärken i GameTrimmer utan automatisk borttagning eller aviseringar.",
     "watch_daemon_status_running": "Aktiv (IPC ansluten)",

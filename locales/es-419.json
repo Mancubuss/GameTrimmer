@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Notificación interactiva",
     "watch_mode_interactive_hint": "Muestra una notificación emergente de Windows con un botón para limpiar los archivos descargados de nuevo.",
     "watch_mode_autotrim": "Autolimpieza silenciosa",
-    "watch_mode_autotrim_hint": "Limpia automáticamente y en silencio los juegos recién actualizados sin pedir confirmación.",
+    "watch_mode_autotrim_hint": "Limpia automáticamente y en silencio los juegos recién actualizados sin pedir confirmación. Aún no está activo.",
     "watch_mode_passive": "Solo distintivo pasivo",
     "watch_mode_passive_hint": "Actualiza los distintivos de estado en GameTrimmer sin eliminación automática ni notificaciones.",
     "watch_daemon_status_running": "Activo (IPC conectado)",

@@ -14,12 +14,21 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, LocalFree, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL,
+    INVALID_HANDLE_VALUE,
+};
+use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows::Win32::Security::{
+    EqualSid, GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+    TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
-    PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
+    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 pub const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\gametrimmer-ipc";
@@ -177,6 +186,69 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// A `SECURITY_ATTRIBUTES` restricting a named pipe to its creating user.
+///
+/// `CreateNamedPipeW` with no security attributes uses the process token's
+/// default DACL, which on this pipe's default configuration grants access
+/// to any local process regardless of which account it runs under - the
+/// pipe carries library paths (`GetStatus`) and accepts `Pause`/`Resume`/
+/// `Exit`, so that default is a real information-disclosure and
+/// denial-of-service surface. `"D:P(A;;GA;;;OW)"` grants full access to the
+/// pipe's owner (the account that created it - by default the account this
+/// process runs as) and nothing to anyone else; `P` marks the DACL
+/// protected so nothing can merge inherited ACEs into it later.
+struct PipeSecurity {
+    descriptor: PSECURITY_DESCRIPTOR,
+    attributes: SECURITY_ATTRIBUTES,
+}
+
+impl PipeSecurity {
+    fn current_user_only() -> windows::core::Result<Self> {
+        let sddl = to_wide("D:P(A;;GA;;;OW)");
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: `sddl` is a valid, NUL-terminated wide string that outlives
+        // this call. `descriptor` receives a pointer to memory this API
+        // allocates with `LocalAlloc`; `Drop` below releases it with
+        // `LocalFree`, the release its documentation calls for.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR::from_raw(sddl.as_ptr()),
+                1, // SDDL_REVISION_1
+                &mut descriptor,
+                None,
+            )?;
+        }
+
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: windows::core::BOOL(0),
+        };
+
+        Ok(Self {
+            descriptor,
+            attributes,
+        })
+    }
+}
+
+impl Drop for PipeSecurity {
+    fn drop(&mut self) {
+        if self.descriptor.0.is_null() {
+            return;
+        }
+        // SAFETY: `self.descriptor` was allocated by
+        // `ConvertStringSecurityDescriptorToSecurityDescriptorW` in
+        // `current_user_only`, which documents `LocalFree` as the correct
+        // release for it; this runs exactly once, from `Drop`, after every
+        // `CreateNamedPipeW` call that borrowed `self.attributes` has
+        // already returned.
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(self.descriptor.0)));
+        }
+    }
+}
+
 fn run_server_loop(
     pipe_name: &str,
     shutdown: Arc<AtomicBool>,
@@ -184,7 +256,25 @@ fn run_server_loop(
 ) {
     let wide_name = to_wide(pipe_name);
 
+    // Built once and reused for every instance this loop creates: the SDDL
+    // string is fixed, so re-deriving the descriptor per connection would
+    // only be work spent to arrive back at the same thing.
+    let security = match PipeSecurity::current_user_only() {
+        Ok(sec) => sec,
+        Err(_) => {
+            // Without a security descriptor we would fall back to
+            // `CreateNamedPipeW`'s default DACL, which is far too open for
+            // this pipe (see `PipeSecurity`) - refuse to open it at all
+            // rather than open it insecurely.
+            return;
+        }
+    };
+
     while !shutdown.load(Ordering::SeqCst) {
+        // SAFETY: `wide_name` is a NUL-terminated wide string that outlives
+        // this call; `security.attributes` borrows `security`, which
+        // outlives the whole loop. The returned handle is closed on every
+        // path out of this iteration, below.
         let pipe_handle = unsafe {
             CreateNamedPipeW(
                 PCWSTR::from_raw(wide_name.as_ptr()),
@@ -194,7 +284,7 @@ fn run_server_loop(
                 4096,
                 4096,
                 1000,
-                None,
+                Some(&security.attributes),
             )
         };
 
@@ -203,7 +293,12 @@ fn run_server_loop(
             continue;
         }
 
+        // SAFETY: `pipe_handle` was just created above and is valid for the
+        // duration of this call.
         let connected = unsafe { ConnectNamedPipe(pipe_handle, None) };
+        // SAFETY: only called to interpret the error left by
+        // `ConnectNamedPipe` immediately above; nothing here outlives this
+        // expression.
         let connect_success =
             connected.is_ok() || (unsafe { GetLastError() } == ERROR_PIPE_CONNECTED);
 
@@ -211,6 +306,9 @@ fn run_server_loop(
             handle_client_connection(pipe_handle, &command_tx);
         }
 
+        // SAFETY: `pipe_handle` is only used within this iteration; both
+        // calls are unconditional cleanup performed before the handle goes
+        // out of scope.
         unsafe {
             let _ = DisconnectNamedPipe(pipe_handle);
             let _ = CloseHandle(pipe_handle);
@@ -219,9 +317,23 @@ fn run_server_loop(
 }
 
 fn handle_client_connection(pipe_handle: HANDLE, command_tx: &Sender<IpcServerCommand>) {
+    if !client_is_current_user(pipe_handle) {
+        // The pipe's DACL (see `PipeSecurity`) already keeps a process
+        // running as a different user from ever obtaining a handle to
+        // connect with, so reaching this point with a mismatched SID is not
+        // expected in practice. Check anyway, and drop the connection
+        // without reading from it: defense in depth against that assumption
+        // ever quietly breaking (a future change to the DACL, a Windows
+        // configuration with different defaults, ...).
+        return;
+    }
+
     let mut buffer = [0u8; 4096];
     let mut bytes_read: u32 = 0;
 
+    // SAFETY: `pipe_handle` is a connected server-side pipe instance owned
+    // by the caller for the duration of this call; `buffer` and
+    // `bytes_read` are valid, correctly sized, and not aliased elsewhere.
     let read_ok = unsafe {
         windows::Win32::Storage::FileSystem::ReadFile(
             pipe_handle,
@@ -276,6 +388,134 @@ fn handle_client_connection(pipe_handle: HANDLE, command_tx: &Sender<IpcServerCo
         };
         let _ = unsafe { windows::Win32::Storage::FileSystem::FlushFileBuffers(pipe_handle) };
     }
+}
+
+/// Whether the process on the other end of `pipe_handle` is running as the
+/// same user as this process.
+///
+/// The pipe's DACL is the real control (see [`PipeSecurity`]); this is a
+/// second, independent check using a different Win32 mechanism
+/// (`GetNamedPipeClientProcessId` plus a token SID comparison) so the two do
+/// not share a single point of failure. Any failure along the way -
+/// `GetNamedPipeClientProcessId` itself, opening the client process, reading
+/// either token's SID - is treated as "not the same user": this gate exists
+/// to keep untrusted connections out, so an inconclusive answer fails closed
+/// exactly like `retrim::is_game_running` does for the same reason.
+fn client_is_current_user(pipe_handle: HANDLE) -> bool {
+    let mut client_pid = 0u32;
+    // SAFETY: `pipe_handle` is a connected server-side pipe instance owned
+    // by the caller for the duration of this call; `client_pid` is a plain
+    // `u32` on the stack.
+    if unsafe { GetNamedPipeClientProcessId(pipe_handle, &mut client_pid) }.is_err() {
+        return false;
+    }
+
+    // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs no
+    // closing and is valid for the lifetime of this process.
+    let self_sid = match process_user_sid(unsafe { GetCurrentProcess() }) {
+        Some(sid) => sid,
+        None => return false,
+    };
+
+    // SAFETY: `client_pid` came from `GetNamedPipeClientProcessId` above;
+    // `PROCESS_QUERY_LIMITED_INFORMATION` is sufficient to open its token for
+    // the `TokenUser` query below, and the resulting handle is closed before
+    // this function returns.
+    let client_handle =
+        match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, client_pid) } {
+            Ok(h) if !h.is_invalid() => h,
+            _ => return false,
+        };
+    let client_sid = process_user_sid(client_handle);
+    // SAFETY: `client_handle` was opened immediately above and is not used
+    // again after this point.
+    let _ = unsafe { CloseHandle(client_handle) };
+    let Some(client_sid) = client_sid else {
+        return false;
+    };
+
+    // A buffer too short to hold the header means the API broke its contract,
+    // and an unidentifiable client is not this user's - refuse it.
+    let (Some(self_ptr), Some(client_ptr)) = (sid_ptr(&self_sid), sid_ptr(&client_sid)) else {
+        return false;
+    };
+    // SAFETY: both `self_sid` and `client_sid` are `Vec<u8>` buffers that
+    // outlive this call, and the pointers above only ever point inside them;
+    // both buffers were produced by `GetTokenInformation(.., TokenUser, ..)`,
+    // which guarantees a well-formed SID at that offset.
+    unsafe { EqualSid(self_ptr, client_ptr) }.is_ok()
+}
+
+/// Reads the `SID` of the user owning `process_handle`'s primary token, as
+/// the raw bytes `GetTokenInformation` fills for `TokenUser`.
+///
+/// Returned as owned bytes rather than the `PSID` embedded in the decoded
+/// `TOKEN_USER`, because that pointer only stays valid as long as this
+/// buffer does - handing back the struct without the buffer behind it would
+/// leave the caller holding a dangling pointer disguised as an ordinary
+/// value.
+fn process_user_sid(process_handle: HANDLE) -> Option<Vec<u8>> {
+    let mut token = HANDLE::default();
+    // SAFETY: `process_handle` is a valid, open (or pseudo-) process handle
+    // supplied by the caller; `OpenProcessToken` only reads it and writes
+    // the resulting token handle into `token`, which is closed below before
+    // this function returns.
+    if unsafe { OpenProcessToken(process_handle, TOKEN_QUERY, &mut token) }.is_err() {
+        return None;
+    }
+
+    let mut needed = 0u32;
+    // SAFETY: passing `None` for the output buffer with a
+    // `tokeninformationlength` of 0 is the documented way to ask
+    // `GetTokenInformation` for the required buffer size; it writes that
+    // size into `needed` and returns an error (`ERROR_INSUFFICIENT_BUFFER`)
+    // that is expected and ignored here.
+    let _ = unsafe { GetTokenInformation(token, TokenUser, None, 0, &mut needed) };
+    if needed == 0 {
+        // SAFETY: `token` was opened above and is only used within this function.
+        let _ = unsafe { CloseHandle(token) };
+        return None;
+    }
+
+    let mut buf = vec![0u8; needed as usize];
+    // SAFETY: `buf` is sized exactly to `needed`, the size just reported for
+    // this same token by the call above; `GetTokenInformation` writes a
+    // `TOKEN_USER` followed by its variable-length `SID` into it, and does
+    // not write past `needed` bytes.
+    let filled = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buf.as_mut_ptr() as *mut _),
+            needed,
+            &mut needed,
+        )
+    };
+    // SAFETY: `token` was opened above and is only used within this function.
+    let _ = unsafe { CloseHandle(token) };
+
+    if filled.is_err() {
+        return None;
+    }
+    Some(buf)
+}
+
+/// Extracts the `PSID` embedded by `GetTokenInformation(.., TokenUser, ..)`
+/// in a buffer filled by [`process_user_sid`], or `None` if the buffer is too
+/// short to hold the header - which would mean the API broke its contract.
+fn sid_ptr(buf: &[u8]) -> Option<PSID> {
+    if buf.len() < std::mem::size_of::<TOKEN_USER>() {
+        return None;
+    }
+    // SAFETY: the length check above covers the read, and the buffer is a
+    // `Vec<u8>` - alignment 1, while `TOKEN_USER` wants 8 - so this reads the
+    // header out unaligned rather than taking a reference to it, which would
+    // be undefined behaviour no matter what the allocator happened to return.
+    // The `Sid` it carries points into the SID bytes packed later in that same
+    // buffer, valid for as long as `buf` is: every caller keeps the `Vec`
+    // alive across the `EqualSid` call that uses this pointer.
+    let token_user = unsafe { std::ptr::read_unaligned(buf.as_ptr().cast::<TOKEN_USER>()) };
+    Some(token_user.User.Sid)
 }
 
 /// Client helper: Sends an IPC request to the named pipe and awaits the response.
@@ -422,5 +662,31 @@ mod tests {
         );
 
         handle.join().expect("join");
+    }
+
+    #[test]
+    fn pipe_security_current_user_only_builds_a_usable_descriptor() {
+        let security = PipeSecurity::current_user_only().expect("build security descriptor");
+        assert!(!security.descriptor.0.is_null());
+        assert_eq!(
+            security.attributes.nLength as usize,
+            std::mem::size_of::<SECURITY_ATTRIBUTES>()
+        );
+        assert!(!security.attributes.bInheritHandle.as_bool());
+    }
+
+    #[test]
+    fn process_user_sid_agrees_with_itself() {
+        // SAFETY: `GetCurrentProcess` returns a pseudo-handle valid for the
+        // life of the process and needs no closing.
+        let handle = unsafe { GetCurrentProcess() };
+        let first = process_user_sid(handle).expect("read this process's own SID");
+        let second = process_user_sid(handle).expect("read it again");
+
+        let first_ptr = sid_ptr(&first).expect("the header must fit the buffer");
+        let second_ptr = sid_ptr(&second).expect("the header must fit the buffer");
+        // SAFETY: both buffers are held alive as local variables across this
+        // call, and both were produced by `GetTokenInformation(.., TokenUser, ..)`.
+        assert!(unsafe { EqualSid(first_ptr, second_ptr) }.is_ok());
     }
 }

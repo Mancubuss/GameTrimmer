@@ -159,6 +159,29 @@ impl Drop for WatchedDirectory {
     }
 }
 
+/// Outcome of one `poll_events` call: parsed manifest events, plus any
+/// directories whose `ReadDirectoryChangesW` buffer overflowed (or whose
+/// watch could not be re-armed) since the previous call.
+///
+/// Overflow means events were lost for that directory - there is no way to
+/// get them back - so the caller's job is not to recover them but to notice
+/// and fall back to a full rescan of that directory instead of continuing
+/// to trust an IOCP stream it now knows is incomplete.
+#[derive(Debug, Default)]
+pub struct PollResult {
+    pub events: Vec<ManifestEvent>,
+    pub overflowed_dirs: Vec<PathBuf>,
+}
+
+/// What one `GetQueuedCompletionStatus` completion means for the directory
+/// it belongs to. See `ManifestWatcher::classify_completion`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionOutcome {
+    Error,
+    Overflow,
+    Data,
+}
+
 /// The ManifestWatcher daemon manager.
 pub struct ManifestWatcher {
     iocp: HANDLE,
@@ -213,16 +236,38 @@ impl ManifestWatcher {
         Ok(())
     }
 
+    /// Decides what a `GetQueuedCompletionStatus` completion means, without
+    /// looking at the directory or buffer it belongs to.
+    ///
+    /// Split out from `poll_events` so the two outcomes that were previously
+    /// collapsed into one early return - a genuine IOCP error, and a
+    /// successful completion that reports zero bytes transferred - can be
+    /// told apart by a unit test without a real IOCP handle. Zero bytes on a
+    /// *successful* completion is the documented `ReadDirectoryChangesW`
+    /// overflow signal (the kernel-side buffer filled faster than we could
+    /// drain it), not "nothing happened" - treating it the same as a hard
+    /// error is what let a directory go permanently deaf: the caller
+    /// returned early and skipped `arm_read`, so no further notification for
+    /// that directory could ever arrive.
+    fn classify_completion(ok: bool, bytes_transferred: u32) -> CompletionOutcome {
+        if !ok {
+            CompletionOutcome::Error
+        } else if bytes_transferred == 0 {
+            CompletionOutcome::Overflow
+        } else {
+            CompletionOutcome::Data
+        }
+    }
+
     /// Polls for completed directory change notifications with a timeout.
-    pub fn poll_events(&mut self, timeout_ms: u32) -> Vec<ManifestEvent> {
+    pub fn poll_events(&mut self, timeout_ms: u32) -> PollResult {
         if self.paused.load(Ordering::SeqCst) || self.directories.is_empty() {
             if timeout_ms > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(timeout_ms as u64));
             }
-            return Vec::new();
+            return PollResult::default();
         }
 
-        let mut events = Vec::new();
         let mut bytes_transferred: u32 = 0;
         let mut completion_key: usize = 0;
         let mut lp_overlapped: *mut OVERLAPPED = ptr::null_mut();
@@ -237,19 +282,40 @@ impl ManifestWatcher {
             )
         };
 
-        if ok.is_err() || bytes_transferred == 0 || completion_key >= self.directories.len() {
-            return events;
+        let outcome = Self::classify_completion(ok.is_ok(), bytes_transferred);
+        if matches!(outcome, CompletionOutcome::Error) || completion_key >= self.directories.len() {
+            // A genuine IOCP error, or a completion key we no longer track -
+            // there is no live watch to re-arm here.
+            return PollResult::default();
         }
 
         let dir = &mut self.directories[completion_key];
-        let buffer_slice = &dir.buffer.0[..bytes_transferred as usize];
+        let mut result = PollResult::default();
 
-        events.extend(parse_notify_records(buffer_slice, &dir.path, dir.launcher));
+        // Only `Data` and `Overflow` can reach this point - `Error` already
+        // returned above - so this is a plain two-way branch rather than a
+        // match with an arm that can never run.
+        if outcome == CompletionOutcome::Overflow {
+            // The events inside this window are gone for good; surface the
+            // directory so the caller can fall back to a full rescan instead
+            // of silently trusting a stream that just lost data.
+            result.overflowed_dirs.push(dir.path.clone());
+        } else {
+            let buffer_slice = &dir.buffer.0[..bytes_transferred as usize];
+            result.events = parse_notify_records(buffer_slice, &dir.path, dir.launcher);
+        }
 
-        // Re-arm directory notification immediately
-        let _ = dir.arm_read();
+        // Re-arm in both the data and the overflow case - a live directory
+        // handle must always come back under watch, or the very first
+        // overflow would be the last notification it ever produced. If the
+        // re-arm itself fails (e.g. the directory was removed), treat that
+        // the same as an overflow: either way the caller's picture of this
+        // directory can no longer be trusted without a rescan.
+        if dir.arm_read().is_err() && !result.overflowed_dirs.contains(&dir.path) {
+            result.overflowed_dirs.push(dir.path.clone());
+        }
 
-        events
+        result
     }
 
     pub fn watched_paths(&self) -> Vec<PathBuf> {
@@ -533,7 +599,44 @@ mod tests {
         assert!(!watcher.is_paused());
 
         // Polling with short timeout should return empty
-        let events = watcher.poll_events(10);
-        assert!(events.is_empty());
+        let result = watcher.poll_events(10);
+        assert!(result.events.is_empty());
+        assert!(result.overflowed_dirs.is_empty());
+    }
+
+    #[test]
+    fn classify_completion_treats_zero_bytes_as_overflow_not_absence() {
+        // The bug this guards against: a successful completion with zero
+        // bytes transferred used to be folded into the same early return as
+        // a hard IOCP error, which skipped re-arming the watch and left the
+        // directory permanently deaf after the first burst that overflowed
+        // its buffer.
+        assert_eq!(
+            ManifestWatcher::classify_completion(true, 0),
+            CompletionOutcome::Overflow
+        );
+    }
+
+    #[test]
+    fn classify_completion_distinguishes_error_from_overflow() {
+        assert_eq!(
+            ManifestWatcher::classify_completion(false, 0),
+            CompletionOutcome::Error
+        );
+        // A failed call reporting a nonzero byte count (should not happen in
+        // practice, but the classification must not depend on it) is still
+        // an error - `ok` alone decides this branch.
+        assert_eq!(
+            ManifestWatcher::classify_completion(false, 42),
+            CompletionOutcome::Error
+        );
+    }
+
+    #[test]
+    fn classify_completion_recognizes_ordinary_data() {
+        assert_eq!(
+            ManifestWatcher::classify_completion(true, 128),
+            CompletionOutcome::Data
+        );
     }
 }

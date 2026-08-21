@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Notificação interativa",
     "watch_mode_interactive_hint": "Apresenta uma notificação do Windows com um botão para limpar os ficheiros descarregados novamente.",
     "watch_mode_autotrim": "Limpeza automática silenciosa",
-    "watch_mode_autotrim_hint": "Limpa automaticamente em segundo plano os jogos recém-atualizados sem pedir confirmação.",
+    "watch_mode_autotrim_hint": "Limpa automaticamente em segundo plano os jogos recém-atualizados sem pedir confirmação. Ainda não está ativo.",
     "watch_mode_passive": "Apenas indicador passivo",
     "watch_mode_passive_hint": "Atualiza os indicadores de estado no GameTrimmer sem eliminação automática nem notificações.",
     "watch_daemon_status_running": "Ativo (IPC ligado)",

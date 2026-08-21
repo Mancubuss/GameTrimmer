@@ -26,7 +26,7 @@
     "watch_mode_interactive": "إشعار تفاعلي",
     "watch_mode_interactive_hint": "يعرض إشعار Windows Toast مع زر لتنظيف الملفات المعاد تحميلها.",
     "watch_mode_autotrim": "تنظيف تلقائي صامت",
-    "watch_mode_autotrim_hint": "يعيد تنظيف الألعاب المحدثة حديثاً بصمت دون طلب تأكيد.",
+    "watch_mode_autotrim_hint": "يعيد تنظيف الألعاب المحدثة حديثاً بصمت دون طلب تأكيد. غير مفعّل بعد.",
     "watch_mode_passive": "شارة حالة سلبية فقط",
     "watch_mode_passive_hint": "يحدّث شارات الحالة داخل GameTrimmer دون حذف تلقائي أو إشعارات.",
     "watch_daemon_status_running": "نشط (متصل عبر IPC)",

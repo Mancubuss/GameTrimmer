@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Interactieve melding",
     "watch_mode_interactive_hint": "Toont een Windows Toast-melding met een knop om opnieuw gedownloade bestanden op te schonen.",
     "watch_mode_autotrim": "Stille automatische opschoning",
-    "watch_mode_autotrim_hint": "Schoont nieuw bijgewerkte games geruisloos op zonder te vragen.",
+    "watch_mode_autotrim_hint": "Schoont nieuw bijgewerkte games geruisloos op zonder te vragen. Nog niet actief.",
     "watch_mode_passive": "Alleen passieve badge",
     "watch_mode_passive_hint": "Werkt statusbadges in GameTrimmer bij zonder automatische verwijdering of meldingen.",
     "watch_daemon_status_running": "Actief (IPC verbonden)",

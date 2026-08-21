@@ -1,7 +1,8 @@
 //! Targeted single-game re-trim execution.
 //!
 //! Re-scans and cleans only the files of an updated game without requiring a
-//! full library re-scan. Fails closed if the game executable is currently running.
+//! full library re-scan. Fails closed if the game executable is currently
+//! running, or if that cannot be determined at all - see [`RunningCheck`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,9 +24,58 @@ pub struct RetrimReport {
     pub errors: Vec<String>,
 }
 
+/// Outcome of asking the OS whether a game's executable is currently
+/// running.
+///
+/// Not a `bool`. A bare `bool` can only say "running" or "not running", and
+/// that forces a caller who can't get a real answer - `K32EnumProcesses`
+/// failed, or the process list didn't fit in a fixed buffer - to collapse
+/// their uncertainty into one of those two values. Every such collapse in
+/// the wild has picked `false` ("not running"), because that is the value
+/// that lets the rest of the function keep going. `Unknown` exists so that
+/// choice has to be made explicitly, once, in [`RunningCheck::blocks_deletion`]
+/// - and made the safe way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunningCheck {
+    /// A process under `install_dir` was found.
+    Running,
+    /// The full process list was enumerated and none matched.
+    NotRunning,
+    /// The process list could not be trusted - the enumeration API failed,
+    /// or returned exactly as many process IDs as the fixed-size buffer
+    /// holds, which Win32 does not distinguish from "the real list is
+    /// longer than this buffer and got truncated".
+    Unknown,
+}
+
+impl RunningCheck {
+    /// Whether a caller about to delete files should refuse to proceed.
+    ///
+    /// True for both [`RunningCheck::Running`] and [`RunningCheck::Unknown`],
+    /// since an ambiguous answer is treated exactly like a positive one -
+    /// the entire point of having three variants instead of a `bool`.
+    pub fn blocks_deletion(self) -> bool {
+        !matches!(self, RunningCheck::NotRunning)
+    }
+}
+
+/// Decides whether a `K32EnumProcesses` result is trustworthy enough to
+/// search for a match, without looking at the process IDs themselves.
+///
+/// Split out from [`is_game_running`] so both failure modes - `api_ok` false
+/// (the call itself failed) and `count >= capacity` (the buffer may have
+/// been truncated, since Win32 reports "bytes written" rather than "process
+/// count would have been") - can be exercised by a unit test without a real
+/// Win32 failure. `count == capacity` is treated as untrustworthy on
+/// purpose: `K32EnumProcesses` gives no signal to tell an exact fit apart
+/// from a truncated one, so a full buffer has to be assumed truncated.
+fn enum_processes_is_trustworthy(api_ok: bool, count: usize, capacity: usize) -> bool {
+    api_ok && count < capacity
+}
+
 /// Checks whether any executable running on the system originates from `install_dir`.
 #[cfg(windows)]
-pub fn is_game_running(install_dir: &Path) -> bool {
+pub fn is_game_running(install_dir: &Path) -> RunningCheck {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::ProcessStatus::K32EnumProcesses;
     use windows::Win32::System::Threading::{
@@ -41,6 +91,10 @@ pub fn is_game_running(install_dir: &Path) -> bool {
 
     let mut pids = [0u32; 2048];
     let mut bytes_returned = 0u32;
+    // SAFETY: `pids` is a stack array of `pids.len()` `u32`s and the byte
+    // length passed is exactly `pids.len() * size_of::<u32>()`, so
+    // `K32EnumProcesses` cannot write past the end of the array; it reports
+    // how many bytes it actually wrote back through `bytes_returned`.
     let ok = unsafe {
         K32EnumProcesses(
             pids.as_mut_ptr(),
@@ -48,23 +102,34 @@ pub fn is_game_running(install_dir: &Path) -> bool {
             &mut bytes_returned,
         )
     };
-    if !ok.as_bool() {
-        return false;
-    }
 
     let count = (bytes_returned as usize) / std::mem::size_of::<u32>();
+    if !enum_processes_is_trustworthy(ok.as_bool(), count, pids.len()) {
+        // Either the enumeration API failed outright, or it may have handed
+        // back a truncated list - either way we cannot say the game isn't
+        // running, so fail closed rather than search a list we don't trust.
+        return RunningCheck::Unknown;
+    }
+
     let mut image_path = [0u16; 1024];
 
     for &pid in &pids[..count] {
         if pid == 0 {
             continue;
         }
+        // SAFETY: `pid` came from the trusted portion of `pids`, which
+        // `K32EnumProcesses` just filled; `OpenProcess` either returns a
+        // handle we close below or an error we skip past.
         let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
             Ok(h) if !h.is_invalid() => h,
             _ => continue,
         };
 
         let mut size = image_path.len() as u32;
+        // SAFETY: `image_path` is a stack array of `image_path.len()` `u16`s
+        // and `size` is initialized to that length, which
+        // `QueryFullProcessImageNameW` treats as the buffer's capacity in
+        // characters; it writes the actual length used back into `size`.
         let success = unsafe {
             QueryFullProcessImageNameW(
                 handle,
@@ -73,6 +138,8 @@ pub fn is_game_running(install_dir: &Path) -> bool {
                 &mut size,
             )
         };
+        // SAFETY: `handle` was opened above by this same iteration and is
+        // not used again after this point.
         let _ = unsafe { CloseHandle(handle) };
 
         if success.is_ok() && size > 0 {
@@ -85,18 +152,24 @@ pub fn is_game_running(install_dir: &Path) -> bool {
             if exe_path_str.starts_with(&target_dir_str)
                 || exe_canon_str.starts_with(&target_dir_str)
             {
-                return true;
+                return RunningCheck::Running;
             }
         }
     }
 
-    false
+    RunningCheck::NotRunning
 }
 
 /// Non-Windows fallback for process checking.
+///
+/// This crate's real target is Windows-only - `is_game_running` exists to
+/// query `K32EnumProcesses`, which has no counterpart to fall back to here.
+/// `NotRunning` (rather than `Unknown`) keeps this branch harmless for
+/// cross-compiling and running the test suite on a non-Windows host; nothing
+/// in a real deployment ever executes it.
 #[cfg(not(windows))]
-pub fn is_game_running(_install_dir: &Path) -> bool {
-    false
+pub fn is_game_running(_install_dir: &Path) -> RunningCheck {
+    RunningCheck::NotRunning
 }
 
 /// Executes a targeted re-trim for a single game by its database ID.
@@ -139,12 +212,22 @@ pub fn retrim_game_with_new_build(
         )));
     }
 
-    // 2. Fail-closed if game executable is currently running
-    if is_game_running(&install_path) {
-        return Err(CoreError::Other(format!(
-            "cannot re-trim \"{}\": game executable is currently running",
-            game.name
-        )));
+    // 2. Fail-closed if the game executable is currently running, or if we
+    // could not determine that with confidence - see `RunningCheck`.
+    match is_game_running(&install_path) {
+        RunningCheck::NotRunning => {}
+        RunningCheck::Running => {
+            return Err(CoreError::Other(format!(
+                "cannot re-trim \"{}\": game executable is currently running",
+                game.name
+            )));
+        }
+        RunningCheck::Unknown => {
+            return Err(CoreError::Other(format!(
+                "cannot re-trim \"{}\": could not verify whether the game executable is running, refusing to delete",
+                game.name
+            )));
+        }
     }
 
     // 3. Scan the game's directory
@@ -512,5 +595,34 @@ mod tests {
             DeleteMethod::Permanent,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn enum_processes_is_trustworthy_fails_closed_on_api_error() {
+        // The enumeration call itself failed - `count` is whatever garbage
+        // was left in `bytes_returned`, and must not be trusted either.
+        assert!(!enum_processes_is_trustworthy(false, 0, 2048));
+        assert!(!enum_processes_is_trustworthy(false, 5, 2048));
+    }
+
+    #[test]
+    fn enum_processes_is_trustworthy_fails_closed_on_a_full_buffer() {
+        // A count equal to capacity is indistinguishable from a truncated
+        // list - Win32 reports bytes written, not "there were more".
+        assert!(!enum_processes_is_trustworthy(true, 2048, 2048));
+    }
+
+    #[test]
+    fn enum_processes_is_trustworthy_trusts_a_normal_result() {
+        assert!(enum_processes_is_trustworthy(true, 0, 2048));
+        assert!(enum_processes_is_trustworthy(true, 137, 2048));
+        assert!(enum_processes_is_trustworthy(true, 2047, 2048));
+    }
+
+    #[test]
+    fn running_check_blocks_deletion_for_running_and_unknown_only() {
+        assert!(RunningCheck::Running.blocks_deletion());
+        assert!(RunningCheck::Unknown.blocks_deletion());
+        assert!(!RunningCheck::NotRunning.blocks_deletion());
     }
 }

@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Interaktive Benachrichtigung",
     "watch_mode_interactive_hint": "Zeigt eine Windows-Toast-Benachrichtigung mit einer Schaltfläche zum Bereinigen erneut heruntergeladener Dateien an.",
     "watch_mode_autotrim": "Stille automatische Bereinigung",
-    "watch_mode_autotrim_hint": "Bereinigt neu aktualisierte Spiele automatisch im Hintergrund ohne Nachfrage.",
+    "watch_mode_autotrim_hint": "Bereinigt neu aktualisierte Spiele automatisch im Hintergrund ohne Nachfrage. Noch nicht aktiv.",
     "watch_mode_passive": "Nur passiver Status-Badge",
     "watch_mode_passive_hint": "Aktualisiert Status-Badges in GameTrimmer ohne automatische Löschung oder Toast-Benachrichtigungen.",
     "watch_daemon_status_running": "Aktiv (IPC verbunden)",

@@ -27,7 +27,7 @@ pub(super) const STRINGS: Strings = Strings {
     watch_mode_interactive: "Інтерактивне сповіщення",
     watch_mode_interactive_hint: "Показує сповіщення Windows Toast із кнопкою швидкого очищення відновлених файлів.",
     watch_mode_autotrim: "Тихий авто-трим",
-    watch_mode_autotrim_hint: "Автоматично та тихо очищає оновлені ігри за збереженими правилами.",
+    watch_mode_autotrim_hint: "Автоматично та тихо очищає оновлені ігри за збереженими правилами. Ще не працює.",
     watch_mode_passive: "Лише бейдж у списку",
     watch_mode_passive_hint: "Оновлює статус ігор у GameTrimmer без спливаючих сповіщень та авто-видалення.",
     watch_daemon_status_running: "Працює (з'єднання з IPC встановлено)",

@@ -26,7 +26,7 @@
     "watch_mode_interactive": "交互式通知",
     "watch_mode_interactive_hint": "弹出 Windows 浮条通知，附带一键清理重新下载的多余文件的按钮。",
     "watch_mode_autotrim": "静默自动清理",
-    "watch_mode_autotrim_hint": "在后台自动清理新更新的游戏，无需任何确认弹窗。",
+    "watch_mode_autotrim_hint": "在后台自动清理新更新的游戏，无需任何确认弹窗。 尚未启用。",
     "watch_mode_passive": "仅徽章标记",
     "watch_mode_passive_hint": "仅更新 GameTrimmer 界面中的状态徽章，不执行自动删除也不发送通知弹窗。",
     "watch_daemon_status_running": "运行中（IPC 已连接）",

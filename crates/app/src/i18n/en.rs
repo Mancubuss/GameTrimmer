@@ -30,7 +30,8 @@ pub(super) const STRINGS: Strings = Strings {
     watch_mode_interactive_hint:
         "Shows a Windows Toast notification with a button to trim re-downloaded files.",
     watch_mode_autotrim: "Silent auto-trim",
-    watch_mode_autotrim_hint: "Silently re-trims newly updated games without prompting.",
+    watch_mode_autotrim_hint:
+        "Silently re-trims newly updated games without prompting. Not active yet.",
     watch_mode_passive: "Passive badge only",
     watch_mode_passive_hint:
         "Updates status badges in GameTrimmer without automatic deletion or toasts.",

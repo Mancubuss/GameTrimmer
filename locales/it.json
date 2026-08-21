@@ -26,7 +26,7 @@
     "watch_mode_interactive": "Notifica interattiva",
     "watch_mode_interactive_hint": "Mostra una notifica popup di Windows con un pulsante per eliminare i file riscaricati.",
     "watch_mode_autotrim": "Ottimizzazione automatica silenziosa",
-    "watch_mode_autotrim_hint": "Rimuove automaticamente e senza chiedere conferma i file superflui dai giochi appena aggiornati.",
+    "watch_mode_autotrim_hint": "Rimuove automaticamente e senza chiedere conferma i file superflui dai giochi appena aggiornati. Non ancora attivo.",
     "watch_mode_passive": "Solo badge passivo",
     "watch_mode_passive_hint": "Aggiorna i badge di stato in GameTrimmer senza eliminazione automatica o notifiche popup.",
     "watch_daemon_status_running": "Attivo (IPC connesso)",

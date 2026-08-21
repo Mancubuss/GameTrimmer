@@ -26,7 +26,7 @@
     "watch_mode_interactive": "การแจ้งเตือนแบบโต้ตอบ",
     "watch_mode_interactive_hint": "แสดงการแจ้งเตือนของ Windows Toast พร้อมปุ่มเพื่อตัดแต่งไฟล์ที่ดาวน์โหลดมาใหม่",
     "watch_mode_autotrim": "ตัดแต่งอัตโนมัติแบบเงียบ",
-    "watch_mode_autotrim_hint": "ตัดแต่งเกมที่เพิ่งอัปเดตใหม่โดยอัตโนมัติอย่างเงียบๆ โดยไม่ต้องถาม",
+    "watch_mode_autotrim_hint": "ตัดแต่งเกมที่เพิ่งอัปเดตใหม่โดยอัตโนมัติอย่างเงียบๆ โดยไม่ต้องถาม ยังไม่เปิดใช้งาน",
     "watch_mode_passive": "แสดงเฉพาะป้ายสถานะ",
     "watch_mode_passive_hint": "อัปเดตป้ายสถานะใน GameTrimmer โดยไม่มีการลบอัตโนมัติหรือการแจ้งเตือน Toast",
     "watch_daemon_status_running": "ทำงานอยู่ (เชื่อมต่อ IPC แล้ว)",
