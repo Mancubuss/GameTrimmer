@@ -8,16 +8,26 @@
 //! - MP4 (`.mp4`, `.m4v`), WebM/MKV (`.webm`, `.mkv`), Ogg Theora (`.ogv`, `.ogg`),
 //!   Windows Media Video (`.wmv`), and AVI (`.avi`) are genuine `ffmpeg`-encoded
 //!   1-frame black clips - real container output, decodable by any real player.
-//! - Bink 1 (`.bik`), Bink 2 (`.bk2`), and CRI Sofdec USM (`.usm`) are hand-built
-//!   39-60 byte headers with correct magic bytes and the container-level fields a
-//!   loader checks before touching frame data. No decoder for any of the three
-//!   ships with this project, so these have never been validated against a real
-//!   one - only against the header layouts each format documents.
+//! - Bink 1 (`.bik`) and Bink 2 (`.bk2`) are hand-built 44-72 byte headers with
+//!   correct magic bytes and the container-level fields a loader checks before
+//!   touching frame data. No decoder for either ships with this project, but
+//!   both have been validated against a real one (`ffmpeg`) - Bink 1 by testing
+//!   payload sizes until one decoded, Bink 2 by deriving the stub from the real
+//!   file's own header.
+//! - CRI Sofdec USM (`.usm`) is deliberately **not** supported: its magic is
+//!   `CRID`, not `@CRID` (`ffmpeg`'s own `usm` demuxer only matched the old
+//!   constant at score 1, "misdetection possible"), and past the signature a
+//!   valid file needs a real CRI `@UTF` metadata table plus at least one real
+//!   encoded video frame in an `@SFV` chunk - `ffmpeg` reports "could not find
+//!   codec parameters" for any hand-built placeholder, fixed signature or not.
+//!   That is a from-the-real-header derivation on the order of Bink 2's, not
+//!   written yet - see GT-201.
 //!
 //! There is deliberately no generic fallback stub for a container this module
-//! doesn't recognize. See [`detect_stub_bytes`]: its `None` means the caller must
-//! skip deleting the original file rather than replace it with a guess, or with
-//! nothing - a 0-byte "stub" is the exact crash this module exists to prevent.
+//! doesn't recognize or can't yet build correctly. See [`detect_stub_bytes`]:
+//! its `None` means the caller must skip deleting the original file rather
+//! than replace it with a guess, or with nothing - a 0-byte "stub" is the
+//! exact crash this module exists to prevent.
 
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -1131,12 +1141,6 @@ pub const AVI_STUB: &[u8] = &[
     0x00, 0x00, 0x69, 0x64, 0x78, 0x31, 0x10, 0x00, 0x00, 0x00, 0x30, 0x30, 0x64, 0x63, 0x10, 0x00,
     0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00,
 ];
-pub const USM_STUB: &[u8] = &[
-    0x40, 0x43, 0x52, 0x49, 0x44, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x40, 0x53, 0x46, 0x56, 0x00, 0x00, 0x00, 0x00,
-];
-
 /// Determines the appropriate micro-stub bytes from the magic signature in an initial byte buffer.
 ///
 /// For Bink 2, `header` doubles as the source for [`build_bink2_stub_from_header`]:
@@ -1184,9 +1188,8 @@ pub fn stub_for_magic(header: &[u8]) -> Option<Vec<u8>> {
     {
         return Some(WMV_STUB.to_vec());
     }
-    if header.len() >= 5 && &header[0..5] == b"@CRID" {
-        return Some(USM_STUB.to_vec());
-    }
+    // No CRID/USM branch: see the module doc comment for why this format
+    // is deliberately unsupported until a real derived stub exists.
     None
 }
 
@@ -1203,7 +1206,6 @@ pub fn stub_for_extension(ext: &str) -> Option<&'static [u8]> {
         "ogv" | "ogg" => OGG_THEORA_STUB,
         "wmv" => WMV_STUB,
         "avi" => AVI_STUB,
-        "usm" => USM_STUB,
         _ => return None,
     })
 }
@@ -1350,9 +1352,6 @@ mod tests {
 
         assert!(!AVI_STUB.is_empty());
         assert_eq!(&AVI_STUB[0..4], b"RIFF");
-
-        assert!(!USM_STUB.is_empty());
-        assert_eq!(&USM_STUB[0..5], b"@CRID");
     }
 
     #[test]
@@ -1378,8 +1377,15 @@ mod tests {
         );
         assert_eq!(stub_for_magic(WMV_STUB), Some(WMV_STUB.to_vec()));
         assert_eq!(stub_for_magic(AVI_STUB), Some(AVI_STUB.to_vec()));
-        assert_eq!(stub_for_magic(USM_STUB), Some(USM_STUB.to_vec()));
         assert_eq!(stub_for_magic(b"UNKNOWN_DATA"), None);
+    }
+
+    #[test]
+    fn stub_for_magic_does_not_recognize_usm_yet() {
+        // Real CRI USM files start with `CRID` (verified against Daemon X
+        // Machina's op_mv01.usm and Jackbox Party Pack 1's Logo.usm), not the
+        // `@CRID` this module used to check for - see the module doc comment.
+        assert_eq!(stub_for_magic(b"CRID_some_other_data"), None);
     }
 
     #[test]
@@ -1452,18 +1458,19 @@ mod tests {
         assert_eq!(stub_for_extension("ogg"), Some(OGG_THEORA_STUB));
         assert_eq!(stub_for_extension("wmv"), Some(WMV_STUB));
         assert_eq!(stub_for_extension("avi"), Some(AVI_STUB));
-        assert_eq!(stub_for_extension("usm"), Some(USM_STUB));
     }
 
     #[test]
     fn stub_for_extension_returns_none_for_unknown_extensions() {
         // Neither a plain unrelated extension nor a plausible-looking but
         // unsupported video container may resolve to a stub - the caller must
-        // treat both the same way: skip, don't guess.
+        // treat both the same way: skip, don't guess. `usm` belongs here too:
+        // see the module doc comment for why CRI Sofdec is not supported yet.
         assert_eq!(stub_for_extension("txt"), None);
         assert_eq!(stub_for_extension("exe"), None);
         assert_eq!(stub_for_extension("smk"), None);
         assert_eq!(stub_for_extension("vp6"), None);
+        assert_eq!(stub_for_extension("usm"), None);
     }
 
     #[test]
