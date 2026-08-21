@@ -51,3 +51,6 @@ desktop.ini
 __pycache__/
 *.pyc
 temp/
+
+# Local developer configuration (test scratch volume, per-machine paths).
+/.cargo/config.toml
