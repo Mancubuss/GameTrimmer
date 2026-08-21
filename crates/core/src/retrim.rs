@@ -296,6 +296,41 @@ pub fn retrim_game_with_new_build(
         ));
     }
 
+    // 4b. Apply the micro-stub contract (see `crate::stub`) to every "intro"
+    // candidate before anything is deleted - identification has to happen
+    // while the file still exists, because after deletion there is nothing
+    // left to sniff. A container this build has no stub for is dropped from
+    // the candidate list entirely rather than deleted and left stub-less: an
+    // intro video replaced by nothing is exactly the boot crash the stub
+    // contract exists to prevent, and retrim runs unattended with no human
+    // watching to catch it. Non-"intro" candidates are untouched by this step.
+    let mut retained_candidates = Vec::with_capacity(candidates.len());
+    let mut candidate_stub_bytes: Vec<Option<&'static [u8]>> = Vec::with_capacity(candidates.len());
+    let mut skipped_intro_errors = Vec::new();
+
+    for candidate in candidates {
+        if candidate.category != "intro" {
+            retained_candidates.push(candidate);
+            candidate_stub_bytes.push(None);
+            continue;
+        }
+        let full_path = install_path.join(&candidate.entry.rel_path);
+        match crate::stub::detect_stub_bytes(&full_path) {
+            Some(bytes) => {
+                retained_candidates.push(candidate);
+                candidate_stub_bytes.push(Some(bytes));
+            }
+            None => {
+                skipped_intro_errors.push(format!(
+                    "kept {}: its video container is not one this build has a micro-stub for; \
+                     deleting it would leave the game with no file there at all",
+                    candidate.entry.rel_path
+                ));
+            }
+        }
+    }
+    let candidates = retained_candidates;
+
     if candidates.is_empty() {
         let final_build_id = new_build_id.or(game.build_id.as_deref());
         conn.execute(
@@ -314,7 +349,7 @@ pub fn retrim_game_with_new_build(
             game_name: game.name,
             files_deleted: 0,
             bytes_freed: 0,
-            errors: Vec::new(),
+            errors: skipped_intro_errors,
         });
     }
 
@@ -357,8 +392,13 @@ pub fn retrim_game_with_new_build(
     let mut candidate_file_ids = Vec::new();
     let mut candidate_sizes = Vec::new();
     let mut candidate_sizes_on_disk = Vec::new();
+    // Stays aligned with `candidate_file_ids`/`candidate_sizes` (pushed together
+    // below), not with the original `candidates`/`candidate_stub_bytes` - a
+    // candidate whose safety snapshot fails never gets a row, and its stub
+    // entry must not shift every later candidate's stub out of place.
+    let mut candidate_stubs: Vec<Option<&'static [u8]>> = Vec::new();
 
-    for candidate in candidates {
+    for (candidate, stub) in candidates.into_iter().zip(candidate_stub_bytes) {
         let snapshot = match crate::safety::capture_safety_snapshot(
             &install_path,
             &candidate.entry.rel_path,
@@ -422,6 +462,7 @@ pub fn retrim_game_with_new_build(
         candidate_sizes.push(candidate.entry.size);
         candidate_sizes_on_disk.push(candidate.entry.size_on_disk);
         candidate_file_ids.push(file_id);
+        candidate_stubs.push(stub);
     }
 
     if candidate_file_ids.is_empty() {
@@ -442,25 +483,45 @@ pub fn retrim_game_with_new_build(
             game_name: game.name,
             files_deleted: 0,
             bytes_freed: 0,
-            errors: Vec::new(),
+            errors: skipped_intro_errors,
         });
     }
 
-    // 7. Execute delete plans
+    // 7. Execute delete plans. A removed "intro" candidate has its
+    // micro-stub written from inside `on_outcome`, while the file it belongs
+    // to still exists nowhere else to look up its bytes from - this mirrors
+    // `crates/app/src/worker/delete.rs::run_delete`, the reference
+    // implementation of this same stub contract. A stub write that fails is
+    // never silently dropped: it lands in `stub_write_failures` and is folded
+    // into this report's `errors` below rather than only reaching a log line.
     let plans = crate::ops::prepare_delete_plans(conn, &candidate_file_ids, delete_method)?;
+    let mut stub_write_failures: Vec<String> = Vec::new();
     let outcomes = crate::ops::execute_delete_plans_observed(
         conn,
         delete_method,
         &plans,
         |_current, _total, _path| {},
-        |_index, _outcome| {},
+        |index, outcome| {
+            if outcome.status == crate::ops::FsOutcome::Removed {
+                if let Some(bytes) = candidate_stubs[index] {
+                    if let Err(err) = crate::stub::write_stub(&outcome.path, bytes) {
+                        stub_write_failures.push(format!(
+                            "{}: the intro micro-stub could not be written after the delete, \
+                             so the game may not start: {err}",
+                            outcome.path.display()
+                        ));
+                    }
+                }
+            }
+        },
     )?;
 
     // 8. Tally results
     let mut files_deleted = 0;
     let mut bytes_freed = 0u64;
     let mut bytes_on_disk_freed = 0u64;
-    let mut errors = Vec::new();
+    let mut errors = skipped_intro_errors;
+    errors.extend(stub_write_failures);
 
     for (idx, outcome) in outcomes.iter().enumerate() {
         if matches!(
@@ -746,5 +807,153 @@ mod tests {
             })
             .expect("persisted localization finding");
         assert_eq!(category, "localization");
+    }
+
+    #[test]
+    fn intro_candidate_with_recognized_container_is_deleted_and_stubbed() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Stubbable Intro Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+        let target = game_dir.join("intro.mp4");
+        // No recognizable magic bytes on purpose - `detect_stub_bytes` must
+        // fall back to the ".mp4" extension, exactly as it does for a real
+        // engine intro whose header this build cannot sniff.
+        fs::write(&target, b"NOT REAL MP4 BYTES, JUST FILLER CONTENT").expect("write intro");
+        let rules = format!(
+            r#"{{"version":{},"rules":[{{"category":"intro","pattern":"^intro\\.mp4$","desc":"Intro video","confidence":95}}]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse intro rule");
+
+        let report = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::new(),
+            DeleteMethod::Permanent,
+        )
+        .expect("a recognized intro container must be retrimmed, not blocked");
+
+        assert_eq!(report.files_deleted, 1);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        // The contract: the original bytes are gone, but the path is never
+        // empty - a micro-stub with the right container now lives there.
+        assert!(
+            target.is_file(),
+            "intro file must be replaced with a micro-stub, not simply vanish"
+        );
+        let contents = fs::read(&target).expect("read stubbed intro");
+        assert_eq!(
+            contents,
+            crate::stub::MP4_STUB,
+            "must be stubbed with the MP4 micro-stub"
+        );
+    }
+
+    #[test]
+    fn intro_candidate_with_unrecognized_container_is_kept_and_reported() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Unstubbable Intro Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+        let target = game_dir.join("intro.smk");
+        let original = b"NOT A KNOWN CONTAINER AT ALL".to_vec();
+        fs::write(&target, &original).expect("write intro");
+        let rules = format!(
+            r#"{{"version":{},"rules":[{{"category":"intro","pattern":"^intro\\.smk$","desc":"Intro video","confidence":95}}]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse intro rule");
+
+        let report = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::new(),
+            DeleteMethod::Permanent,
+        )
+        .expect("an unstubbable intro must be reported, not turned into an error");
+
+        // Fails closed per-file, not as a dropped warning: nothing was
+        // deleted, and the reason is visible on the report rather than only
+        // in a log line - see `show-found-but-empty-not-silence` in project
+        // memory for why silence here would be indistinguishable from a
+        // broken detector.
+        assert_eq!(report.files_deleted, 0);
+        assert_eq!(report.bytes_freed, 0);
+        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+        assert!(
+            report.errors[0].contains("intro.smk"),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors[0].contains("micro-stub"),
+            "{:?}",
+            report.errors
+        );
+
+        assert!(
+            target.is_file(),
+            "an intro with no known stub must never be deleted outright"
+        );
+        assert_eq!(fs::read(&target).expect("read kept intro"), original);
+    }
+
+    #[test]
+    fn skipped_intro_does_not_disturb_an_adjacent_deletable_candidate() {
+        // Two candidates in one batch: an intro with no stub (must be kept)
+        // and an ordinary bonus file (must be deleted). This is the shape
+        // that would expose a stub-detection filter that shifts indices and
+        // attributes one candidate's outcome to the other - see
+        // `candidate_stub_bytes`/`candidate_stubs` alignment in
+        // `retrim_game_with_new_build`.
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Mixed Batch Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+
+        let intro_path = game_dir.join("intro.smk");
+        fs::write(&intro_path, b"NOT A KNOWN CONTAINER AT ALL").expect("write intro");
+
+        let bonus_dir = game_dir.join("Bonus");
+        fs::create_dir_all(&bonus_dir).expect("create bonus dir");
+        let bonus_path = bonus_dir.join("soundtrack.mp3");
+        fs::write(&bonus_path, vec![0u8; 512]).expect("write bonus file");
+
+        let rules = format!(
+            r#"{{"version":{},"rules":[
+                {{"category": "intro", "pattern": "^intro\\.smk$", "desc": "Intro video", "confidence": 95}},
+                {{"category": "bonus", "pattern": "^bonus$", "desc": "Bonus material", "confidence": 85}}
+            ]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse rules");
+
+        let report = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::new(),
+            DeleteMethod::Permanent,
+        )
+        .expect("a skipped intro must not block the rest of the batch");
+
+        assert_eq!(
+            report.files_deleted, 1,
+            "only the bonus file should have been deleted"
+        );
+        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+        assert!(
+            report.errors[0].contains("intro.smk"),
+            "{:?}",
+            report.errors
+        );
+
+        assert!(intro_path.is_file(), "the unstubbable intro must survive");
+        assert_eq!(
+            fs::read(&intro_path).expect("read kept intro"),
+            b"NOT A KNOWN CONTAINER AT ALL"
+        );
+        assert!(!bonus_path.exists(), "the bonus file must still be deleted");
     }
 }
