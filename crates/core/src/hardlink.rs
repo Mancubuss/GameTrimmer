@@ -5,8 +5,8 @@
 //! file, and deleting one of them frees nothing at all - the allocation only
 //! goes away with the last link. Summing [`crate::scanner::FileEntry::size_on_disk`]
 //! over paths therefore over-reports both "found" and "freed" the moment any
-//! deduplicated content is in play (see `docs/hardlink-dedup-spike-2026-08-13.md`,
-//! where a tree of 1 026 links to one 8 MiB file measured as 8 208 MB).
+//! deduplicated content is in play: a tree of 1 026 links to one 8 MiB file
+//! measured as 8 208 MB.
 //!
 //! This module supplies the two pieces needed to stop lying about it: the
 //! per-file identity ([`file_share`]) and the arithmetic that folds a batch of

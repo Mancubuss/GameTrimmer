@@ -2,9 +2,8 @@
 //!
 //! The scan log reports three spans (`scan`, `analyze`, `total`) and that is
 //! enough to judge a build, but not to decide what to work on next: every
-//! optimisation ranked in `docs/scan-optimisation-audit-2026-08-15.md` after
-//! round 3 was ranked by reading code, because nothing measured where the
-//! analyze window actually goes. This module is that measurement.
+//! optimisation so far was ranked by reading code, because nothing measured
+//! where the analyze window actually goes. This module is that measurement.
 //!
 //! Timing is taken **per game** (or per MFT chunk), never per file, so the
 //! instrument costs a few thousand `Instant::now()` calls per scan rather
