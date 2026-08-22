@@ -374,6 +374,16 @@ pub struct GameTrimmerApp {
     /// which the MFT path would lose to a directory walk anyway. See
     /// `scan_route::should_offer_elevation` and `compute_show_elevation_prompt`.
     pub show_elevation_prompt: bool,
+    /// The elevation modal's "don't ask again" tick, in flight.
+    ///
+    /// Lives here rather than in the modal body for the same reason
+    /// [`ConfirmDelete::remember`] does: the modal is rebuilt every frame, so
+    /// a tick held in a local would be re-read from the persisted setting on
+    /// the next frame and be gone by the time "Continue" is clicked - which is
+    /// never the frame the box was ticked in. Only written through to
+    /// `settings.never_ask_elevation` on the way out, and deliberately not at
+    /// all when the answer is a relaunch (see `ui::dialogs`).
+    pub elevation_never_ask: bool,
 }
 
 impl GameTrimmerApp {
@@ -468,6 +478,7 @@ impl GameTrimmerApp {
         // the database open for a question whose answer it would ignore.
         let has_saved_findings = autoload && Self::has_saved_findings(db_path.as_deref());
         let elevated = elevation::is_elevated();
+        let never_ask_elevation = settings.never_ask_elevation;
         // Only worth computing when not already elevated - the modal is
         // never shown otherwise, so there is nothing this decision could
         // change.
@@ -558,6 +569,7 @@ impl GameTrimmerApp {
             compact_after_delete: false,
             elevated,
             show_elevation_prompt,
+            elevation_never_ask: never_ask_elevation,
             watch_daemon_running: false,
             updated_games: std::collections::HashMap::new(),
             last_ipc_poll: None,

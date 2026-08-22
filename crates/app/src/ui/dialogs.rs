@@ -17,23 +17,27 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     show_remove_summary(app, ui);
 }
 
-/// Draws `text` while reserving the vertical space `tallest` would need at the
-/// current width. A caller that swaps between texts of different heights (the
-/// delete modal's per-method question) then keeps a constant overall height
-/// instead of resizing on every switch. Both are laid out at the same
-/// `available_width`, so the reserved height is exactly what `tallest` needs;
-/// `text` is top-aligned within it.
-fn label_reserving_height(ui: &mut egui::Ui, text: &str, tallest: &str) {
+/// Draws `text` while reserving the space `largest` would need at the current
+/// width. A caller that swaps between texts of different sizes (the delete
+/// modal's per-method question) then keeps a constant overall size instead of
+/// resizing on every switch. Both are laid out at the same `available_width`,
+/// so the reserved size is exactly what `largest` needs; `text` is
+/// top-left-aligned within it.
+///
+/// Both axes, not just height: reserving the height alone still let the modal
+/// change *width* with the question, which moves the buttons sideways - the
+/// same swallowed-click problem this exists to prevent, in the other
+/// direction.
+fn label_reserving_size(ui: &mut egui::Ui, text: &str, largest: &str) {
     let wrap_width = ui.available_width();
     let font_id = egui::TextStyle::Body.resolve(ui.style());
     let color = ui.visuals().text_color();
-    let tallest_height = ui
+    let largest_size = ui
         .painter()
-        .layout(tallest.to_owned(), font_id, color, wrap_width)
-        .size()
-        .y;
+        .layout(largest.to_owned(), font_id, color, wrap_width)
+        .size();
     ui.scope(|ui| {
-        ui.set_min_height(tallest_height);
+        ui.set_min_size(largest_size);
         ui.label(text);
     });
 }
@@ -56,9 +60,12 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let s = i18n::strings(app.lang());
     let mut relaunch = false;
     let mut cont = false;
-    // Edited copy, written back through `app` only on the way out - the
-    // modal body borrows `app` immutably for `s`.
-    let mut never_ask = app.settings.never_ask_elevation;
+    // Edited copy of the app's in-flight tick, written back below every frame
+    // and through to the setting only on the way out - the modal body borrows
+    // `app` immutably for `s`. Seeding this from the *setting* instead is how
+    // the tick used to be lost: the modal is rebuilt every frame, so the box
+    // was empty again by the frame the user reached "Continue".
+    let mut never_ask = app.elevation_never_ask;
 
     let modal = egui::Modal::new(egui::Id::new("gt_elevation_prompt")).show(ui.ctx(), |ui| {
         ui.set_min_width(380.0);
@@ -90,6 +97,11 @@ fn show_elevation_prompt(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     if modal.should_close() {
         cont = true;
     }
+
+    // Keep the in-flight tick across frames, same as the delete modal keeps its
+    // method and "remember" choice: the box the user ticked is never the frame
+    // that reads it.
+    app.elevation_never_ask = never_ask;
 
     if relaunch {
         // Relaunching deliberately ignores the checkbox: the user is saying
@@ -129,17 +141,16 @@ fn show_confirm_delete(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         // The question is phrased per method, recomputed from the radio value
         // below (not the persisted setting) so picking "Recycle Bin" here
         // immediately rewords the prompt. Rendered into a block that always
-        // reserves the *taller* question's height (the permanent wording is the
-        // longer, multi-line one) so switching the method never resizes the
-        // modal: without that, the modal grew/shrank on each switch, and the
-        // confirm button jumping to a new position could swallow the first
-        // click aimed at it.
+        // reserves the *larger* question's size (the permanent wording is the
+        // longer one) so switching the method never resizes the modal: without
+        // that, the modal grew/shrank on each switch, and the confirm button
+        // jumping to a new position could swallow the first click aimed at it.
         let question = match picked_method {
             DeleteMethod::Permanent => i18n::confirm_permanent_question(lang, count, &size_str),
             DeleteMethod::RecycleBin => i18n::confirm_recycle_question(lang, count, &size_str),
         };
-        let tallest_question = i18n::confirm_permanent_question(lang, count, &size_str);
-        label_reserving_height(ui, &question, &tallest_question);
+        let largest_question = i18n::confirm_permanent_question(lang, count, &size_str);
+        label_reserving_size(ui, &question, &largest_question);
         ui.add_space(8.0);
 
         ui.radio_value(
@@ -340,5 +351,323 @@ fn show_remove_summary(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     if close {
         app.remove_summary = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::show;
+
+    use std::path::PathBuf;
+
+    use eframe::egui;
+    use gametrimmer_core::settings::DeleteMethod;
+
+    use crate::app::{ConfirmDelete, RemoveSummary};
+    use crate::i18n;
+    use crate::model::format_size;
+    use crate::ui::harness::UiTest;
+
+    /// A harness with findings behind it, since every delete prompt words
+    /// itself from the batch it is about to remove.
+    fn with_findings() -> UiTest {
+        let mut test = UiTest::new(show);
+        test.seed_findings();
+        test
+    }
+
+    /// Puts the delete confirmation up over both seeded findings, the way
+    /// `open_delete_confirmation` does for a "delete selected" click.
+    fn confirming_delete(method: DeleteMethod) -> UiTest {
+        let mut test = with_findings();
+        test.app_mut().confirm_delete = Some(ConfirmDelete {
+            indices: vec![0, 1],
+            method,
+            remember: false,
+        });
+        test.run();
+        test
+    }
+
+    /// Bytes the seeded batch promises to free, so a test can name the same
+    /// figure the modal renders instead of hard-coding a formatted string.
+    fn seeded_batch_size(test: &UiTest) -> String {
+        let bytes = crate::model::group_size_bytes(&test.app().findings, &[0, 1]);
+        format_size(test.app().lang(), bytes)
+    }
+
+    /// Cancelling a destructive confirmation must leave the batch alone *and*
+    /// start nothing - `busy` is what a spawned delete would set, so it is the
+    /// half of the claim that a "the modal closed" assertion alone would miss.
+    #[test]
+    fn cancelling_the_delete_confirmation_starts_no_delete() {
+        let mut test = confirming_delete(DeleteMethod::Permanent);
+        test.assert_label(test.strings().confirm_delete_heading);
+
+        test.click(test.strings().btn_cancel);
+
+        assert!(test.app().confirm_delete.is_none(), "the modal stayed up");
+        assert!(!test.app().busy, "cancelling started a job");
+    }
+
+    /// Escape has to map to the safe path. This is the assertion that keeps
+    /// `should_close` wired to `cancelled` rather than `confirmed` - swapping
+    /// the two compiles and looks identical until it deletes someone's files.
+    #[test]
+    fn escape_dismisses_the_delete_confirmation_as_a_cancel() {
+        let mut test = confirming_delete(DeleteMethod::Permanent);
+
+        test.press(egui::Key::Escape);
+
+        assert!(test.app().confirm_delete.is_none(), "the modal stayed up");
+        assert!(!test.app().busy, "escape started a delete");
+    }
+
+    /// The per-operation method choice has to reach both the question and the
+    /// confirm button in the same frame, and survive to the next one - the
+    /// modal is rebuilt every frame, so a choice that is not written back
+    /// snaps to the persisted default immediately.
+    #[test]
+    fn picking_recycle_bin_rewords_the_question_and_the_button() {
+        let mut test = confirming_delete(DeleteMethod::Permanent);
+        let lang = test.app().lang();
+        let size = seeded_batch_size(&test);
+
+        test.assert_label(&i18n::confirm_permanent_question(lang, 2, &size));
+        test.assert_label(test.strings().confirm_label_permanent);
+
+        test.click(test.strings().delete_method_recycle_label);
+
+        assert_eq!(
+            test.app().confirm_delete.as_ref().map(|s| s.method),
+            Some(DeleteMethod::RecycleBin),
+            "the choice did not survive the frame it was made in",
+        );
+        test.assert_label(&i18n::confirm_recycle_question(lang, 2, &size));
+        test.assert_label(test.strings().confirm_label_recycle);
+        test.assert_no_label(test.strings().confirm_label_permanent);
+    }
+
+    /// "Remember my choice" is read once, on confirm - so it too has to be
+    /// written back every frame or it is always false by the time it matters.
+    #[test]
+    fn remembering_the_method_survives_the_next_frame() {
+        let mut test = confirming_delete(DeleteMethod::RecycleBin);
+
+        test.click(test.strings().remember_delete_method);
+        test.run();
+
+        assert_eq!(
+            test.app().confirm_delete.as_ref().map(|s| s.remember),
+            Some(true),
+            "the tick was lost between frames",
+        );
+    }
+
+    /// The constant-height question block, stated as the thing it protects:
+    /// the buttons must not move when the method changes, or the first click
+    /// aimed at "Delete" lands on a modal that has just resized under it.
+    /// Measured on Cancel, the one button in that row whose label does not
+    /// change with the method.
+    #[test]
+    fn switching_the_method_never_moves_the_buttons() {
+        let mut test = confirming_delete(DeleteMethod::Permanent);
+        let before = test.rect_of(test.strings().btn_cancel);
+
+        test.click(test.strings().delete_method_recycle_label);
+
+        let after = test.rect_of(test.strings().btn_cancel);
+        assert_eq!(
+            before, after,
+            "the buttons moved from {before:?} to {after:?} when the method changed",
+        );
+    }
+
+    /// The database wipe is destructive, so both dismissal routes have to be
+    /// the safe one - and "safe" means the findings are still there, not just
+    /// that a flag flipped.
+    #[test]
+    fn dismissing_the_clear_database_prompt_keeps_the_findings() {
+        for dismiss in ["button", "escape"] {
+            let mut test = with_findings();
+            test.app_mut().confirm_clear_database = true;
+            test.run();
+            test.assert_label(test.strings().confirm_clear_heading);
+            test.assert_label(test.strings().confirm_clear_body);
+
+            match dismiss {
+                "button" => test.click(test.strings().btn_cancel),
+                _ => test.press(egui::Key::Escape),
+            }
+
+            assert!(
+                !test.app().confirm_clear_database,
+                "{dismiss}: the modal stayed up",
+            );
+            assert!(!test.app().busy, "{dismiss}: dismissing started a wipe");
+            assert_eq!(
+                test.app().findings.len(),
+                2,
+                "{dismiss}: dismissing wiped the findings",
+            );
+        }
+    }
+
+    /// A permanent batch that lost nothing reports the shorter wording - the
+    /// "of the expected Y" half only earns its place when the two diverge.
+    #[test]
+    fn a_clean_permanent_summary_reports_only_what_was_freed() {
+        let mut test = UiTest::new(show);
+        let lang = test.app().lang();
+        test.app_mut().remove_summary = Some(RemoveSummary {
+            succeeded: 3,
+            nuked: 0,
+            failed: Vec::new(),
+            method: DeleteMethod::Permanent,
+            expected_bytes: 3 * 1024 * 1024,
+            freed_bytes: 3 * 1024 * 1024,
+            recycled_pending_bytes: 0,
+        });
+        test.run();
+
+        let size = format_size(lang, 3 * 1024 * 1024);
+        test.assert_label(test.strings().remove_summary_heading);
+        test.assert_label(&i18n::success_line_permanent(lang, 3));
+        test.assert_label(&i18n::freed_summary_line(lang, &size, &size, false));
+        test.assert_label(&i18n::errors_count_line(lang, 0));
+    }
+
+    /// A recycle batch has to split the recoverable files from the ones
+    /// Windows silently destroyed for exceeding the bin quota, and say which
+    /// bytes are free now versus after emptying the bin.
+    #[test]
+    fn a_recycle_summary_splits_recoverable_from_permanently_nuked() {
+        let mut test = UiTest::new(show);
+        let lang = test.app().lang();
+        test.app_mut().remove_summary = Some(RemoveSummary {
+            succeeded: 3,
+            nuked: 1,
+            failed: Vec::new(),
+            method: DeleteMethod::RecycleBin,
+            expected_bytes: 3 * 1024 * 1024,
+            freed_bytes: 1024 * 1024,
+            recycled_pending_bytes: 2 * 1024 * 1024,
+        });
+        test.run();
+
+        // Three succeeded, one of them nuked - so two are actually recoverable.
+        test.assert_label(&i18n::success_line_recycle(lang, 2));
+        test.assert_label(&i18n::recycle_pending_size_line(
+            lang,
+            &format_size(lang, 2 * 1024 * 1024),
+        ));
+        test.assert_label(&i18n::success_line_nuked(lang, 1));
+        test.assert_label(&i18n::freed_now_size_line(
+            lang,
+            &format_size(lang, 1024 * 1024),
+        ));
+    }
+
+    /// One bad batch must not turn the summary into an unbounded error log:
+    /// the first five are listed, the rest are counted.
+    #[test]
+    fn only_the_first_five_failures_are_listed_and_the_rest_counted() {
+        let mut test = UiTest::new(show);
+        let lang = test.app().lang();
+        test.app_mut().remove_summary = Some(RemoveSummary {
+            succeeded: 0,
+            nuked: 0,
+            failed: (0..7)
+                .map(|i| {
+                    (
+                        PathBuf::from(format!("C:\\Games\\fail_{i}.pak")),
+                        "denied".to_string(),
+                    )
+                })
+                .collect(),
+            method: DeleteMethod::Permanent,
+            expected_bytes: 0,
+            freed_bytes: 0,
+            recycled_pending_bytes: 0,
+        });
+        test.run();
+
+        for i in 0..5 {
+            test.assert_label_containing(&format!("fail_{i}.pak"));
+        }
+        for i in 5..7 {
+            test.assert_no_label_containing(&format!("fail_{i}.pak"));
+        }
+        test.assert_label(&i18n::errors_count_line(lang, 7));
+        test.assert_label(&i18n::more_errors_line(lang, 2));
+    }
+
+    /// The summary reports an already-finished operation, so both ways out are
+    /// the same way out.
+    #[test]
+    fn both_ways_out_of_the_summary_close_it() {
+        for dismiss in ["button", "escape"] {
+            let mut test = UiTest::new(show);
+            test.app_mut().remove_summary = Some(RemoveSummary {
+                succeeded: 1,
+                nuked: 0,
+                failed: Vec::new(),
+                method: DeleteMethod::Permanent,
+                expected_bytes: 1024,
+                freed_bytes: 1024,
+                recycled_pending_bytes: 0,
+            });
+            test.run();
+
+            match dismiss {
+                "button" => test.click(test.strings().btn_close),
+                _ => test.press(egui::Key::Escape),
+            }
+
+            assert!(
+                test.app().remove_summary.is_none(),
+                "{dismiss}: the summary stayed up",
+            );
+        }
+    }
+
+    /// Dismissing the elevation offer is a one-session answer, never a
+    /// relaunch and never a permanent refusal - the checkbox is the only way
+    /// to say "never".
+    #[test]
+    fn escape_on_the_elevation_offer_continues_unelevated_for_this_session() {
+        let mut test = UiTest::new(show);
+        test.app_mut().show_elevation_prompt = true;
+        test.run();
+        test.assert_label(test.strings().elevation_heading);
+        test.assert_label(test.strings().elevation_body);
+        test.assert_label(test.strings().elevation_when_asked);
+
+        test.press(egui::Key::Escape);
+
+        assert!(!test.app().show_elevation_prompt, "the modal stayed up");
+        assert!(
+            !test.app().settings.never_ask_elevation,
+            "a dismissal was recorded as a permanent refusal",
+        );
+    }
+
+    /// The checkbox is the only permanent way to refuse, so the tick has to
+    /// still be there on the frame the user reaches for "Continue" - which is
+    /// never the same frame they ticked it in.
+    #[test]
+    fn ticking_never_ask_then_continuing_stops_the_offer_for_good() {
+        let mut test = UiTest::new(show);
+        test.app_mut().show_elevation_prompt = true;
+        test.run();
+
+        test.click(test.strings().elevation_never_ask);
+        test.click(test.strings().btn_continue_without_elevation);
+
+        assert!(!test.app().show_elevation_prompt, "the modal stayed up");
+        assert!(
+            test.app().settings.never_ask_elevation,
+            "the tick was lost between the frame it was made in and the click that reads it",
+        );
     }
 }
