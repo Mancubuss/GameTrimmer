@@ -632,20 +632,37 @@ impl FormatDetector {
         if ext == "asar" {
             return Ok(Some(ArchiveType::ElectronAsar));
         }
-        if header_slice.len() >= 16 {
-            let p1 = u32::from_le_bytes([
-                header_slice[0],
-                header_slice[1],
-                header_slice[2],
-                header_slice[3],
-            ]);
-            let p2 = u32::from_le_bytes([
-                header_slice[4],
-                header_slice[5],
-                header_slice[6],
-                header_slice[7],
-            ]);
-            if p1 == 4 && p2 > 0 && p2 < 100_000_000 {
+        // An asar is a chain of Chromium Pickles, and the whole chain sits in
+        // the bytes already read: a size pickle holding the length of the
+        // header pickle, the header pickle holding a string pickle, and then
+        // the JSON tree. The test used to be `p1 == 4` plus a second word of
+        // plausible magnitude, which claimed any file beginning with a
+        // little-endian 4 - Chromium's own resource `.pak` among them, whose
+        // version-4 header reads `04 00 00 00 07 04 00 00`. That made every
+        // `locales/*.pak` in an Electron game a container no handler would
+        // ever trim. Being strict costs nothing: a real `.asar` is claimed by
+        // extension just above, and this branch only ever sees one under
+        // another name.
+        if header_slice.len() >= 17 {
+            let word = |at: usize| {
+                u32::from_le_bytes([
+                    header_slice[at],
+                    header_slice[at + 1],
+                    header_slice[at + 2],
+                    header_slice[at + 3],
+                ])
+            };
+            let (size_pickle, header_pickle, string_pickle, json_len) =
+                (word(0), word(4), word(8), word(12));
+            // `writeString` pads its payload to a four-byte boundary, and each
+            // enclosing pickle prefixes its own four-byte length.
+            let padded = u64::from(json_len).div_ceil(4) * 4;
+            if size_pickle == 4
+                && json_len > 0
+                && u64::from(string_pickle) == padded + 4
+                && header_pickle == string_pickle + 4
+                && header_slice[16] == b'{'
+            {
                 return Ok(Some(ArchiveType::ElectronAsar));
             }
         }
@@ -663,7 +680,23 @@ impl FormatDetector {
             }
         }
 
-        // Fallback checks by extension
+        // Fallback checks by extension.
+        //
+        // Everything above identified the file by its bytes. What follows is a
+        // guess from the name, and it loses to a more specific guess from the
+        // same name: an external single-language file (`locales/ar.pak`,
+        // `sounds_fra.pck`) is a whole-file deletion candidate, never a
+        // container - which is the rule `is_candidate_archive_path` has always
+        // applied on the scan side. The delete preflight probes content
+        // independently, so without this the two disagreed, and a Chromium
+        // `.pak` that matched nothing by magic was claimed here as an Unreal
+        // pak and held back. A file whose bytes really are a container is still
+        // claimed above, by magic, under whatever name it wears - see
+        // `supported_archive_magic_overrides_external_language_or_document_name`.
+        if is_external_single_language_file(&path.to_string_lossy()) {
+            return Ok(None);
+        }
+
         match ext.as_str() {
             "pck" => Ok(Some(ArchiveType::WwisePck)),
             "bnk" => Ok(Some(ArchiveType::WwiseBnk)),
@@ -885,6 +918,57 @@ mod tests {
             FormatDetector::get_handler(ArchiveType::WwiseBnk).analyze(&path),
             Err(ArchiveError::Unsupported(_))
         ));
+    }
+
+    /// Wraps a JSON tree in the Pickle chain Electron writes around one.
+    fn asar_bytes(json: &str) -> Vec<u8> {
+        let padded = json.len().div_ceil(4) * 4;
+        let string_pickle = (padded + 4) as u32;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&(string_pickle + 4).to_le_bytes());
+        bytes.extend_from_slice(&string_pickle.to_le_bytes());
+        bytes.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(json.as_bytes());
+        bytes.resize(16 + padded, 0);
+        bytes
+    }
+
+    #[test]
+    fn a_chromium_resource_pak_under_locales_is_not_a_container() {
+        let dir = tempdir().expect("tempdir");
+        let locales = dir.path().join("bin").join("x64").join("locales");
+        fs::create_dir_all(&locales).expect("create locales");
+
+        // The first bytes of 3DMark's `bin/x64/locales/ar.pak`: a Chromium
+        // resource pack, version 4, 1031 entries. `04 00 00 00` alone used to
+        // read as an asar, and failing that the `.pak` extension read as an
+        // Unreal pak, so the delete preflight held it back by one route or the
+        // other - for every Electron game in the library.
+        let mut bytes = vec![0u8; 64];
+        bytes[0..8].copy_from_slice(&[0x04, 0x00, 0x00, 0x00, 0x07, 0x04, 0x00, 0x00]);
+        let pak = locales.join("ar.pak");
+        fs::write(&pak, &bytes).expect("write pak");
+        assert_eq!(FormatDetector::detect_file(&pak).expect("detect"), None);
+
+        // The name only beats a guess from the extension. Real container bytes
+        // still win under a single-language name.
+        let mut akpk = bytes.clone();
+        akpk[0..4].copy_from_slice(b"AKPK");
+        let disguised = dir.path().join("sounds_fra.pck");
+        fs::write(&disguised, &akpk).expect("write pck");
+        assert_eq!(
+            FormatDetector::detect_file(&disguised).expect("detect"),
+            Some(ArchiveType::WwisePck)
+        );
+
+        // And a genuine asar wearing another extension is still recognized.
+        let renamed = dir.path().join("app.bin");
+        fs::write(&renamed, asar_bytes(r#"{"files":{}}"#)).expect("write asar");
+        assert_eq!(
+            FormatDetector::detect_file(&renamed).expect("detect"),
+            Some(ArchiveType::ElectronAsar)
+        );
     }
 
     #[test]
