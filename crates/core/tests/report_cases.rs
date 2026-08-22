@@ -1112,16 +1112,25 @@ fn games() -> Vec<(&'static str, Vec<Case>)> {
                 c("videos\\de\\PC_WarningSaving.bk2", Rule(Category::Intro)),
             ],
         ),
-        // The other side of the line, and the only rule in the built-in pack
-        // that sits on it: an attract reel is a five- to two-hundred-megabyte
-        // gameplay video looping on the idle title screen, not something the
-        // game plays at you. In a language the user keeps it is content and
-        // survives; in one they do not it is removable like any other.
+        // The attract reel used to be the one rule in the built-in pack that
+        // yielded to the keep-language list: a five- to two-hundred-megabyte
+        // gameplay video looping on the idle title screen is content, not
+        // something the game plays at you, so the copy in a language the user
+        // keeps survived while the rest went.
+        //
+        // It does not any more. Whether a startup video goes is the player's
+        // call, and a veto answered it for them out of sight - while the reel
+        // is offered at confidence 80, under
+        // `app::model::AUTO_SELECT_CONFIDENCE_THRESHOLD`, which means it is
+        // never ticked on their behalf in the first place: they see it
+        // unticked in every language and remove the ones they want gone.
+        // English here is the copy that actually plays for a user keeping
+        // English, and it is offered like all the others.
         (
-            "gt-209-attract-reel-is-content-not-a-screen",
+            "gt-209-attract-reel-is-offered-in-every-language",
             vec![
                 c("Movies\\attract.bik", Rule(Category::Intro)),
-                c("movies\\english\\attract.bik", Nothing),
+                c("movies\\english\\attract.bik", Rule(Category::Intro)),
                 c("movies\\german\\attract.bik", Rule(Category::Intro)),
             ],
         ),

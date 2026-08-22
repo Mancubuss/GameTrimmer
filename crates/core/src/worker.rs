@@ -90,9 +90,12 @@ pub fn is_candidate_archive_extension(ext: &str) -> bool {
 ///   carries. Protecting the one legal screen the player can actually read
 ///   while removing the eighteen they cannot is not keeping a promise, it is
 ///   keeping the wrong copy.
-/// - **Content** in a language the user keeps is off limits. An attract reel
-///   is the case in the built-in pack: a five- to two-hundred-megabyte
-///   gameplay video the game loops on the idle title screen.
+/// - **Content** in a language the user keeps is off limits. No rule the repo
+///   ships claims this any more - the attract reel did, and gave it up: which
+///   startup videos to remove is the player's decision, and a reel offered
+///   under the auto-select threshold is already a decision they make with
+///   their own hand. The flag stays for a personal or imported rule that does
+///   name content in the player's language.
 ///
 /// Deliberately *not* keyed on the rule's description: `Rule::desc` is
 /// resolved to the interface language when the pack is compiled
@@ -393,7 +396,10 @@ mod keep_language_veto_tests {
     }
 
     /// The other side: a rule that says its subject is content yields, and
-    /// the file stays. The attract reel is the case in the built-in pack.
+    /// the file stays. No built-in rule says it any more (see
+    /// [`no_builtin_rule_marks_itself_as_localized_content`]), so the
+    /// predicate is exercised here with a synthetic finding - which is what
+    /// a personal or imported pack setting the flag would produce.
     #[test]
     fn localized_content_in_a_kept_language_is_off_limits() {
         assert!(keep_language_vetoes_rule(
@@ -432,10 +438,24 @@ mod keep_language_veto_tests {
     }
 
     /// The classification is data, not code: every rule the repo ships says
-    /// which side of the line it is on, and exactly one says `content`.
-    /// If that ever changes silently, this is the test that notices.
+    /// which side of the line it is on, and none of them says `content`.
+    ///
+    /// The attract reel used to, and was the only one. It stopped because
+    /// which startup videos a player wants is the player's call, not the
+    /// pack's: the reel is offered at confidence 80 - under
+    /// `app::model::AUTO_SELECT_CONFIDENCE_THRESHOLD`, so never ticked on the
+    /// user's behalf - and a player who wants to keep the one in their own
+    /// language keeps it by leaving the box alone, or permanently by the
+    /// "never touch this" exception. A keep-language veto took that decision
+    /// away from them instead, and did it invisibly.
+    ///
+    /// The mechanism stays - [`keep_language_vetoes_rule`] and
+    /// [`crate::rules::Rule::localized_content`] are part of the pack format,
+    /// available to a personal or imported rule that does name content in the
+    /// player's language. This pins the *built-in* pack's answer, so it
+    /// cannot drift back without someone noticing.
     #[test]
-    fn the_builtin_pack_marks_exactly_one_rule_as_localized_content() {
+    fn no_builtin_rule_marks_itself_as_localized_content() {
         let rules = crate::rules::parse_rule_list(crate::rules::BUILTIN_RULES_JSON)
             .expect("the built-in pack parses");
         let content: Vec<&str> = rules
@@ -444,11 +464,9 @@ mod keep_language_veto_tests {
             .map(|rule| rule.pattern.as_str())
             .collect();
 
-        assert_eq!(
-            content.len(),
-            1,
-            "expected the attract reel and nothing else: {content:?}"
+        assert!(
+            content.is_empty(),
+            "no shipped rule may take a startup video off the table by language: {content:?}"
         );
-        assert!(content[0].contains("attract"), "{content:?}");
     }
 }

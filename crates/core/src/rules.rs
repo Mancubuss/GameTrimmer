@@ -293,22 +293,29 @@ pub struct Rule {
     /// rather than a screen the game plays on the way in.
     ///
     /// This is the line the keep-language list is drawn along, and it is
-    /// per-rule because the categories do not draw it: `Category::Intro`
-    /// holds fourteen rules that name a logo, a legal screen, a health
-    /// warning or a splash, and one that names an attract reel - a five-
-    /// to two-hundred-megabyte gameplay video the game loops on the idle
-    /// title screen, which Bully ships as `AttractModeF/G/I/J/R/S.wmv` and
-    /// Kane & Lynch as `Attract01_French.bik`. The first fourteen are things
-    /// the game plays *at* you; the last is something you watch.
-    ///
-    /// The distinction decides one thing, in
-    /// [`crate::worker::keep_language_vetoes_rule`]: a file carrying one of
-    /// the user's kept languages is off limits when the rule that claimed it
-    /// says `localized_content`, and is removed otherwise. Removing the
+    /// per-rule because the categories do not draw it. It decides one thing,
+    /// in [`crate::worker::keep_language_vetoes_rule`]: a file carrying one
+    /// of the user's kept languages is off limits when the rule that claimed
+    /// it says `localized_content`, and is removed otherwise. Removing the
     /// eighteen legal screens nobody in the room can read while protecting
-    /// the one that actually plays is the failure this exists to prevent -
-    /// and so is stubbing the German attract reel of a player who reads
-    /// German.
+    /// the one that actually plays is the failure this exists to prevent.
+    ///
+    /// **No rule in the built-in pack sets it.** The attract reel was the one
+    /// that did - a five- to two-hundred-megabyte gameplay video the game
+    /// loops on the idle title screen, which Bully ships as
+    /// `AttractModeF/G/I/J/R/S.wmv` and Kane & Lynch as
+    /// `Attract01_French.bik`. It gave the flag up because a keep-language
+    /// veto answers "do I want this startup video gone" on the player's
+    /// behalf and without telling them, while the reel is already offered
+    /// below `app::model::AUTO_SELECT_CONFIDENCE_THRESHOLD` - shown unticked,
+    /// removed only if the player ticks it, kept for good by a personal
+    /// exception if they would rather never see it proposed again. Which
+    /// startup screens go is not a decision a shipped pack should be making
+    /// out of the player's sight.
+    ///
+    /// The field stays because the pack format is not only ours: a personal
+    /// or imported rule that genuinely does name content in the player's
+    /// language declares it here and gets the veto.
     ///
     /// Defaults to `false`, so every pack written before this field existed
     /// keeps its exact behaviour and no rule has to declare it. A rule that

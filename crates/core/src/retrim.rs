@@ -1063,10 +1063,17 @@ mod tests {
     }
 
     /// The unattended half of the same guard, drawing the same line: the
-    /// startup screen goes in every language, the kept-language attract reel
-    /// stays. Re-trim runs with nobody watching, and two paths disagreeing
-    /// about one file is the failure GT-206 exists to fix, which is why both
-    /// call one policy function.
+    /// startup screen goes in every language, the kept-language reel stays.
+    /// Re-trim runs with nobody watching, and two paths disagreeing about one
+    /// file is the failure GT-206 exists to fix, which is why both call one
+    /// policy function.
+    ///
+    /// The pack here is written inline and sets `localized_content` itself:
+    /// no rule the repo ships does any more (see
+    /// `worker::tests::no_builtin_rule_marks_itself_as_localized_content`),
+    /// so this is the shape a *personal or imported* pack would take - which
+    /// is the only way the veto reaches re-trim now, and exactly why it still
+    /// has to hold there.
     #[test]
     fn retrim_stubs_a_startup_screen_but_not_kept_language_content() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");

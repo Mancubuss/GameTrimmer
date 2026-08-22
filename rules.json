@@ -537,8 +537,7 @@
         "uk": "Ролик режиму привернення уваги, який крутиться на титульному екрані до початку гри"
       },
       "confidence": 80,
-      "max_depth": 4,
-      "localized_content": true
+      "max_depth": 4
     },
     {
       "category": "crash_dump",
