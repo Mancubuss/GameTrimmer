@@ -132,7 +132,10 @@ impl ArchiveHandler for ReEngineHandler {
 ///
 /// Reads resource table entries at offset 16 (up to 256 entries) and seeks directly
 /// to check candidate offsets. Falls back to scanning at most the first 2 MB of the file.
-fn scan_for_akpk_offsets(file: &mut File, file_len: u64) -> Result<Vec<u64>, ArchiveError> {
+fn scan_for_akpk_offsets(
+    file: &mut (impl Read + Seek),
+    file_len: u64,
+) -> Result<Vec<u64>, ArchiveError> {
     if file_len < 16 {
         return Ok(Vec::new());
     }
@@ -362,17 +365,30 @@ mod tests {
         std::io::Write::write_all(&mut file, &pak_bytes).expect("write header");
         drop(file);
 
-        // Measure direct scan_for_akpk_offsets on 50GB file
-        let mut f = File::open(&large_pak_path).expect("open");
-        let scan_start = std::time::Instant::now();
+        // What this test is actually about is that inspecting a 50 GB archive
+        // does not read 50 GB of it. That used to be asserted as a 10 ms wall
+        // clock budget, which under `cargo test -j 4` passed or failed with the
+        // machine's load rather than with the code - three people spent a turn
+        // each this session working out whose failure it was. Counting the
+        // bytes states the claim directly and does not care how busy the disk
+        // is.
+        //
+        // The count also says which path ran, which the clock never did: this
+        // fixture reads 2 097 636 bytes, so the capped entry table finds
+        // nothing here and the bound is the fallback's own `min(file_len, 2 MB)`
+        // sweep plus a few hundred bytes of table probing. 4 MB is that bound
+        // with room to spare, and twelve thousand times short of the file.
+        let mut f = CountingReader {
+            inner: File::open(&large_pak_path).expect("open"),
+            read_bytes: 0,
+        };
         let offsets = scan_for_akpk_offsets(&mut f, 50 * 1024 * 1024 * 1024).expect("scan");
-        let scan_duration = scan_start.elapsed();
 
         assert!(!offsets.is_empty());
         assert!(
-            scan_duration.as_millis() < 10,
-            "scan_for_akpk_offsets on 50GB took {:?}",
-            scan_duration
+            f.read_bytes < 4 * 1024 * 1024,
+            "scan_for_akpk_offsets read {} bytes of a 50GB file",
+            f.read_bytes
         );
 
         let start = std::time::Instant::now();
@@ -385,10 +401,31 @@ mod tests {
         assert!(analysis
             .detected_languages
             .contains(&"Japanese".to_string()));
-        assert!(
-            duration.as_millis() < 200,
-            "50GB analyze took {:?}",
-            duration
-        );
+        // `analyze` opens its own handle, so its reads cannot be counted from
+        // here. This stays a wall clock ceiling, but a smoke one rather than a
+        // performance budget: no disk reads 50 GB in five seconds, so it still
+        // catches the regression it exists for without failing under load.
+        assert!(duration.as_secs() < 5, "50GB analyze took {:?}", duration);
+    }
+
+    /// Counts what a scan pulls off the disk. Wraps a `File` for the test
+    /// above; `scan_for_akpk_offsets` takes any `Read + Seek` for this reason.
+    struct CountingReader<R> {
+        inner: R,
+        read_bytes: u64,
+    }
+
+    impl<R: Read> Read for CountingReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read_bytes += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl<R: Seek> Seek for CountingReader<R> {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
     }
 }
