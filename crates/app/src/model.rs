@@ -1080,16 +1080,26 @@ fn majority_category(items: &[FindingItem], indices: &[usize]) -> DisplayCategor
         *total = total.saturating_add(row.size_on_disk);
     }
 
-    let mut best = CATEGORY_ORDER[0];
-    let mut best_bytes = bytes_by_category.get(&best).copied().unwrap_or(0);
-    for &category in &CATEGORY_ORDER[1..] {
-        let bytes = bytes_by_category.get(&category).copied().unwrap_or(0);
-        if bytes > best_bytes {
-            best = category;
-            best_bytes = bytes;
-        }
-    }
-    best
+    // Only categories the group actually holds are candidates. Seeding the
+    // winner with `CATEGORY_ORDER[0]` and unseating it on a strict `>` meant
+    // an absent category won whenever nothing weighed more than nothing - and
+    // a group can weigh nothing legitimately: a read-only monolithic archive
+    // carries `size_on_disk == 0` because it frees nothing until in-place
+    // trimming exists. A folder of those was filed under "Redistributables"
+    // for no better reason than that being first in the list.
+    //
+    // Iterating `CATEGORY_ORDER` keeps the documented tie-break - earliest
+    // wins - now genuinely among the categories present.
+    CATEGORY_ORDER
+        .iter()
+        .filter_map(|category| {
+            bytes_by_category
+                .get(category)
+                .map(|&bytes| (*category, bytes))
+        })
+        .reduce(|best, next| if next.1 > best.1 { next } else { best })
+        .map(|(category, _)| category)
+        .unwrap_or(CATEGORY_ORDER[0])
 }
 
 /// Total bytes represented by a tree node - a folder's precomputed total, or
@@ -2639,6 +2649,54 @@ mod tests {
         assert_eq!(
             tree[0].games[0].categories[0].category,
             Some(DisplayCategory::Redist)
+        );
+    }
+
+    #[test]
+    fn build_tree_files_a_weightless_group_under_a_category_it_actually_has() {
+        // A read-only monolithic archive is deliberately worth zero on-disk
+        // bytes: it frees nothing until in-place trimming exists, so the scan
+        // zeroes `size_on_disk` to keep it out of every total while its real
+        // size still shows. A whole folder of them therefore weighs nothing,
+        // and the winner used to be seeded with `CATEGORY_ORDER[0]` and need a
+        // strict `>` to be unseated - so Delta Force's `Content\Paks\`, 1.5 GB
+        // monoliths and nothing else, was filed under "Redistributables", a
+        // category with no member in that folder at all.
+        //
+        // The sizes below are the shape that matters: large logical, zero on
+        // disk. Weighing `size` instead would hide this without fixing it, and
+        // would put back into the totals the bytes the zeroing exists to keep
+        // out.
+        let monolith = |name: &str| {
+            let mut item = with_group_dir(
+                item_at(
+                    1,
+                    "Delta Force",
+                    "F:\\SteamLibrary\\steamapps\\common\\Delta Force",
+                    &format!("Game\\DeltaForce\\Content\\Paks\\{name}"),
+                    FindingSource::Rule(Category::MonolithicArchive),
+                    90,
+                    1_632_087_572,
+                ),
+                "Game\\DeltaForce\\Content\\Paks",
+            );
+            item.row.size_on_disk = 0;
+            item
+        };
+        let items = vec![
+            monolith("pak-0-0-pakchunk1-WindowsClient.pak"),
+            monolith("pak-0-0-pakchunk2-WindowsClient.pak"),
+        ];
+
+        let tree = build_tree(&items, GroupAxis::Disk);
+
+        let categories = &tree[0].games[0].categories;
+        assert_eq!(categories.len(), 1);
+        assert_eq!(
+            categories[0].category,
+            Some(DisplayCategory::Archives),
+            "a folder of monolithic archives belongs in Archives, not in whichever \
+             category happens to head CATEGORY_ORDER"
         );
     }
 
