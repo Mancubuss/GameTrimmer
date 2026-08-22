@@ -239,9 +239,9 @@ impl LangDetector {
     /// policy now lives for every caller.
     ///
     /// Costs one tokenization and one occurrence pass for the path given.
-    /// Callers ask it about files a rule already claimed - a handful per game
-    /// - not about every file, which is why it can afford to recompute what
-    /// the analysis loop has cached for its own pass.
+    /// Callers ask it about files a rule already claimed, a handful per game,
+    /// not about every file, which is why it can afford to recompute what the
+    /// analysis loop has cached for its own pass.
     pub fn carries_kept_language(&self, rel_path: &str) -> bool {
         let segments = tokenize_path(rel_path);
         let occurrences = collect_occurrences(&self.data, &segments);
