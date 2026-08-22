@@ -975,7 +975,7 @@ mod tests {
     fn a_blocked_container_is_reported_while_the_rest_of_the_batch_is_deleted() {
         let temp = tempfile::tempdir().unwrap();
         let intro_path = temp.path().join("intro.bik");
-        let container_path = temp.path().join("bundled.dat");
+        let container_path = temp.path().join("re_chunk_000.pak");
         let docs_path = temp.path().join("manual.pdf");
         // A real Bink 1 video, the format that used to fail the whole batch.
         let mut intro_bytes = gametrimmer_core::stub::BIK1_STUB.to_vec();
@@ -983,6 +983,9 @@ mod tests {
         std::fs::write(&intro_path, &intro_bytes).unwrap();
         let mut kpka = b"KPKA".to_vec();
         kpka.extend_from_slice(&[0u8; 60]);
+        // Held back by its name. The preflight no longer reads a selected
+        // file's bytes to decide - see
+        // `the_preflight_holds_files_back_by_name_and_never_by_reading_them`.
         std::fs::write(&container_path, &kpka).unwrap();
         std::fs::write(&docs_path, b"ORIGINAL PDF MANUAL DOCUMENTATION").unwrap();
 
@@ -991,7 +994,7 @@ mod tests {
         let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
         let intro_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.bik", "intro");
         let container_id =
-            insert_test_finding(&conn, scan_id, temp.path(), "bundled.dat", "docs_file");
+            insert_test_finding(&conn, scan_id, temp.path(), "re_chunk_000.pak", "docs_file");
         let docs_id = insert_test_finding(&conn, scan_id, temp.path(), "manual.pdf", "docs_file");
         gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
         drop(conn);
@@ -1049,7 +1052,7 @@ mod tests {
                     blocked
                         .error
                         .as_deref()
-                        .is_some_and(|err| err.contains("Capcom RE Engine PAK")),
+                        .is_some_and(|err| err.contains("monolithic archive candidate")),
                     "the user has to be told which file was skipped and why"
                 );
                 assert_eq!(

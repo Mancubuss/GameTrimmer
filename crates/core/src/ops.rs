@@ -252,7 +252,7 @@ pub fn reconcile_pending_operations(conn: &mut Connection) -> Result<Vec<Reconci
 }
 
 /// One file the preflight left out of the batch without failing it: a
-/// multi-asset container, which has to be trimmed in place rather than
+/// monolithic archive candidate, which has to be trimmed in place rather than
 /// removed whole. Every other refusal is a safety error and still aborts the
 /// whole call - see [`prepare_delete_plans_with_skips`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,9 +263,9 @@ pub struct DeleteSkip {
 }
 
 /// Builds immutable delete plans only from the active, non-legacy generation.
-/// Multi-asset containers are dropped from the batch; every other refusal
-/// fails the whole call. Callers that need to tell the user which files were
-/// dropped use [`prepare_delete_plans_with_skips`] instead.
+/// Monolithic archive candidates are dropped from the batch; every other
+/// refusal fails the whole call. Callers that need to tell the user which
+/// files were dropped use [`prepare_delete_plans_with_skips`] instead.
 pub fn prepare_delete_plans(
     conn: &Connection,
     file_ids: &[i64],
@@ -443,50 +443,38 @@ fn prepare_delete_plans_for_action(
             },
         };
         if plan.snapshot.target_identity.kind == TargetKind::File {
-            let target = match crate::safety::validate_delete_plan(&plan) {
-                Ok(target) => Some(target),
-                Err(DeleteBlockReason::Missing) if allow_missing => None,
+            // Identity, and nothing else. This used to also read the file's
+            // first bytes and hold back anything shaped like a multi-asset
+            // container, on the principle that the preflight was the final
+            // authority for every selected file. It was never the first
+            // authority: `should_probe_archive_contents` asks the same
+            // question while classifying - for every imported rule and every
+            // archive-looking extension - and a container caught there is
+            // blocked as read-only and never becomes selectable at all. What
+            // arrives here has already passed that gate or was deliberately
+            // kept off it.
+            //
+            // The one case classification cannot see, bytes that changed
+            // between the scan and the delete, is not a question for a format
+            // detector either. `FileIdentity` carries size and last-write time
+            // and `validate_delete_plan` compares the whole struct, so a
+            // rewritten file is `TargetChanged` long before any magic is read.
+            //
+            // Deliberately given up: a *built-in* rule pointing at a
+            // non-archive extension whose bytes are really a container - the
+            // single combination classification skips for speed. That is a bug
+            // in the built-in rule and belongs in the rule, not in a guard at
+            // the exit. A file the user chose is a file the user chose; the
+            // program does not reopen it to argue the point.
+            match crate::safety::validate_delete_plan(&plan) {
+                Ok(_) => {}
+                Err(DeleteBlockReason::Missing) if allow_missing => {}
                 Err(error) => {
                     return Err(crate::error::CoreError::Other(format!(
-                        "delete preflight blocked file_id {file_id}: archive type probe could not verify the target: {error}"
+                        "delete preflight blocked file_id {file_id}: {error}"
                     )));
                 }
-            };
-            let Some(target) = target else {
-                plans.push(plan);
-                continue;
-            };
-            let detected = archive_trimmer::formats::FormatDetector::detect_file(&target)
-                .map_err(|error| {
-                    crate::error::CoreError::Other(format!(
-                        "delete preflight blocked file_id {file_id}: archive type probe failed: {error}"
-                    ))
-                })?;
-            // Only a container of separately-addressable assets is held
-            // back: deleting one whole would take assets the user never
-            // selected. A recognized single-asset format (a Bink video) is an
-            // ordinary file here and stays deletable - see
-            // `ArchiveType::is_multi_asset_container`.
-            //
-            // The batch is not failed over it either. The user selects across
-            // whole games, and one held-back container used to mean nothing at
-            // all was deleted, named only by file id; it is dropped from the
-            // batch and reported instead.
-            if let Some(archive_type) = detected.filter(|kind| kind.is_multi_asset_container()) {
-                skips.push(DeleteSkip {
-                    file_id: *file_id,
-                    path: target,
-                    reason: format!(
-                        "detected {archive_type}; a multi-asset container is trimmed in place, not deleted whole"
-                    ),
-                });
-                continue;
             }
-            crate::safety::validate_delete_plan(&plan).map_err(|error| {
-                crate::error::CoreError::Other(format!(
-                    "delete preflight blocked file_id {file_id}: target changed during archive type probe: {error}"
-                ))
-            })?;
         }
         plans.push(plan);
     }
@@ -1357,7 +1345,19 @@ mod tests {
     }
 
     #[test]
-    fn archive_magic_blocks_misleading_language_and_text_filenames() {
+    /// A misleading name is classification's problem, not the preflight's.
+    ///
+    /// This used to assert the opposite: the preflight read both files and
+    /// held them back on their magic. It no longer reads anything, so both
+    /// reach a plan here - and neither reaches *here* in the first place
+    /// unless classification let it through. `should_probe_archive_contents`
+    /// probes `sounds_fra.pck` because `.pck` is an archive extension, and
+    /// probes `manual.txt` whenever the rule that claimed it was imported;
+    /// either way the finding is blocked as a read-only archive and can never
+    /// be selected. What is deliberately no longer covered is the third case,
+    /// a *built-in* rule claiming `manual.txt`, which classification skips for
+    /// speed - a bug to fix in that rule rather than at the exit.
+    fn a_misleading_name_reaches_a_plan_because_the_preflight_stopped_reading() {
         let temp = tempfile::tempdir().unwrap();
         let bytes = archive_trimmer::formats::wwise::create_synthetic_wwise_pck(
             &[(0, "English(US)"), (1, "French")],
@@ -1365,6 +1365,8 @@ mod tests {
         );
         std::fs::write(temp.path().join("sounds_fra.pck"), &bytes).unwrap();
         std::fs::write(temp.path().join("manual.txt"), &bytes).unwrap();
+        // Neither name is a monolithic archive candidate, so the name check
+        // that remains has no opinion about either.
         assert!(!crate::worker::is_candidate_archive_path("sounds_fra.pck"));
         assert!(!crate::worker::is_candidate_archive_path("manual.txt"));
 
@@ -1388,18 +1390,23 @@ mod tests {
             let (plans, skips) =
                 prepare_delete_plans_with_skips(&conn, &[file_id], DeleteMethod::Permanent)
                     .unwrap();
-            assert!(plans.is_empty(), "{name} must never get a delete plan");
-            assert_eq!(skips.len(), 1);
-            assert!(skips[0].reason.contains("detected Audiokinetic Wwise PCK"));
-            assert!(temp.path().join(name).is_file(), "{name} must survive");
+            assert!(
+                skips.is_empty(),
+                "{name} must not be held back by a probe the preflight no longer runs"
+            );
+            assert_eq!(
+                plans.iter().map(|plan| plan.file_id).collect::<Vec<_>>(),
+                vec![file_id],
+                "{name} was selected, so it gets a plan"
+            );
         }
     }
 
     #[test]
-    fn a_real_bink_video_is_deletable_while_a_multi_asset_container_is_not() {
-        // Real containers, not stubs of their magic bytes: `BIK1_STUB` and
-        // `BINK2_STUB` are the very files this app writes over an intro, and
-        // the PCK comes out of the Wwise handler's own fixture builder.
+    fn the_preflight_holds_files_back_by_name_and_never_by_reading_them() {
+        // Real files, not stubs of their magic bytes: `BIK1_STUB` is the very
+        // file this app writes over an intro, and the PCK comes out of the
+        // Wwise handler's own fixture builder.
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("intro.bik"), crate::stub::BIK1_STUB).unwrap();
         std::fs::write(temp.path().join("logo.bk2"), crate::stub::BINK2_STUB).unwrap();
@@ -1407,15 +1414,18 @@ mod tests {
             &[(0, "English(US)"), (1, "French")],
             &[(10, 0, 64), (11, 1, 64)],
         );
-        // A name the extension guard has no opinion about, so what is under
-        // test is the content probe and nothing else.
+        // Same bytes, two names. `voices.pck` is a monolithic archive
+        // candidate by name alone; `manual.txt` is not, and nothing but its
+        // contents could say otherwise.
+        std::fs::write(temp.path().join("voices.pck"), &container).unwrap();
         std::fs::write(temp.path().join("manual.txt"), &container).unwrap();
 
         let mut conn = crate::db::open_in_memory().unwrap();
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
         let bink1 = insert_safe_finding(&conn, scan_id, temp.path(), "intro.bik", "bink1");
         let bink2 = insert_safe_finding(&conn, scan_id, temp.path(), "logo.bk2", "bink2");
-        let pck = insert_safe_finding(&conn, scan_id, temp.path(), "manual.txt", "pck");
+        let named = insert_safe_finding(&conn, scan_id, temp.path(), "voices.pck", "pck");
+        let disguised = insert_safe_finding(&conn, scan_id, temp.path(), "manual.txt", "pck");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
         let (plans, skips) =
@@ -1431,11 +1441,31 @@ mod tests {
             "both Bink generations must reach a delete plan"
         );
 
+        // The name check stays: it costs no I/O and it is what reserves a
+        // container for in-place trimming.
         let (plans, skips) =
-            prepare_delete_plans_with_skips(&conn, &[pck], DeleteMethod::Permanent).unwrap();
+            prepare_delete_plans_with_skips(&conn, &[named], DeleteMethod::Permanent).unwrap();
         assert!(plans.is_empty());
         assert_eq!(skips.len(), 1);
-        assert!(skips[0].reason.contains("Audiokinetic Wwise PCK"));
+        assert!(skips[0].reason.contains("monolithic archive candidate"));
+
+        // And the byte probe is gone. The same container under a name no
+        // check objects to now reaches a delete plan, because deciding whether
+        // a container may be whole-deleted is classification's job - see
+        // `should_probe_archive_contents`, which blocks it there as read-only
+        // for every imported rule and every archive-looking extension. By this
+        // point the file is one the user selected, and the preflight does not
+        // reopen it to second-guess that.
+        let (plans, skips) =
+            prepare_delete_plans_with_skips(&conn, &[disguised], DeleteMethod::Permanent).unwrap();
+        assert!(
+            skips.is_empty(),
+            "the preflight must not read a selected file's bytes to hold it back"
+        );
+        assert_eq!(
+            plans.iter().map(|plan| plan.file_id).collect::<Vec<_>>(),
+            vec![disguised]
+        );
     }
 
     #[test]
@@ -1446,13 +1476,15 @@ mod tests {
         std::fs::write(temp.path().join("changelog.txt"), b"another one").unwrap();
         let mut kpka = b"KPKA".to_vec();
         kpka.extend_from_slice(&[0u8; 60]);
-        std::fs::write(temp.path().join("bundled.dat"), &kpka).unwrap();
+        // Held back by its name, not its bytes - `re_chunk_000.pak` is a
+        // monolithic archive candidate before anything is read.
+        std::fs::write(temp.path().join("re_chunk_000.pak"), &kpka).unwrap();
 
         let mut conn = crate::db::open_in_memory().unwrap();
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
         let bink = insert_safe_finding(&conn, scan_id, temp.path(), "intro.bik", "bink");
         let readme = insert_safe_finding(&conn, scan_id, temp.path(), "readme.txt", "readme");
-        let container = insert_safe_finding(&conn, scan_id, temp.path(), "bundled.dat", "kpka");
+        let container = insert_safe_finding(&conn, scan_id, temp.path(), "re_chunk_000.pak", "pak");
         let changelog =
             insert_safe_finding(&conn, scan_id, temp.path(), "changelog.txt", "changelog");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
@@ -1471,10 +1503,10 @@ mod tests {
         );
         assert_eq!(skips.len(), 1);
         assert_eq!(skips[0].file_id, container);
-        assert_eq!(skips[0].path, temp.path().join("bundled.dat"));
+        assert_eq!(skips[0].path, temp.path().join("re_chunk_000.pak"));
         assert!(
-            skips[0].reason.contains("Capcom RE Engine PAK"),
-            "the skip has to name the file's format, not just a file id"
+            skips[0].reason.contains("monolithic archive candidate"),
+            "the skip has to say why, not just name a file id"
         );
     }
 

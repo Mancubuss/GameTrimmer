@@ -831,7 +831,27 @@ mod tests {
     }
 
     #[test]
-    fn archive_magic_in_eac_game_blocks_direct_delete() {
+    /// Records a decision, and a gap it makes visible. Both deliberately.
+    ///
+    /// This used to assert the opposite, and the only thing making it pass was
+    /// the delete preflight reading the file's first bytes and refusing
+    /// anything shaped like a container. That probe is gone by owner's
+    /// decision (GT-215): a file the rules name is a file the program removes,
+    /// without reopening it to argue.
+    ///
+    /// What the old assertion concealed is that `retrim_game` has no
+    /// anti-cheat gate of its own - the EAC marker below is setup, nothing
+    /// reads it, and a plain `readme.txt` in this same game was already being
+    /// deleted by an unattended re-trim long before the probe was removed. The
+    /// probe was accidental cover for one shape of one case, never a
+    /// guarantee. Removing it did not create the hole; it uncovered it.
+    ///
+    /// So this now asserts the deletion, loudly, rather than leaving the
+    /// behaviour untested and the hole unmentioned. See GT-216 for the gate
+    /// itself: the anti-cheat verdict is computed by the scan's Phase 3 from a
+    /// full live inventory, and re-trim needs either to do the same or to read
+    /// the stored verdict.
+    fn unattended_retrim_deletes_a_named_file_even_in_an_anti_cheat_game() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let game_dir = temp_dir.path().join("EAC Game");
         let mut conn = setup_game(&temp_dir, &game_dir);
@@ -853,9 +873,6 @@ mod tests {
         );
         let engine = RuleEngine::from_json(&rules).expect("parse trusted rule");
 
-        // The container is held back from the batch and named in the report,
-        // rather than failing the whole re-trim: the file surviving is the
-        // point, and the run's other candidates are none of its business.
         let report = retrim_game(
             &mut conn,
             10,
@@ -863,18 +880,22 @@ mod tests {
             &LangDetector::new(),
             DeleteMethod::Permanent,
         )
-        .expect("a held-back container must not fail the whole re-trim");
+        .expect("re-trim runs");
 
-        assert_eq!(report.files_deleted, 0);
+        assert_eq!(
+            report.files_deleted, 1,
+            "a trusted rule named the file, so an unattended re-trim removes it"
+        );
         assert!(
-            report
-                .errors
-                .iter()
-                .any(|error| error.contains("Wwise PCK")),
-            "{:?}",
+            report.errors.is_empty(),
+            "nothing holds it back any more: {:?}",
             report.errors
         );
-        assert!(target.is_file());
+        assert!(
+            !target.is_file(),
+            "the file is gone - its bytes being a Wwise container no longer save it, \
+             and neither does the game's EasyAntiCheat marker, which nothing here reads"
+        );
     }
 
     #[test]
