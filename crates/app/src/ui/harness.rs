@@ -105,8 +105,41 @@ impl UiTest {
         self.harness.run_steps(ANIMATED_STEPS);
     }
 
+    /// Draws exactly one frame and reports how long it took.
+    ///
+    /// One frame, not [`Self::run`]'s settle loop: a budget stated over "until
+    /// it settles" measures how many frames egui asked for as much as it
+    /// measures the cost of each, so a layout that needs one extra frame reads
+    /// as a slowdown it is not. What the user waits on is a single repaint.
+    pub fn time_frame(&mut self) -> std::time::Duration {
+        let started = std::time::Instant::now();
+        self.harness.run_steps(1);
+        started.elapsed()
+    }
+
+    /// The fastest of `runs` single frames drawn in the current state.
+    ///
+    /// The minimum rather than the mean: this is a shared, noisy developer
+    /// machine, and every source of noise here (a scheduler preemption, a
+    /// background build, a stray GC in some other process) only ever makes a
+    /// frame *slower*. The floor is the closest thing to the cost of the code
+    /// itself, and a budget compared against it fails only when the code got
+    /// slower - not when the machine was busy.
+    pub fn fastest_frame(&mut self, runs: usize) -> std::time::Duration {
+        (0..runs.max(1))
+            .map(|_| self.time_frame())
+            .min()
+            .expect("at least one run")
+    }
+
     pub fn app(&self) -> &GameTrimmerApp {
         self.harness.state()
+    }
+
+    /// How many times this harness has actually read the rules packs from
+    /// disk - see `ui::settings::rules::pack_disk_reads`.
+    pub fn pack_disk_reads(&self) -> usize {
+        crate::ui::settings::rules::pack_disk_reads(&self.harness.ctx)
     }
 
     pub fn app_mut(&mut self) -> &mut GameTrimmerApp {
@@ -203,6 +236,22 @@ impl UiTest {
     /// grouping by launcher or library yields two, so a switcher that silently
     /// did nothing cannot pass.
     pub fn seed_findings(&mut self) {
+        self.seed_corpus(2, 1);
+    }
+
+    /// A corpus of `games` games with `files_per_game` findings each, for the
+    /// measurements that are about *volume* rather than about which row says
+    /// what: a frame's cost is dominated by how many findings are behind it,
+    /// and two of them measure nothing.
+    ///
+    /// Same row shape as [`Self::seed_findings`], which is the two-game case
+    /// of it - so a timing test and a labelling test disagree about size and
+    /// about nothing else.
+    pub fn seed_many_findings(&mut self, games: usize, files_per_game: usize) {
+        self.seed_corpus(games, files_per_game);
+    }
+
+    fn seed_corpus(&mut self, games: usize, files_per_game: usize) {
         let app = self.app_mut();
         // Findings on screen mean a user who is past the first-run screen:
         // they scanned once, and the disclaimer that gates scanning is
@@ -210,42 +259,51 @@ impl UiTest {
         // panel and every tree assertion below is about the wrong screen.
         app.accept_disclaimer();
         app.mark_scan_started();
-        app.findings = (0..2)
-            .map(|i| crate::model::FindingItem {
-                row: crate::model::FindingRow {
-                    file_id: i,
-                    game_id: i,
-                    game_name: format!("Test Game {i}"),
-                    // These two stand for ordinary launcher-known games, which
-                    // is what the seeded libraries say they are. Leaving this
-                    // `None` would make both of them the *unclaimed* kind -
-                    // folder-scan or hand-added - and the tree marks those with
-                    // a trailing diamond (GT-38), which would quietly change
-                    // every row label these tests look up by name.
-                    app_id: Some(format!("{}", 100 + i)),
-                    install_dir: std::path::PathBuf::from("C:\\Games\\Test"),
-                    library: Some(crate::model::LibraryOrigin {
-                        vendor: Some(SEEDED_LIBRARIES[i as usize].0.to_string()),
-                        root: std::path::PathBuf::from(SEEDED_LIBRARIES[i as usize].1),
-                    }),
-                    rel_path: format!("data/loc_{i}.pak"),
-                    size: 1024 * 1024,
-                    size_on_disk: 1024 * 1024,
-                    source: crate::model::FindingSource::Loc(
-                        gametrimmer_core::langdetect::LangKind::Text,
-                    ),
-                    rule_desc: "test rule".to_string(),
-                    confidence: 90,
-                    lang_tag: Some("de".to_string()),
-                    group_dir: None,
-                    deletion_block_reason: None,
-                    imported_untrusted: false,
-                    action: gametrimmer_core::models::FindingAction::DirectDelete,
-                    anti_cheat_protected: false,
-                    monolith_badge: None,
-                },
-                selected: true,
-                removed: false,
+        app.findings = (0..(games * files_per_game) as i64)
+            .map(|i| {
+                let game = i / files_per_game as i64;
+                crate::model::FindingItem {
+                    row: crate::model::FindingRow {
+                        file_id: i,
+                        game_id: game,
+                        game_name: format!("Test Game {game}"),
+                        // These two stand for ordinary launcher-known games, which
+                        // is what the seeded libraries say they are. Leaving this
+                        // `None` would make both of them the *unclaimed* kind -
+                        // folder-scan or hand-added - and the tree marks those with
+                        // a trailing diamond (GT-38), which would quietly change
+                        // every row label these tests look up by name.
+                        app_id: Some(format!("{}", 100 + game)),
+                        install_dir: std::path::PathBuf::from("C:\\Games\\Test"),
+                        library: Some(crate::model::LibraryOrigin {
+                            vendor: Some(
+                                SEEDED_LIBRARIES[game as usize % SEEDED_LIBRARIES.len()]
+                                    .0
+                                    .to_string(),
+                            ),
+                            root: std::path::PathBuf::from(
+                                SEEDED_LIBRARIES[game as usize % SEEDED_LIBRARIES.len()].1,
+                            ),
+                        }),
+                        rel_path: format!("data/loc_{i}.pak"),
+                        size: 1024 * 1024,
+                        size_on_disk: 1024 * 1024,
+                        source: crate::model::FindingSource::Loc(
+                            gametrimmer_core::langdetect::LangKind::Text,
+                        ),
+                        rule_desc: "test rule".to_string(),
+                        confidence: 90,
+                        lang_tag: Some("de".to_string()),
+                        group_dir: None,
+                        deletion_block_reason: None,
+                        imported_untrusted: false,
+                        action: gametrimmer_core::models::FindingAction::DirectDelete,
+                        anti_cheat_protected: false,
+                        monolith_badge: None,
+                    },
+                    selected: true,
+                    removed: false,
+                }
             })
             .collect();
         app.rebuild_tree();

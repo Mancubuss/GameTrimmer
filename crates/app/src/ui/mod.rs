@@ -7,6 +7,8 @@ pub mod dialogs;
 pub mod harness;
 pub mod highlight;
 pub mod onboarding;
+#[cfg(test)]
+mod perf;
 pub mod plan_panel;
 pub mod row_actions;
 pub mod settings;

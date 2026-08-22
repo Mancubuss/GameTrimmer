@@ -41,7 +41,7 @@
 
 mod data;
 mod general;
-mod rules;
+pub(crate) mod rules;
 mod scanning;
 mod selection;
 

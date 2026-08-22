@@ -2449,6 +2449,22 @@ impl eframe::App for GameTrimmerApp {
         ctx.set_theme(theme_preference(self.settings.theme));
         self.drain_messages(&ctx);
 
+        Self::draw_frame(self, ui);
+    }
+}
+
+impl GameTrimmerApp {
+    /// Everything one frame draws, in the order it is drawn.
+    ///
+    /// Split out of [`eframe::App::ui`] so a test can render a whole frame
+    /// without an `eframe::Frame`. The reason that matters is that no single
+    /// panel is the cost of a frame: the settings dialog is drawn *over* the
+    /// tree, which keeps rebuilding its visible rows underneath, so a
+    /// measurement that drove `ui::settings::show` alone would report a cost
+    /// the user never pays. Listing the panels twice would let the two orders
+    /// drift, and the copy in the test is the one nobody would notice going
+    /// stale.
+    pub(crate) fn draw_frame(&mut self, ui: &mut egui::Ui) {
         ui::top_bar::show(self, ui);
         ui::bottom_bar::show(self, ui);
         // The plan-card strip is rendered inside the tree region (at the top of

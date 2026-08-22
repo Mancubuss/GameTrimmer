@@ -55,7 +55,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let idle = !app.busy && !app.rules_io_active;
 
     for (kind, label, file_name) in packs(s) {
-        show_pack(ui, s, kind, label);
+        show_pack(ui, s, kind, label, file_name);
         if ui
             .add_enabled(idle, egui::Button::new(restore_label(s, file_name)))
             .clicked()
@@ -93,13 +93,19 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     if let Some(kind) = restore_kind {
         app.restore_rules_builtin(kind);
     }
+    // An import rewrites both packs and a restore rewrites one of them, so a
+    // cached readout from before the click is stale the moment it lands.
+    if import_clicked || restore_kind.is_some() {
+        forget_pack_states(ui.ctx(), s);
+    }
 }
 
 /// One pack: its name, whether it currently parses, and where it lives.
-fn show_pack(ui: &mut egui::Ui, s: &i18n::Strings, kind: PackKind, label: &str) {
+fn show_pack(ui: &mut egui::Ui, s: &i18n::Strings, kind: PackKind, label: &str, file_name: &str) {
+    let state = pack_state(ui.ctx(), kind, file_name);
     ui.horizontal(|ui| {
         ui.strong(label);
-        if rules_io::pack_is_valid(kind) {
+        if state.valid {
             ui.colored_label(SUCCESS_GREEN, s.rules_valid_label);
         } else {
             ui.colored_label(ui.visuals().error_fg_color, s.rules_invalid_label);
@@ -107,9 +113,90 @@ fn show_pack(ui: &mut egui::Ui, s: &i18n::Strings, kind: PackKind, label: &str) 
     });
     // Where to look when the answer is "does not parse" - the same reason
     // the database path is shown in "Data & diagnostics".
-    if let Ok(path) = rules_io::pack_path(kind) {
-        ui.small(row_actions::windows_path_string(&path));
+    if let Some(path) = &state.path {
+        ui.small(row_actions::windows_path_string(path));
     }
+}
+
+/// A pack's readout: where its file is, and whether it parses.
+#[derive(Clone)]
+struct PackState {
+    path: Option<std::path::PathBuf>,
+    valid: bool,
+    checked: std::time::Instant,
+}
+
+/// How long a readout is reused before the files are consulted again.
+///
+/// Answering "does this pack still parse?" is not cheap: it resolves the exe
+/// directory, re-serializes the built-in pack to have something to seed a
+/// missing file with, stats the file, reads it, and parses the result - which
+/// for the category pack means building a whole `RuleEngine`, regexes and
+/// all. That ran twice per pack on *every frame* while this section was open,
+/// so the dialog paid for four file reads and two engine builds per repaint,
+/// and a frame took as long as the slowest of those - seconds, when the reads
+/// land on a cold disk or an on-access virus scanner.
+///
+/// A second is chosen so the readout is still what the module docs promise -
+/// live, tracking a hand edit made while the dialog is open - at a fraction of
+/// the cost. Anything this section does to a pack itself invalidates the entry
+/// outright (see [`forget_pack_states`]) rather than waiting it out, so a
+/// restore still turns the readout green immediately.
+pub(crate) const PACK_STATE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn pack_state_id(file_name: &str) -> egui::Id {
+    egui::Id::new(("gametrimmer.rules_pack_state", file_name))
+}
+
+fn pack_state(ctx: &egui::Context, kind: PackKind, file_name: &str) -> PackState {
+    let id = pack_state_id(file_name);
+    if let Some(cached) = ctx.data(|data| data.get_temp::<PackState>(id)) {
+        if cached.checked.elapsed() < PACK_STATE_TTL {
+            return cached;
+        }
+    }
+
+    let state = PackState {
+        path: rules_io::pack_path(kind).ok(),
+        valid: rules_io::pack_is_valid(kind),
+        checked: std::time::Instant::now(),
+    };
+    ctx.data_mut(|data| {
+        data.insert_temp(id, state.clone());
+        // Test-only bookkeeping, kept in the context rather than in a global
+        // so tests running in parallel cannot see each other's counts.
+        #[cfg(test)]
+        {
+            let reads = data.get_temp::<usize>(pack_read_count_id()).unwrap_or(0);
+            data.insert_temp(pack_read_count_id(), reads + 1);
+        }
+    });
+    state
+}
+
+/// Drops both cached readouts, so the next frame re-reads the files. Called
+/// after this section changes a pack itself - the readout must not keep
+/// reporting the state from before the click.
+fn forget_pack_states(ctx: &egui::Context, s: &i18n::Strings) {
+    ctx.data_mut(|data| {
+        for (_, _, file_name) in packs(s) {
+            data.remove::<PackState>(pack_state_id(file_name));
+        }
+    });
+}
+
+#[cfg(test)]
+fn pack_read_count_id() -> egui::Id {
+    egui::Id::new("gametrimmer.rules_pack_reads")
+}
+
+/// How many times this context has actually gone to disk for a pack readout -
+/// the measurement behind the "this section does not re-read its packs every
+/// frame" test, which is the deterministic half of the frame-cost budgets in
+/// `ui::perf`.
+#[cfg(test)]
+pub(crate) fn pack_disk_reads(ctx: &egui::Context) -> usize {
+    ctx.data(|data| data.get_temp::<usize>(pack_read_count_id()).unwrap_or(0))
 }
 
 /// Running state and outcome of an export, import or restore. The top-bar
