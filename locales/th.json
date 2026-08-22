@@ -236,7 +236,7 @@
     "category_bonus": "เนื้อหาโบนัส",
     "category_loc": "ไฟล์ภาษาและคำแปล",
     "category_archives": "คลังข้อมูลแบบรวมศูนย์",
-    "category_other": "อื่นๆ",
+    "category_dev_leftovers": "อื่นๆ",
     "category_orphan": "ไฟล์ตกค้าง/ไม่มีเจ้าของ",
     "orphan_branch_label": "ซากไฟล์ตกค้าง",
     "unit_gb": "GB",

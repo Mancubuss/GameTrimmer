@@ -236,7 +236,7 @@
     "category_bonus": "Bonusinhalte",
     "category_loc": "Lokalisierungsdateien",
     "category_archives": "Monolithische Archive",
-    "category_other": "Sonstiges",
+    "category_dev_leftovers": "Sonstiges",
     "category_orphan": "Verwaist",
     "orphan_branch_label": "Verwaiste Reste",
     "unit_gb": "GB",

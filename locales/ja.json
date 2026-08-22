@@ -236,7 +236,7 @@
     "category_bonus": "特典コンテンツ",
     "category_loc": "ローカライズファイル",
     "category_archives": "モノリシックアーカイブ",
-    "category_other": "その他",
+    "category_dev_leftovers": "その他",
     "category_orphan": "孤立した残存ファイル",
     "orphan_branch_label": "アンインストール残存データ",
     "unit_gb": "GB",

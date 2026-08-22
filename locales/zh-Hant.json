@@ -236,7 +236,7 @@
     "category_bonus": "額外獎勵內容",
     "category_loc": "本地化檔案",
     "category_archives": "單體封存",
-    "category_other": "其他",
+    "category_dev_leftovers": "其他",
     "category_orphan": "孤立殘留檔案",
     "orphan_branch_label": "解除安裝殘留資料",
     "unit_gb": "GB",

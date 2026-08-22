@@ -40,7 +40,12 @@ pub enum DisplayCategory {
     Bonus,
     Loc,
     Archives,
-    Other,
+    /// Build and OS residue a shipped game has no use for: PDB symbol files,
+    /// `Thumbs.db`, `desktop.ini`, test executables. It used to be called
+    /// `Other`, which was never true - [`Category::DevLeftovers`] was the
+    /// only source that ever landed here, so "other" named a bucket with
+    /// exactly one thing in it and hid what that thing was.
+    DevLeftovers,
     /// Orphaned launcher residue (orphan-residue safety) - shown under the per-disk pseudo-game
     /// branch ([`ORPHAN_GAME_ID`]), never mixed into a real game's categories.
     Orphan,
@@ -209,12 +214,15 @@ pub struct FindingItem {
 /// dialog offers a checkbox for it and [`category_enabled`] can gate it.
 pub const CATEGORY_ORDER: [DisplayCategory; 13] = [
     DisplayCategory::Redist,
+    // Right behind redist on purpose: a PDB or a Thumbs.db is the second
+    // easiest thing in a game folder to be certain about, and certainty is
+    // what earns a place near the top of the list.
+    DisplayCategory::DevLeftovers,
     DisplayCategory::Intro,
     DisplayCategory::Docs,
     DisplayCategory::Bonus,
     DisplayCategory::Loc,
     DisplayCategory::Archives,
-    DisplayCategory::Other,
     DisplayCategory::Orphan,
     DisplayCategory::Workshop,
     DisplayCategory::ShaderCache,
@@ -244,7 +252,7 @@ impl DisplayCategory {
             | DisplayCategory::Bonus
             | DisplayCategory::Loc
             | DisplayCategory::Archives
-            | DisplayCategory::Other
+            | DisplayCategory::DevLeftovers
             | DisplayCategory::Orphan
             | DisplayCategory::Workshop => SafetyBadge::Review,
             DisplayCategory::Saves => SafetyBadge::BackupShield,
@@ -443,7 +451,7 @@ pub fn display_category(source: FindingSource) -> DisplayCategory {
         }
         FindingSource::Rule(Category::Bonus) => DisplayCategory::Bonus,
         FindingSource::Rule(Category::MonolithicArchive) => DisplayCategory::Archives,
-        FindingSource::Rule(Category::DevLeftovers) => DisplayCategory::Other,
+        FindingSource::Rule(Category::DevLeftovers) => DisplayCategory::DevLeftovers,
         FindingSource::Rule(Category::Intro) => DisplayCategory::Intro,
         FindingSource::Rule(Category::WorkshopOrphan) => DisplayCategory::Workshop,
         FindingSource::Rule(Category::DownloadingStaging) => DisplayCategory::Orphan,
@@ -468,7 +476,7 @@ pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &
         DisplayCategory::Bonus => s.category_bonus,
         DisplayCategory::Loc => s.category_loc,
         DisplayCategory::Archives => s.category_archives,
-        DisplayCategory::Other => s.category_other,
+        DisplayCategory::DevLeftovers => s.category_dev_leftovers,
         DisplayCategory::Orphan => s.category_orphan,
         DisplayCategory::Workshop => s.category_workshop,
         DisplayCategory::ShaderCache => s.category_shader_cache,
@@ -561,7 +569,7 @@ pub fn category_ui_key(category: DisplayCategory) -> &'static str {
         DisplayCategory::Bonus => "bonus",
         DisplayCategory::Loc => "loc",
         DisplayCategory::Archives => "archives",
-        DisplayCategory::Other => "other",
+        DisplayCategory::DevLeftovers => "dev_leftovers",
         DisplayCategory::Orphan => "orphan",
         DisplayCategory::Workshop => "workshop",
         DisplayCategory::ShaderCache => "shader_cache",
@@ -575,11 +583,26 @@ pub fn category_ui_key(category: DisplayCategory) -> &'static str {
 /// `enabled_categories` setting (see `gametrimmer_core::settings::Settings`).
 /// An empty `enabled_categories` list means every category is enabled - see
 /// that field's doc comment for why an empty list isn't "nothing enabled".
+///
+/// Matched through [`id_names_category`], so a list written under an older
+/// key still selects the right categories.
 pub fn category_enabled(enabled_categories: &[String], category: DisplayCategory) -> bool {
     enabled_categories.is_empty()
         || enabled_categories
             .iter()
-            .any(|id| id == category_ui_key(category))
+            .any(|id| id_names_category(id, category))
+}
+
+/// Whether a stored `enabled_categories` id refers to `category` - by its
+/// current [`category_ui_key`], or by the key it used to be stored under.
+///
+/// [`DisplayCategory::DevLeftovers`] is the one with a past: it was called
+/// "other" until it got its own name. A settings file written back then
+/// still says "other", and a rename that quietly dropped that id from the
+/// list would turn every PDB and Thumbs.db invisible for exactly the users
+/// who had gone to the trouble of picking their categories by hand.
+pub fn id_names_category(id: &str, category: DisplayCategory) -> bool {
+    id == category_ui_key(category) || (category == DisplayCategory::DevLeftovers && id == "other")
 }
 
 /// Default selection policy: auto-select only high-confidence
@@ -687,7 +710,7 @@ pub fn category_risk(category: DisplayCategory) -> RiskLevel {
         | DisplayCategory::Archives
         | DisplayCategory::Workshop => RiskLevel::Low,
         // Dev leftovers and saves: review / backup recommended
-        DisplayCategory::Other | DisplayCategory::Saves => RiskLevel::Medium,
+        DisplayCategory::DevLeftovers | DisplayCategory::Saves => RiskLevel::Medium,
     }
 }
 
@@ -1880,7 +1903,7 @@ mod tests {
         );
         assert_eq!(
             display_category(FindingSource::Rule(Category::DevLeftovers)),
-            DisplayCategory::Other
+            DisplayCategory::DevLeftovers
         );
         assert_eq!(
             display_category(FindingSource::Rule(Category::Intro)),
@@ -2042,12 +2065,12 @@ mod tests {
             keys,
             vec![
                 "redist",
+                "dev_leftovers",
                 "intro",
                 "docs",
                 "bonus",
                 "loc",
                 "archives",
-                "other",
                 "orphan",
                 "workshop",
                 "shader_cache",
@@ -2634,7 +2657,10 @@ mod tests {
         let tree = build_tree(&items, GroupAxis::Disk);
 
         let game = &tree[0].games[0];
-        assert_eq!(game.categories[0].category, Some(DisplayCategory::Other));
+        assert_eq!(
+            game.categories[0].category,
+            Some(DisplayCategory::DevLeftovers)
+        );
         match &game.categories[0].nodes[0] {
             TreeNode::File { index } => assert_eq!(*index, 0),
             TreeNode::Folder { .. } => panic!("expected an orphan file node"),
@@ -3015,7 +3041,7 @@ mod tests {
             ));
         }
         // Everything else is left unchecked, even at high confidence.
-        for category in [Loc, Intro, Redist, Other] {
+        for category in [Loc, Intro, Redist, DevLeftovers] {
             assert!(!profile_auto_selects(
                 SelectionProfile::Cautious,
                 category,
@@ -3041,7 +3067,11 @@ mod tests {
             Redist,
             95
         ));
-        assert!(!profile_auto_selects(SelectionProfile::Balanced, Other, 95));
+        assert!(!profile_auto_selects(
+            SelectionProfile::Balanced,
+            DevLeftovers,
+            95
+        ));
     }
 
     /// The bug this guards against: a false-positive intro match is a unique
@@ -3072,7 +3102,7 @@ mod tests {
                 10
             ));
         }
-        // Redist / Other now come in - but only at or above the floor (70).
+        // Redist / DevLeftovers now come in - but only at or above the floor (70).
         assert!(profile_auto_selects(
             SelectionProfile::Aggressive,
             Redist,
@@ -3080,7 +3110,7 @@ mod tests {
         ));
         assert!(profile_auto_selects(
             SelectionProfile::Aggressive,
-            Other,
+            DevLeftovers,
             90
         ));
         assert!(!profile_auto_selects(
@@ -3094,7 +3124,7 @@ mod tests {
     fn custom_profile_is_the_plain_confidence_threshold() {
         use DisplayCategory::*;
         // Category-agnostic: matches default_selected exactly.
-        for category in [Bonus, Docs, Orphan, Loc, Intro, Redist, Other] {
+        for category in [Bonus, Docs, Orphan, Loc, Intro, Redist, DevLeftovers] {
             assert_eq!(
                 profile_auto_selects(SelectionProfile::Custom, category, 85),
                 default_selected(85)
@@ -3159,7 +3189,7 @@ mod tests {
             RiskLevel::Low,
             "a false-positive intro match destroys a unique video, unlike the zero-risk categories"
         );
-        assert_eq!(category_risk(Other), RiskLevel::Medium);
+        assert_eq!(category_risk(DevLeftovers), RiskLevel::Medium);
     }
 
     #[test]
@@ -3199,10 +3229,10 @@ mod tests {
         assert_eq!(
             categories,
             vec![
-                DisplayCategory::Orphan, // None, 500
-                DisplayCategory::Redist, // None, 100
-                DisplayCategory::Loc,    // Low, 500
-                DisplayCategory::Other,  // Medium, 50
+                DisplayCategory::Orphan,       // None, 500
+                DisplayCategory::Redist,       // None, 100
+                DisplayCategory::Loc,          // Low, 500
+                DisplayCategory::DevLeftovers, // Medium, 50
             ],
             "least-risky first, biggest reclaim first within a risk band"
         );
@@ -3468,7 +3498,10 @@ mod tests {
             category_display(Lang::Uk, DisplayCategory::Archives),
             "Монолітні архіви"
         );
-        assert_eq!(category_display(Lang::Uk, DisplayCategory::Other), "Інше");
+        assert_eq!(
+            category_display(Lang::Uk, DisplayCategory::DevLeftovers),
+            "Залишки розробки"
+        );
         assert_eq!(
             category_display(Lang::Uk, DisplayCategory::Orphan),
             "Осиротіле"
@@ -3494,6 +3527,21 @@ mod tests {
         }
     }
 
+    /// Dev leftovers were shown under "Other" until they got a name of their
+    /// own, and a settings file written back then still lists the category by
+    /// its old key. The one thing a rename must not do is switch a category
+    /// off behind the back of a user who had explicitly switched it on: the
+    /// finding simply stops appearing, which reads as broken detection rather
+    /// than as a setting.
+    #[test]
+    fn a_settings_list_written_under_the_old_key_still_enables_dev_leftovers() {
+        let legacy = vec!["redist".to_string(), "other".to_string()];
+
+        assert!(category_enabled(&legacy, DisplayCategory::DevLeftovers));
+        assert!(category_enabled(&legacy, DisplayCategory::Redist));
+        assert!(!category_enabled(&legacy, DisplayCategory::Docs));
+    }
+
     #[test]
     fn category_enabled_checks_membership_by_ui_key_when_list_is_non_empty() {
         let enabled = vec!["redist".to_string(), "docs".to_string()];
@@ -3501,7 +3549,7 @@ mod tests {
         assert!(category_enabled(&enabled, DisplayCategory::Docs));
         assert!(!category_enabled(&enabled, DisplayCategory::Bonus));
         assert!(!category_enabled(&enabled, DisplayCategory::Loc));
-        assert!(!category_enabled(&enabled, DisplayCategory::Other));
+        assert!(!category_enabled(&enabled, DisplayCategory::DevLeftovers));
         assert!(!category_enabled(&enabled, DisplayCategory::Orphan));
     }
 

@@ -331,7 +331,7 @@ pub(super) const STRINGS: Strings = Strings {
     category_bonus: "Bonus content",
     category_loc: "Localization files",
     category_archives: "Monolithic Archives",
-    category_other: "Other",
+    category_dev_leftovers: "Development leftovers",
     category_orphan: "Orphaned",
     category_workshop: "Workshop mods",
     category_shader_cache: "Shader caches",

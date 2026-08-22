@@ -616,7 +616,7 @@ pub struct Strings {
     pub category_bonus: &'static str,
     pub category_loc: &'static str,
     pub category_archives: &'static str,
-    pub category_other: &'static str,
+    pub category_dev_leftovers: &'static str,
     pub category_orphan: &'static str,
     pub category_workshop: &'static str,
     pub category_shader_cache: &'static str,
@@ -1368,8 +1368,8 @@ impl Strings {
         if let Some(val) = map.get("category_archives") {
             s.category_archives = Box::leak(val.clone().into_boxed_str());
         }
-        if let Some(val) = map.get("category_other") {
-            s.category_other = Box::leak(val.clone().into_boxed_str());
+        if let Some(val) = map.get("category_dev_leftovers") {
+            s.category_dev_leftovers = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("category_orphan") {
             s.category_orphan = Box::leak(val.clone().into_boxed_str());
@@ -1799,7 +1799,7 @@ impl Strings {
             ("category_bonus", self.category_bonus),
             ("category_loc", self.category_loc),
             ("category_archives", self.category_archives),
-            ("category_other", self.category_other),
+            ("category_dev_leftovers", self.category_dev_leftovers),
             ("category_orphan", self.category_orphan),
             ("category_workshop", self.category_workshop),
             ("category_shader_cache", self.category_shader_cache),

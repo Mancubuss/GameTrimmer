@@ -236,7 +236,7 @@
     "category_bonus": "Bonusmaterial",
     "category_loc": "Lokaliseringsfiler",
     "category_archives": "Monolitiska arkiv",
-    "category_other": "Övrigt",
+    "category_dev_leftovers": "Övrigt",
     "category_orphan": "Kvarlämnade rester",
     "orphan_branch_label": "Kvarlämnade rester",
     "unit_gb": "GB",

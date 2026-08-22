@@ -529,12 +529,16 @@ fn toggled(picked: &[String], category: model::DisplayCategory, checked: bool) -
         picked.to_vec()
     };
 
+    // Matched by meaning, not by string: a list carried over from an older
+    // settings file may name this category under a key it no longer uses
+    // (see [`model::id_names_category`]), and a checkbox that cannot untick
+    // what it just showed as ticked is worse than the rename it came from.
     if checked {
-        if !next.iter().any(|id| id == key) {
+        if !next.iter().any(|id| model::id_names_category(id, category)) {
             next.push(key.to_string());
         }
     } else {
-        next.retain(|id| id != key);
+        next.retain(|id| !model::id_names_category(id, category));
     }
 
     if next.len() == CATEGORY_ORDER.len() {

@@ -236,7 +236,7 @@
     "category_bonus": "Contenu bonus",
     "category_loc": "Fichiers de localisation",
     "category_archives": "Archives monolithiques",
-    "category_other": "Autre",
+    "category_dev_leftovers": "Autre",
     "category_orphan": "Orphelin",
     "orphan_branch_label": "Résidus orphelins",
     "unit_gb": "Go",

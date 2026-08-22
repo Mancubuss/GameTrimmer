@@ -328,7 +328,7 @@ pub(super) const STRINGS: Strings = Strings {
     category_bonus: "Бонусні матеріали",
     category_loc: "Файли локалізацій",
     category_archives: "Монолітні архіви",
-    category_other: "Інше",
+    category_dev_leftovers: "Залишки розробки",
     category_orphan: "Осиротіле",
     category_workshop: "Моди Workshop",
     category_shader_cache: "Шейдерні кеші",

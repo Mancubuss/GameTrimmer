@@ -236,7 +236,7 @@
     "category_bonus": "보너스 콘텐츠",
     "category_loc": "로컬라이제이션 파일",
     "category_archives": "모놀리식 아카이브",
-    "category_other": "기타",
+    "category_dev_leftovers": "기타",
     "category_orphan": "삭제된 게임 잔여 파일",
     "orphan_branch_label": "삭제된 게임 잔여 데이터",
     "unit_gb": "GB",
