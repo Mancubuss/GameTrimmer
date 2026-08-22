@@ -4,7 +4,7 @@
 //! full library re-scan. Fails closed if the game executable is currently
 //! running, or if that cannot be determined at all - see [`RunningCheck`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -238,8 +238,12 @@ pub fn retrim_game_with_new_build(
     let lang_findings: HashMap<usize, crate::langdetect::LangFinding> =
         lang_detector.analyze_game(&entries).into_iter().collect();
 
+    #[derive(Clone)]
     struct Candidate<'a> {
         entry: &'a crate::scanner::FileEntry,
+        /// Position of `entry` in `entries` - what the same-name intro sweep
+        /// below matches its pairs against.
+        index: usize,
         category: &'static str,
         rule_desc: Option<String>,
         confidence: u8,
@@ -249,12 +253,30 @@ pub fn retrim_game_with_new_build(
 
     let mut candidates = Vec::new();
     let mut imported_match = false;
+    // A personal keep rule outranks the same-name intro sweep below exactly
+    // as it outranks every rule - see `scanner::same_name_siblings`.
+    let mut vetoed: HashSet<usize> = HashSet::new();
 
     for (index, entry) in entries.iter().enumerate() {
         let verdict = rule_engine.classify(&entry.rel_path, game.app_id.as_deref());
         match verdict {
             crate::rules::Verdict::Kept => {
                 // Explicit keep veto
+                vetoed.insert(index);
+                continue;
+            }
+            crate::rules::Verdict::Flagged(finding)
+                if crate::worker::keep_language_vetoes_rule(
+                    lang_detector,
+                    &finding,
+                    &entry.rel_path,
+                ) =>
+            {
+                // Same veto, same predicate, same policy function as the
+                // interactive scan - see `worker::keep_language_vetoes_rule`.
+                // Unattended re-trim reaching a file the scan would have left
+                // alone is the exact shape of bug GT-206 exists to fix.
+                vetoed.insert(index);
                 continue;
             }
             crate::rules::Verdict::Flagged(finding) => {
@@ -267,6 +289,7 @@ pub fn retrim_game_with_new_build(
                 }
                 candidates.push(Candidate {
                     entry,
+                    index,
                     category: finding.category.as_str(),
                     rule_desc: Some(finding.rule_desc),
                     confidence: finding.confidence,
@@ -278,6 +301,7 @@ pub fn retrim_game_with_new_build(
                 if let Some(lang_finding) = lang_findings.get(&index) {
                     candidates.push(Candidate {
                         entry,
+                        index,
                         category: "localization",
                         rule_desc: Some(lang_finding.reason.to_string()),
                         confidence: lang_finding.confidence,
@@ -294,6 +318,48 @@ pub fn retrim_game_with_new_build(
             "automatic re-trim blocked: an imported rule matched and requires explicit review"
                 .to_string(),
         ));
+    }
+
+    // GT-206: the same-name intro sweep the interactive scan applies, run
+    // over this game's own file list so both paths reach the identical set of
+    // files. A game engine plays one copy of a startup video out of several
+    // search paths, and a stub written into a copy it never opens frees real
+    // bytes while the logo still plays.
+    {
+        let sources: Vec<usize> = candidates
+            .iter()
+            .filter(|candidate| candidate.category == "intro")
+            .map(|candidate| candidate.index)
+            .collect();
+        let mut skip: HashSet<usize> = candidates.iter().map(|candidate| candidate.index).collect();
+        skip.extend(vetoed.iter().copied());
+        let by_index: HashMap<usize, usize> = candidates
+            .iter()
+            .enumerate()
+            .map(|(position, candidate)| (candidate.index, position))
+            .collect();
+        let mut swept = Vec::new();
+        for (sibling, source) in crate::scanner::same_name_siblings(&entries, &sources, &skip) {
+            if crate::worker::is_candidate_archive_path(&entries[sibling].rel_path) {
+                continue;
+            }
+            let Some(&position) = by_index.get(&source) else {
+                continue;
+            };
+            // The source's category and confidence carry over, its
+            // description does not: the rule that matched the source does
+            // not match this path, so repeating it would persist a claim
+            // the file's own path disproves. See
+            // `scanner::SIBLING_FINDING_DESC`.
+            swept.push(Candidate {
+                entry: &entries[sibling],
+                index: sibling,
+                rule_desc: Some(crate::scanner::SIBLING_FINDING_DESC.to_string()),
+                ..candidates[position].clone()
+            });
+        }
+        candidates.extend(swept);
+        candidates.sort_by_key(|candidate| candidate.index);
     }
 
     // 4b. Apply the micro-stub contract (see `crate::stub`) to every "intro"
@@ -494,7 +560,24 @@ pub fn retrim_game_with_new_build(
     // implementation of this same stub contract. A stub write that fails is
     // never silently dropped: it lands in `stub_write_failures` and is folded
     // into this report's `errors` below rather than only reaching a log line.
-    let plans = crate::ops::prepare_delete_plans(conn, &candidate_file_ids, delete_method)?;
+    let (plans, skips) =
+        crate::ops::prepare_delete_plans_with_skips(conn, &candidate_file_ids, delete_method)?;
+    // A multi-asset container the preflight held back leaves the batch, so the
+    // per-candidate arrays have to lose the same entry: they are read by plan
+    // index below, and a shifted one would write a stub over the wrong file.
+    if !skips.is_empty() {
+        let keep: Vec<bool> = candidate_file_ids
+            .iter()
+            .map(|file_id| !skips.iter().any(|skip| skip.file_id == *file_id))
+            .collect();
+        for skip in &skips {
+            skipped_intro_errors.push(format!("{}: {}", skip.path.display(), skip.reason));
+        }
+        retain_by_flags(&mut candidate_file_ids, &keep);
+        retain_by_flags(&mut candidate_sizes, &keep);
+        retain_by_flags(&mut candidate_sizes_on_disk, &keep);
+        retain_by_flags(&mut candidate_stubs, &keep);
+    }
     let mut stub_write_failures: Vec<String> = Vec::new();
     let outcomes = crate::ops::execute_delete_plans_observed(
         conn,
@@ -563,6 +646,17 @@ pub fn retrim_game_with_new_build(
         bytes_freed,
         errors,
     })
+}
+
+/// Drops the entries of `items` whose position is `false` in `keep`, so a set
+/// of parallel per-candidate arrays can lose the same entry together.
+fn retain_by_flags<T>(items: &mut Vec<T>, keep: &[bool]) {
+    let mut index = 0;
+    items.retain(|_| {
+        let retained = keep.get(index).copied().unwrap_or(true);
+        index += 1;
+        retained
+    });
 }
 
 #[cfg(test)]
@@ -759,16 +853,27 @@ mod tests {
         );
         let engine = RuleEngine::from_json(&rules).expect("parse trusted rule");
 
-        let error = retrim_game(
+        // The container is held back from the batch and named in the report,
+        // rather than failing the whole re-trim: the file surviving is the
+        // point, and the run's other candidates are none of its business.
+        let report = retrim_game(
             &mut conn,
             10,
             &engine,
             &LangDetector::new(),
             DeleteMethod::Permanent,
         )
-        .expect_err("supported archive magic must block whole-file deletion");
+        .expect("a held-back container must not fail the whole re-trim");
 
-        assert!(error.to_string().contains("Wwise PCK"), "{error}");
+        assert_eq!(report.files_deleted, 0);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("Wwise PCK")),
+            "{:?}",
+            report.errors
+        );
         assert!(target.is_file());
     }
 
@@ -955,5 +1060,194 @@ mod tests {
             b"NOT A KNOWN CONTAINER AT ALL"
         );
         assert!(!bonus_path.exists(), "the bonus file must still be deleted");
+    }
+
+    /// The unattended half of the same guard, drawing the same line: the
+    /// startup screen goes in every language, the kept-language attract reel
+    /// stays. Re-trim runs with nobody watching, and two paths disagreeing
+    /// about one file is the failure GT-206 exists to fix, which is why both
+    /// call one policy function.
+    #[test]
+    fn retrim_stubs_a_startup_screen_but_not_kept_language_content() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Localized Intro Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+
+        let screen = game_dir.join("legal_german.mp4");
+        let kept = game_dir.join("movies").join("german").join("attract.mp4");
+        let removable = game_dir.join("movies").join("french").join("attract.mp4");
+        for path in [&screen, &kept, &removable] {
+            fs::create_dir_all(path.parent().expect("parent")).expect("create tree");
+            fs::write(path, b"ORIGINAL VIDEO BYTES, NOT A REAL CONTAINER").expect("write video");
+        }
+
+        let rules = format!(
+            r#"{{"version":{},"rules":[
+                {{"category":"intro","pattern":"^legal.*\\.mp4$","desc":"Legal screen","confidence":95}},
+                {{"category":"intro","pattern":"^attract\\.mp4$","desc":"Attract reel","confidence":80,"max_depth":4,"localized_content":true}}
+            ]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse intro rules");
+
+        let report = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::with_keep_list(&["de".to_string()]),
+            DeleteMethod::Permanent,
+        )
+        .expect("execute retrim");
+
+        assert_eq!(
+            report.files_deleted, 2,
+            "the screen and the reel the user does not keep: {:?}",
+            report.errors
+        );
+        assert_eq!(
+            fs::read(&screen).expect("read legal screen"),
+            crate::stub::MP4_STUB,
+            "a legal screen is stubbed in the user's own language too"
+        );
+        assert_eq!(
+            fs::read(&kept).expect("read kept reel").len(),
+            42,
+            "content in a kept language must be untouched, not stubbed"
+        );
+        assert_eq!(
+            fs::read(&removable).expect("read removable reel"),
+            crate::stub::MP4_STUB
+        );
+    }
+
+    /// GT-206: Source searches `portal2_dlc2` before `portal2`, so a stub
+    /// written into the copy an intro rule happened to reach can leave the
+    /// logo playing from the copy it did not. Unattended re-trim must stub
+    /// every copy of the name it judged, not one of them.
+    #[test]
+    fn retrim_stubs_every_copy_of_a_flagged_intro_name() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Overlay Intro Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+
+        // Only the first is within the rule's (depth-limited) reach; the
+        // second is the copy a search-path overlay actually plays.
+        let reached = game_dir.join("media").join("valve.mp4");
+        let overlay = game_dir
+            .join("dlc2")
+            .join("deeper")
+            .join("media")
+            .join("valve.mp4");
+        for path in [&reached, &overlay] {
+            fs::create_dir_all(path.parent().expect("media parent")).expect("create media tree");
+            fs::write(path, b"ORIGINAL VIDEO BYTES, NOT A REAL CONTAINER").expect("write video");
+        }
+
+        let rules = format!(
+            r#"{{"version":{},"rules":[{{"category":"intro","pattern":"^valve\\.mp4$","desc":"Publisher logo","confidence":95}}]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse intro rule");
+
+        let report = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::new(),
+            DeleteMethod::Permanent,
+        )
+        .expect("execute retrim");
+
+        assert_eq!(
+            report.files_deleted, 2,
+            "both copies of the flagged name must be handled, not just the one the rule reached: {:?}",
+            report.errors
+        );
+        // Every copy keeps a playable file at its path, and the freed figure
+        // counts both - the report is what the caller shows as space gained.
+        for path in [&reached, &overlay] {
+            assert_eq!(
+                fs::read(path).expect("read stubbed copy"),
+                crate::stub::MP4_STUB,
+                "{} must hold the micro-stub",
+                path.display()
+            );
+        }
+        assert!(report.bytes_freed > 0);
+
+        // Each copy is persisted with its own attribution: the one the rule
+        // reached cites the rule, the one the sweep added says so. Copying
+        // the rule's description onto a path that rule declines to match
+        // would put a claim in `findings.rule_id` the path disproves.
+        let mut stmt = conn
+            .prepare("SELECT rule_id FROM findings ORDER BY rule_id")
+            .expect("read back finding descriptions");
+        let descs: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query findings")
+            .collect::<std::result::Result<_, _>>()
+            .expect("collect descriptions");
+        assert_eq!(
+            descs,
+            vec![
+                crate::scanner::SIBLING_FINDING_DESC.to_string(),
+                "Publisher logo".to_string()
+            ]
+        );
+    }
+
+    /// The other half of GT-206: one file per language is not one file seen
+    /// several times. Every copy is already flagged on its own, so the sweep
+    /// must add nothing - no second finding, no double-counted bytes.
+    #[test]
+    fn retrim_keeps_language_copies_at_exactly_one_finding_each() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Localized Intro Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+
+        // Three languages the default keep-list does not keep - see the
+        // interactive twin of this test for why.
+        let copies: Vec<PathBuf> = ["de", "fr", "it"]
+            .iter()
+            .map(|lang| game_dir.join("videos").join(lang).join("warning.mp4"))
+            .collect();
+        for path in &copies {
+            fs::create_dir_all(path.parent().expect("language parent")).expect("create video tree");
+            fs::write(path, b"ORIGINAL VIDEO BYTES, NOT A REAL CONTAINER").expect("write video");
+        }
+
+        let rules = format!(
+            r#"{{"version":{},"rules":[{{"category":"intro","pattern":"^warning\\.mp4$","desc":"Legal warning","confidence":95,"max_depth":3}}]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse intro rule");
+
+        let report = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::new(),
+            DeleteMethod::Permanent,
+        )
+        .expect("execute retrim");
+
+        assert_eq!(
+            report.files_deleted, 3,
+            "three language copies are three files, counted once each: {:?}",
+            report.errors
+        );
+        let findings: i64 = conn
+            .query_row("SELECT COUNT(*) FROM findings", [], |row| row.get(0))
+            .expect("count findings");
+        assert_eq!(
+            findings, 3,
+            "a language copy must never receive a second finding for its own name"
+        );
+        for path in &copies {
+            assert_eq!(
+                fs::read(path).expect("read stubbed copy"),
+                crate::stub::MP4_STUB
+            );
+        }
     }
 }

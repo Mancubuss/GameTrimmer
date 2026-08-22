@@ -251,13 +251,37 @@ pub fn reconcile_pending_operations(conn: &mut Connection) -> Result<Vec<Reconci
     Ok(reconciled)
 }
 
+/// One file the preflight left out of the batch without failing it: a
+/// multi-asset container, which has to be trimmed in place rather than
+/// removed whole. Every other refusal is a safety error and still aborts the
+/// whole call - see [`prepare_delete_plans_with_skips`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteSkip {
+    pub file_id: i64,
+    pub path: PathBuf,
+    pub reason: String,
+}
+
 /// Builds immutable delete plans only from the active, non-legacy generation.
-/// Every selected row must pass; callers never receive a partial batch.
+/// Multi-asset containers are dropped from the batch; every other refusal
+/// fails the whole call. Callers that need to tell the user which files were
+/// dropped use [`prepare_delete_plans_with_skips`] instead.
 pub fn prepare_delete_plans(
     conn: &Connection,
     file_ids: &[i64],
     method: DeleteMethod,
 ) -> Result<Vec<DeletePlan>> {
+    Ok(prepare_delete_plans_with_skips(conn, file_ids, method)?.0)
+}
+
+/// [`prepare_delete_plans`] plus the containers it left out, so an
+/// interactive caller can report them instead of silently deleting fewer
+/// files than the user selected.
+pub fn prepare_delete_plans_with_skips(
+    conn: &Connection,
+    file_ids: &[i64],
+    method: DeleteMethod,
+) -> Result<(Vec<DeletePlan>, Vec<DeleteSkip>)> {
     let action = match method {
         DeleteMethod::Permanent => "delete",
         DeleteMethod::RecycleBin => "recycle",
@@ -270,7 +294,7 @@ fn prepare_delete_plans_for_action(
     file_ids: &[i64],
     action: &str,
     allow_missing: bool,
-) -> Result<Vec<DeletePlan>> {
+) -> Result<(Vec<DeletePlan>, Vec<DeleteSkip>)> {
     if !matches!(action, "delete" | "recycle") {
         return Err(crate::error::CoreError::Other(format!(
             "unsupported destructive action: {action}"
@@ -283,6 +307,7 @@ fn prepare_delete_plans_for_action(
         ));
     }
     let mut plans = Vec::with_capacity(file_ids.len());
+    let mut skips = Vec::new();
     for file_id in file_ids {
         validate_persisted_direct_delete_contract(conn, *file_id)?;
         let row = conn.query_row(
@@ -373,9 +398,13 @@ fn prepare_delete_plans_for_action(
             )));
         };
         if crate::worker::is_candidate_archive_path(&rel_path) {
-            return Err(crate::error::CoreError::Other(format!(
-                "delete preflight blocked file_id {file_id}: monolithic archive candidates cannot be whole-file deleted"
-            )));
+            skips.push(DeleteSkip {
+                file_id: *file_id,
+                path: Path::new(&trusted_root).join(&rel_path),
+                reason: "a monolithic archive candidate is trimmed in place, not deleted whole"
+                    .to_string(),
+            });
+            continue;
         }
         let root_identity = FileIdentity::decode(root_identity.as_deref().ok_or_else(|| {
             crate::error::CoreError::Other(format!(
@@ -433,10 +462,25 @@ fn prepare_delete_plans_for_action(
                         "delete preflight blocked file_id {file_id}: archive type probe failed: {error}"
                     ))
                 })?;
-            if let Some(archive_type) = detected {
-                return Err(crate::error::CoreError::Other(format!(
-                    "delete preflight blocked file_id {file_id}: detected {archive_type}; supported archive containers cannot be whole-file deleted"
-                )));
+            // Only a container of separately-addressable assets is held
+            // back: deleting one whole would take assets the user never
+            // selected. A recognized single-asset format (a Bink video) is an
+            // ordinary file here and stays deletable - see
+            // `ArchiveType::is_multi_asset_container`.
+            //
+            // The batch is not failed over it either. The user selects across
+            // whole games, and one held-back container used to mean nothing at
+            // all was deleted, named only by file id; it is dropped from the
+            // batch and reported instead.
+            if let Some(archive_type) = detected.filter(|kind| kind.is_multi_asset_container()) {
+                skips.push(DeleteSkip {
+                    file_id: *file_id,
+                    path: target,
+                    reason: format!(
+                        "detected {archive_type}; a multi-asset container is trimmed in place, not deleted whole"
+                    ),
+                });
+                continue;
             }
             crate::safety::validate_delete_plan(&plan).map_err(|error| {
                 crate::error::CoreError::Other(format!(
@@ -446,7 +490,7 @@ fn prepare_delete_plans_for_action(
         }
         plans.push(plan);
     }
-    Ok(plans)
+    Ok((plans, skips))
 }
 
 /// Authoritative persisted contract gate for every whole-file removal path.
@@ -516,7 +560,7 @@ fn execute_delete_plans_with_remover_observed(
     conn.pragma_update(None, "synchronous", "FULL")?;
 
     let ids: Vec<i64> = plans.iter().map(|plan| plan.file_id).collect();
-    let current = prepare_delete_plans_for_action(conn, &ids, remover.action(), true)?;
+    let (current, _) = prepare_delete_plans_for_action(conn, &ids, remover.action(), true)?;
     if current != plans {
         return Err(crate::error::CoreError::Other(
             DeleteBlockReason::StaleDatabaseRow.to_string(),
@@ -540,7 +584,7 @@ fn execute_delete_plans_with_remover_observed(
 
         let refreshed =
             prepare_delete_plans_for_action(conn, &[plan.file_id], remover.action(), true);
-        if refreshed.as_ref().ok().and_then(|rows| rows.first()) != Some(plan) {
+        if refreshed.as_ref().ok().and_then(|(rows, _)| rows.first()) != Some(plan) {
             let outcome = OpOutcome {
                 path: nominal_path,
                 error: Some(DeleteBlockReason::StaleDatabaseRow.to_string()),
@@ -1304,8 +1348,11 @@ mod tests {
         .unwrap();
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
-        let error = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap_err();
-        assert!(error.to_string().contains("monolithic archive candidates"));
+        let (plans, skips) =
+            prepare_delete_plans_with_skips(&conn, &[file_id], DeleteMethod::Permanent).unwrap();
+        assert!(plans.is_empty(), "a container must never get a delete plan");
+        assert_eq!(skips.len(), 1);
+        assert!(skips[0].reason.contains("monolithic archive candidate"));
         assert!(temp.path().join("voices.pck").is_file());
     }
 
@@ -1338,13 +1385,97 @@ mod tests {
             (language_named, "sounds_fra.pck"),
             (text_named, "manual.txt"),
         ] {
-            let error =
-                prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("detected Audiokinetic Wwise PCK"));
+            let (plans, skips) =
+                prepare_delete_plans_with_skips(&conn, &[file_id], DeleteMethod::Permanent)
+                    .unwrap();
+            assert!(plans.is_empty(), "{name} must never get a delete plan");
+            assert_eq!(skips.len(), 1);
+            assert!(skips[0].reason.contains("detected Audiokinetic Wwise PCK"));
             assert!(temp.path().join(name).is_file(), "{name} must survive");
         }
+    }
+
+    #[test]
+    fn a_real_bink_video_is_deletable_while_a_multi_asset_container_is_not() {
+        // Real containers, not stubs of their magic bytes: `BIK1_STUB` and
+        // `BINK2_STUB` are the very files this app writes over an intro, and
+        // the PCK comes out of the Wwise handler's own fixture builder.
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("intro.bik"), crate::stub::BIK1_STUB).unwrap();
+        std::fs::write(temp.path().join("logo.bk2"), crate::stub::BINK2_STUB).unwrap();
+        let container = archive_trimmer::formats::wwise::create_synthetic_wwise_pck(
+            &[(0, "English(US)"), (1, "French")],
+            &[(10, 0, 64), (11, 1, 64)],
+        );
+        // A name the extension guard has no opinion about, so what is under
+        // test is the content probe and nothing else.
+        std::fs::write(temp.path().join("manual.txt"), &container).unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let bink1 = insert_safe_finding(&conn, scan_id, temp.path(), "intro.bik", "bink1");
+        let bink2 = insert_safe_finding(&conn, scan_id, temp.path(), "logo.bk2", "bink2");
+        let pck = insert_safe_finding(&conn, scan_id, temp.path(), "manual.txt", "pck");
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        let (plans, skips) =
+            prepare_delete_plans_with_skips(&conn, &[bink1, bink2], DeleteMethod::Permanent)
+                .unwrap();
+        assert!(
+            skips.is_empty(),
+            "a Bink video is one video, not a container of separable assets"
+        );
+        assert_eq!(
+            plans.iter().map(|plan| plan.file_id).collect::<Vec<_>>(),
+            vec![bink1, bink2],
+            "both Bink generations must reach a delete plan"
+        );
+
+        let (plans, skips) =
+            prepare_delete_plans_with_skips(&conn, &[pck], DeleteMethod::Permanent).unwrap();
+        assert!(plans.is_empty());
+        assert_eq!(skips.len(), 1);
+        assert!(skips[0].reason.contains("Audiokinetic Wwise PCK"));
+    }
+
+    #[test]
+    fn one_blocked_container_does_not_cost_the_rest_of_the_batch_its_plans() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("intro.bik"), crate::stub::BIK1_STUB).unwrap();
+        std::fs::write(temp.path().join("readme.txt"), b"a plain leftover file").unwrap();
+        std::fs::write(temp.path().join("changelog.txt"), b"another one").unwrap();
+        let mut kpka = b"KPKA".to_vec();
+        kpka.extend_from_slice(&[0u8; 60]);
+        std::fs::write(temp.path().join("bundled.dat"), &kpka).unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let bink = insert_safe_finding(&conn, scan_id, temp.path(), "intro.bik", "bink");
+        let readme = insert_safe_finding(&conn, scan_id, temp.path(), "readme.txt", "readme");
+        let container = insert_safe_finding(&conn, scan_id, temp.path(), "bundled.dat", "kpka");
+        let changelog =
+            insert_safe_finding(&conn, scan_id, temp.path(), "changelog.txt", "changelog");
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        let (plans, skips) = prepare_delete_plans_with_skips(
+            &conn,
+            &[bink, readme, container, changelog],
+            DeleteMethod::Permanent,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plans.iter().map(|plan| plan.file_id).collect::<Vec<_>>(),
+            vec![bink, readme, changelog],
+            "the ordinary files keep their plans when one container is held back"
+        );
+        assert_eq!(skips.len(), 1);
+        assert_eq!(skips[0].file_id, container);
+        assert_eq!(skips[0].path, temp.path().join("bundled.dat"));
+        assert!(
+            skips[0].reason.contains("Capcom RE Engine PAK"),
+            "the skip has to name the file's format, not just a file id"
+        );
     }
 
     #[test]

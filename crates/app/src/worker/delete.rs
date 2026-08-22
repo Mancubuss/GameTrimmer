@@ -11,7 +11,7 @@ use eframe::egui;
 use gametrimmer_core::db;
 use gametrimmer_core::models::FindingAction;
 use gametrimmer_core::ops::{
-    execute_delete_plans_observed, prepare_delete_plans, FsOutcome, OpOutcome,
+    execute_delete_plans_observed, prepare_delete_plans_with_skips, FsOutcome, OpOutcome,
 };
 use gametrimmer_core::settings::DeleteMethod;
 
@@ -46,7 +46,7 @@ pub fn spawn_delete(
 
 fn run_delete(
     db_path: &Path,
-    items: Vec<DeleteItem>,
+    mut items: Vec<DeleteItem>,
     method: DeleteMethod,
     notifier: &Notifier,
     lang: Lang,
@@ -131,19 +131,41 @@ fn run_delete(
         set
     };
 
-    let plans = match prepare_delete_plans(&conn, &file_ids, method) {
-        Ok(plans) if plans.len() == items.len() => plans,
-        Ok(_) => {
-            notifier.report_error(i18n::Reported::new(lang, |l| {
-                i18n::delete_failed(l, "delete preflight returned an incomplete batch")
-            }));
-            return;
-        }
+    // A multi-asset container the preflight held back is dropped from the
+    // batch rather than failing it - one such file used to mean nothing at all
+    // got deleted. It is still reported: `error` keeps it out of the freed
+    // figure (see `space_tally`) and puts it, by name and reason, in the
+    // summary the window shows when the batch finishes.
+    let (plans, blocked) = match prepare_delete_plans_with_skips(&conn, &file_ids, method) {
+        Ok(prepared) => prepared,
         Err(err) => {
             notifier.report_error(i18n::Reported::new(lang, |l| i18n::delete_failed(l, &err)));
             return;
         }
     };
+    let blocked_outcomes: Vec<RemoveOutcome> = blocked
+        .iter()
+        .filter_map(|skip| {
+            let item = items.iter().find(|item| item.file_id == skip.file_id)?;
+            Some(RemoveOutcome {
+                file_id: skip.file_id,
+                path: skip.path.clone(),
+                error: Some(skip.reason.clone()),
+                purged: false,
+                nuked: false,
+                size_on_disk: item.size_on_disk,
+                share: None,
+            })
+        })
+        .collect();
+    // Keeps `items[i]` paired with `plans[i]` for the whole job below.
+    items.retain(|item| !blocked.iter().any(|skip| skip.file_id == item.file_id));
+    if plans.len() != items.len() {
+        notifier.report_error(i18n::Reported::new(lang, |l| {
+            i18n::delete_failed(l, "delete preflight returned an incomplete batch")
+        }));
+        return;
+    }
 
     // Zero-Data-Loss Shield: If any save_bloat files are queued, backup them before deleting
     if !save_file_ids.is_empty() {
@@ -351,7 +373,7 @@ fn run_delete(
     // as selectable despite being gone - re-deleting would then just fail.
     // Only an observed removal or an explicit NotFound result may purge the
     // database row. Permission, sharing and other I/O failures remain visible.
-    let mapped: Vec<RemoveOutcome> = items
+    let mut mapped: Vec<RemoveOutcome> = items
         .iter()
         .zip(outcomes)
         .zip(nuked)
@@ -371,6 +393,7 @@ fn run_delete(
             }
         })
         .collect();
+    mapped.extend(blocked_outcomes);
 
     record_space_tally(&conn, method, &mapped);
 
@@ -945,6 +968,108 @@ mod tests {
         assert!(
             !docs_path.exists(),
             "docs file should be deleted without stub"
+        );
+    }
+
+    #[test]
+    fn a_blocked_container_is_reported_while_the_rest_of_the_batch_is_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let intro_path = temp.path().join("intro.bik");
+        let container_path = temp.path().join("bundled.dat");
+        let docs_path = temp.path().join("manual.pdf");
+        // A real Bink 1 video, the format that used to fail the whole batch.
+        let mut intro_bytes = gametrimmer_core::stub::BIK1_STUB.to_vec();
+        intro_bytes.extend_from_slice(&[0xAB; 4096]);
+        std::fs::write(&intro_path, &intro_bytes).unwrap();
+        let mut kpka = b"KPKA".to_vec();
+        kpka.extend_from_slice(&[0u8; 60]);
+        std::fs::write(&container_path, &kpka).unwrap();
+        std::fs::write(&docs_path, b"ORIGINAL PDF MANUAL DOCUMENTATION").unwrap();
+
+        let db_path = temp.path().join("test.db");
+        let mut conn = gametrimmer_core::db::open(&db_path).unwrap();
+        let scan_id = gametrimmer_core::db::begin_scan(&conn, "complete").unwrap();
+        let intro_id = insert_test_finding(&conn, scan_id, temp.path(), "intro.bik", "intro");
+        let container_id =
+            insert_test_finding(&conn, scan_id, temp.path(), "bundled.dat", "docs_file");
+        let docs_id = insert_test_finding(&conn, scan_id, temp.path(), "manual.pdf", "docs_file");
+        gametrimmer_core::db::activate_scan(&mut conn, scan_id).unwrap();
+        drop(conn);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notifier = Notifier::new(tx, egui::Context::default());
+        let items = vec![
+            DeleteItem {
+                file_id: intro_id,
+                size_on_disk: 1000,
+                action: FindingAction::DirectDelete,
+            },
+            DeleteItem {
+                file_id: container_id,
+                size_on_disk: 4000,
+                action: FindingAction::DirectDelete,
+            },
+            DeleteItem {
+                file_id: docs_id,
+                size_on_disk: 2000,
+                action: FindingAction::DirectDelete,
+            },
+        ];
+
+        run_delete(
+            &db_path,
+            items,
+            DeleteMethod::Permanent,
+            &notifier,
+            Lang::En,
+        );
+
+        let mut done = false;
+        for msg in rx {
+            if let WorkerMsg::RemoveDone {
+                outcomes, method, ..
+            } = msg
+            {
+                let find = |file_id: i64| {
+                    outcomes
+                        .iter()
+                        .find(|outcome| outcome.file_id == file_id)
+                        .unwrap_or_else(|| panic!("file_id {file_id} must be reported"))
+                };
+                assert_eq!(
+                    outcomes.len(),
+                    3,
+                    "every selected file must be accounted for"
+                );
+                assert!(find(intro_id).purged, "a Bink intro must be deletable");
+                assert!(find(docs_id).purged);
+                let blocked = find(container_id);
+                assert!(!blocked.purged);
+                assert!(
+                    blocked
+                        .error
+                        .as_deref()
+                        .is_some_and(|err| err.contains("Capcom RE Engine PAK")),
+                    "the user has to be told which file was skipped and why"
+                );
+                assert_eq!(
+                    space_tally(method, &outcomes).freed,
+                    1000 + 2000,
+                    "the skipped file's bytes must not be reported as freed"
+                );
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "run_delete must emit RemoveDone");
+
+        assert!(container_path.is_file(), "the container must survive");
+        assert_eq!(std::fs::read(&container_path).unwrap(), kpka);
+        assert!(!docs_path.exists());
+        assert_eq!(
+            std::fs::read(&intro_path).unwrap(),
+            gametrimmer_core::stub::BIK1_STUB,
+            "the intro must be replaced by the micro-stub"
         );
     }
 

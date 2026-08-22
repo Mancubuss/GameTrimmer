@@ -47,6 +47,120 @@ impl FileEntry {
     }
 }
 
+/// Pairs every entry that carries the same file name as one of `sources` -
+/// and is not already spoken for by `skip` - with the source it copies.
+/// Returned as `(sibling_index, source_index)`, ascending by sibling index.
+///
+/// This exists because a game engine picks *one* copy of a startup video out
+/// of several search paths, and it is not the copy a path-shaped rule
+/// happens to reach. Portal 2 ships `portal2\media\valve.bik` and
+/// `portal2_dlc2\media\valve.bik`; ELEX 2 ships
+/// `data\extern\videos\logo_pb.bik` and the same file again under
+/// `ELEX2DX11\`, which is one segment past the intro rules' depth budget. A
+/// stub written into the copy the engine never opens frees real bytes and
+/// still shows the logo - a promise the app cannot keep and the user cannot
+/// see without launching the game.
+///
+/// Deliberately *not* a depth increase in the rules: reaching deeper would
+/// flag unrelated videos that merely sit far down a tree. This propagates a
+/// verdict already reached about one exact file name inside one game, which
+/// is a far narrower claim - and it is applied while classifying, so every
+/// extra copy becomes an ordinary finding the user sees, ticks and can
+/// veto, rather than a file some later stage deletes on its own initiative.
+///
+/// `skip` must contain every already-classified and every vetoed index:
+/// a personal keep rule outranks this, and a file that already has a finding
+/// must not receive a second one.
+///
+/// A name alone is not enough. A game may ship `movies\logo.bik` (a two-
+/// megabyte publisher reel) and `chapters\ch3\logo.bik` (a hundred-megabyte
+/// sequence a designer happened to call "logo"), and stubbing the second one
+/// destroys unique content. So a copy also has to be plausibly the *same*
+/// file: see [`SIBLING_MAX_SIZE_RATIO`].
+pub fn same_name_siblings(
+    entries: &[FileEntry],
+    sources: &[usize],
+    skip: &std::collections::HashSet<usize>,
+) -> Vec<(usize, usize)> {
+    if sources.is_empty() {
+        return Vec::new();
+    }
+    // First source wins a tie: two flagged copies of one name describe the
+    // same video, so which one an extra copy cites changes nothing but the
+    // text, and picking deterministically keeps scans reproducible.
+    let mut by_name: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(sources.len());
+    for &source in sources {
+        let Some(entry) = entries.get(source) else {
+            continue;
+        };
+        by_name
+            .entry(file_name_key(&entry.rel_path))
+            .or_insert(source);
+    }
+
+    let mut pairs = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if skip.contains(&index) {
+            continue;
+        }
+        if let Some(&source) = by_name.get(&file_name_key(&entry.rel_path)) {
+            if entry.size > entries[source].size.saturating_mul(SIBLING_MAX_SIZE_RATIO) {
+                continue;
+            }
+            pairs.push((index, source));
+        }
+    }
+    pairs
+}
+
+/// How much bigger than the file it copies a swept sibling may be.
+///
+/// Exact equality was the first choice and is wrong on real data: of the
+/// eight pairs this sweep finds across a 690-game library, five are
+/// re-encodes of the same reel rather than byte-identical duplicates - The
+/// Sinking City's `Win64\Splash\UE4_Logo.mp4` (2 300 301 B) beside the copy
+/// the rule reached (2 042 707 B), its `FullHD\` sibling at 109 590 B, The
+/// Thaumaturge's `vp9\LoadingScreen_Logo.mp4` (140 006 B) beside 511 256 B,
+/// and Boltgun's `Original\AUROCH_SPLASHSCREEN.mp4` (1 583 954 B) beside
+/// 728 582 B. Requiring equal bytes would drop most of the real pairs.
+///
+/// The guard is therefore one-sided and loose, because the danger is
+/// one-sided and coarse: a re-encode of a short logo lands anywhere from a
+/// fifth to a bit over twice the original, while the name collision that
+/// matters - a hundred-megabyte in-game sequence a designer called `logo`
+/// next to a two-megabyte publisher reel - is off by a factor of seventy.
+/// Four is the smallest whole ratio that clears the widest observed
+/// re-encode (2.17x) with room to spare.
+pub const SIBLING_MAX_SIZE_RATIO: u64 = 4;
+
+/// The description a swept sibling carries instead of the rule description
+/// it never matched.
+///
+/// Copying the source finding's `rule_id` used to make the app claim a file
+/// was matched by a pattern that provably declines to reach it (the logo
+/// rule stops at `max_depth: 4`, ELEX 2's second copy sits one segment
+/// deeper). A user auditing "why is this flagged" got a lie. This says what
+/// actually happened.
+///
+/// English, like every other description the database stores - see
+/// `app::worker::descriptions` for why, and for why this one stays English
+/// in the window as well: there is no rule-pack entry to look a translation
+/// up from, exactly as for a generated localization reason.
+pub const SIBLING_FINDING_DESC: &str =
+    "Another copy of an intro file already flagged elsewhere in this game";
+
+/// The last `\`- or `/`-separated segment of `rel_path`, lowercased: Windows
+/// file names are case-insensitive, so `UE4_Logo.mp4` and `ue4_logo.mp4` are
+/// the same name and must pair.
+fn file_name_key(rel_path: &str) -> String {
+    rel_path
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(rel_path)
+        .to_ascii_lowercase()
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ScanStats {
     pub files: u64,
@@ -353,7 +467,150 @@ pub fn scan_games_bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::fs;
+
+    /// Builds a game file list out of `\`-separated relative paths.
+    fn entries_of(rel_paths: &[&str]) -> Vec<FileEntry> {
+        rel_paths
+            .iter()
+            .map(|rel| FileEntry::logical_only(*rel, 1024, None))
+            .collect()
+    }
+
+    /// The GT-206 shape: Source searches `portal2_dlc2` before `portal2`, so
+    /// the copy a rule reached is not the copy the engine opens. Both must
+    /// end up flagged.
+    #[test]
+    fn same_name_siblings_pairs_a_search_path_overlay_copy() {
+        let entries = entries_of(&[
+            r"portal2\media\valve.bik",
+            r"portal2_dlc2\media\valve.bik",
+            r"portal2\media\intro_movie.bik",
+        ]);
+
+        let pairs = same_name_siblings(&entries, &[0], &HashSet::from([0]));
+
+        assert_eq!(
+            pairs,
+            vec![(1, 0)],
+            "the second copy of valve.bik must pair with the flagged one, \
+             and an unrelated video must not"
+        );
+    }
+
+    /// ELEX 2 keeps a whole second copy of its video tree under
+    /// `ELEX2DX11\`, one segment past what the intro rules' depth budget
+    /// reaches. Depth must not shield a copy of a name already judged.
+    #[test]
+    fn same_name_siblings_reaches_past_the_rules_depth_budget() {
+        let entries = entries_of(&[
+            r"data\extern\videos\logo_pb.bik",
+            r"ELEX2DX11\data\extern\videos\logo_pb.bik",
+        ]);
+
+        assert_eq!(
+            same_name_siblings(&entries, &[0], &HashSet::from([0])),
+            vec![(1, 0)]
+        );
+    }
+
+    /// Assassin's Creed ships one `warning_disclaimer.bik` per language, and
+    /// every one of them is a real separate file the rules already flag
+    /// individually. The sweep must find nothing left to add - anything else
+    /// would be a second finding for a file that already has one.
+    #[test]
+    fn same_name_siblings_adds_nothing_when_every_language_copy_is_already_flagged() {
+        let entries = entries_of(&[
+            r"videos\br\warning_disclaimer.bik",
+            r"videos\de\warning_disclaimer.bik",
+            r"videos\en\warning_disclaimer.bik",
+        ]);
+
+        assert!(
+            same_name_siblings(&entries, &[0, 1, 2], &HashSet::from([0, 1, 2])).is_empty(),
+            "language copies are already covered one by one"
+        );
+    }
+
+    /// A personal keep rule is the refusal of any classification, and it
+    /// outranks this sweep exactly as it outranks the rule that would
+    /// otherwise have matched the file.
+    #[test]
+    fn same_name_siblings_respects_a_keep_veto() {
+        let entries = entries_of(&[r"movies\logo.bik", r"mods\custom\movies\logo.bik"]);
+
+        assert!(
+            same_name_siblings(&entries, &[0], &HashSet::from([0, 1])).is_empty(),
+            "a vetoed copy must not be resurrected by its name"
+        );
+    }
+
+    /// Windows file names are case-insensitive: `UE4_Logo.mp4` and
+    /// `ue4_logo.mp4` name the same video and must pair.
+    #[test]
+    fn same_name_siblings_matches_file_names_case_insensitively() {
+        let entries = entries_of(&[
+            r"TSCGame\Content\Movies\UE4_Logo.mp4",
+            r"Remaster\TSCGame\Content\Movies\Splash\ue4_logo.mp4",
+        ]);
+
+        assert_eq!(
+            same_name_siblings(&entries, &[0], &HashSet::from([0])),
+            vec![(1, 0)]
+        );
+    }
+
+    /// A name is not an identity. The failure this guards against: a game
+    /// ships a two-megabyte publisher reel as `movies\logo.bik` and a
+    /// hundred-megabyte in-game sequence a designer also called `logo`.
+    /// Pairing them on the name alone would stub unique content.
+    #[test]
+    fn same_name_siblings_refuses_a_copy_far_bigger_than_the_file_it_copies() {
+        let entries = vec![
+            FileEntry::logical_only(r"movies\logo.bik", 2 * 1024 * 1024, None),
+            FileEntry::logical_only(r"chapters\ch3\logo.bik", 140 * 1024 * 1024, None),
+        ];
+
+        assert!(
+            same_name_siblings(&entries, &[0], &HashSet::from([0])).is_empty(),
+            "a 140 MB video is not another copy of a 2 MB logo"
+        );
+    }
+
+    /// The other side of the same guard: the real pairs in the library are
+    /// re-encodes more often than byte-identical duplicates (The Thaumaturge
+    /// ships `vp9\LoadingScreen_Logo.mp4` at 140 006 B beside 511 256 B, and
+    /// Boltgun's `Original\` master runs 2.17x the copy the rule reached),
+    /// so exact equality would drop most of them.
+    #[test]
+    fn same_name_siblings_still_pairs_a_smaller_re_encode() {
+        let entries = vec![
+            FileEntry::logical_only(r"Content\Movies\LoadingScreen_Logo.mp4", 511_256, None),
+            FileEntry::logical_only(r"Content\Moviesp9\LoadingScreen_Logo.mp4", 140_006, None),
+        ];
+
+        assert_eq!(
+            same_name_siblings(&entries, &[0], &HashSet::from([0])),
+            vec![(1, 0)]
+        );
+    }
+
+    /// Same file name, different extension is a different file: a `.webm`
+    /// re-encode next to a `.bik` is not proof the engine reads either.
+    #[test]
+    fn same_name_siblings_does_not_pair_across_extensions() {
+        let entries = entries_of(&[r"movies\logo.bik", r"movies\vp9\logo.webm"]);
+
+        assert!(same_name_siblings(&entries, &[0], &HashSet::from([0])).is_empty());
+    }
+
+    #[test]
+    fn same_name_siblings_without_sources_pairs_nothing() {
+        let entries = entries_of(&[r"movies\logo.bik", r"other\logo.bik"]);
+
+        assert!(same_name_siblings(&entries, &[], &HashSet::new()).is_empty());
+    }
 
     fn write_file(path: &Path, contents: &[u8]) {
         if let Some(parent) = path.parent() {

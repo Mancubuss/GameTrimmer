@@ -173,12 +173,7 @@ impl LangDetector {
             // keep-language token: `ai_voice_sk_vo_english.spk` is English
             // VO ("sk" is a mission code), `*_LOC_INT.upk` is the English
             // master locale.
-            let named_keep_language = occ_lists[i].iter().any(|occ| {
-                occ.is_filename
-                    && !matches!(occ.level, dict::Level::C)
-                    && self.keep.contains(occ.canonical)
-            });
-            if named_keep_language || self.under_keep_language_folder(segs) {
+            if self.keep_language_protects(&occ_lists[i], segs) {
                 continue;
             }
 
@@ -199,6 +194,58 @@ impl LangDetector {
         // nothing anyway, so the early return above needs no bookkeeping.
         perf::add(perf::Stage::LangDecide, decide_started.elapsed());
         Ok(out)
+    }
+
+    /// Whether one of the user's kept languages claims this file, so no
+    /// stage of the pipeline may remove it.
+    ///
+    /// Lifted out of the decision loop above rather than copied: this is the
+    /// only definition of "a kept language owns this file" in the program,
+    /// and [`carries_kept_language`](Self::carries_kept_language) is the same
+    /// function reached from a path instead of from precomputed tables. Two
+    /// definitions would be worse than none - the guarantee the keep-list
+    /// makes is that *nothing* takes the file, and a second opinion about
+    /// what counts as a language marker is exactly how the first hole in that
+    /// guarantee appeared.
+    ///
+    /// A file living under a keep-language folder belongs to that language
+    /// whatever its own name resembles: GRID keeps Japanese-named engine cues
+    /// (`collision_drift_jpn_01.raw`) inside `audio\speech\en\` - the `en\`
+    /// folder wins. The same goes for a file whose own name carries an
+    /// unambiguous (A/B) keep-language token: `ai_voice_sk_vo_english.spk` is
+    /// English VO ("sk" is a mission code), `*_LOC_INT.upk` is the English
+    /// master locale.
+    fn keep_language_protects(
+        &self,
+        occurrences: &[Occurrence],
+        segments: &[tokens::Segment],
+    ) -> bool {
+        let named = occurrences.iter().any(|occ| {
+            occ.is_filename
+                && !matches!(occ.level, dict::Level::C)
+                && self.keep.contains(occ.canonical)
+        });
+        named || self.under_keep_language_folder(segments)
+    }
+
+    /// [`keep_language_protects`](Self::keep_language_protects) asked about
+    /// one path, for the stages that hold a verdict rather than a table.
+    ///
+    /// The keep-language veto used to live *only* inside the analysis loop,
+    /// which meant it protected a file from the localization stage and from
+    /// nothing else. A rule engine that never consults it would happily stub
+    /// `1080_LogoLegal_PCConsole_DEU.bik` for someone who keeps German - see
+    /// [`crate::worker::keep_language_vetoes_rule`], which is where that
+    /// policy now lives for every caller.
+    ///
+    /// Costs one tokenization and one occurrence pass for the path given.
+    /// Callers ask it about files a rule already claimed - a handful per game
+    /// - not about every file, which is why it can afford to recompute what
+    /// the analysis loop has cached for its own pass.
+    pub fn carries_kept_language(&self, rel_path: &str) -> bool {
+        let segments = tokenize_path(rel_path);
+        let occurrences = collect_occurrences(&self.data, &segments);
+        self.keep_language_protects(&occurrences, &segments)
     }
 
     /// True if any directory segment of the path *is* (entirely) a

@@ -2084,6 +2084,10 @@ fn classify_game(
         gametrimmer_core::models::FindingAction,
     )> = Vec::new();
     let mut kept = 0usize;
+    // A personal keep rule outranks the same-name sweep below just as it
+    // outranks every rule: a file the user vetoed by name must not come back
+    // because another copy of that name was flagged elsewhere in the game.
+    let mut vetoed: HashSet<usize> = HashSet::new();
     for (index, entry) in entries.iter().enumerate() {
         // The rule-engine pass is per-file regex work; on a game with
         // hundreds of thousands of files it is long enough to be worth
@@ -2100,7 +2104,30 @@ fn classify_game(
         // against.
         if verdict == Verdict::Kept {
             kept += 1;
+            vetoed.insert(index);
             continue;
+        }
+
+        // The keep-language list is the other veto a rule must yield to,
+        // and the one it used to step over: it lives inside the localization
+        // detector, so it protected this file from that stage and from
+        // nothing else. It applies to a rule that says it matches *content*
+        // in the player's language, not to the startup screens that make up
+        // the rest of the intro category - see
+        // `worker::keep_language_vetoes_rule`. Dropping the verdict leaves
+        // the file with no finding at all (the detector already declined it,
+        // by the same predicate), so it stays on disk. It also joins
+        // `vetoed`, because a copy of it elsewhere in the game must not be
+        // swept back in by name.
+        if let Verdict::Flagged(finding) = &verdict {
+            if gametrimmer_core::worker::keep_language_vetoes_rule(
+                lang_detector,
+                finding,
+                &entry.rel_path,
+            ) {
+                vetoed.insert(index);
+                continue;
+            }
         }
 
         if gametrimmer_core::worker::is_candidate_archive_path(&entry.rel_path) {
@@ -2167,6 +2194,14 @@ fn classify_game(
             ));
         }
     }
+
+    // GT-206: a game engine plays *one* copy of a startup video out of
+    // several search paths, and it is not necessarily the copy a path-shaped
+    // rule reached. Every other file of this game carrying an already-flagged
+    // intro's exact file name becomes an intro finding too - see
+    // `same_name_siblings` for why this is done here, while classifying,
+    // rather than by widening a delete batch later.
+    add_same_name_intro_siblings(&entries, &mut combined_by_index, &vetoed);
 
     perf::add(perf::Stage::Rules, rules_started.elapsed());
 
@@ -2442,12 +2477,98 @@ fn scan_and_classify_game(
 
 /// One file's finding after reconciling the rule engine and the localization
 /// detector, ready to persist and display.
+#[derive(Clone)]
 struct CombinedFinding {
     source: FindingSource,
     rule_id: String,
     confidence: u8,
     provenance: RuleProvenance,
     lang_tag: Option<String>,
+}
+
+/// Extends `combined` with every unclassified file of this game that carries
+/// the exact file name of one of its intro findings, copying that finding's
+/// description, confidence and provenance.
+///
+/// Why intros only: a stub written into the copy the engine never opens is
+/// the one failure the user cannot see without launching the game - the app
+/// reports the bytes freed and the logo still plays. Every other category
+/// deletes the file outright, where a missed second copy is merely space not
+/// reclaimed. See [`gametrimmer_core::scanner::same_name_siblings`].
+///
+/// Three exclusions, each of them a rule that already outranks a rules-engine
+/// match and must keep outranking this:
+/// - `vetoed`: a personal keep rule refuses any classification of that file.
+/// - already in `combined`: the file has a verdict of its own; a second
+///   finding for one file would double-count its bytes.
+/// - an imported rule's match: an untrusted pack gets no reach past the
+///   pattern it actually wrote, and `retrim` refuses those unattended anyway.
+/// - an archive candidate: those belong to the deep inspector's explicit
+///   contract, never to a whole-file delete.
+fn add_same_name_intro_siblings(
+    entries: &[FileEntry],
+    combined: &mut Vec<(
+        usize,
+        CombinedFinding,
+        Option<String>,
+        gametrimmer_core::models::FindingAction,
+    )>,
+    vetoed: &HashSet<usize>,
+) {
+    let sources: Vec<usize> = combined
+        .iter()
+        .filter(|(_, finding, probe_error, _)| {
+            finding.source == FindingSource::Rule(gametrimmer_core::rules::Category::Intro)
+                && finding.provenance != RuleProvenance::ImportedUntrusted
+                && probe_error.is_none()
+        })
+        .map(|(index, _, _, _)| *index)
+        .collect();
+    if sources.is_empty() {
+        return;
+    }
+
+    let mut skip: HashSet<usize> = combined.iter().map(|(index, _, _, _)| *index).collect();
+    skip.extend(vetoed.iter().copied());
+
+    let pairs = gametrimmer_core::scanner::same_name_siblings(entries, &sources, &skip);
+    if pairs.is_empty() {
+        return;
+    }
+    let by_index: HashMap<usize, usize> = combined
+        .iter()
+        .enumerate()
+        .map(|(position, (index, _, _, _))| (*index, position))
+        .collect();
+    for (sibling, source) in pairs {
+        if gametrimmer_core::worker::is_candidate_archive_path(&entries[sibling].rel_path) {
+            continue;
+        }
+        let Some(&position) = by_index.get(&source) else {
+            continue;
+        };
+        // Not a clone of the source's attribution: the rule that matched
+        // the source provably does not match this path (it is what the
+        // depth budget excluded), so persisting its description would put a
+        // pattern in `findings.rule_id` that a user auditing "why is this
+        // flagged" can disprove. The confidence *is* the source's, and
+        // capped there: the sweep's claim is derived from that verdict and
+        // cannot outrank it, while lowering it would drop the copy below
+        // `AUTO_SELECT_CONFIDENCE_THRESHOLD` and leave it unticked - which
+        // is the GT-206 bug again, the logo still playing out of the copy
+        // nobody stubbed.
+        let mut swept = combined[position].1.clone();
+        swept.rule_id = gametrimmer_core::scanner::SIBLING_FINDING_DESC.to_string();
+        combined.push((
+            sibling,
+            swept,
+            None,
+            gametrimmer_core::models::FindingAction::DirectDelete,
+        ));
+    }
+    // Findings are read back positionally by the UI tree; keeping them in
+    // file order stops a swept copy from surfacing detached from its group.
+    combined.sort_by_key(|(index, _, _, _)| *index);
 }
 
 /// Merges a rules-engine finding with a localization finding for the same
@@ -2586,6 +2707,7 @@ mod tests {
             rule_desc: "Файл документації (PDF/RTF)".to_string(),
             confidence: 85,
             provenance: RuleProvenance::Builtin,
+            localized_content: false,
             action: gametrimmer_core::models::FindingAction::DirectDelete,
         };
 
@@ -5683,5 +5805,269 @@ mod tests {
             RuleProvenance::Builtin,
             "manual.pdf"
         ));
+    }
+
+    /// The interactive half of the keep-language guard, and the line the
+    /// product decision drew through it: a **screen the game plays at you on
+    /// the way in** is removed in every language, and the keep-list guards
+    /// **content in your language** instead. For one round the app did the
+    /// opposite - removed the eighteen legal screens the player cannot read
+    /// and protected the one that actually plays.
+    #[test]
+    fn a_startup_screen_goes_but_kept_language_content_stays() {
+        // Two rules of the same category, differing only in which side of
+        // the line they declare.
+        let engine = RuleEngine::from_json(&format!(
+            r#"{{"version":{},"rules":[
+                {{"category":"intro","pattern":"^legal.*\\.bik$","desc":"Legal screen","confidence":95}},
+                {{"category":"intro","pattern":"^attract\\.bik$","desc":"Attract reel","confidence":80,"max_depth":4,"localized_content":true}}
+            ]}}"#,
+            gametrimmer_core::rules::RULE_PACK_VERSION
+        ))
+        .expect("valid intro rules");
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        let root = install_dir.path();
+        write_file(&root.join("legal_german.bik"), b"german legal screen");
+        write_file(
+            &root.join("movies").join("german").join("attract.bik"),
+            b"reel",
+        );
+        write_file(
+            &root.join("movies").join("french").join("attract.bik"),
+            b"reel",
+        );
+
+        let german = LangDetector::with_keep_list(&["de".to_string()]);
+        let flagged: HashSet<String> = scan_and_prepare_game(
+            &engine,
+            &german,
+            GameIdentity {
+                id: 1,
+                name: "Localized Intro Game",
+                install_dir: root,
+                app_id: None,
+            },
+            &[],
+            &AtomicBool::new(false),
+        )
+        .expect("classify game")
+        .findings
+        .iter()
+        .map(|f| f.rel_path.clone())
+        .collect();
+
+        assert!(
+            flagged.contains("legal_german.bik"),
+            "a legal screen is removed in the user's own language too: {flagged:?}"
+        );
+        assert!(
+            !flagged
+                .iter()
+                .any(|rel| rel.contains("german") && rel.ends_with("attract.bik")),
+            "the attract reel of a language the user keeps is content: {flagged:?}"
+        );
+        assert!(
+            flagged
+                .iter()
+                .any(|rel| rel.contains("french") && rel.ends_with("attract.bik")),
+            "a language the user does not keep is still removable: {flagged:?}"
+        );
+    }
+
+    /// GT-206: Source searches `portal2_dlc2` ahead of `portal2`, so the
+    /// copy an intro rule reached is not necessarily the copy the engine
+    /// opens - and a stub in the unread copy frees real bytes while the logo
+    /// still plays. Both copies must reach the findings list, where the user
+    /// can see and tick them, rather than one being swept in silently by a
+    /// later delete.
+    #[test]
+    fn a_deeper_copy_of_a_flagged_intro_name_becomes_its_own_finding() {
+        // Depth-limited by default (2 segments), so the rule itself reaches
+        // only the shallow copy - the depth budget is exactly what hides an
+        // overlay tree such as ELEX 2's `ELEX2DX11\`.
+        let engine = RuleEngine::from_json(&format!(
+            r#"{{"version":{},"rules":[{{"category":"intro","pattern":"^valve\\.bik$","desc":"Publisher logo","confidence":95}}]}}"#,
+            gametrimmer_core::rules::RULE_PACK_VERSION
+        ))
+        .expect("valid intro rule");
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        let root = install_dir.path();
+        write_file(&root.join("portal2").join("valve.bik"), b"shallow copy");
+        write_file(
+            &root
+                .join("dlc2")
+                .join("deeper")
+                .join("media")
+                .join("valve.bik"),
+            b"the copy the engine really plays",
+        );
+        write_file(&root.join("portal2").join("intro_movie.bik"), b"real video");
+
+        let prepared = scan_and_prepare_game(
+            &engine,
+            &lang_detector,
+            GameIdentity {
+                id: 1,
+                name: "Overlay Game",
+                install_dir: root,
+                app_id: None,
+            },
+            &[],
+            &AtomicBool::new(false),
+        )
+        .expect("classify game");
+
+        let flagged: HashSet<&str> = prepared
+            .findings
+            .iter()
+            .filter(|f| f.source == FindingSource::Rule(gametrimmer_core::rules::Category::Intro))
+            .map(|f| f.rel_path.as_str())
+            .collect();
+        assert!(
+            flagged.contains(r"dlc2\deeper\media\valve.bik"),
+            "the copy past the rule's depth budget must be flagged too: {flagged:?}"
+        );
+        assert_eq!(flagged.len(), 2, "both copies, and only those: {flagged:?}");
+        assert!(
+            !flagged.iter().any(|rel| rel.ends_with("intro_movie.bik")),
+            "a different file name is a different video: {flagged:?}"
+        );
+
+        // The swept copy must not borrow the source's attribution: the rule
+        // that matched the source declines to reach this path, so persisting
+        // its description would put a pattern in `findings.rule_id` that the
+        // path itself disproves. Its confidence stays the source's, or the
+        // copy drops out of the default selection and the logo keeps playing
+        // out of the file nobody stubbed.
+        let source = prepared
+            .findings
+            .iter()
+            .find(|f| f.rel_path == r"portal2\valve.bik")
+            .expect("the copy the rule reached");
+        let swept = prepared
+            .findings
+            .iter()
+            .find(|f| f.rel_path == r"dlc2\deeper\media\valve.bik")
+            .expect("the swept copy");
+        assert_eq!(source.rule_id, "Publisher logo");
+        assert_eq!(
+            swept.rule_id,
+            gametrimmer_core::scanner::SIBLING_FINDING_DESC,
+            "a swept copy describes itself, not the rule it never matched"
+        );
+        assert_eq!(swept.confidence, source.confidence);
+    }
+
+    /// The other half of GT-206, which the sweep must not break: one
+    /// `warning_disclaimer.bik` per language is not one file seen several
+    /// times. Each is already flagged on its own, and each must keep exactly
+    /// one finding - a second one would double-count its bytes in the space
+    /// the confirm dialog promises.
+    #[test]
+    fn language_copies_of_an_intro_keep_exactly_one_finding_each() {
+        let engine = RuleEngine::from_json(&format!(
+            r#"{{"version":{},"rules":[{{"category":"intro","pattern":"^warning\\.bik$","desc":"Legal warning","confidence":95,"max_depth":3}}]}}"#,
+            gametrimmer_core::rules::RULE_PACK_VERSION
+        ))
+        .expect("valid intro rule");
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        let root = install_dir.path();
+        // Three languages the default keep-list does not keep: this
+        // test is about the sweep not double-counting a language set,
+        // not about the keep-language veto, which owns its own tests.
+        for lang in ["de", "fr", "it"] {
+            write_file(
+                &root.join("videos").join(lang).join("warning.bik"),
+                b"video",
+            );
+        }
+
+        let prepared = scan_and_prepare_game(
+            &engine,
+            &lang_detector,
+            GameIdentity {
+                id: 1,
+                name: "Localized Game",
+                install_dir: root,
+                app_id: None,
+            },
+            &[],
+            &AtomicBool::new(false),
+        )
+        .expect("classify game");
+
+        let intro_paths: Vec<&str> = prepared
+            .findings
+            .iter()
+            .filter(|f| f.source == FindingSource::Rule(gametrimmer_core::rules::Category::Intro))
+            .map(|f| f.rel_path.as_str())
+            .collect();
+        assert_eq!(intro_paths.len(), 3, "{intro_paths:?}");
+        let unique: HashSet<&&str> = intro_paths.iter().collect();
+        assert_eq!(
+            unique.len(),
+            3,
+            "no language copy may receive a second finding: {intro_paths:?}"
+        );
+    }
+
+    /// A personal keep rule is the refusal of any classification. It must
+    /// still refuse when another copy of that file name was flagged
+    /// elsewhere in the same game.
+    #[test]
+    fn a_kept_copy_is_not_resurrected_by_the_same_name_sweep() {
+        let engine = RuleEngine::from_json(&format!(
+            r#"{{"version":{},"rules":[
+                {{"category":"intro","pattern":"^logo\\.bik$","desc":"Startup logo","confidence":95}},
+                {{"polarity":"keep","pattern":"^mods\\\\","desc":"Hands off my mods"}}
+            ]}}"#,
+            gametrimmer_core::rules::RULE_PACK_VERSION
+        ))
+        .expect("valid rule pack");
+        let lang_detector = LangDetector::new();
+
+        let install_dir = tempfile::tempdir().expect("create temp install dir");
+        let root = install_dir.path();
+        write_file(&root.join("movies").join("logo.bik"), b"the startup logo");
+        write_file(
+            &root
+                .join("mods")
+                .join("custom")
+                .join("movies")
+                .join("logo.bik"),
+            b"a mod author's own video",
+        );
+
+        let prepared = scan_and_prepare_game(
+            &engine,
+            &lang_detector,
+            GameIdentity {
+                id: 1,
+                name: "Modded Game",
+                install_dir: root,
+                app_id: None,
+            },
+            &[],
+            &AtomicBool::new(false),
+        )
+        .expect("classify game");
+
+        assert!(
+            !prepared
+                .findings
+                .iter()
+                .any(|f| f.rel_path.starts_with("mods")),
+            "the vetoed copy must stay vetoed: {:?}",
+            prepared
+                .findings
+                .iter()
+                .map(|f| &f.rel_path)
+                .collect::<Vec<_>>()
+        );
     }
 }

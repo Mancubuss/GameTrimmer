@@ -68,6 +68,56 @@ pub fn is_candidate_archive_extension(ext: &str) -> bool {
         .any(|known| ext.eq_ignore_ascii_case(known))
 }
 
+/// Whether the user's keep-language list forbids `finding`'s rule from
+/// claiming `rel_path`, and therefore whether the verdict has to be dropped.
+///
+/// The keep-list is a promise that files of the languages the user keeps are
+/// not touched. It was only half kept: the check lived inside the
+/// localization detector's analysis loop
+/// ([`crate::langdetect::LangDetector::carries_kept_language`] is the same
+/// predicate), so it protected a file from the localization stage and from
+/// nothing else. The rule engine has no language tables and never consulted
+/// it.
+///
+/// The line is drawn per rule, by [`crate::rules::Rule::localized_content`],
+/// and not per category - because the categories do not draw it. Read the
+/// flag off the rule to see why any given file is exempt; a rule that names
+/// content in the player's language opts in by setting it, and needs no
+/// change here.
+///
+/// - A **screen** the game plays on the way in - a logo, a legal or rating
+///   screen, a health warning, a splash - is removed whatever language it
+///   carries. Protecting the one legal screen the player can actually read
+///   while removing the eighteen they cannot is not keeping a promise, it is
+///   keeping the wrong copy.
+/// - **Content** in a language the user keeps is off limits. An attract reel
+///   is the case in the built-in pack: a five- to two-hundred-megabyte
+///   gameplay video the game loops on the idle title screen.
+///
+/// Deliberately *not* keyed on the rule's description: `Rule::desc` is
+/// resolved to the interface language when the pack is compiled
+/// (`rules.rs`), so a list of English descriptions would stop matching the
+/// moment someone ran the app in Ukrainian - a guard that silently switches
+/// off for most of the world.
+///
+/// Both classification paths call this, and only this: the interactive scan
+/// (`app::worker::scan::classify_game`) and unattended re-trim
+/// ([`crate::retrim::retrim_game_with_new_build`]). They used to be free to
+/// disagree about one file, which is the failure GT-206 exists to fix; the
+/// policy lives here so there is one answer to disagree with.
+///
+/// Costs nothing on the overwhelming majority of findings: the flag is a
+/// bool test, and the language tokenization behind
+/// `carries_kept_language` only runs for a rule that declared itself
+/// content.
+pub fn keep_language_vetoes_rule(
+    detector: &crate::langdetect::LangDetector,
+    finding: &Finding,
+    rel_path: &str,
+) -> bool {
+    finding.localized_content && detector.carries_kept_language(rel_path)
+}
+
 /// Identifies whether a file is a candidate for monolithic archive deep inspection.
 ///
 /// The extension is tested first, and it decides almost every call: seven
@@ -179,6 +229,10 @@ pub fn inspect_monolithic_archive(
             ),
             confidence: 90,
             provenance: RuleProvenance::Builtin,
+            // Archive stream trimming carries its own per-language keep-list
+            // (`trimmable_offsets` is already filtered by it), so the
+            // whole-file guard has nothing left to decide here.
+            localized_content: false,
             action: FindingAction::SparseZero {
                 format: analysis.archive_type.to_string(),
                 languages: trimmable_languages,
@@ -294,5 +348,107 @@ mod tests {
         assert_eq!(streams.len(), 1);
         assert_eq!(streams[0].language, "german");
         assert_eq!(estimated_savings, 8192);
+    }
+}
+
+#[cfg(test)]
+mod keep_language_veto_tests {
+    use super::*;
+    use crate::langdetect::LangDetector;
+    use crate::rules::RuleProvenance;
+
+    fn detector(keep: &[&str]) -> LangDetector {
+        LangDetector::with_keep_list(&keep.iter().map(|k| k.to_string()).collect::<Vec<_>>())
+    }
+
+    fn finding(localized_content: bool) -> Finding {
+        Finding {
+            category: Category::Intro,
+            rule_desc: "test".to_string(),
+            confidence: 80,
+            provenance: RuleProvenance::Builtin,
+            localized_content,
+            action: FindingAction::DirectDelete,
+        }
+    }
+
+    /// The line the decision drew. A startup screen is removed whatever
+    /// language it carries - removing the eighteen legal screens the player
+    /// cannot read while protecting the one that actually plays is not
+    /// keeping the keep-list's promise, it is keeping the wrong copy.
+    #[test]
+    fn a_startup_screen_is_removed_even_in_a_language_the_user_keeps() {
+        let german = detector(&["de"]);
+
+        assert!(!keep_language_vetoes_rule(
+            &german,
+            &finding(false),
+            r"XComGame\Movies\1080_LogoLegal_PCConsole_DEU.bik"
+        ));
+        assert!(!keep_language_vetoes_rule(
+            &german,
+            &finding(false),
+            r"videos\de\warning_disclaimer.bik"
+        ));
+    }
+
+    /// The other side: a rule that says its subject is content yields, and
+    /// the file stays. The attract reel is the case in the built-in pack.
+    #[test]
+    fn localized_content_in_a_kept_language_is_off_limits() {
+        assert!(keep_language_vetoes_rule(
+            &detector(&["de"]),
+            &finding(true),
+            r"movies\german\attract.bik"
+        ));
+        // The folder half and the file-name half of the same predicate.
+        assert!(keep_language_vetoes_rule(
+            &detector(&["de"]),
+            &finding(true),
+            r"movies\attract_german.bik"
+        ));
+    }
+
+    /// A language the user does not keep is removable whichever side of the
+    /// line the rule sits on.
+    #[test]
+    fn content_in_a_language_the_user_does_not_keep_is_still_removable() {
+        assert!(!keep_language_vetoes_rule(
+            &detector(&["en"]),
+            &finding(true),
+            r"movies\german\attract.bik"
+        ));
+    }
+
+    /// A file with no language marker at all is unaffected, whatever the
+    /// keep-list says - the overwhelmingly common case.
+    #[test]
+    fn a_file_without_a_language_marker_is_never_vetoed() {
+        assert!(!keep_language_vetoes_rule(
+            &detector(&["de", "en", "fr"]),
+            &finding(true),
+            r"Movies\UE4_Logo.mp4"
+        ));
+    }
+
+    /// The classification is data, not code: every rule the repo ships says
+    /// which side of the line it is on, and exactly one says `content`.
+    /// If that ever changes silently, this is the test that notices.
+    #[test]
+    fn the_builtin_pack_marks_exactly_one_rule_as_localized_content() {
+        let rules = crate::rules::parse_rule_list(crate::rules::BUILTIN_RULES_JSON)
+            .expect("the built-in pack parses");
+        let content: Vec<&str> = rules
+            .iter()
+            .filter(|rule| rule.localized_content)
+            .map(|rule| rule.pattern.as_str())
+            .collect();
+
+        assert_eq!(
+            content.len(),
+            1,
+            "expected the attract reel and nothing else: {content:?}"
+        );
+        assert!(content[0].contains("attract"), "{content:?}");
     }
 }

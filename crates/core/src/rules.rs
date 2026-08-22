@@ -289,6 +289,37 @@ pub struct Rule {
     /// material, `QtQuick\Extras\Extras.qml` is program code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
+    /// Whether what this rule matches is **content in the player's language**
+    /// rather than a screen the game plays on the way in.
+    ///
+    /// This is the line the keep-language list is drawn along, and it is
+    /// per-rule because the categories do not draw it: `Category::Intro`
+    /// holds fourteen rules that name a logo, a legal screen, a health
+    /// warning or a splash, and one that names an attract reel - a five-
+    /// to two-hundred-megabyte gameplay video the game loops on the idle
+    /// title screen, which Bully ships as `AttractModeF/G/I/J/R/S.wmv` and
+    /// Kane & Lynch as `Attract01_French.bik`. The first fourteen are things
+    /// the game plays *at* you; the last is something you watch.
+    ///
+    /// The distinction decides one thing, in
+    /// [`crate::worker::keep_language_vetoes_rule`]: a file carrying one of
+    /// the user's kept languages is off limits when the rule that claimed it
+    /// says `localized_content`, and is removed otherwise. Removing the
+    /// eighteen legal screens nobody in the room can read while protecting
+    /// the one that actually plays is the failure this exists to prevent -
+    /// and so is stubbing the German attract reel of a player who reads
+    /// German.
+    ///
+    /// Defaults to `false`, so every pack written before this field existed
+    /// keeps its exact behaviour and no rule has to declare it. A rule that
+    /// does not set it is asserting the common case: what I match is a
+    /// screen.
+    #[serde(default, skip_serializing_if = "is_not_localized_content")]
+    pub localized_content: bool,
+}
+
+fn is_not_localized_content(localized_content: &bool) -> bool {
+    !*localized_content
 }
 
 impl Rule {
@@ -311,6 +342,9 @@ impl Rule {
             // own machine, not an imported pack of someone else's rules - the
             // untrusted marking exists to warn about the latter.
             provenance: RuleProvenance::Builtin,
+            // A veto outranks the keep-language list as it outranks every
+            // other ranking; the parser refuses a keep rule that sets this.
+            localized_content: false,
             app_id: Some(app_id.to_string()),
             max_depth: None,
             extensions: None,
@@ -399,6 +433,8 @@ struct CompiledRule {
     desc: String,
     confidence: u8,
     provenance: RuleProvenance,
+    /// See [`Rule::localized_content`].
+    localized_content: bool,
     /// The effective depth limit for this rule: the rule's own `max_depth`
     /// if given, otherwise the category default (see [`Rule::max_depth`]).
     max_depth: usize,
@@ -531,11 +567,13 @@ impl RuleEngine {
                     || rule.confidence.is_some()
                     || rule.max_depth.is_some()
                     || rule.extensions.is_some()
+                    || rule.localized_content
                 {
                     return Err(CoreError::Other(format!(
                         "rules.json: keep rule #{index} (pattern `{}`) sets category, confidence, \
-                         max_depth or extensions; a veto ranks against nothing and matches the \
-                         whole relative path, so none of them would do anything",
+                         max_depth, extensions or localized_content; a veto ranks against nothing, \
+                         matches the whole relative path and already outranks the keep-language \
+                         list, so none of them would do anything",
                         rule.pattern
                     )));
                 }
@@ -578,6 +616,7 @@ impl RuleEngine {
                 desc,
                 confidence,
                 provenance: rule.provenance,
+                localized_content: rule.localized_content,
                 max_depth: rule.max_depth.unwrap_or(default_depth),
                 extensions: rule.extensions.map(|list| {
                     list.into_iter()
@@ -717,6 +756,7 @@ impl RuleEngine {
                     rule_desc: rule.desc.clone(),
                     confidence: rule.confidence,
                     provenance: rule.provenance,
+                    localized_content: rule.localized_content,
                     action: FindingAction::DirectDelete,
                 });
             }
@@ -1504,6 +1544,7 @@ mod tests {
             r#""confidence":80"#,
             r#""max_depth":3"#,
             r#""extensions":["pdf"]"#,
+            r#""localized_content":true"#,
         ] {
             let json = pack(&format!(
                 r#"[{{"polarity":"keep","pattern":"^x$","desc":"Kept",{extra}}}]"#

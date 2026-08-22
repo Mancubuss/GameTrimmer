@@ -979,6 +979,152 @@ fn games() -> Vec<(&'static str, Vec<Case>)> {
                 c("CookedPC\\sounds\\l03_camp_cs.fsb", Nothing),
             ],
         ),
+        // GT-209: the intro rules distilled from the PCGamingWiki
+        // "Skip intro videos" harvest (`docs/pcgw_skip_intro_dataset.json`).
+        // Positives are real file names the wiki documents deleting; the
+        // negatives below them are the names that merely *look* like the
+        // positives - a frequent name is evidence that a name is common, not
+        // that the video behind it is a logo, and an intro false positive
+        // destroys a unique video nothing can re-download.
+        (
+            "gt-209-intro-harvest-positives",
+            vec![
+                // "logo" as a token, with a qualifier tail that carries a
+                // digit - the shape a resolution or platform variant takes.
+                c(
+                    "ContentBaked\\pc\\BinkMovies\\2KG_logo_720P_PS4.bik",
+                    Rule(Category::Intro),
+                ),
+                // "logo" leading: what follows it names whose logo it is,
+                // and that is an open set of studio names.
+                c("data\\extern\\videos\\logo_pb.bik", Rule(Category::Intro)),
+                // "logo" trailing, no tail at all.
+                c("Movies\\abstergo_logo.bik", Rule(Category::Intro)),
+                // A studio ident, separator-delimited so it cannot reach
+                // "accident", "identity" or "Trident".
+                c("Movies\\ACC_Ubisoft_Ident_1080.bik", Rule(Category::Intro)),
+                c("Movies\\Ident_Frontier_Arena.webm", Rule(Category::Intro)),
+                // A legal screen behind a glued studio or platform prefix,
+                // which neither prefix-anchored legal rule reached.
+                c("media\\valve_xbox_legals.bik", Rule(Category::Intro)),
+                c("Videos\\TQLegal.bik", Rule(Category::Intro)),
+                // Engine name glued to "logo".
+                c("Movies\\UE3Logo.bik", Rule(Category::Intro)),
+                // Studio-prefixed splash screen, no tail.
+                c("Content\\Movies\\AUROCH_SPLASHSCREEN.mp4", Rule(Category::Intro)),
+                // Vendor logo glued into one word.
+                c("Movies\\UbisoftLogo.bk2", Rule(Category::Intro)),
+                // Legal/health screen behind a platform prefix.
+                c("videos\\PC_WarningSaving.bk2", Rule(Category::Intro)),
+                c("videos\\ps3_HealthWarning.bik", Rule(Category::Intro)),
+                // Engine startup and splash screens.
+                c(
+                    "SwGame\\Content\\Movies\\Default_Startup.mp4",
+                    Rule(Category::Intro),
+                ),
+                c(
+                    "ArtificerOne\\Content\\Movies\\SplashScreen.mp4",
+                    Rule(Category::Intro),
+                ),
+                // Generic developer/publisher ident.
+                c("videos\\DeveloperIntro.usm", Rule(Category::Intro)),
+                c("Data\\Video\\Publisher.bik", Rule(Category::Intro)),
+                // Nothing but the publisher's name.
+                c("data\\movies\\Sega.ogv", Rule(Category::Intro)),
+                // Idle title-screen attract reel.
+                c("videos\\attract.bk2", Rule(Category::Intro)),
+            ],
+        ),
+        (
+            "gt-209-intro-harvest-near-misses",
+            vec![
+                // "nologo" is the opposite of a logo: this is a demo outro
+                // shipped *without* the logo reel.
+                c("Movies\\demo_outro_nologo.bik", Nothing),
+                // `intro.bik` is the single most frequent name in the harvest
+                // and still not claimed: for as many games it is the opening
+                // cinematic as it is the logo reel, and the corpus already
+                // rules the story-cinematic reading (see `introFU.bik`).
+                c("Movies\\intro.bik", Nothing),
+                c("Movies\\cs_gameintro.ogv", Nothing),
+                c("Movies\\OpeningCinematic.bik", Nothing),
+                // A loading screen plays throughout the game, not at startup.
+                c("Content\\Movies\\LoadingScreen.mp4", Nothing),
+                // Frequent, but as easily the animated title card or a
+                // fallback video as a logo.
+                c("Movies\\title.avi", Nothing),
+                c("Movies\\default.bik", Nothing),
+                // "ident" only counts as a whole separator-delimited token.
+                c("Movies\\Movie_Trident3.sfd", Nothing),
+                c("Movies\\005_TheAccident.usm", Nothing),
+                c("Movies\\Scenes_Alfred_Ak_Identity_Ch05.usm", Nothing),
+                // The glued-prefix legal rule anchors on the *end* of the
+                // name, so a legal district in a level name is out of reach.
+                c("Movies\\LoadingDLC06LegalDistrict.bik", Nothing),
+            ],
+        ),
+        // GT-209 follow-up, and the decision that settled it: a **screen the
+        // game plays at you on the way in** is removed whatever language it
+        // carries, and the keep-language list guards **content in your
+        // language** instead. Every rule in the intro category names a screen
+        // except the attract reel, which declares itself with
+        // `localized_content` in `rules.json`.
+        //
+        // So all of these go, in every language, for every keep-list. The
+        // alternative - what the app did for one round - was to remove the
+        // eighteen legal screens the player cannot read and protect the one
+        // that actually plays at startup.
+        (
+            "gt-209-language-suffixed-startup-screens-xcom",
+            vec![
+                c("XComGame\\Movies\\1080_LogoLegal_PCConsole.bik", Rule(Category::Intro)),
+                c("XComGame\\Movies\\1080_LogoLegal_PCConsole_DEU.bik", Rule(Category::Intro)),
+                c("XComGame\\Movies\\1080_LogoLegal_PCConsole_FRA.bik", Rule(Category::Intro)),
+                c("XComGame\\Movies\\1080_LogoLegal_PCConsole_JPN.bik", Rule(Category::Intro)),
+                // `INT` is the Unreal English master locale and English is
+                // kept by default - and it still goes, because a legal screen
+                // is a legal screen.
+                c("XComGame\\Movies\\1080_LogoLegal_PCConsole_INT.bik", Rule(Category::Intro)),
+            ],
+        ),
+        (
+            "gt-209-language-suffixed-startup-screens-call-of-cthulhu",
+            vec![
+                c("Development\\pcvideo\\legal.wmv", Rule(Category::Intro)),
+                c("Development\\pcvideo\\legal_french.wmv", Rule(Category::Intro)),
+                c("Development\\pcvideo\\legal_german.wmv", Rule(Category::Intro)),
+                c("Development\\pcvideo\\legal_english.wmv", Rule(Category::Intro)),
+                c("Development\\pcvideo\\cocdcote_logo.wmv", Rule(Category::Intro)),
+                c("Development\\pcvideo\\cocdcote_logo_french.wmv", Rule(Category::Intro)),
+                c("Development\\pcvideo\\cocdcote_logo_german.wmv", Rule(Category::Intro)),
+            ],
+        ),
+        // The case the whole decision was about. Assassin's Creed keeps one
+        // startup screen per language folder; the English one is the copy
+        // that actually plays for a user who keeps English, and it is
+        // removed along with the rest.
+        (
+            "gt-209-keep-language-folder-startup-screens",
+            vec![
+                c("videos\\en\\warning_disclaimer.bik", Rule(Category::Intro)),
+                c("videos\\en\\PC_WarningSaving.bk2", Rule(Category::Intro)),
+                c("videos\\de\\warning_disclaimer.bik", Rule(Category::Intro)),
+                c("videos\\de\\PC_WarningSaving.bk2", Rule(Category::Intro)),
+            ],
+        ),
+        // The other side of the line, and the only rule in the built-in pack
+        // that sits on it: an attract reel is a five- to two-hundred-megabyte
+        // gameplay video looping on the idle title screen, not something the
+        // game plays at you. In a language the user keeps it is content and
+        // survives; in one they do not it is removable like any other.
+        (
+            "gt-209-attract-reel-is-content-not-a-screen",
+            vec![
+                c("Movies\\attract.bik", Rule(Category::Intro)),
+                c("movies\\english\\attract.bik", Nothing),
+                c("movies\\german\\attract.bik", Rule(Category::Intro)),
+            ],
+        ),
     ]
 }
 
@@ -1005,13 +1151,24 @@ fn report_golden_cases() {
 
         for (idx, case) in cases.iter().enumerate() {
             // Mirrors the app's combine_finding: a rule claim wins; a
-            // localization finding applies only when no rule matched.
+            // localization finding applies only when no rule matched - and
+            // the claim is dropped first if the keep-language list forbids
+            // it, which is the guard both classification paths apply. The
+            // detector here carries the default keep-list (`uk`, `en`), so
+            // these cases describe what a user who keeps those two sees.
             // The corpus asks only "what would be flagged"; a keep-rule
             // veto is indistinguishable from a non-match for that question,
             // which is what `Verdict::flagged` exists for. `None` for the
             // app id: these cases are paths, not games, so no game-scoped
             // rule can apply to them.
-            let rule = engine.classify(case.path, None).flagged();
+            let rule = engine
+                .classify(case.path, None)
+                .flagged()
+                .filter(|finding| {
+                    !gametrimmer_core::worker::keep_language_vetoes_rule(
+                        &detector, finding, case.path,
+                    )
+                });
             let lang = loc.get(&idx);
 
             let outcome: String = match (&rule, lang) {

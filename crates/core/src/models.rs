@@ -173,6 +173,16 @@ pub struct Finding {
     pub rule_desc: String,
     pub confidence: u8,
     pub provenance: RuleProvenance,
+    /// Whether the rule that produced this finding says its subject is
+    /// content in the player's language rather than a screen the game plays
+    /// on the way in - see [`crate::rules::Rule::localized_content`] and
+    /// [`crate::worker::keep_language_vetoes_rule`], which is the only thing
+    /// that reads it.
+    ///
+    /// `#[serde(default)]`, like `action`: a finding serialized before this
+    /// field existed describes a screen, which is what `false` says.
+    #[serde(default)]
+    pub localized_content: bool,
     #[serde(default)]
     pub action: FindingAction,
 }
@@ -190,6 +200,10 @@ impl Finding {
             rule_desc: rule_desc.into(),
             confidence,
             provenance,
+            // A caller building a finding by hand is not the rule pack, and
+            // only the pack can say a rule names content - see
+            // `rules::Rule::localized_content`.
+            localized_content: false,
             action: FindingAction::DirectDelete,
         }
     }

@@ -417,17 +417,17 @@
     },
     {
       "category": "intro",
-      "pattern": "^(.*_logos?|logos?)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "pattern": "^(.*[_. -])?logos?.*\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
       "desc": {
         "en": "Startup logo video file",
         "uk": "Відеофайл логотипу заставки"
       },
-      "confidence": 95,
+      "confidence": 85,
       "max_depth": 4
     },
     {
       "category": "intro",
-      "pattern": "^(legal.*|legalscreens?.*|disclaimer.*|warning.*|warning_?epilepsy.*|epilepsy.*|health_?safety.*|esrb.*|pegi.*|cero.*|usk.*|rating.*|ratingscreens?.*|autosave_?warning.*)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "pattern": "^(legal.*|legalscreens?.*|licen[cs]e|licen[cs]escreens?|disclaimer.*|warning.*|warning_?epilepsy.*|epilepsy.*|health_?safety.*|esrb.*|pegi.*|cero.*|usk.*|rating.*|ratingscreens?.*|autosave_?warning.*)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
       "desc": {
         "en": "Legal disclaimer, health & safety, or age rating video screen",
         "uk": "Юридичні дисклеймери, застереження про здоров'я або вікові рейтинги"
@@ -437,7 +437,7 @@
     },
     {
       "category": "intro",
-      "pattern": "^(boot_sequence|boot_logo|splash_screen|splash_pc|startup_logo|stinger|stinger_wide|bumpers?)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "pattern": "^(boot_sequence|boot_logo|splash_screen|splash_pc|splashscreens?|.*[_. -]splashscreens?|startup|default_startup|default_startup_loop|startup_logo|stinger|stinger_wide|bumpers?)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
       "desc": {
         "en": "Startup splash screen, bumper, stinger or boot sequence video",
         "uk": "Стартова заставка, бампер або ролик послідовності завантаження"
@@ -468,6 +468,77 @@
         "mov"
       ],
       "max_depth": 4
+    },
+    {
+      "category": "intro",
+      "pattern": "^(2k|2kg|amd|av|bc|cryengine|dc|epic|gbx|gs|mgs|ms|nvidia|sega|thecoalition|thq|ubi|ubisoft|ue3|ue4|ue5|unity|unreal)logos?.*\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
+      "desc": {
+        "en": "Vendor or publisher startup logo video written as one word (2KLogo, UbisoftLogo, AMDLogo)",
+        "uk": "Відео стартового логотипу вендора чи видавця, записане одним словом (2KLogo, UbisoftLogo, AMDLogo)"
+      },
+      "confidence": 90,
+      "max_depth": 4
+    },
+    {
+      "category": "intro",
+      "pattern": "^(pc|ps2|ps3|ps4|ps5|xb|xbox|x360|xone|win|nx|wii)[_. -]?(legal|licen[cs]e|warning|epilepsy|disclaimer|health|rating|esrb|pegi|usk|cero|autosave).*\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
+      "desc": {
+        "en": "Platform-prefixed legal, health & safety or age rating screen (pc_WarningSaving, ps3_HealthWarning)",
+        "uk": "Юридичний екран, застереження про здоров'я або віковий рейтинг із префіксом платформи (pc_WarningSaving, ps3_HealthWarning)"
+      },
+      "confidence": 92,
+      "max_depth": 4
+    },
+    {
+      "category": "intro",
+      "pattern": "^(developer|publisher)(intro|logo|logos)?\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
+      "desc": {
+        "en": "Generic developer or publisher ident video (DeveloperIntro.usm, Publisher.bik)",
+        "uk": "Узагальнене відео заставки розробника або видавця (DeveloperIntro.usm, Publisher.bik)"
+      },
+      "confidence": 88,
+      "max_depth": 4
+    },
+    {
+      "category": "intro",
+      "pattern": "^(activision|aspyr|atari|atvi|beenox|ea|eidos|kex|milestone|nightdive|nival|paramount|rebellion|sega|simbin|thq|twimtbp|ubi|ubisoft|valve)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
+      "desc": {
+        "en": "Startup logo video named after nothing but the publisher, studio or engine (Sega.ogv, Ubisoft.bik, Kex.ogv)",
+        "uk": "Відео стартового логотипу, назване лише іменем видавця, студії або рушія (Sega.ogv, Ubisoft.bik, Kex.ogv)"
+      },
+      "confidence": 85,
+      "max_depth": 4
+    },
+    {
+      "category": "intro",
+      "pattern": "^(.*[_. -])?ident([_. -].*)?\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
+      "desc": {
+        "en": "Broadcast-style studio ident played before the menu (ACC_Ubisoft_Ident_1080, Ident_Frontier_Arena)",
+        "uk": "Заставка-ідент студії у телевізійному стилі перед меню (ACC_Ubisoft_Ident_1080, Ident_Frontier_Arena)"
+      },
+      "confidence": 88,
+      "max_depth": 4
+    },
+    {
+      "category": "intro",
+      "pattern": "^.*legals?\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
+      "desc": {
+        "en": "Legal screen behind a glued studio or platform prefix (valve_xbox_legals, TQLegal, ZenimaxLegal)",
+        "uk": "Юридичний екран за злитим префіксом студії або платформи (valve_xbox_legals, TQLegal, ZenimaxLegal)"
+      },
+      "confidence": 92,
+      "max_depth": 4
+    },
+    {
+      "category": "intro",
+      "pattern": "^attract\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v|mov|smk|sfd)$",
+      "desc": {
+        "en": "Attract-mode reel played on the idle title screen before the game starts",
+        "uk": "Ролик режиму привернення уваги, який крутиться на титульному екрані до початку гри"
+      },
+      "confidence": 80,
+      "max_depth": 4,
+      "localized_content": true
     },
     {
       "category": "crash_dump",

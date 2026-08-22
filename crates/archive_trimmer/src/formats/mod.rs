@@ -50,6 +50,33 @@ impl std::fmt::Display for ArchiveType {
     }
 }
 
+impl ArchiveType {
+    /// Whether this format packs many separately-addressable assets into one
+    /// file. Such a container must be trimmed in place: deleting it whole
+    /// would take every asset in it, including the ones the user never asked
+    /// to lose. A format that is a single asset in its own right has no such
+    /// problem and may be removed like any other file.
+    ///
+    /// The match is exhaustive on purpose - a new format has to state which
+    /// side of that line it falls on rather than inherit an answer.
+    pub fn is_multi_asset_container(self) -> bool {
+        match self {
+            ArchiveType::WwisePck
+            | ArchiveType::WwiseBnk
+            | ArchiveType::UnrealPak
+            | ArchiveType::CapcomRePak
+            | ArchiveType::ElectronAsar
+            | ArchiveType::UnityAssetBundle => true,
+            // One video, not a container of separable assets. The Bink
+            // handler reports zero trimmable bytes for it and its replacement
+            // path is disabled (see `bink.rs`), so treating it as a container
+            // only ever had the effect of pinning intro videos in place - the
+            // one thing the intro rules exist to remove. See GT-204.
+            ArchiveType::BinkVideo => false,
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ArchiveError {
     #[error("I/O error: {0}")]
