@@ -1,0 +1,51 @@
+Branch state at the time of this push.
+
+WHAT IS HERE
+Seven commits ahead of origin, and they are not one piece of work:
+
+  2492cee, 239ba98, 98353ce, 8a60ae7, 70ee5b1
+      Epic 10 (monolithic archives), still in progress. Pushed as a
+      backup, not as a finished unit.
+
+  15cc5fb, 35ee8a2
+      Self-contained UI work, complete and verified. `ui::dialogs` had
+      no tests at all; twelve were added and two failed on the first
+      run, both on real defects: the elevation modal's "don't ask
+      again" tick was re-seeded from the setting every frame and so was
+      gone by the frame that read it, leaving no reachable way to
+      refuse the UAC offer permanently; and the delete confirmation
+      reserved only the taller question's height, so switching the
+      method still resized the modal sideways and slid both buttons
+      100pt. Then five frame-cost tests in the new `ui::perf` found why
+      switching a settings tab could take seconds: "Rules" re-read both
+      pack files and rebuilt a whole RuleEngine on every frame, which
+      is 46ms a frame in debug against 14-16ms for each of the other
+      four sections. Cached with a one-second lifetime; it is now the
+      cheapest of the five at 15ms.
+
+NO PR, DELIBERATELY
+CI runs on push to master and on pull_request, so this push triggers
+nothing. Opening a PR now would run the gate over the unfinished epic
+as well, and a green result there would mean less than it looks. The
+two UI commits sit on top of the epic's five and are not worth
+cherry-picking out - they touch the same crate.
+
+CI GATE, RUN LOCALLY INSTEAD
+Exactly the ci.yml invocations, all green at 35ee8a2:
+  cargo fmt --all -- --check
+  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+  cargo test  --workspace --all-targets --all-features --locked
+    -> gametrimmer 567 passed, gametrimmer-core 683 passed, 0 failed.
+
+WHAT IS NOT IN THIS PUSH
+The working tree is dirty and stays that way: .gitignore,
+crates/core/src/stub.rs, docs/README.md, three staged deletions of
+internal docs under docs/, and an untracked CLAUDE.md. None of it is
+committed, so none of it is here. The staged deletions in particular
+are unfinished business, not an oversight of this push.
+
+DIST IS OLDER THAN THIS
+dist/ was packaged from a dirty tree whose last commit was dda1c7a,
+seven behind this HEAD. Anything hand-tested from that package was not
+testing these commits. Repackage from a clean tree before reading a
+manual test as evidence about this code.
