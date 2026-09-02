@@ -22,8 +22,9 @@ it there.
 
 ## Not here
 
-- **The design documents, plans and audits** are not public. They described
-  intentions rather than the shipped program.
+- **The design documents, plans, audits, spikes, and handoffs** live in
+  `docs/internal/`, which is not published (see `.gitignore`). They describe
+  intentions and dated snapshots rather than the shipped program.
 - **The backlog** lives on a local Kanban board, not in this repository.
 - **Release notes** are in [CHANGELOG.md](../CHANGELOG.md).
 - **How to contribute** is in [CONTRIBUTING.md](../CONTRIBUTING.md); reporting a

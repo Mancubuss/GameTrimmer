@@ -5,22 +5,11 @@ gametrimmer.db*
 # Portable packaging output (scripts/package-portable.ps1)
 /dist/
 
-# Pre-release plans, audits, the project's own history and old git backups.
-# Kept next to the code because that is where they are useful, but they are
-# not part of the published project: they describe intentions rather than the
-# shipped program, and a reader who found them here would reasonably take them
-# for current guidance. Stored as a single compressed archive rather than
-# loose files - see the extraction and warning notes inside it.
-/docs/archive.7z
-/docs/archive/
-
-# The same reasoning for the loose ones: a dated audit or redesign plan is a
-# snapshot of what was wrong on that day, and someone finding it in a release
-# would read a fixed problem as a current one. They stay next to the code and
-# out of the published tree.
-/docs/codebase-audit-*.md
-/docs/portability-audit.md
-/docs/ui-redesign-plan-*.md
+# Pre-release plans, audits, handoffs and the project's own history - dated
+# snapshots that describe intentions rather than the shipped program. Kept
+# next to the code because that is where they are useful, but a reader who
+# found them in a release would reasonably mistake them for current guidance.
+/docs/internal/
 
 # Working notes about friction hit while building, not about the program.
 /.papercuts.jsonl

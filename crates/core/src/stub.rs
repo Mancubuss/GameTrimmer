@@ -1537,7 +1537,7 @@ mod tests {
     #[test]
     fn stub_for_magic_derives_bink2_stub_from_a_real_header() {
         // Bytes read from Scars Above's `UE4_Logo.bk2` (KB2n, 1 audio track,
-        // 1920x1080, 30fps) - see GameTrimmer-bk2-test/ScarsAbove. Only the
+        // 1920x1080, 30fps) - see temp/bk2-test/ScarsAbove. Only the
         // first 60 bytes (48-byte header + one 12-byte track descriptor)
         // matter; anything past that is frame data this function never reads.
         let real_header: [u8; 60] = [
