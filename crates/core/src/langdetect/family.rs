@@ -69,23 +69,23 @@ const SHAPE_PLACEHOLDER: char = '\u{1}';
 type FamilyMember = (usize, &'static str, Level);
 
 /// One mechanism-3 candidate: the file's remaining (non-language) atoms are
-/// kept — split into those before and after the language token — so
-/// coincidental same-position matches can be filtered out. See
+/// kept so coincidental same-position matches can be filtered out. See
 /// `compute_directory_occurrence_family`.
 struct PositionMember {
     file_idx: usize,
     canonical: &'static str,
     level: Level,
-    /// Non-language atoms preceding the language token in the name.
-    before_atoms: HashSet<String>,
-    /// Non-language atoms following it (suffixes, extensions).
-    after_atoms: HashSet<String>,
-}
-
-impl PositionMember {
-    fn all_atoms(&self) -> impl Iterator<Item = &String> {
-        self.before_atoms.iter().chain(self.after_atoms.iter())
-    }
+    /// Every non-language atom of the name, as this variant splits it —
+    /// extension atoms included, since a directory holding both `.txt` and
+    /// `.dat` members says something real by which of the two a file uses.
+    atoms: HashSet<String>,
+    /// The subset of `atoms` that says how the file was *named*: everything
+    /// in the stem, plus anything preceding the language token. What this
+    /// leaves out is the tail of a dotted extension — `.item.bytes`,
+    /// `.bundle.bin` — which describes the format, is shared by every file
+    /// of that format in the directory, and so tells nothing about whether
+    /// two names belong to the same set.
+    naming_atoms: HashSet<String>,
 }
 
 /// (parent_dir, shape-with-placeholder) -> sibling occurrences.
@@ -330,14 +330,14 @@ fn compute_directory_occurrence_family(
                     continue;
                 };
                 let from_end = atoms.len() - 1 - atom_idx;
-                let before_atoms: HashSet<String> = atoms
+                let own_atoms: HashSet<String> = atoms
                     .iter()
-                    .filter(|a| a.end <= occ.start)
+                    .filter(|a| a.end <= occ.start || a.start >= occ.end)
                     .map(|a| a.text.clone())
                     .collect();
-                let after_atoms: HashSet<String> = atoms
+                let naming_atoms: HashSet<String> = atoms
                     .iter()
-                    .filter(|a| a.start >= occ.end)
+                    .filter(|a| a.end <= occ.start || (a.start >= occ.end && a.end <= stem_end))
                     .map(|a| a.text.clone())
                     .collect();
                 for (from_start, idx) in [(true, atom_idx), (false, from_end)] {
@@ -348,8 +348,8 @@ fn compute_directory_occurrence_family(
                             file_idx: i,
                             canonical: occ.canonical,
                             level: occ.level,
-                            before_atoms: before_atoms.clone(),
-                            after_atoms: after_atoms.clone(),
+                            atoms: own_atoms.clone(),
+                            naming_atoms: naming_atoms.clone(),
                         });
                 }
             }
@@ -377,22 +377,39 @@ fn compute_directory_occurrence_family(
             .collect();
 
         // Filter 2 (2026-07-16 report): a member must be *supported* by a
-        // different-language member — sharing a distinctive
-        // (non-universal) atom, or 3+ atoms outright, or 2+ atoms that sit
-        // *before* the language token in both names (a shared naming stem:
-        // `VO_Gameplay_Charles_DE` / `VO_Gameplay_William_FR`). Atoms
+        // different-language member — sharing a distinctive (non-universal)
+        // atom, or 2+ *naming* atoms (a shared stem `VO_Gameplay_Charles_DE`
+        // / `VO_Gameplay_William_FR`, or a shared suffix
+        // `Spanish(Spain)_patch_1.snd` / `German_patch_1.snd`). Atoms
         // present in more than half the group (framework suffixes like
-        // `_SF`, extensions) are "universal" and don't count as
-        // distinctive on their own. This keeps genuine sets whose stems
-        // differ per file (`FemaleVoice9_German` / `FemaleVoice9_Italian`;
-        // `Spanish(Spain)_patch_1.snd` / `French(France)_patch_1.snd`)
-        // while rejecting coincidental same-position matches with
-        // unrelated names (`wp_consp_ar` against `uefonts_jpn` share only
-        // the trailing universal `sf`+`upk`; `l01_keep_cs` against
+        // `_SF`) are "universal" and don't count as distinctive on their
+        // own. This keeps genuine sets whose stems differ per file
+        // (`FemaleVoice9_German` / `FemaleVoice9_Italian`) while rejecting
+        // coincidental same-position matches with unrelated names
+        // (`wp_consp_ar` against `uefonts_jpn`; `l01_keep_cs` against
         // `dlc_arena_crowd_cries_de`; Flatout `MountSV` vs `Statue_JA`).
+        //
+        // The second condition used to be "3+ shared atoms" counted over
+        // the whole filename, or 2+ shared atoms restricted to those
+        // *before* the language token. The first half of that was a
+        // loophole rather than a bar (GT-224): it was only ever reached for
+        // members C1 had already rejected, and C1 rejects a member
+        // precisely when no *other* language carries any of its distinctive
+        // atoms — so by construction every atom such a member can still
+        // share with a different-language partner is a universal one. "3+
+        // shared atoms" therefore read "3+ shared *uninformative* atoms",
+        // which a directory of `<name>.item.bytes` files hands out for
+        // free: Shadowrun Dragonfall's `ar 2 lady (luckystrike)`, `sr 3
+        // eiger's rifle` and `russian grenade 3 (frag)` share `item`,
+        // `bytes` and a literal `3`, and on that alone were confirmed a
+        // three-language family — "ar" being an assault rifle and "sr" a
+        // sniper rifle. Counting `naming_atoms` instead drops the dotted
+        // format tail and asks the two names to agree on two words their
+        // author actually chose, which those three never do and
+        // `_patch_1` sets always do.
         let mut atom_freq: HashMap<&str, usize> = HashMap::new();
         for m in &survivors {
-            for atom in m.all_atoms() {
+            for atom in &m.atoms {
                 *atom_freq.entry(atom.as_str()).or_default() += 1;
             }
         }
@@ -401,10 +418,9 @@ fn compute_directory_occurrence_family(
         // scan with a fresh HashSet allocated per differing-canonical pair
         // - fine for a handful of siblings but explosive for the
         // thousand-file flat directories real game installs produce. The
-        // three conditions below (distinctive shared atom / 3+ shared
-        // atoms / 2+ shared before-atoms) are independent (OR'd), so each
-        // can be answered from a small index built once over `survivors`
-        // instead of a pairwise scan:
+        // two conditions below are independent (OR'd), so each can be
+        // answered from a small index built once over `survivors` instead
+        // of a pairwise scan:
         //
         // - C1 (distinctive shared atom): for each distinctive atom
         //   (`atom_freq[a] * 2 <= survivors.len()`), the set of canonicals
@@ -412,129 +428,69 @@ fn compute_directory_occurrence_family(
         //   distinctive atoms has >= 2 distinct canonicals against it -
         //   its own canonical is always one of them, so >= 2 means a
         //   different-canonical member shares it too.
-        // - C3 (2+ shared before-atoms): same idea, keyed by unordered
-        //   pairs of a member's own before-atoms. `|before(m) ∩
-        //   before(n)| >= 2` implies m and n share some concrete pair
-        //   drawn from that intersection, so indexing pairs -> canonicals
-        //   finds it without ever comparing m against n directly.
-        // - C2 (3+ shared atoms, multiplicity-aware): only evaluated for
-        //   members not already C1/C3-supported. `max_mult[a]` bounds how
-        //   many times atom `a` can appear in any single member's
-        //   `all_atoms()`; if a member's own atoms can't sum to 3 even at
-        //   that bound, no partner can push it over 3 shared, so it's
-        //   skipped outright. Otherwise only candidates sharing >= 1 atom
-        //   (via a postings index) are checked, each with the exact
-        //   original expression so multiplicity semantics match
-        //   precisely.
+        // - C2 (2+ shared naming atoms): same idea, keyed by unordered
+        //   pairs of a member's own naming atoms. `|naming(m) ∩ naming(n)|
+        //   >= 2` implies m and n share some concrete pair drawn from that
+        //   intersection, so indexing pairs -> canonicals finds it without
+        //   ever comparing m against n directly.
         let total = survivors.len();
-        let all_atoms_sets: Vec<HashSet<&str>> = survivors
-            .iter()
-            .map(|m| m.all_atoms().map(|a| a.as_str()).collect())
-            .collect();
-        let before_sorted: Vec<Vec<&str>> = survivors
+        let naming_sorted: Vec<Vec<&str>> = survivors
             .iter()
             .map(|m| {
-                let mut v: Vec<&str> = m.before_atoms.iter().map(|s| s.as_str()).collect();
+                let mut v: Vec<&str> = m.naming_atoms.iter().map(|s| s.as_str()).collect();
                 v.sort_unstable();
                 v
             })
             .collect();
 
         let mut distinctive_atom_canonicals: HashMap<&str, HashSet<&'static str>> = HashMap::new();
-        for (si, m) in survivors.iter().enumerate() {
-            for &atom in &all_atoms_sets[si] {
-                if atom_freq[atom] * 2 <= total {
+        for m in &survivors {
+            for atom in &m.atoms {
+                if atom_freq[atom.as_str()] * 2 <= total {
                     distinctive_atom_canonicals
-                        .entry(atom)
+                        .entry(atom.as_str())
                         .or_default()
                         .insert(m.canonical);
                 }
             }
         }
 
-        let mut before_pair_canonicals: HashMap<(&str, &str), HashSet<&'static str>> =
+        let mut naming_pair_canonicals: HashMap<(&str, &str), HashSet<&'static str>> =
             HashMap::new();
         for (si, m) in survivors.iter().enumerate() {
-            let before = &before_sorted[si];
-            for i in 0..before.len() {
-                for j in (i + 1)..before.len() {
-                    before_pair_canonicals
-                        .entry((before[i], before[j]))
+            let naming = &naming_sorted[si];
+            for i in 0..naming.len() {
+                for j in (i + 1)..naming.len() {
+                    naming_pair_canonicals
+                        .entry((naming[i], naming[j]))
                         .or_default()
                         .insert(m.canonical);
                 }
             }
         }
-
-        let mut max_mult: HashMap<&str, u8> = HashMap::new();
-        let mut postings: HashMap<&str, Vec<usize>> = HashMap::new();
-        for (si, m) in survivors.iter().enumerate() {
-            for &atom in &all_atoms_sets[si] {
-                let mult = m.before_atoms.contains(atom) as u8 + m.after_atoms.contains(atom) as u8;
-                let entry = max_mult.entry(atom).or_insert(0);
-                if mult > *entry {
-                    *entry = mult;
-                }
-                postings.entry(atom).or_default().push(si);
-            }
-        }
-        let maxpossible: Vec<u32> = all_atoms_sets
-            .iter()
-            .map(|atoms| atoms.iter().map(|a| u32::from(max_mult[a])).sum())
-            .collect();
 
         let mut is_supported = vec![false; total];
         for (si, m) in survivors.iter().enumerate() {
             if si % CANCEL_POLL_INTERVAL == 0 {
                 check_cancel(cancel)?;
             }
-            let c1 = all_atoms_sets[si].iter().any(|a| {
+            let c1 = m.atoms.iter().any(|a| {
                 distinctive_atom_canonicals
-                    .get(a)
+                    .get(a.as_str())
                     .is_some_and(|s| s.len() >= 2)
             });
             if c1 {
                 is_supported[si] = true;
                 continue;
             }
-            let before = &before_sorted[si];
-            let c3 = (0..before.len()).any(|i| {
-                (i + 1..before.len()).any(|j| {
-                    before_pair_canonicals
-                        .get(&(before[i], before[j]))
+            let naming = &naming_sorted[si];
+            is_supported[si] = (0..naming.len()).any(|i| {
+                (i + 1..naming.len()).any(|j| {
+                    naming_pair_canonicals
+                        .get(&(naming[i], naming[j]))
                         .is_some_and(|s| s.len() >= 2)
                 })
             });
-            if c3 {
-                is_supported[si] = true;
-                continue;
-            }
-            if maxpossible[si] < 3 {
-                continue;
-            }
-            let m_all = &all_atoms_sets[si];
-            let mut seen: HashSet<usize> = HashSet::new();
-            let mut c2 = false;
-            'candidates: for &atom in m_all.iter() {
-                let Some(candidates) = postings.get(atom) else {
-                    continue;
-                };
-                for &ni in candidates {
-                    if ni == si || !seen.insert(ni) {
-                        continue;
-                    }
-                    let n = survivors[ni];
-                    if n.canonical == m.canonical {
-                        continue;
-                    }
-                    let shared_count = n.all_atoms().filter(|a| m_all.contains(a.as_str())).count();
-                    if shared_count >= 3 {
-                        c2 = true;
-                        break 'candidates;
-                    }
-                }
-            }
-            is_supported[si] = c2;
         }
 
         let supported: Vec<&&PositionMember> = survivors
@@ -561,9 +517,28 @@ fn compute_directory_occurrence_family(
         // supported set does NOT contain stay out (`wp_consp_ar` never
         // revives via a ja/ko/de family), and over-represented constants
         // were already dropped before this point.
+        //
+        // What a *bare-code* rider must still bring is a name of its own.
+        // `R2_Stingers` is a file that happens to be German; `cs.ttf` is a
+        // file called "cs", and Counter-Strike's own UI font was landing in
+        // the Czech localization on nothing more than that (GT-224) - it
+        // occupies the same "last atom of the stem" slot as the genuine
+        // `cstrike_czech.txt` / `gameui_german.txt` set while sharing not
+        // one word with it. Riding along is the one route into this
+        // mechanism that asks a file for no evidence at all, so a name that
+        // is nothing but a two-letter code may not take it: those collide
+        // with ordinary short words, which is the same reason
+        // `MIN_FAMILY_SIZE_BARE_ONLY` exists. A stem that is nothing but a
+        // full name or an iso3 code still rides - `russian.pack` beside
+        // `patch_1_russian.pack`, Path of Exile's
+        // `russian.datc64_1.bundle.bin` - because "russian" is not a word a
+        // file falls into by accident.
         let flagged: Vec<&&PositionMember> = survivors
             .iter()
-            .filter(|m| distinct.contains(m.canonical))
+            .filter(|m| {
+                distinct.contains(m.canonical)
+                    && (m.level != Level::C || !m.naming_atoms.is_empty())
+            })
             .collect();
         for member in &flagged {
             if keep.contains(member.canonical) {
@@ -844,6 +819,99 @@ mod tests {
         assert!(hits.contains_key(&1), "de/ folder should be flagged");
         assert!(hits.contains_key(&2), "fr/ folder should be flagged");
         assert!(hits.contains_key(&3), "es/ folder should be flagged");
+    }
+
+    /// GT-224: `cstrike\\resource\\cs.ttf` is Counter-Strike's own UI font,
+    /// not a Czech localization - "cs" is the game's own abbreviation. It
+    /// occupies the same "last atom of the stem" slot as the genuine
+    /// `cstrike_czech.txt` / `gameui_german.txt` set, but shares no naming
+    /// word with any of them.
+    #[test]
+    fn bare_code_with_no_naming_of_its_own_is_not_a_family_member() {
+        let mut paths = vec!["cstrike\\resource\\cs.ttf".to_string()];
+        for lang in [
+            "czech", "danish", "dutch", "french", "german", "greek", "italian", "japanese",
+            "korean", "polish", "russian", "spanish", "swedish", "turkish",
+        ] {
+            paths.push(format!("cstrike\\resource\\cstrike_{lang}.txt"));
+            paths.push(format!("cstrike\\resource\\gameui_{lang}.txt"));
+        }
+        let seg_lists: Vec<_> = paths.iter().map(|p| tokenize_path(p)).collect();
+        let occ_lists: Vec<_> = seg_lists
+            .iter()
+            .map(|s| collect_occurrences(&data(), s))
+            .collect();
+
+        let hits = compute_family(
+            &data(),
+            &seg_lists,
+            &occ_lists,
+            &keep_default(),
+            &no_cancel(),
+        )
+        .unwrap();
+
+        assert!(!hits.contains_key(&0), "cs.ttf is the game font, not Czech");
+        assert!(hits.contains_key(&1), "cstrike_czech.txt is a real member");
+    }
+
+    /// GT-224: Shadowrun Dragonfall item files. "ar" is an assault rifle and
+    /// "sr" a sniper rifle; all these names share is the `.item.bytes`
+    /// extension every file in the directory carries, plus a literal `3`.
+    #[test]
+    fn shared_extension_atoms_alone_do_not_support_a_family() {
+        let paths = [
+            "data\\items\\ar 2 lady (luckystrike).item.bytes",
+            "data\\items\\ar 3 lady (luckystrike).item.bytes",
+            "data\\items\\russian grenade 3 (frag).item.bytes",
+            "data\\items\\sr 3 eiger's rifle.item.bytes",
+        ];
+        let seg_lists: Vec<_> = paths.iter().map(|p| tokenize_path(p)).collect();
+        let occ_lists: Vec<_> = seg_lists
+            .iter()
+            .map(|s| collect_occurrences(&data(), s))
+            .collect();
+
+        let hits = compute_family(
+            &data(),
+            &seg_lists,
+            &occ_lists,
+            &keep_default(),
+            &no_cancel(),
+        )
+        .unwrap();
+
+        assert!(
+            hits.is_empty(),
+            "item names are not a language family: {hits:?}"
+        );
+    }
+
+    /// The naming-suffix set mechanism 1 misses (the paren qualifier breaks
+    /// the shape) and C2 must keep: two shared stem words, `patch` and `1`.
+    #[test]
+    fn shared_naming_suffix_still_confirms_a_family() {
+        let paths = [
+            "sound\\Spanish(Spain)_patch_1.snd",
+            "sound\\French(France)_patch_1.snd",
+            "sound\\German_patch_1.snd",
+        ];
+        let seg_lists: Vec<_> = paths.iter().map(|p| tokenize_path(p)).collect();
+        let occ_lists: Vec<_> = seg_lists
+            .iter()
+            .map(|s| collect_occurrences(&data(), s))
+            .collect();
+
+        let hits = compute_family(
+            &data(),
+            &seg_lists,
+            &occ_lists,
+            &keep_default(),
+            &no_cancel(),
+        )
+        .unwrap();
+
+        assert_eq!(hits.len(), 3, "{hits:?}");
     }
 
     #[test]
