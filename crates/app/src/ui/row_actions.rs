@@ -44,14 +44,30 @@ pub fn windows_path_string(path: &Path) -> String {
 }
 
 /// Program + arguments to reveal `path` in Windows Explorer with the item
-/// selected. `/select,PATH` MUST be a single argument - Explorer treats a
-/// space after the comma as "no item to select" - so it is built as one token;
-/// `std::process::Command` then quotes the embedded spaces when it constructs
-/// the command line.
+/// selected.
+///
+/// Two separate quoting facts have to hold at once, and satisfying one with
+/// `Command`'s own escaping breaks the other:
+///
+/// 1. `/select,PATH` must stay one token - a space after the comma makes
+///    Explorer select nothing.
+/// 2. The path must be quoted *inside* that token, as `/select,"PATH"`.
+///
+/// This used to return an unquoted `/select,PATH` and rely on
+/// `std::process::Command` to quote the embedded spaces. It does quote them -
+/// but it quotes the argument *as a whole*, producing
+/// `explorer.exe "/select,C:\Games\My Game\file.dll"`. Explorer does not parse
+/// `/select,` from inside a quoted token, fails to read the argument at all,
+/// and falls back to opening the default folder, which is why revealing a file
+/// landed the user in Documents while revealing a game folder worked (there
+/// the whole argument is just a path, and a quoted path is fine).
+///
+/// So the quotes are placed here, deliberately, and [`launch`] passes the
+/// argument through verbatim.
 pub fn reveal_in_explorer_args(path: &Path) -> (&'static str, Vec<String>) {
     (
         "explorer.exe",
-        vec![format!("/select,{}", windows_path_string(path))],
+        vec![format!("/select,\"{}\"", windows_path_string(path))],
     )
 }
 
@@ -59,8 +75,21 @@ pub fn reveal_in_explorer_args(path: &Path) -> (&'static str, Vec<String>) {
 /// (no `/select`). Used for a game's install dir, where the point is to land
 /// *inside* the folder and look around - unlike `reveal_in_explorer_args`,
 /// which opens the parent with the item highlighted.
+///
+/// Quoted here rather than by `Command` for the reason given on
+/// [`reveal_in_explorer_args`]: [`launch`] no longer escapes anything.
 pub fn open_folder_args(path: &Path) -> (&'static str, Vec<String>) {
-    ("explorer.exe", vec![windows_path_string(path)])
+    ("explorer.exe", vec![quoted(&windows_path_string(path))])
+}
+
+/// `text` wrapped in double quotes for a Windows command line.
+///
+/// Every path this module hands to [`launch`] goes through here. Windows paths
+/// cannot contain `"` at all, so there is nothing to escape inside - the only
+/// job is keeping a path with spaces as one argument now that [`launch`] does
+/// no escaping of its own.
+fn quoted(text: &str) -> String {
+    format!("\"{text}\"")
 }
 
 /// Program + arguments for the Windows "Open with..." chooser dialog for
@@ -70,7 +99,7 @@ pub fn open_with_args(path: &Path) -> (&'static str, Vec<String>) {
         "rundll32.exe",
         vec![
             "shell32.dll,OpenAs_RunDLL".to_string(),
-            windows_path_string(path),
+            quoted(&windows_path_string(path)),
         ],
     )
 }
@@ -112,9 +141,21 @@ fn to_wide(s: &str) -> Vec<u16> {
 /// success the child keeps running on its own; on failure (the program could
 /// not be started at all) an error string is returned for the caller to log -
 /// the process handle is intentionally dropped, never waited on.
+/// Spawns `program` with `args` passed to the command line **verbatim**.
+///
+/// `Command::args` would escape each argument, and its escaping is wrong for
+/// Explorer's `/select,"PATH"` - see [`reveal_in_explorer_args`] for what that
+/// cost. `raw_arg` hands the string through untouched, which makes the
+/// builders above responsible for their own quoting; they all route their
+/// paths through `quoted` for that reason.
 pub fn launch(program: &str, args: &[String]) -> Result<(), String> {
-    Command::new(program)
-        .args(args)
+    use std::os::windows::process::CommandExt;
+
+    let mut command = Command::new(program);
+    for arg in args {
+        command.raw_arg(arg);
+    }
+    command
         .spawn()
         .map(|_child| ())
         .map_err(|err| format!("{program}: {err}"))
@@ -165,16 +206,55 @@ mod tests {
         let p = PathBuf::from(r"C:\Games\My Game\file.dll");
         let (program, args) = reveal_in_explorer_args(&p);
         assert_eq!(program, "explorer.exe");
-        // Exactly one argument, and it keeps the path attached to `/select,`
-        // (space-separating it would make Explorer select nothing).
-        assert_eq!(args, vec![r"/select,C:\Games\My Game\file.dll".to_string()]);
+        // Exactly one argument, the path attached to `/select,`
+        // (space-separating it would make Explorer select nothing) and the
+        // path quoted *inside* the token rather than around the whole of it.
+        assert_eq!(
+            args,
+            vec!["/select,\"C:\\Games\\My Game\\file.dll\"".to_string()]
+        );
+    }
+
+    /// The regression this file exists for: a path with a space used to be
+    /// handed to `Command` unquoted, which quoted the whole `/select,...`
+    /// token. Explorer could not read the argument and opened Documents
+    /// instead of the file's folder. The quotes must sit around the path
+    /// only, so that `/select,` stays outside them and parseable.
+    #[test]
+    fn reveal_quotes_the_path_and_not_the_select_switch() {
+        let p = PathBuf::from(r"F:\SteamLibrary\steamapps\common\Counter-Strike Source\cs.ttf");
+        let (_program, args) = reveal_in_explorer_args(&p);
+        let arg = &args[0];
+        assert!(
+            arg.starts_with("/select,\""),
+            "`/select,` must stay outside the quotes: {arg}"
+        );
+        assert!(arg.ends_with('"'), "the path must be closed: {arg}");
+        assert!(
+            !arg.starts_with('"'),
+            "quoting the whole token is what Explorer cannot parse: {arg}"
+        );
     }
 
     #[test]
     fn reveal_normalizes_forward_slashes_for_select() {
         let p = PathBuf::from("C:/Games/file.dll");
         let (_program, args) = reveal_in_explorer_args(&p);
-        assert_eq!(args, vec![r"/select,C:\Games\file.dll".to_string()]);
+        assert_eq!(args, vec!["/select,\"C:\\Games\\file.dll\"".to_string()]);
+    }
+
+    /// A folder argument is a bare path, so it carries its own quotes now
+    /// that `launch` no longer adds any - without them a game whose name has
+    /// a space would arrive as several arguments.
+    #[test]
+    fn open_folder_quotes_a_path_containing_spaces() {
+        let p = PathBuf::from(r"H:\SteamLibrary\steamapps\common\The Finals");
+        let (program, args) = open_folder_args(&p);
+        assert_eq!(program, "explorer.exe");
+        assert_eq!(
+            args,
+            vec!["\"H:\\SteamLibrary\\steamapps\\common\\The Finals\"".to_string()]
+        );
     }
 
     #[test]
@@ -183,15 +263,16 @@ mod tests {
         let (program, args) = open_folder_args(&p);
         assert_eq!(program, "explorer.exe");
         // No `/select,` - that would open the parent with "My Game"
-        // highlighted instead of opening the folder itself.
-        assert_eq!(args, vec![r"D:\Games\My Game".to_string()]);
+        // highlighted instead of opening the folder itself. Quoted, because
+        // `launch` now passes arguments through verbatim.
+        assert_eq!(args, vec!["\"D:\\Games\\My Game\"".to_string()]);
     }
 
     #[test]
     fn open_folder_normalizes_forward_slashes() {
         let p = PathBuf::from("D:/Games/My Game");
         let (_program, args) = open_folder_args(&p);
-        assert_eq!(args, vec![r"D:\Games\My Game".to_string()]);
+        assert_eq!(args, vec!["\"D:\\Games\\My Game\"".to_string()]);
     }
 
     #[test]
@@ -213,8 +294,10 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                // The verb is a single token with no spaces and needs no
+                // quotes; the path carries its own, since `launch` adds none.
                 "shell32.dll,OpenAs_RunDLL".to_string(),
-                r"C:\Games\My Game\file.dll".to_string(),
+                "\"C:\\Games\\My Game\\file.dll\"".to_string(),
             ]
         );
     }
