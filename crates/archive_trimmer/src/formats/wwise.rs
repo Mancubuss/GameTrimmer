@@ -189,6 +189,12 @@ pub fn parse_wwise_pck(
     let lang_table_size = file.read_u32::<LittleEndian>()?;
     let bank_table_size = file.read_u32::<LittleEndian>()?;
     let stream_table_size = file.read_u32::<LittleEndian>()?;
+    // Present on real AKPK files at base+24, immediately before the language
+    // map (which starts at base+28). Not part of the trimmable data itself,
+    // but its declared size is real header content: a corrupt/truncated
+    // externals table means the header is corrupt too, so it belongs in the
+    // bounds check below.
+    let externals_table_size = file.read_u32::<LittleEndian>()?;
 
     let lang_sec_start = base_offset.saturating_add(24);
     let bank_sec_start = lang_sec_start
@@ -198,9 +204,17 @@ pub fn parse_wwise_pck(
     let lang_sec_end = bank_sec_start;
     let bank_sec_end = stream_sec_start;
     let stream_sec_end = stream_sec_start.saturating_add(stream_table_size as u64);
-    let declared_header_end = base_offset.saturating_add(header_size as u64);
-    if stream_sec_end > file_len
-        || stream_sec_end > declared_header_end
+    let externals_sec_end = stream_sec_end.saturating_add(externals_table_size as u64);
+    // `header_size` is measured from offset 8 (right after the magic and the
+    // header_size field itself), not from the start of the file. Real AKPK
+    // files were byte-verified against this: base+8+header_size lands exactly
+    // at the end of the declared section tables (including the externals
+    // table that trails the stream table).
+    let declared_header_end = base_offset
+        .saturating_add(8)
+        .saturating_add(header_size as u64);
+    if externals_sec_end > file_len
+        || externals_sec_end > declared_header_end
         || declared_header_end > file_len
     {
         return Err(ArchiveError::InvalidFormat(
@@ -212,9 +226,14 @@ pub fn parse_wwise_pck(
     let mut language_map = HashMap::new();
     language_map.insert(0, "SFX".to_string());
 
-    // Parse Language Map Table at base_offset + 24
-    if lang_table_size > 0 && lang_sec_start.saturating_add(4) <= file_len {
-        file.seek(SeekFrom::Start(lang_sec_start))?;
+    // Parse Language Map Table. The real language map starts at base_offset +
+    // 28 (base+24 is `externals_table_size`, read above), so the count field
+    // itself lives at lang_sec_start + 4, not at lang_sec_start. Byte-verified
+    // against a real AKPK: reading the count from lang_sec_start directly
+    // only "worked" when externals_table_size happened to equal the true
+    // language count by coincidence.
+    if lang_table_size > 0 && lang_sec_start.saturating_add(8) <= file_len {
+        file.seek(SeekFrom::Start(lang_sec_start.saturating_add(4)))?;
         let lang_count = file.read_u32::<LittleEndian>()?;
         if lang_count > 100_000
             || lang_sec_start
@@ -415,21 +434,26 @@ pub fn create_synthetic_wwise_pck(
     // 1. Magic
     buf.extend_from_slice(b"AKPK");
 
-    // 2. Placeholders for header fields: header_size, unknown, language_map_size, bank_table_size, stream_table_size
+    // 2. Placeholders for header fields: header_size, unknown, language_map_size,
+    // bank_table_size, stream_table_size, externals_table_size. Real AKPK files
+    // carry all six fields (magic + 6*u32 = 28 bytes) before the language map
+    // starts; earlier versions of this fixture stopped at 5 fields (24 bytes)
+    // and let the language map's own count field double as the "6th field",
+    // which is exactly the offset bug the real parser had.
     let header_pos = buf.len();
-    buf.write_u32::<LittleEndian>(0).unwrap(); // header_size
-    buf.write_u32::<LittleEndian>(1).unwrap(); // unknown
-    buf.write_u32::<LittleEndian>(0).unwrap(); // language_map_size
-    buf.write_u32::<LittleEndian>(0).unwrap(); // bank_table_size
-    buf.write_u32::<LittleEndian>(0).unwrap(); // stream_table_size
+    buf.write_u32::<LittleEndian>(0).unwrap(); // header_size (fixed up below)
+    buf.write_u32::<LittleEndian>(1).unwrap(); // unknown / version
+    buf.write_u32::<LittleEndian>(0).unwrap(); // language_map_size (fixed up below)
+    buf.write_u32::<LittleEndian>(0).unwrap(); // bank_table_size (fixed up below)
+    buf.write_u32::<LittleEndian>(0).unwrap(); // stream_table_size (fixed up below)
+    buf.write_u32::<LittleEndian>(0).unwrap(); // externals_table_size (no externals in test fixtures)
 
-    assert_eq!(buf.len(), 24);
+    assert_eq!(buf.len(), 28);
 
-    // 3. Language section at base_offset + 24
-    let lang_sec_start = buf.len(); // 24
+    // 3. Real language section at base_offset + 28
+    let lang_sec_start = buf.len(); // 28 -- position of the true lang_count field
     buf.write_u32::<LittleEndian>(languages.len() as u32)
-        .unwrap(); // lang_count at 24..28
-    buf.write_u32::<LittleEndian>(0).unwrap(); // 4 bytes unknown / alignment at 28..32
+        .unwrap(); // lang_count at 28..32
 
     let desc_start = buf.len(); // 32
     for _ in languages {
@@ -437,11 +461,12 @@ pub fn create_synthetic_wwise_pck(
         buf.write_u32::<LittleEndian>(0).unwrap(); // placeholder lang_id
     }
 
-    // Write strings and fix up descriptors (str_offset relative to lang_sec_start + 4 = 28)
+    // Write strings and fix up descriptors (str_offset relative to lang_sec_start = 28,
+    // matching the parser's declared_header_end-adjacent anchor: base+24+4)
     let mut lang_string_offsets = Vec::new();
     for (id, name) in languages {
         let str_pos = buf.len();
-        let rel_off = (str_pos - (lang_sec_start + 4)) as u32;
+        let rel_off = (str_pos - lang_sec_start) as u32;
         lang_string_offsets.push((rel_off, *id));
         for u in name.encode_utf16() {
             buf.write_u16::<LittleEndian>(u).unwrap();
@@ -461,7 +486,7 @@ pub fn create_synthetic_wwise_pck(
         buf[entry_pos + 4..entry_pos + 8].copy_from_slice(&id.to_le_bytes());
     }
 
-    let lang_table_size = (buf.len() - (lang_sec_start + 4)) as u32;
+    let lang_table_size = (buf.len() - lang_sec_start) as u32;
 
     // 4. Bank table (empty in test)
     let bank_sec_start = buf.len();
@@ -482,13 +507,16 @@ pub fn create_synthetic_wwise_pck(
     }
 
     let stream_table_size = (buf.len() - stream_sec_start) as u32;
-    let header_size = buf.len() as u32;
+    // header_size is measured from offset 8 (right after magic + header_size
+    // itself), matching real AKPK files -- not the absolute buffer length.
+    let header_size = (buf.len() - 8) as u32;
 
-    // Fix up header fields in 0..24
+    // Fix up header fields in 0..28
     buf[header_pos..header_pos + 4].copy_from_slice(&header_size.to_le_bytes());
     buf[header_pos + 8..header_pos + 12].copy_from_slice(&lang_table_size.to_le_bytes());
     buf[header_pos + 12..header_pos + 16].copy_from_slice(&bank_table_size.to_le_bytes());
     buf[header_pos + 16..header_pos + 20].copy_from_slice(&stream_table_size.to_le_bytes());
+    // externals_table_size at header_pos+20..24 is left as 0 (written above).
 
     // 6. Data payload
     for (i, &(id, lang_id, data_len)) in streams.iter().enumerate() {

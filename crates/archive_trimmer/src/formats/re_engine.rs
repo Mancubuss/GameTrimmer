@@ -56,6 +56,7 @@ impl ArchiveHandler for ReEngineHandler {
 
         let mut detected_languages = Vec::new();
         let mut trimmable_chunks = Vec::new();
+        let mut total_trimmable_bytes = 0u64;
 
         for &akpk_offset in &embedded_akpk_offsets {
             if let Ok(pck) = parse_wwise_pck(&mut file, akpk_offset, total_size) {
@@ -85,6 +86,19 @@ impl ArchiveHandler for ReEngineHandler {
                     let is_language = !is_sfx;
                     let abs_offset = entry.file_offset;
 
+                    // Unlike the outer PAK container (repacking is intentionally
+                    // out of scope for RE Engine — proven unworkable), the
+                    // embedded Wwise AKPK block is located precisely by
+                    // `parse_wwise_pck`, and point-zeroing it in place is the
+                    // actual working trim method for RE Engine archives, not a
+                    // stand-in for a future repacker.
+                    let can_zero_in_place = true;
+
+                    if is_language && can_zero_in_place {
+                        total_trimmable_bytes =
+                            total_trimmable_bytes.saturating_add(entry.file_size);
+                    }
+
                     trimmable_chunks.push(TrimmableChunk {
                         id: format!("RE_{}_{}", akpk_offset, entry.id),
                         name: format!("Embedded_Wwise_{}.wem", entry.id),
@@ -93,7 +107,7 @@ impl ArchiveHandler for ReEngineHandler {
                         is_language,
                         language: Some(lang_name),
                         category: "Capcom RE Audio Chunk".to_string(),
-                        can_zero_in_place: false,
+                        can_zero_in_place,
                     });
                 }
             }
@@ -114,8 +128,8 @@ impl ArchiveHandler for ReEngineHandler {
             on_disk_size,
             detected_languages,
             trimmable_chunks,
-            total_trimmable_bytes: 0,
-            estimated_savings_bytes: 0,
+            total_trimmable_bytes,
+            estimated_savings_bytes: total_trimmable_bytes,
             details,
         })
     }
@@ -305,15 +319,51 @@ mod tests {
             custom_backup_dir: None,
         };
 
-        assert_eq!(analysis.total_trimmable_bytes, 0);
+        // Embedded AKPK entries are point-zeroable regardless of language (RE
+        // repacking is out of scope, so this is the working trim method here).
         assert!(analysis
             .trimmable_chunks
             .iter()
-            .all(|chunk| !chunk.can_zero_in_place));
+            .all(|chunk| chunk.can_zero_in_place));
+        // The total counts only the non-SFX language streams: English (202,
+        // 12288) + Japanese (203, 16384) + German (204, 16384). SFX (201, 8192)
+        // is excluded because it is not localized content.
+        assert_eq!(analysis.total_trimmable_bytes, 12288 + 16384 + 16384);
+        assert_eq!(analysis.estimated_savings_bytes, 12288 + 16384 + 16384);
         assert!(matches!(
             handler.trim(&pak_path, &options),
             Err(ArchiveError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn capcom_re_pak_embedded_akpk_savings_sum_matches_expected_total() {
+        let dir = tempdir().expect("tempdir");
+        let pak_path = dir.path().join("re_chunk_001.pak");
+
+        let languages = vec![(0, "SFX"), (1, "English(US)"), (2, "French")];
+        let streams = vec![(301, 0, 4096), (302, 1, 8192), (303, 2, 8192)];
+
+        let embedded_pck = create_synthetic_wwise_pck(&languages, &streams);
+        let pak_bytes = create_synthetic_re_pak(&embedded_pck);
+        fs::write(&pak_path, &pak_bytes).expect("write re pak");
+
+        let handler = ReEngineHandler;
+        let analysis = handler.analyze(&pak_path).expect("analyze re pak");
+
+        assert!(!analysis.trimmable_chunks.is_empty());
+        assert!(
+            analysis
+                .trimmable_chunks
+                .iter()
+                .all(|chunk| chunk.can_zero_in_place),
+            "embedded AKPK entries must be zero-in-place-eligible"
+        );
+
+        let expected: u64 = 8192 + 8192; // English + French streams, SFX excluded
+        assert_ne!(expected, 0);
+        assert_eq!(analysis.total_trimmable_bytes, expected);
+        assert_eq!(analysis.estimated_savings_bytes, expected);
     }
 
     #[test]

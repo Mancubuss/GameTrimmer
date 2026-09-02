@@ -54,6 +54,7 @@ impl ArchiveHandler for UnrealPakHandler {
 
         let mut detected_languages = Vec::new();
         let mut trimmable_chunks = Vec::new();
+        let mut total_trimmable_bytes = 0u64;
 
         for entry in &entries {
             let (is_loc, lang_opt, category) = classify_ue_asset(&entry.path);
@@ -64,6 +65,25 @@ impl ArchiveHandler for UnrealPakHandler {
                 }
             }
 
+            // Zero-in-place is safe only for entries stored without compression
+            // or encryption: their payload bytes are the raw asset data, so
+            // overwriting them with zeros cannot corrupt a compressed block or
+            // land inside ciphertext. Compressed and encrypted entries stay
+            // `false` and belong to the "needs repacking" bucket.
+            //
+            // Open precondition: the offset semantics used here have never been
+            // checked against a real UE PAK. `create_synthetic_unreal_pak` below
+            // writes bare payload bytes with no serialized `FPakEntry` header in
+            // front of them, so it cannot catch an inline-header offset shift
+            // that a real pak may have. That verification must happen before
+            // mutation is ever enabled for this format — it is harmless today
+            // only because `trim()` unconditionally refuses to run.
+            let can_zero_in_place = entry.compression_method == 0 && !entry.is_encrypted;
+
+            if is_loc && can_zero_in_place {
+                total_trimmable_bytes = total_trimmable_bytes.saturating_add(entry.size as u64);
+            }
+
             trimmable_chunks.push(TrimmableChunk {
                 id: entry.path.clone(),
                 name: entry.path.clone(),
@@ -72,9 +92,7 @@ impl ArchiveHandler for UnrealPakHandler {
                 is_language: is_loc,
                 language: lang_opt,
                 category,
-                // UE PAK entries require a validated repack implementation. Even
-                // uncompressed payload bytes may be covered by container metadata.
-                can_zero_in_place: false,
+                can_zero_in_place,
             });
         }
 
@@ -92,8 +110,8 @@ impl ArchiveHandler for UnrealPakHandler {
             on_disk_size,
             detected_languages,
             trimmable_chunks,
-            total_trimmable_bytes: 0,
-            estimated_savings_bytes: 0,
+            total_trimmable_bytes,
+            estimated_savings_bytes: total_trimmable_bytes,
             details,
         })
     }
@@ -358,7 +376,18 @@ fn extract_language_from_path(path: &str) -> Option<String> {
 }
 
 /// Helper to generate a valid synthetic Unreal Engine PAK for unit tests.
-pub fn create_synthetic_unreal_pak(entries: &[(&str, &[u8])], // (path, payload)
+/// All entries are written uncompressed and unencrypted.
+pub fn create_synthetic_unreal_pak(entries: &[(&str, &[u8])], /* (path, payload) */) -> Vec<u8> {
+    let flagged: Vec<(&str, &[u8], i32, bool)> =
+        entries.iter().map(|&(p, d)| (p, d, 0, false)).collect();
+    create_synthetic_unreal_pak_with_flags(&flagged)
+}
+
+/// Same as [`create_synthetic_unreal_pak`], but lets each entry declare its own
+/// compression method and encrypted flag, for tests that need to distinguish
+/// zero-in-place-eligible entries from compressed/encrypted ones.
+pub fn create_synthetic_unreal_pak_with_flags(
+    entries: &[(&str, &[u8], i32, bool)], // (path, payload, compression_method, encrypted)
 ) -> Vec<u8> {
     use byteorder::WriteBytesExt;
     let mut buf = Vec::new();
@@ -366,7 +395,7 @@ pub fn create_synthetic_unreal_pak(entries: &[(&str, &[u8])], // (path, payload)
     // 1. Write file entries
     let mut entry_records = Vec::new();
 
-    for &(path, data) in entries {
+    for &(path, data, compression_method, encrypted) in entries {
         // Cluster align offset
         while buf.len() % 4096 != 0 {
             buf.push(0);
@@ -375,7 +404,13 @@ pub fn create_synthetic_unreal_pak(entries: &[(&str, &[u8])], // (path, payload)
         let size = data.len() as i64;
         buf.extend_from_slice(data);
 
-        entry_records.push((path.to_string(), offset, size));
+        entry_records.push((
+            path.to_string(),
+            offset,
+            size,
+            compression_method,
+            encrypted,
+        ));
     }
 
     // 2. Index TOC
@@ -390,7 +425,7 @@ pub fn create_synthetic_unreal_pak(entries: &[(&str, &[u8])], // (path, payload)
     buf.write_i32::<LittleEndian>(entry_records.len() as i32)
         .unwrap();
 
-    for (path, offset, size) in &entry_records {
+    for (path, offset, size, compression_method, encrypted) in &entry_records {
         let path_with_null = format!("{}\0", path);
         buf.write_i32::<LittleEndian>(path_with_null.len() as i32)
             .unwrap();
@@ -399,9 +434,12 @@ pub fn create_synthetic_unreal_pak(entries: &[(&str, &[u8])], // (path, payload)
         buf.write_i64::<LittleEndian>(*offset).unwrap();
         buf.write_i64::<LittleEndian>(*size).unwrap();
         buf.write_i64::<LittleEndian>(*size).unwrap(); // uncompressed size
-        buf.write_i32::<LittleEndian>(0).unwrap(); // compression method 0 (none)
+        buf.write_i32::<LittleEndian>(*compression_method).unwrap();
         buf.extend_from_slice(&[0u8; 20]); // sha1 hash
-        buf.write_u8(0).unwrap(); // encrypted 0
+        if *compression_method != 0 {
+            buf.write_i32::<LittleEndian>(0).unwrap(); // block_count = 0 (no blocks to skip)
+        }
+        buf.write_u8(u8::from(*encrypted)).unwrap();
         buf.write_i32::<LittleEndian>(65536).unwrap(); // compression block size (v3+)
     }
 
@@ -466,11 +504,16 @@ mod tests {
             custom_backup_dir: None,
         };
 
-        assert_eq!(analysis.total_trimmable_bytes, 0);
+        // Every entry in this fixture is stored uncompressed and unencrypted, so
+        // all four are individually zero-in-place-eligible, but only the three
+        // localized entries (de/fr/en) count toward the trimmable total —
+        // Core.uasset is a general asset, not localized content.
         assert!(analysis
             .trimmable_chunks
             .iter()
-            .all(|chunk| !chunk.can_zero_in_place));
+            .all(|chunk| chunk.can_zero_in_place));
+        assert_eq!(analysis.total_trimmable_bytes, 16384 * 3);
+        assert_eq!(analysis.estimated_savings_bytes, 16384 * 3);
         assert!(matches!(
             handler.trim(&pak_path, &options),
             Err(ArchiveError::Unsupported(_))
@@ -481,6 +524,81 @@ mod tests {
             !ambiguous.0,
             "unknown UE localization language must fail closed"
         );
+    }
+
+    #[test]
+    fn unreal_pak_marks_compressed_and_encrypted_language_entries_not_zeroable() {
+        let dir = tempdir().expect("tempdir");
+        let pak_path = dir.path().join("Game-Compressed.pak");
+
+        let de_data = vec![0x22u8; 16384];
+        let fr_data = vec![0x33u8; 16384];
+        let es_data = vec![0x44u8; 16384];
+        let en_data = vec![0x55u8; 16384];
+
+        let entries: [(&str, &[u8], i32, bool); 4] = [
+            (
+                "Content/Localization/Game/de/Game.locres",
+                &de_data,
+                0,
+                false,
+            ), // uncompressed, unencrypted -> zeroable
+            (
+                "Content/Localization/Game/fr/Game.locres",
+                &fr_data,
+                1,
+                false,
+            ), // compressed -> NOT zeroable
+            (
+                "Content/Localization/Game/es/Game.locres",
+                &es_data,
+                0,
+                true,
+            ), // encrypted -> NOT zeroable
+            (
+                "Content/Localization/Game/en/Game.locres",
+                &en_data,
+                0,
+                false,
+            ), // uncompressed, unencrypted -> zeroable
+        ];
+
+        let pak_bytes = create_synthetic_unreal_pak_with_flags(&entries);
+        fs::write(&pak_path, &pak_bytes).expect("write pak");
+
+        let handler = UnrealPakHandler;
+        let analysis = handler.analyze(&pak_path).expect("analyze pak");
+
+        let by_lang = |lang: &str| -> &TrimmableChunk {
+            analysis
+                .trimmable_chunks
+                .iter()
+                .find(|c| c.language.as_deref() == Some(lang))
+                .unwrap_or_else(|| panic!("no chunk for language {lang}"))
+        };
+
+        assert!(by_lang("German").can_zero_in_place);
+        assert!(
+            !by_lang("French").can_zero_in_place,
+            "compressed entries must not be zero-in-place-eligible"
+        );
+        assert!(
+            !by_lang("Spanish").can_zero_in_place,
+            "encrypted entries must not be zero-in-place-eligible"
+        );
+        assert!(by_lang("English").can_zero_in_place);
+
+        // The sum must equal exactly the entries that passed both zero-in-place
+        // conditions (uncompressed AND unencrypted), not all four language
+        // entries — the compressed French and encrypted Spanish entries are
+        // localized but must not contribute to the trimmable total.
+        assert_eq!(analysis.total_trimmable_bytes, 16384 * 2);
+        assert_eq!(analysis.estimated_savings_bytes, 16384 * 2);
+
+        assert!(matches!(
+            handler.trim(&pak_path, &TrimOptions::default()),
+            Err(ArchiveError::Unsupported(_))
+        ));
     }
 
     #[test]
