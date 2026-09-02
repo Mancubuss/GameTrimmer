@@ -46,6 +46,24 @@
 //! the one the previous index was built for, only findings that already matched
 //! can still match, so every keystroke after the first scans the previous hits
 //! rather than the whole corpus.
+//!
+//! # Wildcards
+//!
+//! `*` matches a run of characters, including none, so `loc_*.pak` reads as
+//! "starts with `loc_`, ends with `.pak`" and `*.ttf` as "ends with `.ttf`".
+//! Several `*` may appear in one query. A query with none is exactly the
+//! substring match described above - [`glob_segments`] splits on `*`, and a
+//! query without one produces a single segment, so the loops below run the
+//! same `find` they always did.
+//!
+//! `?` is not special - it matches only itself, like every other character.
+//! GT-226 asked for `*`; a single-character wildcard was not requested and
+//! regex is explicitly out of scope, so this stays the smallest thing that
+//! covers the ask.
+//!
+//! No pattern is compiled per row: [`SearchIndex::build`] splits the query on
+//! `*` once, and the two match loops below reuse that `Vec<&str>` for every
+//! haystack.
 
 use std::collections::HashSet;
 
@@ -99,6 +117,54 @@ impl Corpus {
     }
 }
 
+/// Splits a folded query on `*` into the literal runs a match must contain in
+/// order. A query with no `*` comes back as one segment - the same string
+/// `str::contains` was always called with - so plain queries are unaffected.
+fn glob_segments(query: &str) -> Vec<&str> {
+    query.split('*').collect()
+}
+
+/// Whether `haystack` contains `segments` in order, each found no earlier
+/// than the end of the previous one - `*` becomes "any run of characters,
+/// including none" between them. A single segment (no `*` in the query)
+/// reduces to `haystack.contains(segments[0])`, today's behaviour.
+///
+/// ponytail: a segment search is free to walk past the `FIELD_SEPARATOR`
+/// between a haystack's game name and its path, so a deliberately crafted
+/// multi-segment query (e.g. `"me*eternal"` against `"Some Game\0eternal.pak"`)
+/// could otherwise claim a match that starts in one field and ends in the
+/// other - exactly what [`FIELD_SEPARATOR`] exists to prevent for a plain
+/// query. The check below refuses any match whose span crosses it. Upgrade
+/// path if that is ever too coarse: search each field independently instead
+/// of the joined haystack.
+fn matches_segments(haystack: &str, segments: &[&str]) -> bool {
+    let mut pos = 0;
+    let mut span_start = None;
+    let mut span_end = 0;
+
+    for segment in segments {
+        if segment.is_empty() {
+            continue; // `*` matching zero characters: no position to advance.
+        }
+        match haystack[pos..].find(segment) {
+            Some(offset) => {
+                let start = pos + offset;
+                span_start.get_or_insert(start);
+                span_end = start + segment.len();
+                pos = span_end;
+            }
+            None => return false,
+        }
+    }
+
+    match span_start {
+        Some(start) => !haystack[start..span_end].contains(FIELD_SEPARATOR),
+        // Every segment was empty: the query is made entirely of `*` (e.g.
+        // "*", "**"), which matches everything.
+        None => true,
+    }
+}
+
 /// Which findings match the current search query. An empty query is the
 /// inactive state: [`is_active`](Self::is_active) is false and the tree view
 /// skips filtering entirely.
@@ -143,6 +209,10 @@ impl SearchIndex {
             games_with_match.insert(corpus.game_ids[index]);
         };
 
+        // Split once per query change, not once per haystack - see the
+        // module docs on wildcards.
+        let segments = glob_segments(&query);
+
         match previous.filter(|prev| prev.narrows_into(&query, corpus)) {
             Some(prev) => {
                 for index in prev
@@ -152,14 +222,14 @@ impl SearchIndex {
                     .filter(|(_, hit)| **hit)
                     .map(|(index, _)| index)
                 {
-                    if corpus.haystacks[index].contains(&query) {
+                    if matches_segments(&corpus.haystacks[index], &segments) {
                         record(index);
                     }
                 }
             }
             None => {
                 for (index, haystack) in corpus.haystacks.iter().enumerate() {
-                    if haystack.contains(&query) {
+                    if matches_segments(haystack, &segments) {
                         record(index);
                     }
                 }
@@ -493,5 +563,91 @@ mod tests {
 
         assert!(index.is_active());
         assert!(!index.item_matches(0));
+    }
+
+    // GT-226: `*` wildcards.
+
+    #[test]
+    fn a_wildcard_at_the_end_matches_a_prefix() {
+        let findings = vec![
+            finding(1, "Game", r"Data\Localization\loc_fr.pak"),
+            finding(1, "Game", r"Data\Localization\FR.ttf"),
+        ];
+        assert!(index("loc_*", &findings).item_matches(0));
+        assert!(!index("loc_*", &findings).item_matches(1));
+    }
+
+    #[test]
+    fn a_wildcard_at_the_start_matches_a_suffix() {
+        let findings = vec![
+            finding(1, "Game", r"Fonts\FR.ttf"),
+            finding(1, "Game", r"Data\loc_fr.pak"),
+        ];
+        assert!(index("*.ttf", &findings).item_matches(0));
+        assert!(!index("*.ttf", &findings).item_matches(1));
+    }
+
+    #[test]
+    fn a_wildcard_in_the_middle_matches_both_sides() {
+        let findings = vec![
+            finding(1, "Game", r"Data\Localization\loc_fr.pak"),
+            finding(1, "Game", r"Data\Localization\loc_fr.ttf"),
+        ];
+        assert!(index("loc_*.pak", &findings).item_matches(0));
+        assert!(!index("loc_*.pak", &findings).item_matches(1));
+    }
+
+    /// Several `*` in one query: each literal segment has to be found in
+    /// order, not just the first and last.
+    #[test]
+    fn several_wildcards_in_one_query_all_have_to_match_in_order() {
+        let findings = vec![
+            finding(1, "Game", r"Data\Localization\loc_fr_voice.pak"),
+            finding(1, "Game", r"Data\Localization\loc_fr.pak"),
+        ];
+        assert!(index("loc_*fr*voice*.pak", &findings).item_matches(0));
+        assert!(!index("loc_*fr*voice*.pak", &findings).item_matches(1));
+    }
+
+    /// A query that is only `*` (or several) has no literal text at all, so
+    /// it matches every finding - the degenerate case of "any run of
+    /// characters, including none".
+    #[test]
+    fn a_query_of_only_wildcards_matches_everything() {
+        let findings = vec![
+            finding(1, "Game", r"Data\loc_fr.pak"),
+            finding(2, "Other", r"bin\game.exe"),
+        ];
+        assert!(index("*", &findings).item_matches(0));
+        assert!(index("*", &findings).item_matches(1));
+        assert!(index("**", &findings).item_matches(0));
+    }
+
+    /// A glob that finds no finding behaves like any other non-matching
+    /// query - `*` does not make the field somehow always match.
+    #[test]
+    fn a_wildcard_query_that_matches_nothing_matches_nothing() {
+        let findings = vec![finding(1, "Game", r"Data\loc_fr.pak")];
+        assert!(!index("xyz*never", &findings).item_matches(0));
+    }
+
+    /// A literal query with no `*` must behave exactly as it did before
+    /// wildcards existed - plain, unanchored, case-insensitive substring.
+    #[test]
+    fn a_query_without_a_wildcard_is_still_plain_substring_matching() {
+        let findings = vec![finding(1, "Game", r"Data\Localization\loc_fr.pak")];
+        assert!(index("pak", &findings).item_matches(0));
+        assert!(index("loc_fr", &findings).item_matches(0));
+    }
+
+    /// A wildcard query must not be able to bridge the game-name/path
+    /// separator any more than a literal one can (see
+    /// `a_query_cannot_match_across_the_name_and_the_path`) - `*` matching
+    /// "any run of characters" must not include matching across fields that
+    /// were never meant to be searched as one string.
+    #[test]
+    fn a_wildcard_cannot_bridge_the_name_and_the_path() {
+        let findings = vec![finding(1, "Doom", "eternal.pak")];
+        assert!(!index("m*eternal", &findings).item_matches(0));
     }
 }

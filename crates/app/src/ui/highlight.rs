@@ -171,6 +171,12 @@ fn append(
 /// Byte ranges of `text` that `query` matches, in ascending order and never
 /// overlapping. `query` is expected already folded (see [`name`]).
 ///
+/// `query` may contain `*` (see `crate::search`'s module docs on wildcards):
+/// only the literal runs between the `*`s are ever tinted, never the
+/// characters a `*` stood in for - there is nothing typed to point at there.
+/// A query with no `*` is one literal run, so this reduces to finding every
+/// occurrence of that one substring, exactly as before wildcards existed.
+///
 /// # Why the folded text needs a map back
 ///
 /// Lowercasing can change a string's length - `'\u{130}'` folds into two
@@ -199,22 +205,54 @@ fn match_ranges(text: &str, query: &str) -> Vec<Range<usize>> {
         ends.resize(folded.len(), offset + ch.len_utf8());
     }
 
+    let segments: Vec<&str> = query.split('*').collect();
+
     let mut ranges: Vec<Range<usize>> = Vec::new();
     let mut from = 0;
-    while let Some(offset) = folded[from..].find(query) {
-        let start = from + offset;
-        let end = start + query.len();
-        let range = starts[start]..ends[end - 1];
-        match ranges.last_mut() {
-            // Two hits can land inside one original character (folding can
-            // turn one character into several), and touching ranges would
-            // paint the same gap twice. Either way the layout wants one
-            // section, so they are merged instead of pushed as a pair.
-            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
-            _ => ranges.push(range),
+    // Each pass through 'outer finds one occurrence of the whole ordered
+    // sequence of segments, starting no earlier than `from`, and records the
+    // folded byte range of every non-empty segment in it. A `*` gap between
+    // two segments is never recorded - nothing was typed there to tint.
+    'outer: loop {
+        let mut pos = from;
+        let mut hits: Vec<(usize, usize)> = Vec::new();
+        for segment in &segments {
+            if segment.is_empty() {
+                continue; // `*` matching zero characters between two literals.
+            }
+            match folded[pos..].find(segment) {
+                Some(offset) => {
+                    let start = pos + offset;
+                    pos = start + segment.len();
+                    hits.push((start, pos));
+                }
+                None => break 'outer,
+            }
         }
-        // A non-empty query always advances, so this cannot spin.
-        from = end;
+        if hits.is_empty() {
+            // Every segment was empty - the query is made entirely of `*`
+            // (e.g. "*", "**"). Nothing literal matched and nothing
+            // advances, so stop instead of re-finding the same empty
+            // pattern forever.
+            break;
+        }
+        for (start, end) in hits {
+            let range = starts[start]..ends[end - 1];
+            match ranges.last_mut() {
+                // Two hits can land inside one original character (folding
+                // can turn one character into several), or two segments of
+                // one wildcard match can end up adjacent when a `*` between
+                // them matched zero characters - either way the layout wants
+                // one section, so they are merged instead of pushed as a
+                // pair.
+                Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+                _ => ranges.push(range),
+            }
+        }
+        // At least one segment was non-empty (checked above) and consumed
+        // characters, so `pos` always advances past `from` - this cannot
+        // spin.
+        from = pos;
     }
     ranges
 }
@@ -469,5 +507,72 @@ mod tests {
         );
         assert_eq!(joined(&[Part::searched("only")]), "only");
         assert_eq!(joined(&[]), "");
+    }
+
+    // GT-226: `*` wildcards - only the literal segments a wildcard query is
+    // made of are ever tinted, never the run of characters `*` stood in for.
+
+    #[test]
+    fn a_wildcard_at_the_end_tints_only_the_literal_prefix() {
+        assert_eq!(
+            job(&[Part::searched("loc_fr.pak")], "loc_*"),
+            Some(vec![
+                ("loc_".to_owned(), true),
+                ("fr.pak".to_owned(), false),
+            ]),
+        );
+    }
+
+    #[test]
+    fn a_wildcard_at_the_start_tints_only_the_literal_suffix() {
+        assert_eq!(
+            job(&[Part::searched("FR.ttf")], "*.ttf"),
+            Some(vec![("FR".to_owned(), false), (".ttf".to_owned(), true)]),
+        );
+    }
+
+    #[test]
+    fn a_wildcard_in_the_middle_tints_both_literal_sides_separately() {
+        assert_eq!(
+            job(&[Part::searched("loc_fr.pak")], "loc_*.pak"),
+            Some(vec![
+                ("loc_".to_owned(), true),
+                ("fr".to_owned(), false),
+                (".pak".to_owned(), true),
+            ]),
+        );
+    }
+
+    /// Several `*` in one query: every literal segment is tinted, in order.
+    /// "loc_" and "fr" sit back to back in this text (the `*` between them
+    /// matches zero characters), so they merge into one tinted run exactly
+    /// like `touching_occurrences_merge_into_one_section`; "voice" and
+    /// ".pak" do too. The lone "_" the second `*` actually consumed stays
+    /// untinted between them.
+    #[test]
+    fn several_wildcards_tint_every_literal_segment() {
+        assert_eq!(
+            job(&[Part::searched("loc_fr_voice.pak")], "loc_*fr*voice*.pak"),
+            Some(vec![
+                ("loc_fr".to_owned(), true),
+                ("_".to_owned(), false),
+                ("voice.pak".to_owned(), true),
+            ]),
+        );
+    }
+
+    /// A query that is only `*` has no literal text, so nothing is tinted -
+    /// the row still shows (the search side matches everything), but there
+    /// is nothing typed to point at.
+    #[test]
+    fn a_query_of_only_wildcards_tints_nothing() {
+        assert!(job(&[Part::searched("loc_fr.pak")], "*").is_none());
+    }
+
+    /// A wildcard query that matches nothing produces no tint, same as any
+    /// other query - `*` does not force a highlight into existence.
+    #[test]
+    fn a_wildcard_query_with_no_match_tints_nothing() {
+        assert!(job(&[Part::searched("loc_fr.pak")], "xyz*never").is_none());
     }
 }
