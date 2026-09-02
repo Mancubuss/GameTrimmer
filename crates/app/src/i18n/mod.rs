@@ -667,9 +667,27 @@ pub struct Strings {
     pub scan_phase_3_title: &'static str,
     pub scan_overall_title: &'static str,
     pub badge_monolith: &'static str,
+    /// Badge drawn once on a game row's name (see
+    /// `ui::tree_view::show_game_row`, next to `[🔄 Updated]`) for a game
+    /// whose findings carry `anti_cheat_protected`. The verdict is a
+    /// per-*game* fact, not a per-row one, so it is marked on the game
+    /// instead of repeated on every one of its rows - a monolithic archive
+    /// row, the only kind the carve-out still affects, already explains its
+    /// own block via its `deletion_block_reason`.
     pub badge_anticheat_shield: &'static str,
+    /// Hover text for [`Self::badge_anticheat_shield`]. States what the
+    /// anti-cheat verdict means under the current rule: only monolithic
+    /// archives inside the game are excluded from trimming, everything else
+    /// (redist, docs, unused language packs, intro videos, ...) behaves
+    /// normally. Must never promise a wider carve-out than that.
     pub anticheat_shield_tooltip: &'static str,
     pub archive_action_unavailable: &'static str,
+    /// Hover text on a category/game/folder header checkbox when it is
+    /// disabled: nothing in the group is selected, and nothing in it is
+    /// bulk-selectable either, so a click could never do anything (see
+    /// `model::group_selection_state`). Without this the control just looks
+    /// clickable and silently does nothing.
+    pub group_checkbox_disabled_hint: &'static str,
 }
 
 impl Strings {
@@ -1476,6 +1494,9 @@ impl Strings {
         if let Some(val) = map.get("archive_action_unavailable") {
             s.archive_action_unavailable = Box::leak(val.clone().into_boxed_str());
         }
+        if let Some(val) = map.get("group_checkbox_disabled_hint") {
+            s.group_checkbox_disabled_hint = Box::leak(val.clone().into_boxed_str());
+        }
         s
     }
 }
@@ -1843,6 +1864,10 @@ impl Strings {
             (
                 "archive_action_unavailable",
                 self.archive_action_unavailable,
+            ),
+            (
+                "group_checkbox_disabled_hint",
+                self.group_checkbox_disabled_hint,
             ),
         ]
     }

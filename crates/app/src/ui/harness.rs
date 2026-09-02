@@ -423,6 +423,34 @@ impl UiTest {
             .rect()
     }
 
+    /// How many checkboxes are on screen. Every tree row carries exactly one,
+    /// so folding a group takes its children's away - which is how a test
+    /// tells "the group is still open" apart from "that click collapsed it".
+    pub fn checkbox_count(&self) -> usize {
+        self.harness
+            .query_all_by_role(egui::accesskit::Role::CheckBox)
+            .count()
+    }
+
+    /// Hovers the `n`-th checkbox on screen (see [`Self::nth_checkbox_rect`]),
+    /// so its `on_disabled_hover_text` tooltip has a frame to appear in.
+    /// Position-based like [`Self::nth_checkbox_rect`] rather than
+    /// label-based like [`Self::hover`]: these checkboxes are deliberately
+    /// label-less (see that method's doc comment), so they cannot be reached
+    /// by accessibility label at all.
+    #[track_caller]
+    pub fn hover_nth_checkbox(&mut self, n: usize) {
+        {
+            let node = self
+                .harness
+                .query_all_by_role(egui::accesskit::Role::CheckBox)
+                .nth(n)
+                .unwrap_or_else(|| panic!("fewer than {} checkboxes on screen", n + 1));
+            node.hover();
+        }
+        self.run();
+    }
+
     /// How many combo boxes currently display exactly this selection.
     ///
     /// A combo box carries its selected text as an accessibility *value*, not

@@ -41,7 +41,12 @@ CREATE TABLE IF NOT EXISTS games (
     files        INTEGER,
     bytes        INTEGER,
     bytes_on_disk INTEGER,
-    scan_route   TEXT
+    scan_route   TEXT,
+    -- The scan's anti-cheat verdict for this game, and the only place it is
+    -- decided for display: 1 protected, 0 clear, NULL never assessed (a row
+    -- written before schema v6, or a game whose scan did not finish). NULL
+    -- reads as protected - see `migrate_v6`.
+    anti_cheat_protected INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS files (
@@ -129,7 +134,7 @@ CREATE INDEX IF NOT EXISTS idx_diagnostics_scan   ON scan_diagnostics(scan_id);
 /// `user_version` beside the version this build understands - the pair is
 /// what distinguishes "your database is from a newer build" from "it is
 /// damaged".
-pub const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub const CURRENT_SCHEMA_VERSION: i64 = 6;
 
 /// Opens (or creates) the database at `path` and applies the schema.
 /// What reconciling crash-left delete intents found while opening. Advisory:
@@ -289,6 +294,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 5 {
         migrate_v5(conn)?;
         conn.pragma_update(None, "user_version", 5)?;
+        version = 5;
+    }
+    if version < 6 {
+        migrate_v6(conn)?;
+        conn.pragma_update(None, "user_version", 6)?;
     }
     Ok(())
 }
@@ -453,6 +463,54 @@ fn migrate_v5(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "operations", "expected_tree_fingerprint")? {
         conn.execute(
             "ALTER TABLE operations ADD COLUMN expected_tree_fingerprint TEXT",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// Adds `games.anti_cheat_protected`, the scan's per-game anti-cheat verdict.
+///
+/// Before this column the verdict was not stored at all, so every path that
+/// needed it recomputed it - and they disagreed. The startup load in
+/// particular only ever asked the question for monolithic archives, which
+/// meant an Easy Anti-Cheat game came back from the database with no shield
+/// and was swept straight into "Select All". One scan-time answer is what
+/// keeps the display and the bulk-selection rule from drifting apart again.
+/// It is not the *only* reader: the unattended delete gate in
+/// [`crate::ops`] takes the union of this stored verdict and a live walk,
+/// because a game can acquire anti-cheat after the scan that judged it.
+///
+/// Existing rows get `NULL`, and `NULL` reads as *protected* - the verdict
+/// guards multiplayer accounts, so a wrong guess has to cost a needless
+/// shield rather than silently offer an EAC game for bulk deletion.
+///
+/// That fail-closed read is right for one row and unusable for a whole
+/// database of them: every pre-upgrade game would come back `NULL`, so the
+/// first launch after upgrading would badge every game in the library as
+/// anti-cheat protected, select nothing, and disable every group checkbox,
+/// with no hint that a rescan is what fixes it. Retiring the active scan
+/// instead drops the user into the ordinary "nothing scanned yet" state the
+/// app already shows on a first run, which does say what to do next. The
+/// findings themselves are left in place; only the pointer that makes them
+/// current is cleared.
+fn migrate_v6(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "games", "anti_cheat_protected", "INTEGER")?;
+    // Only a real upgrade retires its scan. On a database being created from
+    // scratch this whole sequence still runs, and there is no unassessed game
+    // to protect against - clearing the freshly initialised pointer there
+    // would just break the `scan_id = active_scan_id` join for every caller.
+    // A database old enough to predate `scan_state` has nothing to retire
+    // either, hence the table guard.
+    let has_unassessed_games = table_exists(conn, "games")?
+        && conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM games WHERE anti_cheat_protected IS NULL)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+    if has_unassessed_games && table_exists(conn, "scan_state")? {
+        conn.execute(
+            "UPDATE scan_state SET active_scan_id = NULL WHERE singleton = 1",
             [],
         )?;
     }
@@ -2145,6 +2203,118 @@ mod tests {
         );
 
         migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
+    }
+
+    /// `games.anti_cheat_protected` must reach a database created before the
+    /// column existed, be idempotent, and leave pre-existing games `NULL` -
+    /// the value every reader treats as protected. An upgraded database
+    /// therefore shows a needless shield until the next scan, which is the
+    /// side of the guess that cannot cost anyone a multiplayer ban.
+    #[test]
+    fn migrate_adds_anti_cheat_protected_to_a_legacy_games_table_and_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open bare in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE games (
+                id          INTEGER PRIMARY KEY,
+                library_id  INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                install_dir TEXT NOT NULL,
+                app_id      TEXT
+            );
+            INSERT INTO games (id, library_id, name, install_dir, app_id)
+                VALUES (1, 1, 'Apex', 'F:/SteamLibrary/common/Apex', '1172470');",
+        )
+        .expect("create legacy games table");
+        assert!(
+            !column_exists(&conn, "games", "anti_cheat_protected").expect("probe legacy column"),
+            "precondition: the legacy table must not have anti_cheat_protected"
+        );
+
+        migrate(&conn).expect("first migrate should add the column");
+        assert!(
+            column_exists(&conn, "games", "anti_cheat_protected").expect("probe migrated column"),
+            "anti_cheat_protected must exist after migrate"
+        );
+
+        let verdict: Option<i64> = conn
+            .query_row(
+                "SELECT anti_cheat_protected FROM games WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated row");
+        assert_eq!(
+            verdict, None,
+            "a game scanned before the column existed has no verdict, and must not be handed a fabricated clear one"
+        );
+
+        migrate(&conn).expect("second migrate must be a no-op, not a duplicate-column error");
+    }
+
+    /// The upgrade cannot leave the previous scan current. Every game in it
+    /// predates the verdict column, and an absent verdict reads as protected -
+    /// so keeping that scan would badge the user's whole library as anti-cheat
+    /// protected, select nothing, and disable every group checkbox, with
+    /// nothing on screen saying a rescan is the cure. Retiring the scan lands
+    /// them in the ordinary "nothing scanned yet" state, which does.
+    #[test]
+    fn upgrading_a_database_full_of_unassessed_games_retires_its_active_scan() {
+        let conn = Connection::open_in_memory().expect("open bare in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE games (
+                id          INTEGER PRIMARY KEY,
+                scan_id     INTEGER NOT NULL DEFAULT 0,
+                library_id  INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                install_dir TEXT NOT NULL,
+                app_id      TEXT
+            );
+            CREATE TABLE scan_state (
+                singleton      INTEGER PRIMARY KEY CHECK (singleton = 1),
+                active_scan_id INTEGER
+            );
+            INSERT INTO games (id, scan_id, library_id, name, install_dir, app_id)
+                VALUES (1, 7, 1, 'Apex', 'F:/SteamLibrary/common/Apex', '1172470');
+            INSERT INTO scan_state (singleton, active_scan_id) VALUES (1, 7);",
+        )
+        .expect("create a legacy database with a completed scan");
+
+        migrate(&conn).expect("migrate a legacy database");
+
+        let active: Option<i64> = conn
+            .query_row(
+                "SELECT active_scan_id FROM scan_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read the active scan pointer");
+        assert_eq!(
+            active, None,
+            "a scan whose games were never assessed for anti-cheat must not stay current"
+        );
+    }
+
+    /// The counterpart, and the reason the retirement is conditional: the
+    /// same sequence runs when a database is created from scratch, where
+    /// there is no unassessed game to protect anyone from. Clearing the
+    /// freshly initialised pointer there would break the
+    /// `scan_id = active_scan_id` join every reader depends on.
+    #[test]
+    fn creating_a_database_from_scratch_keeps_its_active_scan_pointer() {
+        let conn = open_in_memory().expect("in-memory db should open");
+
+        let active: Option<i64> = conn
+            .query_row(
+                "SELECT active_scan_id FROM scan_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read the active scan pointer");
+        assert_eq!(
+            active,
+            Some(0),
+            "a fresh database has nothing to retire, and its initial pointer must survive"
+        );
     }
 
     #[test]

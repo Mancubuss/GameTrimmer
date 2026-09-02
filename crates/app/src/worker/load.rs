@@ -5,7 +5,6 @@
 //! thread exactly like [`super::scan`], communicating back through the same
 //! [`WorkerMsg::Done`] the scan worker uses.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
@@ -184,7 +183,8 @@ fn load_findings_with_lang(conn: &Connection, lang: Lang) -> CoreResult<Vec<Find
                 END, COALESCE(fi.provenance, 'builtin'), \
                 COALESCE(gl.vendor, glo.vendor), \
                 COALESCE(gl.path, fs.evidence_library_path), \
-                sle.status, f.game_id IS NULL, g.app_id, fi.action \
+                sle.status, f.game_id IS NULL, g.app_id, fi.action, \
+                g.anti_cheat_protected \
          FROM findings fi \
          JOIN files f ON f.id = fi.file_id \
          LEFT JOIN games g ON g.id = f.game_id \
@@ -198,10 +198,6 @@ fn load_findings_with_lang(conn: &Connection, lang: Lang) -> CoreResult<Vec<Find
     )?;
 
     let mut rows = Vec::new();
-    // A game may contribute thousands of findings, but its anti-cheat verdict
-    // requires one complete directory walk. Cache only monolithic-relevant
-    // games: ordinary DirectDelete rows do not consult this protection flag.
-    let mut anti_cheat_cache = HashMap::new();
     let mut result = stmt.query([])?;
     while let Some(row) = result.next()? {
         let category: String = row.get(6)?;
@@ -310,12 +306,14 @@ fn load_findings_with_lang(conn: &Connection, lang: Lang) -> CoreResult<Vec<Find
         };
         let install_dir: String = row.get(2)?;
         let install_path = PathBuf::from(&install_dir);
-        let anti_cheat_protected = cached_anti_cheat_protection(
-            &mut anti_cheat_cache,
-            game_id,
-            action.is_monolithic_archive(),
-            || archive_trimmer::anti_cheat::AntiCheatShield::is_safe(&install_path),
-        );
+        // Read, never recomputed: the scan already decided this from the
+        // game's complete inventory and stored it (see
+        // `worker::scan::persistence::persist_prepared_game`). A row from
+        // before the column existed, or from a scan that never finished the
+        // game, comes back `NULL` and is treated as protected - a needless
+        // shield until the next scan is the only side of that guess that
+        // cannot cost a multiplayer account.
+        let anti_cheat_protected = row.get::<_, Option<bool>>(20)?.unwrap_or(true);
         let size_on_disk = if deletion_block_reason.as_deref()
             == Some("archive container is read-only until safe rollback is implemented")
         {
@@ -366,18 +364,6 @@ fn nonnegative_persisted_size(value: i64, field: &str, file_id: i64) -> Option<u
             None
         }
     }
-}
-
-fn cached_anti_cheat_protection(
-    cache: &mut HashMap<i64, bool>,
-    game_id: i64,
-    monolithic_relevant: bool,
-    check_safe: impl FnOnce() -> bool,
-) -> bool {
-    if !monolithic_relevant {
-        return false;
-    }
-    *cache.entry(game_id).or_insert_with(|| !check_safe())
 }
 
 /// Restored monolithic rows display the bytes their validated action can
@@ -466,30 +452,6 @@ mod tests {
 
         let monolith = FindingSource::Rule(Category::MonolithicArchive);
         assert!(restored_action(&monolith, Some("  "), 8).is_none());
-    }
-
-    #[test]
-    fn anti_cheat_check_is_lazy_and_cached_once_per_relevant_game() {
-        let mut cache = HashMap::new();
-        let calls = std::cell::Cell::new(0usize);
-
-        assert!(!cached_anti_cheat_protection(&mut cache, 1, false, || {
-            calls.set(calls.get() + 1);
-            false
-        }));
-        assert_eq!(calls.get(), 0, "ordinary findings need no directory walk");
-
-        for _ in 0..2 {
-            assert!(cached_anti_cheat_protection(&mut cache, 1, true, || {
-                calls.set(calls.get() + 1);
-                false
-            }));
-        }
-        assert_eq!(
-            calls.get(),
-            1,
-            "multiple monolithic findings from one game share one fail-closed verdict"
-        );
     }
 
     #[test]

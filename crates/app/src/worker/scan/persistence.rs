@@ -355,6 +355,15 @@ pub(super) fn persist_prepared_game(
         "DELETE FROM findings WHERE file_id IN (SELECT id FROM files WHERE game_id = ?1)",
         params![prepared.game_id],
     )?;
+    // The anti-cheat verdict is decided once, here, from the complete
+    // inventory this scan just walked (`classify_game`), and stored so every
+    // later reader - Phase 3, the startup load - can read the same answer
+    // instead of re-deriving its own. A game whose scan never reaches this
+    // line keeps `NULL`, which reads as protected.
+    conn.execute(
+        "UPDATE games SET anti_cheat_protected = ?2 WHERE id = ?1",
+        params![prepared.game_id, prepared.anti_cheat_protected],
+    )?;
     sql += sql_started.elapsed();
 
     // Per-game totals cover the *whole* install - every file, flagged or not.

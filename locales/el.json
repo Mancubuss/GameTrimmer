@@ -269,7 +269,6 @@
     "scan_overall_title": "Overall progress",
     "badge_monolith": "Monolith",
     "badge_anticheat_shield": "🛡️ Anti-Cheat",
-    "anticheat_shield_tooltip": "Game protected by anti-cheat; modification disabled for safety",
     "archive_action_unavailable": "Archive trimming is unavailable until safe rollback is implemented"
   }
 }

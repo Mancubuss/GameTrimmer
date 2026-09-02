@@ -188,8 +188,26 @@ impl FindingRow {
     /// auto-select) only when nothing blocks its deletion and its safety
     /// evidence came from this scan. `imported_untrusted` rows carry evidence
     /// an older database supplied and this scan never re-checked, so they
-    /// must be ticked one at a time, deliberately. Anti-cheat protected
-    /// monolithic archives are never bulk-selectable to prevent accidental trimming.
+    /// must be ticked one at a time, deliberately.
+    ///
+    /// Anti-cheat protection no longer has a clause of its own here: the
+    /// owner narrowed "risky" from every byte-rewriting finding (a
+    /// monolithic archive edit *or* an intro's micro-stub replacement) down
+    /// to monolithic archives only, and a protected monolithic archive is
+    /// already hard-blocked by [`Self::individually_selectable`] - which this
+    /// method calls first. Re-excluding it here would just repeat that
+    /// block. `anti_cheat_protected` is a per-*game* verdict, so in a
+    /// protected game it is true on every one of that game's rows; the wider
+    /// exclusion this used to carry (any byte-rewriting row, including an
+    /// ordinary intro finding) took Select All and every group header dark
+    /// for the game the moment any part of it tripped an anti-cheat
+    /// detector, measured on the owner's library as 100% hand-ticking across
+    /// 112k+ findings in 162 games, for content (redist, docs, unused
+    /// language packs, intro videos) that is trivially safe to bulk-delete.
+    /// A whole-file delete or an intro's stub swap in a protected game is
+    /// exactly what this program did before anti-cheat detection existed,
+    /// and the worst case is the launcher's own integrity check
+    /// re-downloading it, not a ban.
     pub fn bulk_selectable(&self) -> bool {
         self.individually_selectable() && !self.imported_untrusted
     }
@@ -1610,26 +1628,99 @@ fn cmp_member_files(
 
 /// Whether every / any item in `indices` is currently selected. Used to
 /// drive the tri-state checkbox on category and game headers.
+///
+/// `any_selected` looks at every row regardless of how it got selected. A
+/// row that is not bulk-selectable (imported and untrusted, or an anti-cheat
+/// protected monolithic archive) can still be ticked by hand, and once it
+/// is, it is really queued for deletion - so it must never be invisible to
+/// the header, or the checkbox lies about there being nothing selected here.
+///
+/// "All selected" is judged against the bulk-selectable set when the group
+/// has one: that is what a click on the header would actually select, and
+/// it is what let an otherwise-complete group stay checked even with an
+/// untouched blocked row sitting in it (see
+/// `group_selection_never_selects_imported_untrusted_rows`). But a group
+/// that is *entirely* individually-selectable-but-not-bulk-selectable - every
+/// row in it still `imported_untrusted` - has no bulk-selectable rows to
+/// judge against at all. Falling back to the individually-selectable set
+/// there is what lets such a group read as indeterminate while partly
+/// hand-ticked, and as fully checked once every row in it has been ticked by
+/// hand, instead of being stuck reporting "nothing selected" or "nothing to
+/// complete" forever.
+///
+/// An anti-cheat protected monolithic archive never lands in that fallback:
+/// the same clause that excludes it from bulk selection already excludes it
+/// from [`FindingRow::individually_selectable`] (which [`FindingRow::bulk_selectable`]
+/// calls first), so it contributes to neither tally here - same as a row
+/// with a `deletion_block_reason`.
 pub fn group_selection_state(items: &[FindingItem], indices: &[usize]) -> (bool, bool) {
-    let mut selectable_count = 0usize;
-    let mut selected_count = 0usize;
+    let mut bulk_total = 0usize;
+    let mut bulk_selected = 0usize;
+    let mut selectable_total = 0usize;
+    let mut selectable_selected = 0usize;
+    let mut any_selected = false;
+
     for &index in indices {
-        if items[index].row.bulk_selectable() {
-            selectable_count += 1;
-            selected_count += usize::from(items[index].selected);
+        let item = &items[index];
+        if item.selected {
+            any_selected = true;
+        }
+        // `bulk_selectable` implies `individually_selectable`, so a
+        // bulk-selectable row is counted in both tallies below - each is
+        // used independently by whichever branch of `all_selected` applies.
+        if item.row.bulk_selectable() {
+            bulk_total += 1;
+            bulk_selected += usize::from(item.selected);
+        }
+        if item.row.individually_selectable() {
+            selectable_total += 1;
+            selectable_selected += usize::from(item.selected);
         }
     }
-    (
-        selectable_count > 0 && selected_count == selectable_count,
-        selected_count > 0,
-    )
+
+    let all_selected = if bulk_total > 0 {
+        bulk_selected == bulk_total
+    } else {
+        selectable_total > 0 && selectable_selected == selectable_total
+    };
+
+    (all_selected, any_selected)
 }
 
-/// Flips the selection of a whole group: selects all if not all are
-/// currently selected, otherwise deselects all.
+/// Flips the selection of a whole group: selects the rest whenever anything
+/// here still can be selected, and clears the group only when it cannot.
+///
+/// The pivot is "would selecting change anything", not "is everything
+/// selected" and not "is anything selected", because those two each break a
+/// different case. Pivoting on "everything" leaves the header dead in a group
+/// with no bulk-selectable rows at all (every row still `imported_untrusted`,
+/// or an anti-cheat protected monolithic archive on its own):
+/// selecting only ever touches bulk-selectable rows (see
+/// [`set_group_selection`]), so "everything selected" is unreachable and every
+/// click retries the same no-op, with a hand-ticked row left impossible to
+/// clear from here. Pivoting on "anything" fixes that but breaks the ordinary
+/// half-ticked group, where a click would throw the user's existing ticks away
+/// instead of extending them - the opposite of what a part-filled tri-state
+/// checkbox means anywhere else.
+///
+/// Asking the mutation itself keeps both readings: an ordinary partial group
+/// has more to select, so it fills up; a full one and a hand-tick-only one
+/// have nothing left to select, so they clear. See [`group_selection_state`]
+/// for the remaining case - nothing to select and nothing to clear - where the
+/// header must be disabled rather than clickable and inert.
+///
+/// One combination stays visually ambiguous even so: an all-`imported_untrusted`
+/// group with one row hand-ticked reports `(false, true)` from
+/// [`group_selection_state`], the same indeterminate reading an ordinary
+/// partial selection gets - but a click here clears rather than fills, for
+/// exactly the reason above (nothing bulk-selectable to fill it with). The
+/// tri-state checkbox alone cannot tell a reader which kind of indeterminate
+/// group they are looking at; only the *outcome* of the click does.
 pub fn toggle_group(items: &mut [FindingItem], indices: &[usize]) -> bool {
-    let (all_selected, _) = group_selection_state(items, indices);
-    set_group_selection(items, indices, !all_selected)
+    if set_group_selection(items, indices, true) {
+        return true;
+    }
+    set_group_selection(items, indices, false)
 }
 
 /// Sets every item in `indices` to the given selection state. Used by the
@@ -1985,6 +2076,48 @@ mod tests {
             "an unprotected archive action is still not executable by this GUI"
         );
         assert!(!unsupported_archive.row.bulk_selectable());
+    }
+
+    /// The owner's decision (GT: narrow the anti-cheat carve-out to
+    /// monolithic archives): an intro row is not deleted, it is replaced with
+    /// a micro-stub, but that is still a whole-file-shaped operation as far
+    /// as an anti-cheat integrity check can tell - not the container-editing
+    /// a monolithic archive does. Hiding it from Select All bought no safety,
+    /// only 56 hidden intro findings in Assassin's Creed Shadows with no
+    /// visible reason. It now stays exactly as ordinary as a whole-file
+    /// delete.
+    #[test]
+    fn anti_cheat_protected_intro_row_is_bulk_selectable() {
+        let mut protected = item(1, "Game", FindingSource::Rule(Category::Intro), 90, 10);
+        protected.row.anti_cheat_protected = true;
+
+        assert!(
+            protected.row.individually_selectable(),
+            "a deliberate, single tick must still be honoured"
+        );
+        assert!(
+            protected.row.bulk_selectable(),
+            "an anti-cheat protected intro row must be picked up by select-all like any other \
+             whole-file delete"
+        );
+    }
+
+    /// The other half of the narrowed carve-out: a row that is only ever a
+    /// whole-file delete (a language pack, here) stays perfectly ordinary in
+    /// a protected game. `anti_cheat_protected` is a per-*game* verdict, so
+    /// treating it alone as disqualifying (the pre-fix rule) took Select All
+    /// and every group header away from every finding in every protected
+    /// game - on the owner's real library, 112k+ findings across 162 games.
+    #[test]
+    fn anti_cheat_protected_loc_row_is_bulk_selectable() {
+        let mut protected = item(1, "Game", FindingSource::Loc(LangKind::Text), 90, 10);
+        protected.row.anti_cheat_protected = true;
+
+        assert!(
+            protected.row.bulk_selectable(),
+            "a whole-file delete in a protected game is ordinary - anti-cheat cannot notice \
+             an uninstalled language pack any differently than the user doing it by hand"
+        );
     }
 
     #[test]
@@ -3462,6 +3595,32 @@ mod tests {
         );
     }
 
+    /// The half-ticked case, which the none-to-all-to-none walk above never
+    /// reaches. A part-filled tri-state checkbox means "fill the rest"
+    /// everywhere else in this program, and a header that threw the user's
+    /// existing ticks away instead would lose work with no way to undo it.
+    #[test]
+    fn toggling_a_partly_selected_group_extends_the_selection_instead_of_clearing_it() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 50, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 50, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 50, 10),
+        ];
+        items[0].selected = true;
+        items[1].selected = false;
+        items[2].selected = false;
+        let indices = vec![0, 1, 2];
+
+        assert!(
+            toggle_group(&mut items, &indices),
+            "the click must report a change"
+        );
+        assert!(
+            items.iter().all(|i| i.selected),
+            "a partly selected group fills up; the one row already ticked keeps its tick"
+        );
+    }
+
     /// The tree's header rows are a bulk-selection path like any other, so an
     /// `imported_untrusted` row inside a game, category or folder must survive
     /// its header being toggled. Deselecting the same group still clears it -
@@ -3506,6 +3665,85 @@ mod tests {
         let (all, any) = group_selection_state(&items, &[0, 1]);
         assert!(!all);
         assert!(any);
+    }
+
+    /// A group where every row is `imported_untrusted` has zero
+    /// bulk-selectable rows - after the anti-cheat carve-out narrowed to
+    /// monolithic archives only, this is the only remaining way to reach the
+    /// zero-bulk-selectable fallback in `group_selection_state` (a protected
+    /// monolithic archive is excluded from `individually_selectable` too, so
+    /// it drops out of both tallies rather than exercising this path - see
+    /// `bulk_selectable_excludes_blocked_and_untrusted_rows`). The old
+    /// bulk-selectable-only tally reported `(false, false)` here - "nothing
+    /// selected" - even after a deliberate hand tick, which is what let the
+    /// header lie about a file that was really queued for deletion.
+    #[test]
+    fn group_selection_state_is_honest_when_every_row_is_imported_untrusted() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+        ];
+        items[0].row.imported_untrusted = true;
+        items[1].row.imported_untrusted = true;
+        items[0].selected = false;
+        items[1].selected = false;
+
+        assert_eq!(
+            group_selection_state(&items, &[0, 1]),
+            (false, false),
+            "an untouched all-imported-untrusted group has nothing selected yet"
+        );
+
+        items[0].selected = true;
+        assert_eq!(
+            group_selection_state(&items, &[0, 1]),
+            (false, true),
+            "a hand tick must be visible - not-all, but never nothing-selected"
+        );
+
+        items[1].selected = true;
+        assert_eq!(
+            group_selection_state(&items, &[0, 1]),
+            (true, true),
+            "once every row that can be selected has been hand-ticked, the group is complete"
+        );
+    }
+
+    /// The residual ambiguity `toggle_group`'s doc comment names but the test
+    /// above never exercises: an all-imported-untrusted group with one row
+    /// hand-ticked renders indeterminate exactly like an ordinary partial
+    /// selection, but a click here clears the tick instead of filling the
+    /// rest of the group - there is nothing bulk-selectable to fill it with,
+    /// so the select pass inside `toggle_group` is a no-op and the deselect
+    /// pass is the only one that ever changes anything.
+    #[test]
+    fn toggle_group_clears_rather_than_fills_a_partly_ticked_all_imported_untrusted_group() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+        ];
+        items[0].row.imported_untrusted = true;
+        items[1].row.imported_untrusted = true;
+        items[0].selected = true;
+        items[1].selected = false;
+        let indices = vec![0, 1];
+
+        assert_eq!(
+            group_selection_state(&items, &indices),
+            (false, true),
+            "one hand tick out of an all-imported-untrusted pair reads indeterminate, same as an \
+             ordinary partial selection"
+        );
+
+        assert!(
+            toggle_group(&mut items, &indices),
+            "the click must report a change"
+        );
+        assert!(
+            items.iter().all(|i| !i.selected),
+            "nothing here is bulk-selectable, so the click clears the hand tick instead of \
+             filling item 1 the way an ordinary partial group would"
+        );
     }
 
     #[test]

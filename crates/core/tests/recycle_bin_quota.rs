@@ -30,7 +30,9 @@
 
 use std::path::PathBuf;
 
-use gametrimmer_core::ops::{execute_delete_plans_observed, prepare_delete_plans, FsOutcome};
+use gametrimmer_core::ops::{
+    execute_delete_plans_observed, prepare_delete_plans, DeleteAttendance, FsOutcome,
+};
 use gametrimmer_core::settings::DeleteMethod;
 
 /// Writes `size_mb` MiB of zeroes to `path` in 1 MiB chunks.
@@ -112,7 +114,12 @@ fn recycle_through_authoritative_pipeline(
     )?;
     gametrimmer_core::db::record_scan_library_evidence(&conn, scan_id, root, "test", "complete")?;
     gametrimmer_core::db::activate_scan(&mut conn, scan_id)?;
-    let plans = prepare_delete_plans(&conn, &[file_id], DeleteMethod::RecycleBin)?;
+    let plans = prepare_delete_plans(
+        &conn,
+        &[file_id],
+        DeleteMethod::RecycleBin,
+        DeleteAttendance::Interactive,
+    )?;
     let outcomes = execute_delete_plans_observed(
         &mut conn,
         DeleteMethod::RecycleBin,

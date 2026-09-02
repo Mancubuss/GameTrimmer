@@ -11,7 +11,8 @@ use eframe::egui;
 use gametrimmer_core::db;
 use gametrimmer_core::models::FindingAction;
 use gametrimmer_core::ops::{
-    execute_delete_plans_observed, prepare_delete_plans_with_skips, FsOutcome, OpOutcome,
+    execute_delete_plans_observed, prepare_delete_plans_with_skips, DeleteAttendance, FsOutcome,
+    OpOutcome,
 };
 use gametrimmer_core::settings::DeleteMethod;
 
@@ -136,7 +137,14 @@ fn run_delete(
     // got deleted. It is still reported: `error` keeps it out of the freed
     // figure (see `space_tally`) and puts it, by name and reason, in the
     // summary the window shows when the batch finishes.
-    let (plans, blocked) = match prepare_delete_plans_with_skips(&conn, &file_ids, method) {
+    // The user ticked the box and pressed delete: that click is the
+    // anti-cheat consent - see `DeleteAttendance`.
+    let (plans, blocked) = match prepare_delete_plans_with_skips(
+        &conn,
+        &file_ids,
+        method,
+        DeleteAttendance::Interactive,
+    ) {
         Ok(prepared) => prepared,
         Err(err) => {
             notifier.report_error(i18n::Reported::new(lang, |l| i18n::delete_failed(l, &err)));

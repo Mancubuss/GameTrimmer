@@ -671,19 +671,46 @@ fn run_scan(
 
         let total_candidates = candidate_rows.len();
 
-        // 1. Re-evaluate anti-cheat from each candidate game's complete live
-        // inventory. Phase 2 intentionally persists only findings plus
-        // candidate archives; deriving this verdict from `files` would omit
-        // an unflagged EasyAntiCheat/BattlEye module and fail open in Phase 3.
-        // `is_safe` itself fails closed on traversal errors, and the cache
-        // keeps this full walk to once per candidate game rather than archive.
+        // 1. Read each candidate game's anti-cheat verdict back from the row
+        // Phase 2 wrote it to. Phase 3 used to walk every candidate game's
+        // install directory again to re-derive it, which was both a second
+        // full traversal per game and a second opinion that could disagree
+        // with the one already shown in the UI. The stored verdict was
+        // decided from that game's complete live inventory, so nothing is
+        // lost by reading it - and a game with no stored verdict stays
+        // absent from the map, which the lookup below reads as protected.
         let mut anti_cheat_cache: HashMap<i64, bool> = HashMap::new();
-        for candidate in &candidate_rows {
-            anti_cheat_cache
-                .entry(candidate.game_id)
-                .or_insert_with(|| {
-                    !archive_trimmer::anti_cheat::AntiCheatShield::is_safe(&candidate.install_dir)
-                });
+        // A read failure here silently fails closed via `unwrap_or(true)`
+        // below - correct, but with nothing in gametrimmer.log to say why a
+        // game the user just watched come back clean is suddenly shielded
+        // again. Every failure mode is logged so the fail-closed outcome
+        // stays diagnosable instead of just mysterious.
+        match conn.prepare(
+            "SELECT id, anti_cheat_protected FROM games \
+             WHERE scan_id = ?1 AND anti_cheat_protected IS NOT NULL",
+        ) {
+            Ok(mut ac_stmt) => match ac_stmt.query_map(params![scan_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?))
+            }) {
+                Ok(mapped) => {
+                    for row in mapped {
+                        match row {
+                            Ok((game_id, protected)) => {
+                                anti_cheat_cache.insert(game_id, protected);
+                            }
+                            Err(err) => crate::logger::error(&format!(
+                                "Phase 3 anti-cheat verdict row decode failed: {err}"
+                            )),
+                        }
+                    }
+                }
+                Err(err) => {
+                    crate::logger::error(&format!("Phase 3 anti-cheat verdict query failed: {err}"))
+                }
+            },
+            Err(err) => crate::logger::error(&format!(
+                "Phase 3 anti-cheat verdict statement prepare failed: {err}"
+            )),
         }
 
         // Preload library evidence status
@@ -5381,6 +5408,7 @@ mod tests {
             &conn,
             &[loaded[0].file_id],
             gametrimmer_core::settings::DeleteMethod::RecycleBin,
+            gametrimmer_core::ops::DeleteAttendance::Interactive,
         )
         .expect("the delete preflight must accept a janitor row");
         assert_eq!(plans.len(), 1);
@@ -5544,6 +5572,161 @@ mod tests {
         )
         .expect("classify EAC game");
         assert!(prepared_eac.anti_cheat_protected);
+    }
+
+    /// The blocker this whole column exists for: an Easy Anti-Cheat game's
+    /// `anti_cheat_protected` verdict used to come back from the database as
+    /// `false` for an ORDINARY (non-monolithic) finding, because the load
+    /// path only ever asked the anti-cheat question for monolithic archives.
+    /// Scan an EAC game, restart the app, and the shield the scan had just
+    /// raised was gone.
+    ///
+    /// An ordinary whole-file delete stays bulk-selectable either way (see
+    /// `FindingRow::bulk_selectable` - only a monolithic archive is excluded
+    /// by the anti-cheat carve-out) - this test is about the flag itself
+    /// surviving the round trip, not about what it does to selection, so
+    /// `bulk_selectable` here is a control: it must read the same before and
+    /// after reload, proving the reload did not silently change what the row
+    /// means.
+    #[test]
+    fn an_anti_cheat_game_keeps_its_shield_across_the_database_round_trip() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let library_root = tempfile::tempdir().expect("create temp library");
+        let install_dir = library_root.path().join("EAC Game");
+        write_file(&install_dir.join("readme.txt"), b"ordinary docs file");
+        write_file(
+            &install_dir
+                .join("EasyAntiCheat")
+                .join("easyanticheat_x64.dll"),
+            b"MZ",
+        );
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: library_root.path().to_path_buf(),
+            orphan_evidence: OrphanEvidence::Heuristic,
+            games: vec![GameInstall {
+                name: "EAC Game".to_string(),
+                install_dir: install_dir.clone(),
+                app_id: None,
+            }],
+        };
+
+        let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
+        db::record_scan_library_evidence(&conn, scan_id, library_root.path(), "steam", "complete")
+            .expect("record library evidence");
+        let games = persist_libraries(&conn, std::slice::from_ref(&library), scan_id)
+            .expect("persist library");
+        let game = &games[0];
+        let scanned = scan_and_classify_game(
+            &mut conn,
+            &engine,
+            &lang_detector,
+            game.id,
+            &game.name,
+            &game.install_dir,
+            scan_id,
+        )
+        .expect("scan game");
+        db::activate_scan(&mut conn, scan_id).expect("activate scan");
+
+        let readme = scanned
+            .iter()
+            .find(|row| row.rel_path.ends_with("readme.txt"))
+            .expect("the docs file must be a finding");
+        assert!(
+            !readme.is_monolithic_archive(),
+            "the point of this test is an ordinary whole-file row"
+        );
+        assert!(readme.anti_cheat_protected, "the scan raises the shield");
+        assert!(
+            readme.bulk_selectable(),
+            "an ordinary whole-file delete stays in Select All even under anti-cheat protection"
+        );
+
+        let loaded = crate::worker::load::load_findings(&conn).expect("load should succeed");
+        let restored = loaded
+            .iter()
+            .find(|row| row.file_id == readme.file_id)
+            .expect("the scanned row must come back from the load path");
+        assert!(
+            restored.anti_cheat_protected,
+            "the shield has to survive a restart, not only the session that raised it"
+        );
+        assert!(
+            restored.bulk_selectable(),
+            "an ordinary row must stay bulk-selectable after the round trip too"
+        );
+        assert!(
+            restored.individually_selectable(),
+            "and of course it stays tickable by hand as well"
+        );
+    }
+
+    /// A database written before `games.anti_cheat_protected` existed opens
+    /// and loads, and its games come back protected. `NULL` is "never
+    /// assessed", and the only safe reading of that is the one that keeps an
+    /// unknown game out of bulk selection until a scan says otherwise.
+    #[test]
+    fn a_game_with_no_stored_verdict_loads_as_protected() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let engine = match_all_engine();
+        let lang_detector = LangDetector::new();
+
+        let library_root = tempfile::tempdir().expect("create temp library");
+        let install_dir = library_root.path().join("Ordinary Game");
+        write_file(&install_dir.join("readme.txt"), b"ordinary docs file");
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: library_root.path().to_path_buf(),
+            orphan_evidence: OrphanEvidence::Heuristic,
+            games: vec![GameInstall {
+                name: "Ordinary Game".to_string(),
+                install_dir: install_dir.clone(),
+                app_id: None,
+            }],
+        };
+
+        let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
+        db::record_scan_library_evidence(&conn, scan_id, library_root.path(), "steam", "complete")
+            .expect("record library evidence");
+        let games = persist_libraries(&conn, std::slice::from_ref(&library), scan_id)
+            .expect("persist library");
+        let game = &games[0];
+        scan_and_classify_game(
+            &mut conn,
+            &engine,
+            &lang_detector,
+            game.id,
+            &game.name,
+            &game.install_dir,
+            scan_id,
+        )
+        .expect("scan game");
+        db::activate_scan(&mut conn, scan_id).expect("activate scan");
+
+        assert!(
+            crate::worker::load::load_findings(&conn)
+                .expect("load should succeed")
+                .iter()
+                .all(|row| !row.anti_cheat_protected),
+            "precondition: a scanned clean game stores a clear verdict"
+        );
+
+        // What a row written by a build from before the column looks like.
+        conn.execute("UPDATE games SET anti_cheat_protected = NULL", [])
+            .expect("clear the stored verdict");
+
+        let loaded = crate::worker::load::load_findings(&conn).expect("load must not crash");
+        assert!(!loaded.is_empty(), "the rows themselves still load");
+        assert!(
+            loaded.iter().all(|row| row.anti_cheat_protected),
+            "an unassessed game must not be silently reported as clear"
+        );
     }
 
     #[test]

@@ -230,4 +230,57 @@ mod tests {
             .reason
             .contains("anti-cheat protected monolithic archives"));
     }
+
+    /// The non-monolith case, narrowed: an intro finding -
+    /// replaced by a micro-stub rather than deleted, but still a whole-file-
+    /// shaped operation, not a container edit - inside an EAC/BattlEye game
+    /// is exactly as ordinary as any other whole-file delete. It is swept up
+    /// by `select_all` like any unprotected row, and a manual tick on the
+    /// same row still passes the batch preflight - the hard block stays
+    /// reserved for monolithic archives only.
+    #[test]
+    fn anti_cheat_protected_intro_row_is_swept_by_select_all_and_passes_batch() {
+        let mut row_ac = item(1, None, false, false);
+        row_ac.row.anti_cheat_protected = true;
+        row_ac.row.source = FindingSource::Rule(Category::Intro);
+        // Default action from `item()` is DirectDelete, so this row is not
+        // a monolithic archive - only the anti-cheat flag plus the intro
+        // source guards it here.
+
+        let mut items = vec![row_ac];
+
+        select_all(&mut items);
+        assert!(
+            items[0].selected,
+            "an anti-cheat protected intro row must be swept up by select_all like any other \
+             whole-file delete"
+        );
+
+        let checked = validate_batch(&items, &[0]);
+        assert!(
+            checked.is_ok(),
+            "an anti-cheat protected intro row must pass preflight"
+        );
+    }
+
+    /// The other half of the narrowed carve-out: `item()`'s default source
+    /// (`Category::Bonus`, an ordinary whole-file delete) stays
+    /// bulk-selectable in a protected game. Before the fix, `anti_cheat_protected`
+    /// alone disqualified a row from `select_all` - and since the verdict is
+    /// per-*game*, that took Select All away from every finding in every
+    /// protected game (112k+ findings across 162 games on the reported
+    /// library), not just the byte-rewriting ones that actually need it.
+    #[test]
+    fn anti_cheat_protected_ordinary_row_is_swept_by_select_all() {
+        let mut row_ac = item(1, None, false, false);
+        row_ac.row.anti_cheat_protected = true;
+
+        let mut items = vec![row_ac];
+
+        select_all(&mut items);
+        assert!(
+            items[0].selected,
+            "a whole-file delete in a protected game must be swept up by select_all"
+        );
+    }
 }

@@ -1512,6 +1512,18 @@ fn show_game_row(
     let label = game_branch_label(lang, game);
     let unclaimed = !model::is_pseudo_branch(game.game_id)
         && !game_has_launcher_id(findings, &game.all_indices);
+    // Anti-cheat protection is a per-*game* verdict (see
+    // `FindingRow::anti_cheat_protected`), copied onto every one of the
+    // game's findings identically - so, exactly like the `is_updated` lookup
+    // below, the first surviving finding already tells the whole game's
+    // story.
+    let is_anti_cheat = !model::is_pseudo_branch(game.game_id)
+        && game
+            .all_indices
+            .first()
+            .and_then(|&idx| findings.get(idx))
+            .map(|item| item.row.anti_cheat_protected)
+            .unwrap_or(false);
     let name = if model::is_pseudo_branch(game.game_id) {
         // A UI string, not a name the search index holds: drawn as decoration
         // so a query that happens to occur in it tints nothing.
@@ -1527,6 +1539,10 @@ fn show_game_row(
             // Decoration, not searched text: a query matching the marker must
             // not tint anything, and the marker is not part of the name.
             parts.push(Part::decoration(" ◇"));
+        }
+        if is_anti_cheat {
+            parts.push(Part::decoration(" "));
+            parts.push(Part::decoration(i18n::strings(lang).badge_anticheat_shield));
         }
         let is_updated = !model::is_pseudo_branch(game.game_id)
             && (ctx.updated_games.contains_key(&game.game_name)
@@ -1577,6 +1593,11 @@ fn show_game_row(
     // not there for some rows is indistinguishable from one that is broken.
     let response = if unclaimed {
         response.on_hover_text(i18n::strings(lang).game_without_launcher_id)
+    } else {
+        response
+    };
+    let response = if is_anti_cheat {
+        response.on_hover_text(i18n::strings(lang).anticheat_shield_tooltip)
     } else {
         response
     };
@@ -1842,12 +1863,44 @@ fn show_header_row(
             // leading column as the file-row checkboxes (which have no arrow),
             // so the selection column reads consistently down the tree.
             let (all_selected, any_selected) = group_selection_state(findings, indices);
+            // A click always works when something is selected (it clears the
+            // group - deselecting ignores `bulk_selectable`, see
+            // `set_group_selection`). With nothing selected, a click only
+            // does something if there is at least one bulk-selectable row to
+            // pick up; otherwise the whole group is anti-cheat protected (or
+            // otherwise blocked) and every row needs a deliberate individual
+            // tick, so the header has nothing left to do and must say so
+            // instead of looking clickable and doing nothing.
+            let has_bulk_selectable = indices
+                .iter()
+                .any(|&index| findings[index].row.bulk_selectable());
+            let clickable = any_selected || has_bulk_selectable;
             let mut checked = all_selected;
-            let response = ui.add(
+            let checkbox = ui.add_enabled(
+                clickable,
                 egui::Checkbox::new(&mut checked, "").indeterminate(any_selected && !all_selected),
             );
-            if response.clicked() && toggle_group(findings, indices) {
+            if checkbox.clicked() && toggle_group(findings, indices) {
                 selection_changed.set(true);
+            }
+            if !clickable {
+                // A disabled widget senses nothing, so the whole-row click
+                // target underneath it (registered before this row's widgets -
+                // see "Why the row is one click target") receives the click
+                // instead and folds the group. The user aimed at a checkbox
+                // and the tree collapsed under them.
+                //
+                // An explicitly interactive rect over the same area takes the
+                // hit instead. It does nothing on click, which is what a
+                // disabled control should do; the hover text says why. This
+                // has to sense clicks, not just hovers - hovering alone does
+                // not take the click away from the row.
+                let blocked = ui.interact(
+                    checkbox.rect,
+                    ui.id().with(("group_checkbox_blocked", row_index)),
+                    egui::Sense::click(),
+                );
+                blocked.on_hover_text(i18n::strings(lang).group_checkbox_disabled_hint);
             }
 
             let open = is_open(toggles, key, default_open);
@@ -2042,10 +2095,10 @@ fn show_file_row(
                 parts.push(Part::decoration(" "));
                 parts.push(Part::decoration(badge));
             }
-            if row.anti_cheat_protected {
-                parts.push(Part::decoration(" "));
-                parts.push(Part::decoration(i18n::anticheat_shield_badge()));
-            }
+            // The anti-cheat verdict is a per-*game* fact (see
+            // `ui::tree_view::show_game_row`, which marks it once on the
+            // game's own row), not drawn again here - see that function for
+            // why.
             (index, parts)
         }
         (TreeNode::File { index }, None) => {
@@ -2082,10 +2135,10 @@ fn show_file_row(
                 parts.push(Part::decoration(" "));
                 parts.push(Part::decoration(badge));
             }
-            if row.anti_cheat_protected {
-                parts.push(Part::decoration(" "));
-                parts.push(Part::decoration(i18n::anticheat_shield_badge()));
-            }
+            // The anti-cheat verdict is a per-*game* fact (see
+            // `ui::tree_view::show_game_row`, which marks it once on the
+            // game's own row), not drawn again here - see that function for
+            // why.
             (*index, parts)
         }
         _ => unreachable!("Row::File member/node kind mismatch"),
@@ -2131,10 +2184,12 @@ fn show_file_row(
     if item.row.is_monolithic_archive() {
         hover.push_str(&i18n::hover_monolith_suffix(lang, &item.row.action));
     }
-    if item.row.anti_cheat_protected {
-        hover.push_str("\n\n");
-        hover.push_str(i18n::anticheat_shield_tooltip(lang));
-    }
+    // The anti-cheat verdict is explained once, on the game's own row (see
+    // `show_game_row`), not repeated per-file here: after the carve-out
+    // narrowed to monolithic archives only, the one row type it still
+    // affects already explains its own block via `deletion_block_reason`
+    // below (archives stay read-only until safe rollback ships), so a
+    // second paragraph here would either repeat that or never fire.
 
     row_columns(
         ui,
@@ -2148,12 +2203,17 @@ fn show_file_row(
             if checkbox.changed() {
                 ctx.selection_changed.set(true);
             }
+            // `individually_selectable` has a third clause - the anti-cheat
+            // monolith hard block - but it can never be the sole reason this
+            // checkbox is disabled: `is_monolithic_archive` only holds for a
+            // `SparseZero`/`Repack` action, and `action_is_executable_by_gui`
+            // only holds for `DirectDelete`, so whenever that clause fires
+            // the `!action_is_executable_by_gui()` branch above has already
+            // matched. No disabled-hover branch is needed for it here.
             if let Some(reason) = item.row.deletion_block_reason.as_deref() {
                 checkbox.on_disabled_hover_text(i18n::deletion_block_reason(lang, reason));
             } else if !item.row.action_is_executable_by_gui() {
                 checkbox.on_disabled_hover_text(i18n::strings(lang).archive_action_unavailable);
-            } else if item.row.anti_cheat_protected && item.row.is_monolithic_archive() {
-                checkbox.on_disabled_hover_text(i18n::anticheat_shield_tooltip(lang));
             }
             if item.row.is_monolithic_archive() && !item.row.action.streams().is_empty() {
                 let m_key =
@@ -3748,6 +3808,417 @@ mod tests {
         assert!(
             !test.app().findings[2].selected,
             "no keyboard route may select the protected container"
+        );
+    }
+
+    /// The owner's decision after testing on their real library: intro is no
+    /// longer treated as risky. A protected row that rewrites bytes in place
+    /// without being a monolithic archive - an intro finding, replaced by a
+    /// micro-stub rather than deleted - is exactly as ordinary as a
+    /// whole-file delete for anti-cheat purposes, so it is swept up by
+    /// Select All like any other row and the resulting batch clears the
+    /// preflight. Before this change, excluding it hid 56 intro findings in
+    /// Assassin's Creed Shadows (anti-cheat protected) from Select All and
+    /// every group header, with no visible reason.
+    #[test]
+    fn select_all_sweeps_an_anti_cheat_protected_intro_row() {
+        let mut test = tree_of_files([90, 90]);
+        {
+            let app = test.app_mut();
+            for item in &mut app.findings {
+                item.selected = false;
+            }
+            app.findings[0].row.anti_cheat_protected = true;
+            app.findings[0].row.source =
+                model::FindingSource::Rule(gametrimmer_core::rules::Category::Intro);
+            app.rebuild_tree();
+        }
+        open_every_branch(&mut test);
+
+        test.app_mut().select_all();
+
+        assert!(
+            test.app().findings[0].selected,
+            "an anti-cheat protected intro row must be swept up by Select All like any other \
+             whole-file delete"
+        );
+        assert!(
+            test.app().findings[1].selected,
+            "a plain row must still be caught by Select All"
+        );
+
+        let checked = crate::deletion_controller::validate_batch(&test.app().findings, &[0, 1]);
+        assert!(
+            checked.is_ok(),
+            "the swept-up anti-cheat intro row must pass the batch preflight"
+        );
+    }
+
+    /// The narrowed half of the carve-out, and what the fix actually
+    /// restores: a localization row - a whole-file delete, never rewritten in
+    /// place - stays bulk-selectable in a protected game and is swept up by
+    /// Select All exactly like an unprotected row. The old blanket rule
+    /// (`anti_cheat_protected` alone disqualifying a row) took Select All away
+    /// from every finding in every protected game, since the verdict is
+    /// per-game - 112k+ findings across 162 games on the reported library.
+    #[test]
+    fn select_all_sweeps_an_anti_cheat_protected_loc_row() {
+        let mut test = tree_of_files([90, 90]);
+        for item in &mut test.app_mut().findings {
+            item.selected = false;
+        }
+        test.app_mut().findings[0].row.anti_cheat_protected = true;
+
+        test.app_mut().select_all();
+
+        assert!(
+            test.app().findings[0].selected,
+            "a localization row in a protected game must be swept up by Select All like any \
+             other whole-file delete"
+        );
+        assert!(test.app().findings[1].selected);
+    }
+
+    /// A game where every row is still `imported_untrusted` (an older
+    /// database's evidence this scan never re-checked) has zero
+    /// bulk-selectable rows in its group - after the anti-cheat carve-out
+    /// narrowed to monolithic archives, this is the only remaining way a
+    /// whole group reaches zero bulk-selectable rows while still allowing a
+    /// hand tick (a protected monolithic archive is excluded from
+    /// individual selection too, so it never reaches this path - see
+    /// `group_selection_never_selects_an_anti_cheat_monolith`). The old
+    /// header math counted only bulk-selectable rows on both sides of the
+    /// fraction, so a hand tick here was invisible to it and the header kept
+    /// reporting "nothing selected" - `(false, false)` - while a file really
+    /// was queued for deletion. This is the game-level header
+    /// (`show_header_row` backs every level - disk, game, category, folder -
+    /// through the same `group_selection_state` call), verified directly
+    /// against the tree the harness actually built.
+    #[test]
+    fn group_header_reports_selection_honestly_when_every_row_is_imported_untrusted() {
+        let mut test = UiTest::new(show);
+        test.seed_many_findings(1, 2);
+        {
+            let app = test.app_mut();
+            for item in &mut app.findings {
+                item.selected = false;
+                item.row.imported_untrusted = true;
+            }
+            app.rebuild_tree();
+        }
+        open_every_branch(&mut test);
+
+        let indices = test.app().tree[0].games[0].all_indices.clone();
+        assert_eq!(indices.len(), 2, "both seeded files land in the one game");
+
+        assert_eq!(
+            group_selection_state(&test.app().findings, &indices),
+            (false, false),
+            "untouched, nothing is selected yet"
+        );
+
+        test.app_mut().findings[indices[0]].selected = true;
+        assert_eq!(
+            group_selection_state(&test.app().findings, &indices),
+            (false, true),
+            "a hand tick must be visible - not complete, but never 'nothing selected'"
+        );
+
+        test.app_mut().findings[indices[1]].selected = true;
+        assert_eq!(
+            group_selection_state(&test.app().findings, &indices),
+            (true, true),
+            "once every row that can ever be selected has been hand-ticked, the group reads complete"
+        );
+    }
+
+    /// Companion to the honesty test above: the header checkbox itself must
+    /// never be a dead click. With something selected, clicking it must
+    /// clear the group; with nothing selected and nothing bulk-selectable to
+    /// grab, there is nothing a click could do, and the rendered checkbox
+    /// must actually be disabled - not merely inert underneath a control that
+    /// still looks clickable, which calling `toggle_group` directly (bypassing
+    /// `show_header_row`'s `add_enabled`/`on_disabled_hover_text` entirely)
+    /// would never catch.
+    #[test]
+    fn group_header_click_clears_a_selection_or_is_disabled_when_nothing_can_be_selected() {
+        let mut test = UiTest::new(show);
+        test.seed_many_findings(1, 2);
+        {
+            let app = test.app_mut();
+            for item in &mut app.findings {
+                item.selected = false;
+                item.row.imported_untrusted = true;
+            }
+            app.rebuild_tree();
+        }
+        open_every_branch(&mut test);
+
+        let indices = test.app().tree[0].games[0].all_indices.clone();
+        let has_bulk_selectable = indices
+            .iter()
+            .any(|&i| test.app().findings[i].row.bulk_selectable());
+        assert!(
+            !has_bulk_selectable,
+            "the whole group is still imported_untrusted, so nothing is bulk-selectable"
+        );
+
+        // Nothing selected, nothing bulk-selectable: the rendered header
+        // checkbox (index 1 - index 0 is the disk root) must be disabled, a
+        // click on it must be a true no-op, and it must say why.
+        let checkbox = test.nth_checkbox_rect(1);
+        test.click_at(checkbox.center());
+        assert!(
+            test.app().findings.iter().all(|item| !item.selected),
+            "a disabled header checkbox must not react to a click"
+        );
+        test.hover_nth_checkbox(1);
+        test.assert_label_containing(test.strings().group_checkbox_disabled_hint);
+
+        // Hand-tick one row - the header becomes clickable again, and this
+        // time the click must clear it rather than retry a dead select.
+        test.app_mut().findings[indices[0]].selected = true;
+        test.run();
+        let checkbox = test.nth_checkbox_rect(1);
+        test.click_at(checkbox.center());
+        assert!(
+            test.app().findings.iter().all(|item| !item.selected),
+            "the now-enabled header must clear the hand-ticked row on click"
+        );
+    }
+
+    /// Reported from a real library (originally against a game whose intro
+    /// category was wholly anti-cheat protected, before the carve-out
+    /// narrowed to monolithic archives only): clicking the group's checkbox
+    /// collapsed the group instead of selecting it. Kept alive on a
+    /// still-disabled group - now `imported_untrusted`, since that is the
+    /// only way left to get a fully non-bulk-selectable group - because the
+    /// underlying bug is about a disabled checkbox in general, not about
+    /// anti-cheat specifically.
+    ///
+    /// A disabled widget senses nothing, so the whole-row click target
+    /// underneath took the click and folded the row - the one thing a click
+    /// on a *checkbox* must never do. The header's other test above only
+    /// checked that nothing got selected, which stayed true the whole time
+    /// the bug was live, which is why it did not catch this.
+    #[test]
+    fn clicking_a_disabled_group_checkbox_does_not_fold_the_group() {
+        let mut test = UiTest::new(show);
+        test.seed_many_findings(1, 2);
+        {
+            let app = test.app_mut();
+            for item in &mut app.findings {
+                item.selected = false;
+                item.row.imported_untrusted = true;
+            }
+            app.rebuild_tree();
+        }
+        open_every_branch(&mut test);
+
+        let before = test.checkbox_count();
+        assert!(
+            before > 2,
+            "the fixture must have children on screen for a fold to be visible: {before}"
+        );
+
+        // The game header's checkbox (index 1; index 0 is the disk root).
+        let checkbox = test.nth_checkbox_rect(1);
+        test.click_at(checkbox.center());
+
+        assert_eq!(
+            test.checkbox_count(),
+            before,
+            "clicking the disabled header checkbox must leave the group open - a click \
+             aimed at a checkbox must never fold the tree under the pointer"
+        );
+        assert!(
+            test.app().findings.iter().all(|item| !item.selected),
+            "and it must still select nothing"
+        );
+    }
+
+    /// A mixed game - one anti-cheat protected monolithic archive alongside
+    /// ordinary rows, the one remaining case the narrowed carve-out still
+    /// excludes - must keep behaving normally for the ordinary rows: the
+    /// header still selects and clears them like any other group, the
+    /// archive row just never joins in on its own.
+    #[test]
+    fn group_header_selects_only_the_ordinary_rows_in_a_mixed_anti_cheat_group() {
+        use gametrimmer_core::models::FindingAction;
+
+        let mut test = UiTest::new(show);
+        test.seed_many_findings(1, 3);
+        {
+            let app = test.app_mut();
+            for item in &mut app.findings {
+                item.selected = false;
+            }
+            app.findings[0].row.anti_cheat_protected = true;
+            app.findings[0].row.source =
+                model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
+            app.findings[0].row.action = FindingAction::SparseZero {
+                format: "Wwise".to_string(),
+                languages: vec!["de".to_string()],
+                stream_count: 1,
+                offsets: vec![(0, 1)],
+                streams: vec![],
+                estimated_savings: 1,
+            };
+            app.rebuild_tree();
+        }
+        open_every_branch(&mut test);
+
+        let indices = test.app().tree[0].games[0].all_indices.clone();
+        assert_eq!(indices.len(), 3);
+
+        assert!(
+            toggle_group(&mut test.app_mut().findings, &indices),
+            "selecting a mixed group must still pick up its ordinary rows"
+        );
+        assert!(
+            !test.app().findings[0].selected,
+            "the anti-cheat monolithic archive must not be swept in"
+        );
+        assert!(
+            test.app().findings[1].selected && test.app().findings[2].selected,
+            "both ordinary rows must be selected"
+        );
+
+        assert!(
+            toggle_group(&mut test.app_mut().findings, &indices),
+            "clicking again must clear the selection it just made"
+        );
+        assert!(test.app().findings.iter().all(|item| !item.selected));
+    }
+
+    /// This is what the narrowed carve-out actually restores: a game that is
+    /// entirely anti-cheat protected but holds only ordinary (whole-file
+    /// delete) findings behaves like any unprotected group - the header
+    /// checkbox is enabled from the start and a real click on it, driven
+    /// through the harness rather than called on the model directly, selects
+    /// every row. Before this fix `anti_cheat_protected` alone disqualified a
+    /// row from bulk selection, so this exact scenario - the common one, since
+    /// the verdict is per-game - left the header permanently disabled.
+    #[test]
+    fn group_header_selects_all_ordinary_rows_in_a_fully_anti_cheat_protected_game() {
+        let mut test = UiTest::new(show);
+        test.seed_many_findings(1, 2);
+        for item in &mut test.app_mut().findings {
+            item.selected = false;
+            item.row.anti_cheat_protected = true;
+        }
+        open_every_branch(&mut test);
+
+        let indices = test.app().tree[0].games[0].all_indices.clone();
+        assert_eq!(indices.len(), 2);
+        assert!(
+            indices
+                .iter()
+                .all(|&i| test.app().findings[i].row.bulk_selectable()),
+            "a whole-file delete in a protected game must stay bulk-selectable"
+        );
+
+        let checkbox = test.nth_checkbox_rect(1);
+        test.click_at(checkbox.center());
+        assert!(
+            test.app().findings.iter().all(|item| item.selected),
+            "the header must select every ordinary row in one click, exactly like an \
+             unprotected group"
+        );
+
+        test.click_at(checkbox.center());
+        assert!(
+            test.app().findings.iter().all(|item| !item.selected),
+            "clicking again must clear the selection it just made"
+        );
+    }
+
+    /// Regression guard for the hard block: an anti-cheat protected
+    /// monolithic archive must never be pulled in by any group-selection
+    /// path, whether that is a header click (`toggle_group`) or a direct
+    /// bulk-selection action (`set_group_selection`, what "select this
+    /// category" and the selection profiles use). The keyboard route is
+    /// covered separately by
+    /// `keyboard_cannot_select_a_protected_monolith_or_its_stream_detail`;
+    /// this covers the group-header route that this change touches.
+    #[test]
+    fn group_selection_never_selects_an_anti_cheat_monolith() {
+        use gametrimmer_core::models::{FindingAction, MonolithicStreamInfo};
+
+        let mut test = UiTest::new(show);
+        test.seed_many_findings(1, 2);
+        {
+            let app = test.app_mut();
+            app.findings[1].row.source =
+                model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
+            app.findings[1].row.anti_cheat_protected = true;
+            app.findings[1].row.action = FindingAction::SparseZero {
+                format: "Wwise".to_string(),
+                languages: vec!["de".to_string()],
+                stream_count: 1,
+                offsets: vec![(0, 1)],
+                streams: vec![MonolithicStreamInfo {
+                    name: "protected stream".to_string(),
+                    language: "de".to_string(),
+                    size: 1,
+                }],
+                estimated_savings: 1,
+            };
+            for item in &mut app.findings {
+                item.selected = false;
+            }
+            app.rebuild_tree();
+        }
+        open_every_branch(&mut test);
+
+        let indices = test.app().tree[0].games[0].all_indices.clone();
+
+        assert!(
+            toggle_group(&mut test.app_mut().findings, &indices),
+            "the ordinary row must still be picked up by the header"
+        );
+        assert!(test.app().findings[0].selected);
+        assert!(
+            !test.app().findings[1].selected,
+            "the anti-cheat monolith must never be group-selected"
+        );
+
+        assert!(
+            !set_group_selection(&mut test.app_mut().findings, &[indices[1]], true),
+            "a direct bulk-select attempt on the anti-cheat monolith alone must be a no-op"
+        );
+        assert!(!test.app().findings[1].selected);
+    }
+
+    /// The game-level marking Change 2 adds: the anti-cheat verdict is a
+    /// per-*game* fact (`FindingRow::anti_cheat_protected`, uniform across
+    /// every one of a game's findings), and after the carve-out narrowed to
+    /// monolithic archives it is otherwise invisible - an intro row no
+    /// longer carries a badge of its own. It is marked once on the game's
+    /// own row instead (see `show_game_row`, mirroring the `[🔄 Updated]`
+    /// decoration), so it stays visible on games where the row-level shield
+    /// used to appear but does not need one to explain itself, and it must
+    /// not appear on an unprotected game's row.
+    #[test]
+    fn game_row_shows_the_anti_cheat_badge_only_for_a_protected_game() {
+        let mut test = UiTest::new(show);
+        test.seed_many_findings(2, 1);
+        {
+            let app = test.app_mut();
+            app.findings[0].row.anti_cheat_protected = true;
+            app.rebuild_tree();
+        }
+        open_every_branch(&mut test);
+
+        // Two games on screen, only one (game 0) anti-cheat protected: the
+        // badge appearing exactly once - not zero, not on both - is what
+        // proves it is scoped to the protected game's own row rather than
+        // shown for every game or missing entirely.
+        let badge = test.strings().badge_anticheat_shield;
+        assert_eq!(
+            test.count_labels_containing(badge),
+            1,
+            "the badge must be drawn on exactly one game row - the protected one"
         );
     }
 }

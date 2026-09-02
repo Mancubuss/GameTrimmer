@@ -993,6 +993,11 @@ pub fn selection_hint(lang: Lang) -> String {
         Lang::En | Lang::Custom(_) => {
             "Files the app is not sure enough about are marked \u{26a0} and are never \
              ticked for you after a scan - look at them before deleting.\n\n\
+             In a game protected by anti-cheat, a file that gets rewritten in place \
+             instead of deleted outright is marked \u{1f6e1}\u{fe0f}: a monolithic archive \
+             stays blocked either way, and an intro video replaced by a micro-stub is \
+             skipped by Select all - tick it by hand to delete it. Every other file in a \
+             protected game deletes normally, marked or not.\n\n\
              Checkboxes on tree rows select a whole disk, game, category, or folder. \
              Right-clicking a disk, game, or category opens bulk selection actions \
              (including a category across the whole disk).\n\n\
@@ -1003,6 +1008,11 @@ pub fn selection_hint(lang: Lang) -> String {
         Lang::Uk => "Файли, щодо яких застосунок недостатньо впевнений, позначені \u{26a0} і \
              ніколи не обираються за вас після сканування — гляньте на них перед \
              видаленням.\n\n\
+             У грі під захистом античиту файл, який перезаписується на місці замість \
+             видалення, позначений \u{1f6e1}\u{fe0f}: монолітний архів лишається заблокованим \
+             у будь-якому разі, а вступний ролик, замінений мікро-заглушкою, пропускається \
+             «Вибрати все» — позначте його вручну, щоб видалити. Решта файлів у захищеній грі \
+             видаляється як завжди, незалежно від позначки.\n\n\
              Прапорці на рядках дерева вибирають цілий диск, гру, категорію чи теку. \
              Права кнопка миші на диску, грі або категорії відкриває дії масового вибору \
              (зокрема категорію на всьому диску).\n\n\
@@ -1519,14 +1529,6 @@ pub fn monolithic_badge(lang: Lang, savings: u64, total: u64) -> String {
         Lang::Uk => format!("📦 Моноліт [Економія: {savings_str} / Разом: {total_str}]"),
         _ => format!("📦 Monolith [Savings: {savings_str} / Total: {total_str}]"),
     }
-}
-
-pub fn anticheat_shield_badge() -> &'static str {
-    "🛡️"
-}
-
-pub fn anticheat_shield_tooltip(lang: Lang) -> &'static str {
-    strings(lang).anticheat_shield_tooltip
 }
 
 pub fn hover_monolith_suffix(

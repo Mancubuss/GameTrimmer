@@ -21,7 +21,31 @@ pub struct RetrimReport {
     pub game_name: String,
     pub files_deleted: usize,
     pub bytes_freed: u64,
+    /// Something went wrong: a delete that failed, a micro-stub that could
+    /// not be written after one succeeded.
     pub errors: Vec<String>,
+    /// Files the run left alone, each with the reason - an anti-cheat
+    /// protected game, a container that is trimmed in place rather than
+    /// deleted whole, an intro this build has no micro-stub for.
+    ///
+    /// Separate from `errors` because a caller cannot act on "one file was
+    /// left alone, exactly as designed" the way it acts on "one file failed",
+    /// and a single list forces it to read English to tell them apart.
+    ///
+    /// One entry kind does not fit that framing: when the anti-cheat check
+    /// itself cannot complete (`ops::unattended_skip_reason`'s `Err` arm -
+    /// typically an install directory that went unreadable, e.g. a permission
+    /// error), the file is still fail-closed into `skipped` rather than
+    /// `errors`, because refusing to delete on an unproven verdict is the
+    /// deliberate, designed outcome. But the *cause* is a genuine I/O
+    /// failure, not an intentional keep, and a caller that only branches on
+    /// `errors` vs `skipped` cannot tell the two apart from the shape of this
+    /// struct alone. The distinction survives in the reason text: an
+    /// entry whose reason contains "could not complete" is this case: an
+    /// operational problem worth surfacing to the user (fix permissions,
+    /// investigate the drive), not a normal anti-cheat keep. Every other
+    /// `skipped` entry is the deliberate kind and has no such phrase.
+    pub skipped: Vec<String>,
 }
 
 /// Outcome of asking the OS whether a game's executable is currently
@@ -372,7 +396,7 @@ pub fn retrim_game_with_new_build(
     // watching to catch it. Non-"intro" candidates are untouched by this step.
     let mut retained_candidates = Vec::with_capacity(candidates.len());
     let mut candidate_stub_bytes: Vec<Option<Vec<u8>>> = Vec::with_capacity(candidates.len());
-    let mut skipped_intro_errors = Vec::new();
+    let mut skipped = Vec::new();
 
     for candidate in candidates {
         if candidate.category != "intro" {
@@ -387,7 +411,7 @@ pub fn retrim_game_with_new_build(
                 candidate_stub_bytes.push(Some(bytes));
             }
             None => {
-                skipped_intro_errors.push(format!(
+                skipped.push(format!(
                     "kept {}: its video container is not one this build has a micro-stub for; \
                      deleting it would leave the game with no file there at all",
                     candidate.entry.rel_path
@@ -415,7 +439,8 @@ pub fn retrim_game_with_new_build(
             game_name: game.name,
             files_deleted: 0,
             bytes_freed: 0,
-            errors: skipped_intro_errors,
+            errors: Vec::new(),
+            skipped,
         });
     }
 
@@ -549,7 +574,8 @@ pub fn retrim_game_with_new_build(
             game_name: game.name,
             files_deleted: 0,
             bytes_freed: 0,
-            errors: skipped_intro_errors,
+            errors: Vec::new(),
+            skipped,
         });
     }
 
@@ -560,8 +586,12 @@ pub fn retrim_game_with_new_build(
     // implementation of this same stub contract. A stub write that fails is
     // never silently dropped: it lands in `stub_write_failures` and is folded
     // into this report's `errors` below rather than only reaching a log line.
-    let (plans, skips) =
-        crate::ops::prepare_delete_plans_with_skips(conn, &candidate_file_ids, delete_method)?;
+    let (plans, skips) = crate::ops::prepare_delete_plans_with_skips(
+        conn,
+        &candidate_file_ids,
+        delete_method,
+        crate::ops::DeleteAttendance::Unattended,
+    )?;
     // A multi-asset container the preflight held back leaves the batch, so the
     // per-candidate arrays have to lose the same entry: they are read by plan
     // index below, and a shifted one would write a stub over the wrong file.
@@ -571,7 +601,7 @@ pub fn retrim_game_with_new_build(
             .map(|file_id| !skips.iter().any(|skip| skip.file_id == *file_id))
             .collect();
         for skip in &skips {
-            skipped_intro_errors.push(format!("{}: {}", skip.path.display(), skip.reason));
+            skipped.push(format!("{}: {}", skip.path.display(), skip.reason));
         }
         retain_by_flags(&mut candidate_file_ids, &keep);
         retain_by_flags(&mut candidate_sizes, &keep);
@@ -603,8 +633,7 @@ pub fn retrim_game_with_new_build(
     let mut files_deleted = 0;
     let mut bytes_freed = 0u64;
     let mut bytes_on_disk_freed = 0u64;
-    let mut errors = skipped_intro_errors;
-    errors.extend(stub_write_failures);
+    let mut errors = stub_write_failures;
 
     for (idx, outcome) in outcomes.iter().enumerate() {
         if matches!(
@@ -645,6 +674,7 @@ pub fn retrim_game_with_new_build(
         files_deleted,
         bytes_freed,
         errors,
+        skipped,
     })
 }
 
@@ -673,8 +703,12 @@ mod tests {
         )
         .expect("insert library");
         conn.execute(
-            "INSERT INTO games (id, library_id, name, install_dir, app_id, build_id)
-             VALUES (10, 1, 'Test Game', ?1, 'test-app', '100')",
+            // The verdict column is not nullable in practice: every game a
+            // scan writes carries one, and a NULL reads as protected, which
+            // would make an unattended re-trim skip the whole fixture.
+            "INSERT INTO games (id, library_id, name, install_dir, app_id, build_id,
+                                anti_cheat_protected)
+             VALUES (10, 1, 'Test Game', ?1, 'test-app', '100', 0)",
             [game_dir.to_string_lossy()],
         )
         .expect("insert game");
@@ -712,8 +746,9 @@ mod tests {
 
         let install_dir_str = game_dir.to_string_lossy().to_string();
         conn.execute(
-            "INSERT INTO games (id, library_id, name, install_dir, app_id, build_id)
-             VALUES (10, 1, 'Portal 2', ?1, '620', '100')",
+            "INSERT INTO games (id, library_id, name, install_dir, app_id, build_id,
+                                anti_cheat_protected)
+             VALUES (10, 1, 'Portal 2', ?1, '620', '100', 0)",
             [&install_dir_str],
         )
         .expect("insert game");
@@ -831,27 +866,19 @@ mod tests {
     }
 
     #[test]
-    /// Records a decision, and a gap it makes visible. Both deliberately.
+    /// GT-216, closed. This used to assert the opposite - a trusted rule
+    /// naming the file, so an unattended re-trim removed it, EAC marker and
+    /// all - and said so loudly, on purpose, to record a real gap:
+    /// `retrim_game` had no anti-cheat gate of its own, and the marker below
+    /// was setup nothing read.
     ///
-    /// This used to assert the opposite, and the only thing making it pass was
-    /// the delete preflight reading the file's first bytes and refusing
-    /// anything shaped like a container. That probe is gone by owner's
-    /// decision (GT-215): a file the rules name is a file the program removes,
-    /// without reopening it to argue.
-    ///
-    /// What the old assertion concealed is that `retrim_game` has no
-    /// anti-cheat gate of its own - the EAC marker below is setup, nothing
-    /// reads it, and a plain `readme.txt` in this same game was already being
-    /// deleted by an unattended re-trim long before the probe was removed. The
-    /// probe was accidental cover for one shape of one case, never a
-    /// guarantee. Removing it did not create the hole; it uncovered it.
-    ///
-    /// So this now asserts the deletion, loudly, rather than leaving the
-    /// behaviour untested and the hole unmentioned. See GT-216 for the gate
-    /// itself: the anti-cheat verdict is computed by the scan's Phase 3 from a
-    /// full live inventory, and re-trim needs either to do the same or to read
-    /// the stored verdict.
-    fn unattended_retrim_deletes_a_named_file_even_in_an_anti_cheat_game() {
+    /// `prepare_delete_plans_for_action` (crates/core/src/ops.rs) now reads
+    /// it: when the preflight runs `DeleteAttendance::Unattended` and the
+    /// file's game is anti-cheat protected, the file is skipped rather than
+    /// deleted, and the skip is reported. Ticking the box by hand is still
+    /// consent enough for the interactive delete path - this only closes the
+    /// unattended one, where nobody is present to give it.
+    fn unattended_retrim_refuses_to_delete_in_an_anti_cheat_game() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let game_dir = temp_dir.path().join("EAC Game");
         let mut conn = setup_game(&temp_dir, &game_dir);
@@ -880,21 +907,32 @@ mod tests {
             &LangDetector::new(),
             DeleteMethod::Permanent,
         )
-        .expect("re-trim runs");
+        .expect("re-trim runs - a skip is reported, not a hard failure");
 
         assert_eq!(
-            report.files_deleted, 1,
-            "a trusted rule named the file, so an unattended re-trim removes it"
+            report.files_deleted, 0,
+            "no one is present to consent, so an unattended re-trim leaves an \
+             anti-cheat-protected game alone"
         );
         assert!(
             report.errors.is_empty(),
-            "nothing holds it back any more: {:?}",
+            "a deliberate skip is not a failure: {:?}",
             report.errors
         );
+        assert_eq!(
+            report.skipped.len(),
+            1,
+            "the skip must be reported, not silently dropped: {:?}",
+            report.skipped
+        );
         assert!(
-            !target.is_file(),
-            "the file is gone - its bytes being a Wwise container no longer save it, \
-             and neither does the game's EasyAntiCheat marker, which nothing here reads"
+            report.skipped[0].contains("manual.txt"),
+            "the report must say which file was left alone: {:?}",
+            report.skipped
+        );
+        assert!(
+            target.is_file(),
+            "the file survives - the game's EasyAntiCheat marker is what saves it"
         );
     }
 
@@ -1007,16 +1045,21 @@ mod tests {
         // broken detector.
         assert_eq!(report.files_deleted, 0);
         assert_eq!(report.bytes_freed, 0);
-        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
         assert!(
-            report.errors[0].contains("intro.smk"),
-            "{:?}",
+            report.errors.is_empty(),
+            "keeping a file on purpose is not a failure: {:?}",
             report.errors
         );
+        assert_eq!(report.skipped.len(), 1, "{:?}", report.skipped);
         assert!(
-            report.errors[0].contains("micro-stub"),
+            report.skipped[0].contains("intro.smk"),
             "{:?}",
-            report.errors
+            report.skipped
+        );
+        assert!(
+            report.skipped[0].contains("micro-stub"),
+            "{:?}",
+            report.skipped
         );
 
         assert!(
@@ -1068,11 +1111,16 @@ mod tests {
             report.files_deleted, 1,
             "only the bonus file should have been deleted"
         );
-        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
         assert!(
-            report.errors[0].contains("intro.smk"),
-            "{:?}",
+            report.errors.is_empty(),
+            "keeping a file on purpose is not a failure: {:?}",
             report.errors
+        );
+        assert_eq!(report.skipped.len(), 1, "{:?}", report.skipped);
+        assert!(
+            report.skipped[0].contains("intro.smk"),
+            "{:?}",
+            report.skipped
         );
 
         assert!(intro_path.is_file(), "the unstubbable intro must survive");

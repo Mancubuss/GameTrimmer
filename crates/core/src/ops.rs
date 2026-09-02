@@ -1,6 +1,6 @@
 //! Safe file removal with an operations journal.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -262,6 +262,22 @@ pub struct DeleteSkip {
     pub reason: String,
 }
 
+/// Whether a human is present to consent to this batch, or the preflight is
+/// running unattended - see the automatic re-trim engine in
+/// [`crate::retrim`]. Not a bare `bool`: `prepare_delete_plans(.., true)` at
+/// a call site tells a reader nothing, and the two situations get a
+/// genuinely different anti-cheat verdict (below), not just a different
+/// label for the same behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteAttendance {
+    /// A person selected this file and pressed delete. That click is the
+    /// anti-cheat consent; the preflight does not second-guess it.
+    Interactive,
+    /// Nobody is watching. An anti-cheat-protected game is always skipped,
+    /// never silently re-deleted after an unattended update.
+    Unattended,
+}
+
 /// Builds immutable delete plans only from the active, non-legacy generation.
 /// Monolithic archive candidates are dropped from the batch; every other
 /// refusal fails the whole call. Callers that need to tell the user which
@@ -270,8 +286,9 @@ pub fn prepare_delete_plans(
     conn: &Connection,
     file_ids: &[i64],
     method: DeleteMethod,
+    attendance: DeleteAttendance,
 ) -> Result<Vec<DeletePlan>> {
-    Ok(prepare_delete_plans_with_skips(conn, file_ids, method)?.0)
+    Ok(prepare_delete_plans_with_skips(conn, file_ids, method, attendance)?.0)
 }
 
 /// [`prepare_delete_plans`] plus the containers it left out, so an
@@ -281,12 +298,13 @@ pub fn prepare_delete_plans_with_skips(
     conn: &Connection,
     file_ids: &[i64],
     method: DeleteMethod,
+    attendance: DeleteAttendance,
 ) -> Result<(Vec<DeletePlan>, Vec<DeleteSkip>)> {
     let action = match method {
         DeleteMethod::Permanent => "delete",
         DeleteMethod::RecycleBin => "recycle",
     };
-    prepare_delete_plans_for_action(conn, file_ids, action, false)
+    prepare_delete_plans_for_action(conn, file_ids, action, false, attendance)
 }
 
 fn prepare_delete_plans_for_action(
@@ -294,6 +312,7 @@ fn prepare_delete_plans_for_action(
     file_ids: &[i64],
     action: &str,
     allow_missing: bool,
+    attendance: DeleteAttendance,
 ) -> Result<(Vec<DeletePlan>, Vec<DeleteSkip>)> {
     if !matches!(action, "delete" | "recycle") {
         return Err(crate::error::CoreError::Other(format!(
@@ -308,12 +327,18 @@ fn prepare_delete_plans_for_action(
     }
     let mut plans = Vec::with_capacity(file_ids.len());
     let mut skips = Vec::new();
+    // The anti-cheat verdict costs a full directory walk - see
+    // `unattended_skip_reason`. Memoized per game for the duration of this
+    // call, so a batch touching many files in the same game pays for it once,
+    // and only ever populated on the unattended path.
+    let mut anti_cheat_cache: HashMap<i64, Option<String>> = HashMap::new();
     for file_id in file_ids {
         validate_persisted_direct_delete_contract(conn, *file_id)?;
         let row = conn.query_row(
             "SELECT f.scan_id, f.game_id, fs.trusted_root, fs.rel_path,
                     fs.root_identity, fs.target_identity, fs.target_kind,
-                    fs.tree_fingerprint, fs.block_reason, sle.status
+                    fs.tree_fingerprint, fs.block_reason, sle.status, g.install_dir,
+                    g.anti_cheat_protected
              FROM files f
              LEFT JOIN games g ON g.id = f.game_id
              LEFT JOIN game_libraries gl ON gl.id = g.library_id
@@ -335,6 +360,8 @@ fn prepare_delete_plans_for_action(
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<bool>>(11)?,
                 ))
             },
         );
@@ -349,6 +376,8 @@ fn prepare_delete_plans_for_action(
             tree_fingerprint,
             block_reason,
             evidence_status,
+            install_dir,
+            stored_anti_cheat,
         ) = row.map_err(|_| {
             crate::error::CoreError::Other(format!(
                 "delete preflight blocked file_id {file_id}: {}",
@@ -405,6 +434,65 @@ fn prepare_delete_plans_for_action(
                     .to_string(),
             });
             continue;
+        }
+        // Variant B (owner's decision): ticking the checkbox by hand IS the
+        // anti-cheat consent, so the interactive path never consults this.
+        // Nobody ticks anything for an unattended re-trim, so there the
+        // verdict is authoritative and refusal is unconditional - the file
+        // is left alone and reported, not silently re-deleted after a game
+        // update. Monolithic archives keep their own hard block above,
+        // unrelated to this one.
+        //
+        // This is the ONE place the anti-cheat decision is made. The executor
+        // deliberately does not repeat it: by the time plans exist every
+        // protected file has already left the batch, and re-asking there only
+        // gave a directory that went briefly unreadable the power to abort a
+        // whole unattended run - see `execute_delete_plans_with_remover_observed`.
+        if attendance == DeleteAttendance::Unattended {
+            // Fails closed on absent data, like every other missing-evidence
+            // case in this preflight. A file with no game row (an orphan, a
+            // janitor artifact) has no install directory to clear, and "no
+            // directory to check" is not the same claim as "checked, clear".
+            //
+            // Two detectors, and the union of them, because they do not agree.
+            // The stored verdict comes from `is_safe_from_relative_paths` over
+            // the scan's whole inventory and matches substrings, so it sees a
+            // `Vanguard\` directory; the live walk below matches exact file
+            // names and does not. Neither is a superset of the other, and both
+            // fail closed, so asking only one leaves that one's blind spot as a
+            // hole in the gate. The stored answer also cannot see a game that
+            // acquired anti-cheat since the scan - which is precisely the case
+            // an after-an-update re-trim runs in - so the live walk cannot be
+            // dropped for it either.
+            let reason = match (game_id, install_dir.as_deref()) {
+                (Some(game_id), Some(install_dir)) => {
+                    if stored_anti_cheat.unwrap_or(true) {
+                        Some(
+                            "no one is present to consent, and the last scan found this game \
+                             anti-cheat protected"
+                                .to_string(),
+                        )
+                    } else {
+                        anti_cheat_cache
+                            .entry(game_id)
+                            .or_insert_with(|| unattended_skip_reason(Path::new(install_dir)))
+                            .clone()
+                    }
+                }
+                _ => Some(
+                    "no one is present to consent, and this file has no game install \
+                     directory to clear of anti-cheat first"
+                        .to_string(),
+                ),
+            };
+            if let Some(reason) = reason {
+                skips.push(DeleteSkip {
+                    file_id: *file_id,
+                    path: Path::new(&trusted_root).join(&rel_path),
+                    reason,
+                });
+                continue;
+            }
         }
         let root_identity = FileIdentity::decode(root_identity.as_deref().ok_or_else(|| {
             crate::error::CoreError::Other(format!(
@@ -481,6 +569,37 @@ fn prepare_delete_plans_for_action(
     Ok((plans, skips))
 }
 
+/// Why an unattended batch must leave the game installed at `install_dir`
+/// alone, or `None` when a complete walk found nothing to protect.
+///
+/// Both refusals are the same fail-closed answer and they are worded apart on
+/// purpose. `AntiCheatShield::is_safe` collapses "a complete scan found
+/// EasyAntiCheat" into the same `false` as "the directory could not be walked
+/// at all", which is safe but reports a game as anti-cheat protected when what
+/// actually happened is that a launcher update moved its folder - in the one
+/// line an operator reads to find out what the re-trim did.
+fn unattended_skip_reason(install_dir: &Path) -> Option<String> {
+    match archive_trimmer::anti_cheat::AntiCheatShield::check_directory(install_dir, false) {
+        Ok(report) if report.is_safe => None,
+        Ok(report) => {
+            let engine = report
+                .findings
+                .first()
+                .map(|finding| finding.engine.to_string())
+                .unwrap_or_else(|| "an unnamed engine".to_string());
+            Some(format!(
+                "no one is present to consent - an unattended re-trim never deletes in an \
+                 anti-cheat-protected game ({engine})"
+            ))
+        }
+        Err(error) => Some(format!(
+            "no one is present to consent, and the anti-cheat check over {} could not \
+             complete ({error}) - an unattended re-trim never deletes on an unproven verdict",
+            install_dir.display()
+        )),
+    }
+}
+
 /// Authoritative persisted contract gate for every whole-file removal path.
 /// All finding rows attached to the file must be recognized ordinary
 /// direct-delete contracts. One monolithic, malformed, unknown or conflicting
@@ -518,6 +637,11 @@ fn validate_persisted_direct_delete_contract(conn: &Connection, file_id: i64) ->
 /// Executes a preflighted batch. The whole batch is validated before the first
 /// mutation, then each row and live identity is checked again immediately
 /// before its own operation.
+///
+/// Takes no [`DeleteAttendance`]: the anti-cheat decision belongs to
+/// [`prepare_delete_plans_for_action`] and is made exactly once, there. See
+/// [`execute_delete_plans_with_remover_observed`] for why repeating it here
+/// was worse than useless.
 pub fn execute_delete_plans_observed(
     conn: &mut Connection,
     method: DeleteMethod,
@@ -538,6 +662,22 @@ pub fn execute_delete_plans_observed(
     )
 }
 
+/// The rechecks below re-derive each plan and compare it against the one the
+/// caller preflighted, which is what catches a database row that changed
+/// underneath a batch. They deliberately run as
+/// [`DeleteAttendance::Interactive`] regardless of who asked for the batch.
+///
+/// An unattended preflight has already dropped every file in an anti-cheat
+/// protected game, so the ids that reach here belong to unprotected games
+/// only, and re-deriving them as interactive yields exactly the same plans -
+/// the comparison stays honest. Threading the attendance through instead
+/// bought one thing, catching a game that becomes protected in the
+/// milliseconds between prepare and execute, and charged two for it: a
+/// directory that is momentarily unreadable (a launcher update, which is
+/// precisely when a re-trim runs) failed the walk closed, emptied the batch
+/// and aborted the whole run under `StaleDatabaseRow` - a name that does not
+/// even describe what happened - and every unprotected game paid for one
+/// complete extra traversal per file on top of two per batch.
 fn execute_delete_plans_with_remover_observed(
     conn: &mut Connection,
     remover: &dyn Remover,
@@ -548,7 +688,13 @@ fn execute_delete_plans_with_remover_observed(
     conn.pragma_update(None, "synchronous", "FULL")?;
 
     let ids: Vec<i64> = plans.iter().map(|plan| plan.file_id).collect();
-    let (current, _) = prepare_delete_plans_for_action(conn, &ids, remover.action(), true)?;
+    let (current, _) = prepare_delete_plans_for_action(
+        conn,
+        &ids,
+        remover.action(),
+        true,
+        DeleteAttendance::Interactive,
+    )?;
     if current != plans {
         return Err(crate::error::CoreError::Other(
             DeleteBlockReason::StaleDatabaseRow.to_string(),
@@ -570,8 +716,13 @@ fn execute_delete_plans_with_remover_observed(
         let nominal_path = plan.snapshot.trusted_root.join(&plan.snapshot.rel_path);
         on_progress(index + 1, plans.len(), &nominal_path);
 
-        let refreshed =
-            prepare_delete_plans_for_action(conn, &[plan.file_id], remover.action(), true);
+        let refreshed = prepare_delete_plans_for_action(
+            conn,
+            &[plan.file_id],
+            remover.action(),
+            true,
+            DeleteAttendance::Interactive,
+        );
         if refreshed.as_ref().ok().and_then(|(rows, _)| rows.first()) != Some(plan) {
             let outcome = OpOutcome {
                 path: nominal_path,
@@ -833,8 +984,14 @@ mod tests {
             )
             .unwrap();
         conn.execute(
-            "INSERT INTO games (scan_id, library_id, name, install_dir, app_id)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            // A scanned game always carries a verdict; NULL means "never
+            // assessed" and reads as protected, which would make every
+            // unattended fixture here skip instead of exercising its case.
+            // Tests that want protection plant an anti-cheat marker on disk
+            // and let the live half of the gate find it.
+            "INSERT INTO games (scan_id, library_id, name, install_dir, app_id,
+                                anti_cheat_protected)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
             rusqlite::params![scan_id, library_id, app_id, root.to_string_lossy(), app_id],
         )
         .unwrap();
@@ -880,7 +1037,13 @@ mod tests {
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
         let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "gone.bin", "one");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
-        let plans = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap();
+        let plans = prepare_delete_plans(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
         std::fs::remove_file(temp.path().join("gone.bin")).unwrap();
         let outcomes = execute_delete_plans_observed(
             &mut conn,
@@ -926,7 +1089,13 @@ mod tests {
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
         let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "locked.bin", "one");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
-        let plans = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap();
+        let plans = prepare_delete_plans(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
 
         let outcomes = execute_delete_plans_with_remover_observed(
             &mut conn,
@@ -967,7 +1136,13 @@ mod tests {
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
         let file_id = insert_safe_finding(&conn, scan_id, &root, "leftover.bin", "one");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
-        let plans = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap();
+        let plans = prepare_delete_plans(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
 
         // The volume goes away between planning and execution.
         std::fs::remove_dir_all(&root).unwrap();
@@ -1252,7 +1427,13 @@ mod tests {
         let safe = insert_safe_finding(&conn, scan_id, temp.path(), "safe.bin", "one");
         let swapped = insert_safe_finding(&conn, scan_id, temp.path(), "swapped.bin", "two");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
-        let plans = prepare_delete_plans(&conn, &[safe, swapped], DeleteMethod::Permanent).unwrap();
+        let plans = prepare_delete_plans(
+            &conn,
+            &[safe, swapped],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
         std::fs::remove_file(temp.path().join("swapped.bin")).unwrap();
         std::fs::write(temp.path().join("swapped.bin"), b"replacement").unwrap();
         assert!(execute_delete_plans_observed(
@@ -1280,7 +1461,13 @@ mod tests {
         )
         .unwrap();
 
-        let error = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap_err();
+        let error = prepare_delete_plans(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("filesystem identity is missing"));
         assert!(temp.path().join("target.bin").is_file());
     }
@@ -1294,8 +1481,13 @@ mod tests {
         let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "target.bin", "one");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
-        let error =
-            prepare_delete_plans(&conn, &[file_id, file_id], DeleteMethod::Permanent).unwrap_err();
+        let error = prepare_delete_plans(
+            &conn,
+            &[file_id, file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("duplicate file id"));
         assert!(temp.path().join("target.bin").is_file());
     }
@@ -1315,7 +1507,13 @@ mod tests {
         .unwrap();
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
-        let error = prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).unwrap_err();
+        let error = prepare_delete_plans(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("invalid finding contract"));
         assert!(temp.path().join("archive.pck").is_file());
     }
@@ -1336,8 +1534,13 @@ mod tests {
         .unwrap();
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
-        let (plans, skips) =
-            prepare_delete_plans_with_skips(&conn, &[file_id], DeleteMethod::Permanent).unwrap();
+        let (plans, skips) = prepare_delete_plans_with_skips(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
         assert!(plans.is_empty(), "a container must never get a delete plan");
         assert_eq!(skips.len(), 1);
         assert!(skips[0].reason.contains("monolithic archive candidate"));
@@ -1387,9 +1590,13 @@ mod tests {
             (language_named, "sounds_fra.pck"),
             (text_named, "manual.txt"),
         ] {
-            let (plans, skips) =
-                prepare_delete_plans_with_skips(&conn, &[file_id], DeleteMethod::Permanent)
-                    .unwrap();
+            let (plans, skips) = prepare_delete_plans_with_skips(
+                &conn,
+                &[file_id],
+                DeleteMethod::Permanent,
+                DeleteAttendance::Interactive,
+            )
+            .unwrap();
             assert!(
                 skips.is_empty(),
                 "{name} must not be held back by a probe the preflight no longer runs"
@@ -1428,9 +1635,13 @@ mod tests {
         let disguised = insert_safe_finding(&conn, scan_id, temp.path(), "manual.txt", "pck");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
-        let (plans, skips) =
-            prepare_delete_plans_with_skips(&conn, &[bink1, bink2], DeleteMethod::Permanent)
-                .unwrap();
+        let (plans, skips) = prepare_delete_plans_with_skips(
+            &conn,
+            &[bink1, bink2],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
         assert!(
             skips.is_empty(),
             "a Bink video is one video, not a container of separable assets"
@@ -1443,8 +1654,13 @@ mod tests {
 
         // The name check stays: it costs no I/O and it is what reserves a
         // container for in-place trimming.
-        let (plans, skips) =
-            prepare_delete_plans_with_skips(&conn, &[named], DeleteMethod::Permanent).unwrap();
+        let (plans, skips) = prepare_delete_plans_with_skips(
+            &conn,
+            &[named],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
         assert!(plans.is_empty());
         assert_eq!(skips.len(), 1);
         assert!(skips[0].reason.contains("monolithic archive candidate"));
@@ -1456,8 +1672,13 @@ mod tests {
         // for every imported rule and every archive-looking extension. By this
         // point the file is one the user selected, and the preflight does not
         // reopen it to second-guess that.
-        let (plans, skips) =
-            prepare_delete_plans_with_skips(&conn, &[disguised], DeleteMethod::Permanent).unwrap();
+        let (plans, skips) = prepare_delete_plans_with_skips(
+            &conn,
+            &[disguised],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
         assert!(
             skips.is_empty(),
             "the preflight must not read a selected file's bytes to hold it back"
@@ -1493,6 +1714,7 @@ mod tests {
             &conn,
             &[bink, readme, container, changelog],
             DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
         )
         .unwrap();
 
@@ -1520,8 +1742,13 @@ mod tests {
         let first_id = insert_safe_finding(&conn, scan_id, temp.path(), "first.bin", "first");
         let archive_id = insert_safe_finding(&conn, scan_id, temp.path(), "second.bin", "second");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
-        let plans =
-            prepare_delete_plans(&conn, &[first_id, archive_id], DeleteMethod::Permanent).unwrap();
+        let plans = prepare_delete_plans(
+            &conn,
+            &[first_id, archive_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
 
         conn.execute(
             "UPDATE findings SET category = 'monolithic_archive', action = NULL \
@@ -1556,7 +1783,13 @@ mod tests {
         for status in ["failed", "unexpected"] {
             crate::db::record_scan_library_evidence(&conn, scan_id, temp.path(), "test", status)
                 .unwrap();
-            assert!(prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).is_err());
+            assert!(prepare_delete_plans(
+                &conn,
+                &[file_id],
+                DeleteMethod::Permanent,
+                DeleteAttendance::Interactive
+            )
+            .is_err());
         }
         assert!(temp.path().join("target.bin").is_file());
     }
@@ -1603,10 +1836,22 @@ mod tests {
             .unwrap();
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
-        assert!(prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).is_err());
+        assert!(prepare_delete_plans(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive
+        )
+        .is_err());
         crate::db::record_scan_library_evidence(&conn, scan_id, temp.path(), "test", "complete")
             .unwrap();
-        assert!(prepare_delete_plans(&conn, &[file_id], DeleteMethod::Permanent).is_ok());
+        assert!(prepare_delete_plans(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive
+        )
+        .is_ok());
     }
 
     /// Mock remover for testing that never touches the real Recycle Bin.
@@ -1967,5 +2212,329 @@ mod tests {
             .expect("count findings");
         assert_eq!(file_count, 1, "no-op must leave files untouched");
         assert_eq!(finding_count, 1, "no-op must leave findings untouched");
+    }
+
+    /// Both refusals are fail-closed, and an operator has to be able to tell
+    /// which one happened: the shield collapses them into one `false`, and
+    /// the skip line used to claim anti-cheat for a folder that had simply
+    /// gone missing.
+    #[test]
+    fn an_unwalkable_directory_is_refused_without_claiming_anti_cheat() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("ordinary.bin"), b"x").unwrap();
+        assert_eq!(
+            unattended_skip_reason(temp.path()),
+            None,
+            "a directory that walks clean is not a refusal"
+        );
+
+        std::fs::create_dir_all(temp.path().join("EasyAntiCheat")).unwrap();
+        std::fs::write(
+            temp.path().join("EasyAntiCheat").join("EasyAntiCheat.exe"),
+            b"MZ",
+        )
+        .unwrap();
+        let detected = unattended_skip_reason(temp.path()).expect("a detected engine refuses");
+        assert!(detected.contains("anti-cheat"), "{detected}");
+        assert!(
+            detected.contains("Easy Anti-Cheat"),
+            "the refusal must name what was found: {detected}"
+        );
+
+        let missing = temp.path().join("moved-by-a-launcher-update");
+        let unwalkable = unattended_skip_reason(&missing).expect("an unproven verdict refuses");
+        assert!(
+            unwalkable.contains("could not complete"),
+            "a failed walk must not be reported as anti-cheat: {unwalkable}"
+        );
+    }
+
+    #[test]
+    fn unattended_preflight_skips_every_file_in_an_anti_cheat_protected_game() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("EasyAntiCheat")).unwrap();
+        std::fs::write(
+            temp.path().join("EasyAntiCheat").join("EasyAntiCheat.exe"),
+            b"MZ",
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("one.bin"), b"one").unwrap();
+        std::fs::write(temp.path().join("two.bin"), b"two").unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let file_one = insert_safe_finding(&conn, scan_id, temp.path(), "one.bin", "eac-game");
+        // A second file in the *same* game: `insert_safe_finding` inserts a
+        // fresh game row on every call, so the second file is attached
+        // directly to the first file's own game instead of calling it again
+        // - this is what proves the batch shares one verdict, not two.
+        let game_id: i64 = conn
+            .query_row(
+                "SELECT game_id FROM files WHERE id = ?1",
+                [file_one],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO files (scan_id, game_id, rel_path, size) VALUES (?1, ?2, 'two.bin', 1)",
+            rusqlite::params![scan_id, game_id],
+        )
+        .unwrap();
+        let file_two = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO findings (file_id, category, confidence) VALUES (?1, 'bonus', 90)",
+            [file_two],
+        )
+        .unwrap();
+        let snapshot = crate::safety::capture_safety_snapshot(temp.path(), "two.bin").unwrap();
+        conn.execute(
+            "INSERT INTO file_safety
+             (file_id, scan_id, trusted_root, rel_path, root_identity,
+              target_identity, target_kind, tree_fingerprint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                file_two,
+                scan_id,
+                snapshot.trusted_root.to_string_lossy(),
+                snapshot.rel_path.to_string_lossy(),
+                snapshot.root_identity.encode(),
+                snapshot.target_identity.encode(),
+                snapshot.target_identity.kind.as_str(),
+                snapshot.tree_fingerprint,
+            ],
+        )
+        .unwrap();
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        let (plans, skips) = prepare_delete_plans_with_skips(
+            &conn,
+            &[file_one, file_two],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Unattended,
+        )
+        .unwrap();
+
+        assert!(
+            plans.is_empty(),
+            "an anti-cheat-protected game blocks every file in the batch"
+        );
+        assert_eq!(skips.len(), 2);
+        for skip in &skips {
+            assert!(
+                skip.reason.contains("anti-cheat"),
+                "unexpected reason: {}",
+                skip.reason
+            );
+        }
+        assert!(temp.path().join("one.bin").is_file());
+        assert!(temp.path().join("two.bin").is_file());
+    }
+
+    #[test]
+    fn unattended_preflight_deletes_normally_outside_an_anti_cheat_game() {
+        // Guards against over-blocking: an ordinary game must not pay any
+        // price for the new gate.
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("leftover.bin"), b"x").unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let file_id =
+            insert_safe_finding(&conn, scan_id, temp.path(), "leftover.bin", "ordinary-game");
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        let plans = prepare_delete_plans(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Unattended,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1, "an ordinary game must not be over-blocked");
+
+        let outcomes = execute_delete_plans_observed(
+            &mut conn,
+            DeleteMethod::Permanent,
+            &plans,
+            |_, _, _| {},
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(outcomes[0].status, FsOutcome::Removed);
+        assert!(!temp.path().join("leftover.bin").is_file());
+    }
+
+    /// The stored verdict has to be able to refuse on its own, because the
+    /// two detectors do not see the same things. The scan's verdict matches
+    /// substrings over the whole inventory and catches a `Vanguard\`
+    /// directory; the live walk matches exact file names and does not. This
+    /// game is clean on disk as far as that walk is concerned - no marker
+    /// anywhere - and must still be refused on the strength of what the scan
+    /// recorded, or the walk's blind spot becomes a hole in the gate.
+    #[test]
+    fn a_stored_verdict_refuses_an_unattended_delete_with_no_marker_on_disk() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("loc_fr.pak"), b"x").unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "loc_fr.pak", "riot-game");
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+        conn.execute("UPDATE games SET anti_cheat_protected = 1", [])
+            .unwrap();
+
+        let (plans, skips) = prepare_delete_plans_with_skips(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Unattended,
+        )
+        .unwrap();
+
+        assert!(plans.is_empty(), "the stored verdict alone must refuse");
+        assert_eq!(skips.len(), 1, "and the refusal must be reported");
+        assert!(
+            skips[0].reason.contains("last scan"),
+            "the reason must name the scan as its source rather than claim a live finding: {}",
+            skips[0].reason
+        );
+        assert!(
+            temp.path().join("loc_fr.pak").is_file(),
+            "the file must survive"
+        );
+    }
+
+    /// The executor used to re-ask the anti-cheat question, and `is_safe`
+    /// fails closed on a walk that cannot complete. An install directory that
+    /// went momentarily unreadable between prepare and execute (a launcher
+    /// update, which is exactly when an unattended re-trim runs) therefore
+    /// emptied the recheck batch and aborted the whole run under
+    /// `StaleDatabaseRow`, a verdict that is both wrong and misnamed.
+    #[test]
+    fn an_install_directory_lost_between_prepare_and_execute_no_longer_aborts_the_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("leftover.bin"), b"x").unwrap();
+        // The game's install directory is kept in its own root so it can
+        // disappear mid-batch without disturbing the identity of the tree the
+        // delete target lives in - the walk has to be the only thing that
+        // breaks, or the test proves something else.
+        let install = tempfile::tempdir().unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let file_id =
+            insert_safe_finding(&conn, scan_id, temp.path(), "leftover.bin", "ordinary-game");
+        conn.execute(
+            "UPDATE games SET install_dir = ?1",
+            [install.path().to_string_lossy()],
+        )
+        .unwrap();
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        let plans = prepare_delete_plans(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Unattended,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1, "an ordinary game plans normally");
+
+        install.close().unwrap();
+
+        let outcomes = execute_delete_plans_observed(
+            &mut conn,
+            DeleteMethod::Permanent,
+            &plans,
+            |_, _, _| {},
+            |_, _| {},
+        )
+        .expect("a directory that cannot be walked must not fail the batch");
+        assert_eq!(outcomes[0].status, FsOutcome::Removed);
+        assert!(!temp.path().join("leftover.bin").is_file());
+    }
+
+    /// Finding 5: the unattended gate used to be a `if let (Some, Some)`, so a
+    /// file with no game row - an orphan, a janitor artifact - fell past the
+    /// anti-cheat check entirely and was deleted unattended. Every other
+    /// missing-evidence case in this preflight fails closed; so does this one.
+    #[test]
+    fn an_unattended_file_with_no_game_row_is_skipped_rather_than_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("leftover.bin"), b"x").unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let file_id =
+            insert_safe_finding(&conn, scan_id, temp.path(), "leftover.bin", "ordinary-game");
+        // What an orphan-residue or janitor row looks like: safety evidence
+        // and library evidence, but no game and so no directory to clear.
+        conn.execute(
+            "UPDATE file_safety SET evidence_library_path = ?1 WHERE file_id = ?2",
+            rusqlite::params![temp.path().to_string_lossy(), file_id],
+        )
+        .unwrap();
+        conn.execute("UPDATE files SET game_id = NULL", []).unwrap();
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        let (plans, skips) = prepare_delete_plans_with_skips(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Unattended,
+        )
+        .unwrap();
+        assert!(plans.is_empty(), "no directory to clear means no delete");
+        assert_eq!(skips.len(), 1);
+        assert!(
+            skips[0].reason.contains("no game install"),
+            "unexpected reason: {}",
+            skips[0].reason
+        );
+        assert!(temp.path().join("leftover.bin").is_file());
+    }
+
+    #[test]
+    fn interactive_preflight_still_plans_a_delete_in_an_anti_cheat_protected_game() {
+        // Variant B, the owner's decision: a person ticking the box by hand
+        // IS the anti-cheat consent. Proves the unattended guard did not leak
+        // onto the attended path.
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("EasyAntiCheat")).unwrap();
+        std::fs::write(
+            temp.path().join("EasyAntiCheat").join("EasyAntiCheat.exe"),
+            b"MZ",
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("one.bin"), b"one").unwrap();
+
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
+        let file_id = insert_safe_finding(&conn, scan_id, temp.path(), "one.bin", "eac-game");
+        crate::db::activate_scan(&mut conn, scan_id).unwrap();
+
+        let (plans, skips) = prepare_delete_plans_with_skips(
+            &conn,
+            &[file_id],
+            DeleteMethod::Permanent,
+            DeleteAttendance::Interactive,
+        )
+        .unwrap();
+        assert!(
+            skips.is_empty(),
+            "ticking the box by hand is the anti-cheat consent"
+        );
+        assert_eq!(plans.len(), 1);
+
+        let outcomes = execute_delete_plans_observed(
+            &mut conn,
+            DeleteMethod::Permanent,
+            &plans,
+            |_, _, _| {},
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(outcomes[0].status, FsOutcome::Removed);
+        assert!(!temp.path().join("one.bin").is_file());
     }
 }

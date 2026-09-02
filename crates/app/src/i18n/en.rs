@@ -370,7 +370,9 @@ pub(super) const STRINGS: Strings = Strings {
     scan_phase_3_title: "3. Monolithic archives inspection",
     scan_overall_title: "Overall progress",
     badge_monolith: "Monolith",
-    badge_anticheat_shield: "🛡️ Anti-Cheat",
-    anticheat_shield_tooltip: "Game protected by anti-cheat; modification disabled for safety",
+    badge_anticheat_shield: "🛡️ Anti-Cheat Protected",
+    anticheat_shield_tooltip: "This game uses anti-cheat. Monolithic archives inside it cannot be \
+                                trimmed; everything else behaves normally.",
     archive_action_unavailable: "Archive trimming is unavailable until safe rollback is implemented",
+    group_checkbox_disabled_hint: "Nothing here is selected, and nothing qualifies for Select all.",
 };
