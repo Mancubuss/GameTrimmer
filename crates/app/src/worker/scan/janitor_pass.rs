@@ -31,7 +31,13 @@ use std::collections::HashSet;
 use gametrimmer_core::janitor::{self, JanitorArtifact, JanitorConfig};
 
 use super::orphan_analysis::{measure_single_file, PreparedRootless};
-use super::*;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use gametrimmer_core::providers::{DiscoveredLibrary, OrphanEvidence};
+use gametrimmer_core::scanner::scan_dir_cancellable;
+
+use crate::model::{category_enabled, DisplayCategory, FindingSource};
 
 /// Confidence for an artifact the janitor considers safe by default (a stale
 /// cache file, a crash dump, a launcher's web cache).

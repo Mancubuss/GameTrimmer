@@ -170,11 +170,15 @@ pub struct GameTrimmerApp {
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
     /// Cloned into every worker spawn (see `worker::Notifier`) so a
-    /// background thread can call `request_repaint()` right after every
+    /// background thread can rouse the event loop right after every
     /// `WorkerMsg` send - this is what keeps progress moving while the main
     /// window is minimized, when winit stops calling `eframe::App::ui()` (and
     /// so `drain_messages()` never runs) on its own.
-    egui_ctx: egui::Context,
+    ///
+    /// The closure, not the `egui::Context` it closes over: this is the only
+    /// thing the worker layer ever wanted from the toolkit, and holding it
+    /// this way is what lets that layer stop depending on egui at all.
+    wake: worker::Wake,
     cancel: Arc<AtomicBool>,
     /// Kept only so the thread is joined on drop rather than detached;
     /// never awaited from the UI thread.
@@ -524,7 +528,10 @@ impl GameTrimmerApp {
             settings_saved: false,
             tx: tx.clone(),
             rx,
-            egui_ctx: ctx,
+            wake: Arc::new({
+                let ctx = ctx.clone();
+                move || ctx.request_repaint()
+            }),
             cancel: Arc::new(AtomicBool::new(false)),
             _worker: None,
             busy: false,
@@ -590,7 +597,7 @@ impl GameTrimmerApp {
                     db_path,
                     tx,
                     app.lang(),
-                    app.egui_ctx.clone(),
+                    worker::Wake::clone(&app.wake),
                 ));
             }
         }
@@ -1052,7 +1059,7 @@ impl GameTrimmerApp {
             db_path,
             Arc::clone(&self.cancel),
             self.tx.clone(),
-            self.egui_ctx.clone(),
+            worker::Wake::clone(&self.wake),
             self.elevated,
             worker::scan::ScanOptions {
                 lang: self.lang(),
@@ -1334,7 +1341,7 @@ impl GameTrimmerApp {
             method,
             self.tx.clone(),
             self.lang(),
-            self.egui_ctx.clone(),
+            worker::Wake::clone(&self.wake),
         );
         self._worker = Some(handle);
     }
@@ -1398,7 +1405,7 @@ impl GameTrimmerApp {
             self.cancel.clone(),
             self.tx.clone(),
             self.lang(),
-            self.egui_ctx.clone(),
+            worker::Wake::clone(&self.wake),
         );
         self._worker = Some(handle);
     }
@@ -1432,7 +1439,7 @@ impl GameTrimmerApp {
             db_path,
             self.tx.clone(),
             self.lang(),
-            self.egui_ctx.clone(),
+            worker::Wake::clone(&self.wake),
         );
         self._worker = Some(handle);
     }
@@ -1474,7 +1481,7 @@ impl GameTrimmerApp {
             db_path,
             self.tx.clone(),
             self.lang(),
-            self.egui_ctx.clone(),
+            worker::Wake::clone(&self.wake),
         );
         self._worker = Some(handle);
     }

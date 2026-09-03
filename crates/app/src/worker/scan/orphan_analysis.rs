@@ -1,11 +1,23 @@
 //! Authoritative orphan analysis and persistence.
 
-use rusqlite::OptionalExtension;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use rusqlite::{params, Connection, OptionalExtension};
+
+use gametrimmer_core::error::Result as CoreResult;
 use gametrimmer_core::ondisk;
+use gametrimmer_core::orphans::{self, OrphanKind};
 use gametrimmer_core::providers::steam;
+use gametrimmer_core::providers::{DiscoveredLibrary, OrphanEvidence};
+use gametrimmer_core::scanner::scan_dir_cancellable;
 
-use super::*;
+use crate::i18n::{self, Lang};
+use crate::model::{
+    orphan_confidence, rootless_branch_id, rootless_split, source_key, FindingRow, FindingSource,
+    LibraryOrigin,
+};
 
 /// One finding that belongs to no game row (orphan-residue safety, and the
 /// janitor areas that live outside every install directory): its absolute

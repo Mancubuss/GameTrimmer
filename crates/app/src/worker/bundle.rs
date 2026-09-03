@@ -19,12 +19,11 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use eframe::egui;
 use gametrimmer_core::bundle::{self, BundleInput};
 
 use crate::i18n::{self, Lang, Verb};
 
-use super::{Notifier, WorkerMsg};
+use super::{Notifier, Wake, WorkerMsg};
 
 /// Spawns the whole job: save dialog, assembly, atomic write.
 pub fn spawn_bundle(
@@ -32,9 +31,9 @@ pub fn spawn_bundle(
     cancel: Arc<AtomicBool>,
     tx: Sender<WorkerMsg>,
     lang: Lang,
-    ctx: egui::Context,
+    wake: Wake,
 ) -> JoinHandle<()> {
-    let notifier = Notifier::new(tx, ctx);
+    let notifier = Notifier::new(tx, wake);
     std::thread::spawn(move || run_bundle(input, &cancel, &notifier, lang))
 }
 

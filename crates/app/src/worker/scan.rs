@@ -13,37 +13,30 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender};
+use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use eframe::egui;
 use gametrimmer_core::db;
 use gametrimmer_core::error::{CoreError, Result as CoreResult};
 use gametrimmer_core::langdetect::{LangData, LangDetector, LangFinding};
 use gametrimmer_core::mftscan;
-use gametrimmer_core::orphans::{self, OrphanKind};
 use gametrimmer_core::perf;
-use gametrimmer_core::providers::{
-    self, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, OrphanEvidence,
-};
+use gametrimmer_core::providers::OrphanEvidence;
 use gametrimmer_core::rules::{Finding, RuleEngine, RuleProvenance, Verdict};
 use gametrimmer_core::safety::{SafetySnapshot, SnapshotCapture};
-use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry, ScanStats};
+use gametrimmer_core::scanner::{scan_dir_cancellable, FileEntry};
 use gametrimmer_core::sysinfo;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 use crate::i18n::{self, Lang, Verb};
+use crate::model::{category_enabled, display_category, DisplayCategory, FindingSource};
 #[cfg(test)]
-use crate::model::ORPHAN_GAME_ID;
-use crate::model::{
-    category_enabled, display_category, orphan_confidence, rootless_branch_id, rootless_split,
-    source_key, DisplayCategory, FindingRow, FindingSource, LibraryOrigin,
-};
+use crate::model::{FindingRow, ORPHAN_GAME_ID};
 
 use super::scan_route::{self, ScanRoute};
-use super::{manual, Notifier, WorkerMsg};
+use super::{manual, Notifier, Wake, WorkerMsg};
 use generation::ScanGenerationGuard;
 use janitor_pass::collect_janitor;
 #[cfg(test)]
@@ -172,11 +165,11 @@ pub fn spawn_scan(
     db_path: PathBuf,
     cancel: Arc<AtomicBool>,
     tx: Sender<WorkerMsg>,
-    ctx: egui::Context,
+    wake: Wake,
     elevated: bool,
     options: ScanOptions,
 ) -> JoinHandle<()> {
-    let notifier = Notifier::new(tx, ctx);
+    let notifier = Notifier::new(tx, wake);
     std::thread::spawn(move || run_scan(&db_path, &cancel, &notifier, elevated, &options))
 }
 
@@ -2085,6 +2078,14 @@ fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<
 mod tests {
     use super::*;
 
+    use std::sync::mpsc::Receiver;
+
+    use gametrimmer_core::orphans::OrphanKind;
+    use gametrimmer_core::providers::DiscoveredLibrary;
+    use rusqlite::params;
+
+    use crate::model::LibraryOrigin;
+
     /// A fresh database reports `active_scan_id == Some(0)` - the legacy
     /// sentinel - and the first version of the environment line read that as
     /// "holds a previous generation", describing every baseline run as the
@@ -2133,7 +2134,7 @@ mod tests {
     #[test]
     fn a_fatal_error_is_logged_in_english_and_shown_in_the_users_language() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
+        let notifier = Notifier::silent(tx);
         let interface_lang = Lang::Custom(*b"xx\0\0\0\0\0\0");
 
         let contents = crate::logger::captured_for_test(|_dir| {
@@ -3569,7 +3570,7 @@ mod tests {
                 engine: match_all_engine(),
                 lang_detector: LangDetector::new(),
                 cancel: AtomicBool::new(false),
-                notifier: Notifier::new(msg_tx, egui::Context::default()),
+                notifier: Notifier::silent(msg_tx),
                 completed: std::sync::atomic::AtomicUsize::new(0),
                 phase2_completed: std::sync::atomic::AtomicUsize::new(0),
                 kept: std::sync::atomic::AtomicUsize::new(0),

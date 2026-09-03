@@ -16,8 +16,7 @@ pub(crate) mod scan_route;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-
-use eframe::egui;
+use std::sync::Arc;
 
 use crate::i18n::Verb;
 use crate::model::FindingRow;
@@ -213,24 +212,47 @@ pub struct RemoveOutcome {
     pub share: Option<gametrimmer_core::hardlink::FileShare>,
 }
 
-/// Pairs a [`WorkerMsg`] sender with the app's `egui::Context` so every
-/// background-thread send can also wake the UI event loop via
-/// `Context::request_repaint()`. This is the fix for progress appearing to
-/// freeze while the main window is minimized: winit stops calling
-/// `eframe::App::ui()` (and so `drain_messages()` never runs to drain the
-/// channel) while minimized, but a repaint request forces a frame regardless
-/// of window visibility. `Clone` (both fields are `Clone`) so it can be
-/// handed to as many worker threads/closures as `Sender<WorkerMsg>` used to
-/// be, e.g. once per rayon task in `scan::dispatch_scans`.
+/// Whatever a completed send has to poke so the results are looked at.
+///
+/// Deliberately a closure and not the `egui::Context` this used to be. The
+/// context brought the whole GUI toolkit into every module that reports
+/// progress - including the ones that are pure engine work and belong a
+/// crate lower - and it forced two callers with no window at all (the
+/// headless CLI, and every test that builds a worker) to conjure an
+/// `egui::Context::default()` whose repaint requests went nowhere, purely to
+/// satisfy a type.
+pub(crate) type Wake = Arc<dyn Fn() + Send + Sync>;
+
+/// A [`Wake`] that does nothing, for a caller with no event loop to wake.
+pub(crate) fn no_wake() -> Wake {
+    Arc::new(|| {})
+}
+
+/// Pairs a [`WorkerMsg`] sender with a wake-up so every background-thread
+/// send can also rouse the UI event loop. This is the fix for progress
+/// appearing to freeze while the main window is minimized: winit stops
+/// calling `eframe::App::ui()` (and so `drain_messages()` never runs to
+/// drain the channel) while minimized, but a repaint request forces a frame
+/// regardless of window visibility. `Clone` (both fields are `Clone`) so it
+/// can be handed to as many worker threads/closures as `Sender<WorkerMsg>`
+/// used to be, e.g. once per rayon task in `scan::dispatch_scans`.
 #[derive(Clone)]
 pub(crate) struct Notifier {
     tx: Sender<WorkerMsg>,
-    ctx: egui::Context,
+    wake: Wake,
 }
 
 impl Notifier {
-    pub(crate) fn new(tx: Sender<WorkerMsg>, ctx: egui::Context) -> Self {
-        Self { tx, ctx }
+    pub(crate) fn new(tx: Sender<WorkerMsg>, wake: Wake) -> Self {
+        Self { tx, wake }
+    }
+
+    /// A notifier whose messages nobody is waiting to be woken for: a test
+    /// that reads the channel itself. The headless CLI reaches the same
+    /// place through [`no_wake`], which is what the job entrypoints take.
+    #[cfg(test)]
+    pub(crate) fn silent(tx: Sender<WorkerMsg>) -> Self {
+        Self::new(tx, no_wake())
     }
 
     /// Sends `msg` and immediately requests a repaint. A closed receiver (the
@@ -239,7 +261,7 @@ impl Notifier {
     /// replaces, the result is discarded.
     pub(crate) fn send(&self, msg: WorkerMsg) {
         let _ = self.tx.send(msg);
-        self.ctx.request_repaint();
+        (self.wake)();
     }
 
     /// Reports a fatal failure: English to the diagnostic log, the interface

@@ -12,12 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
-use eframe::egui;
 use gametrimmer_core::db;
 
 use crate::i18n::{self, Lang, Verb};
 
-use super::{Notifier, WorkerMsg};
+use super::{Notifier, Wake, WorkerMsg};
 
 /// Minimum reclaimable share (free pages / total pages) required before a
 /// full `VACUUM` runs. `VACUUM` rewrites the whole file - a full read+write
@@ -34,9 +33,9 @@ pub fn spawn_compact(
     db_path: PathBuf,
     tx: Sender<WorkerMsg>,
     lang: Lang,
-    ctx: egui::Context,
+    wake: Wake,
 ) -> JoinHandle<()> {
-    let notifier = Notifier::new(tx, ctx);
+    let notifier = Notifier::new(tx, wake);
     std::thread::spawn(move || run_compact(&db_path, &notifier, lang))
 }
 

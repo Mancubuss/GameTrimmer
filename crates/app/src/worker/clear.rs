@@ -22,13 +22,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
-use eframe::egui;
 use gametrimmer_core::db;
 
 use crate::i18n::{self, Lang, Verb};
 
 use super::compact::MIN_FREE_FRACTION;
-use super::{Notifier, WorkerMsg};
+use super::{Notifier, Wake, WorkerMsg};
 
 /// Spawns the clear job on a new thread. `ctx` is the app's `egui::Context`
 /// (see `Notifier`) so the progress percentage keeps updating even while the
@@ -37,9 +36,9 @@ pub fn spawn_clear(
     db_path: PathBuf,
     tx: Sender<WorkerMsg>,
     lang: Lang,
-    ctx: egui::Context,
+    wake: Wake,
 ) -> JoinHandle<()> {
-    let notifier = Notifier::new(tx, ctx);
+    let notifier = Notifier::new(tx, wake);
     std::thread::spawn(move || run_clear(&db_path, &notifier, lang))
 }
 

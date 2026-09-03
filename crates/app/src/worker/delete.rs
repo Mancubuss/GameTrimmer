@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
-use eframe::egui;
 use gametrimmer_core::db;
 use gametrimmer_core::ops::{
     execute_delete_plans_observed, prepare_delete_plans_with_skips, DeleteAttendance, FsOutcome,
@@ -17,7 +16,7 @@ use gametrimmer_core::settings::DeleteMethod;
 
 use crate::i18n::{self, Lang, Verb};
 
-use super::{Notifier, RemoveOutcome, WorkerMsg};
+use super::{Notifier, RemoveOutcome, Wake, WorkerMsg};
 
 /// One database row queued for removal. The path is deliberately not accepted
 /// from the UI: the core delete preflight reconstructs it from the active
@@ -35,9 +34,9 @@ pub fn spawn_delete(
     method: DeleteMethod,
     tx: Sender<WorkerMsg>,
     lang: Lang,
-    ctx: egui::Context,
+    wake: Wake,
 ) -> JoinHandle<()> {
-    let notifier = Notifier::new(tx, ctx);
+    let notifier = Notifier::new(tx, wake);
     std::thread::spawn(move || run_delete(&db_path, items, method, &notifier, lang))
 }
 
@@ -859,7 +858,7 @@ mod tests {
         drop(conn);
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
+        let notifier = Notifier::silent(tx);
 
         let items = vec![
             DeleteItem {
@@ -944,7 +943,7 @@ mod tests {
         drop(conn);
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
+        let notifier = Notifier::silent(tx);
         let items = vec![
             DeleteItem {
                 file_id: intro_id,
@@ -1033,7 +1032,7 @@ mod tests {
         drop(conn);
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
+        let notifier = Notifier::silent(tx);
         let items = vec![DeleteItem {
             file_id,
             size_on_disk: 1000,
@@ -1088,7 +1087,7 @@ mod tests {
         drop(conn);
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
+        let notifier = Notifier::silent(tx);
         let items = vec![DeleteItem {
             file_id,
             size_on_disk: 1000,
@@ -1130,7 +1129,7 @@ mod tests {
         let bogus_path = blocker.join("intro.mp4");
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
+        let notifier = Notifier::silent(tx);
 
         let detail = report_stub_write_failure_if_any(
             &notifier,
@@ -1174,7 +1173,7 @@ mod tests {
         drop(conn);
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let notifier = Notifier::new(tx, egui::Context::default());
+        let notifier = Notifier::silent(tx);
         let items = vec![
             DeleteItem {
                 file_id: skipped_id,

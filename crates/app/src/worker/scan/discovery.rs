@@ -1,6 +1,14 @@
 //! Provider discovery orchestration and its fail-closed status contract.
 
-use super::*;
+use rusqlite::Connection;
+
+use gametrimmer_core::providers::{
+    self, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, OrphanEvidence,
+};
+
+use crate::i18n::{self, Lang};
+
+use super::{manual, Notifier};
 
 pub(super) struct DiscoveryOutcome {
     pub(super) libraries: Vec<DiscoveredLibrary>,
@@ -165,6 +173,8 @@ fn drop_excluded(libraries: Vec<DiscoveredLibrary>, excluded: &[String]) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::path::{Path, PathBuf};
 
     fn library(path: &str) -> DiscoveredLibrary {
         DiscoveredLibrary {

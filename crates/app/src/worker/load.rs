@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
-use eframe::egui;
 use gametrimmer_core::db;
 use gametrimmer_core::error::Result as CoreResult;
 use rusqlite::Connection;
@@ -19,7 +18,7 @@ use crate::model::{
     parse_source_key, rootless_branch_id, rootless_split, FindingRow, LibraryOrigin,
 };
 
-use super::{Notifier, WorkerMsg};
+use super::{Notifier, Wake, WorkerMsg};
 #[cfg(test)]
 use crate::model::ORPHAN_GAME_ID;
 
@@ -30,9 +29,9 @@ pub fn spawn_load(
     db_path: PathBuf,
     tx: Sender<WorkerMsg>,
     lang: Lang,
-    ctx: egui::Context,
+    wake: Wake,
 ) -> JoinHandle<()> {
-    let notifier = Notifier::new(tx, ctx);
+    let notifier = Notifier::new(tx, wake);
     std::thread::spawn(move || run_load(&db_path, &notifier, lang))
 }
 

@@ -1,6 +1,23 @@
 //! Atomic scan-generation persistence and the single bounded writer.
 
-use super::*;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
+
+use rusqlite::{params, Connection};
+
+use gametrimmer_core::db;
+use gametrimmer_core::error::{CoreError, Result as CoreResult};
+use gametrimmer_core::perf;
+use gametrimmer_core::providers::{self, DiscoveredLibrary};
+use gametrimmer_core::rules::RuleProvenance;
+use gametrimmer_core::scanner::{store_files_no_tx, ScanStats};
+
+use crate::i18n::Verb;
+use crate::model::{source_key, FindingRow, LibraryOrigin};
+
+use super::{manual, GameOutcome, Notifier, PreparedGame, WorkerMsg, WRITE_BATCH_SIZE};
 
 /// The single database writer: receives every game's scan outcome and
 /// persists it, batching `WRITE_BATCH_SIZE` games per transaction to keep

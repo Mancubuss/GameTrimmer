@@ -28,7 +28,6 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use eframe::egui;
 use gametrimmer_core::settings::{self, Settings};
 
 pub use args::{parse_invocation, HeadlessConfig, Invocation, Mode};
@@ -340,15 +339,18 @@ fn run_scan_headless(
     options: ScanOptions,
 ) -> Result<(Vec<FindingRow>, String), String> {
     let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
-    // No viewer is attached, so the context's repaint requests are no-ops; it
-    // exists only because the shared worker API pairs a sender with one.
-    let ctx = egui::Context::default();
     // Headless runs never cancel (no Stop button); the flag is required by the
     // worker API and simply stays false.
     let cancel = Arc::new(AtomicBool::new(false));
 
-    let handle =
-        worker::scan::spawn_scan(db_path.to_path_buf(), cancel, tx, ctx, elevated, options);
+    let handle = worker::scan::spawn_scan(
+        db_path.to_path_buf(),
+        cancel,
+        tx,
+        worker::no_wake(),
+        elevated,
+        options,
+    );
 
     let mut result: Option<(Vec<FindingRow>, String)> = None;
     let mut error: Option<String> = None;
@@ -388,9 +390,15 @@ fn run_delete_headless(
     lang: settings::Lang,
 ) -> Result<Vec<RemoveOutcome>, String> {
     let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
-    let ctx = egui::Context::default();
 
-    let handle = worker::delete::spawn_delete(db_path.to_path_buf(), items, method, tx, lang, ctx);
+    let handle = worker::delete::spawn_delete(
+        db_path.to_path_buf(),
+        items,
+        method,
+        tx,
+        lang,
+        worker::no_wake(),
+    );
 
     let mut outcomes: Option<Vec<RemoveOutcome>> = None;
     let mut error: Option<String> = None;

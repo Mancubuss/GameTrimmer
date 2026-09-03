@@ -1,6 +1,10 @@
 //! Staging-generation lifecycle and rollback guard.
 
-use super::*;
+use std::path::{Path, PathBuf};
+
+use gametrimmer_core::db;
+use gametrimmer_core::error::Result as CoreResult;
+use rusqlite::Connection;
 
 /// Rollback guard for a staging generation. Any early return or panic after
 /// generation creation removes only that generation and preserves the active
