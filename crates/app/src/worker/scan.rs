@@ -871,7 +871,7 @@ fn run_scan(
     let wal_before = wal_bytes(db_path);
     match db::checkpoint_truncate(&conn) {
         Ok(true) => crate::logger::error(&format!(
-            "The WAL checkpoint after the scan was blocked by another reader;              {} of journal stays unmerged",
+            "WAL checkpoint blocked by a reader; {} of journal stays unmerged",
             format_bytes(wal_before)
         )),
         Ok(false) => {}
