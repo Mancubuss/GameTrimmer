@@ -2346,14 +2346,12 @@ impl GameTrimmerApp {
 /// registry entry that decides whether the daemon gets *launched* at boot,
 /// not anything the already-running daemon needs to hear about over IPC.
 ///
-/// Note: as of this writing the daemon's `ReloadSettings` handler
-/// (`gametrimmer_watch::main`) does not actually consult `excluded_libraries`
-/// when re-enumerating directories to watch (see
-/// `gametrimmer_watch::watcher::discover_watch_directories`, which reads the
-/// `game_libraries` table directly and applies no exclusion filter) - it is
-/// included here on the strength of what the field means, not what the
-/// daemon currently does with it, so this stays correct if that gap is
-/// closed without anyone having to remember to widen this comparison too.
+/// `excluded_libraries` was listed here before the daemon read it at all -
+/// on the strength of what the field means rather than what the daemon then
+/// did with it. GT-205 closed that gap: `discover_watch_directories` now
+/// filters the excluded roots out, and `ReloadSettings` reconciles the watch
+/// set rather than only adding to it, so a notify sent on this field is a
+/// notify the daemon acts on.
 fn watch_relevant_settings_changed(old: &Settings, new: &Settings) -> bool {
     old.watch_enabled != new.watch_enabled
         || old.watch_mode != new.watch_mode

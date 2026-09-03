@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use gametrimmer_core::db;
+use gametrimmer_core::providers::comparable_path;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{
@@ -85,6 +86,12 @@ struct WatchedDirectory {
     handle: HANDLE,
     buffer: Box<AlignedBuffer>,
     overlapped: Box<OVERLAPPED>,
+    /// Set by [`ManifestWatcher::remove_directory`]. The entry is not
+    /// deleted from `ManifestWatcher::directories` on removal - see that
+    /// method's doc comment for why - so this flag is what makes a removed
+    /// directory invisible to `watched_paths`, re-addable by `add_directory`,
+    /// and skipped by `poll_events`.
+    removed: bool,
 }
 
 // HANDLE is safe to send across threads when owned exclusively
@@ -116,6 +123,7 @@ impl WatchedDirectory {
             handle,
             buffer: Box::new(AlignedBuffer::new()),
             overlapped: Box::new(OVERLAPPED::default()),
+            removed: false,
         })
     }
 
@@ -223,7 +231,11 @@ impl ManifestWatcher {
 
     /// Adds a directory to monitor.
     pub fn add_directory(&mut self, path: PathBuf, launcher: LauncherKind) -> std::io::Result<()> {
-        if self.directories.iter().any(|d| d.path == path) {
+        if self
+            .directories
+            .iter()
+            .any(|d| !d.removed && d.path == path)
+        {
             return Ok(());
         }
 
@@ -238,6 +250,40 @@ impl ManifestWatcher {
         watched.arm_read()?;
         self.directories.push(watched);
         Ok(())
+    }
+
+    /// Takes a directory off watch, e.g. because `ReloadSettings` found it
+    /// newly excluded. Returns whether a watched directory matched `path`.
+    ///
+    /// The entry is not removed from `self.directories` - only closed and
+    /// flagged. `poll_events` looks a directory up by `completion_key`, which
+    /// is the entry's index in `self.directories` at the moment
+    /// `CreateIoCompletionPort` attached its handle - that association is
+    /// baked into the kernel object for the handle's whole lifetime. Deleting
+    /// from the middle of the Vec would shift every later index, so the next
+    /// completion for any directory added after this one would be resolved
+    /// against the wrong `WatchedDirectory`. Closing the handle here is
+    /// enough to stop new notifications; the flag hides the slot from
+    /// `watched_paths` and lets `add_directory` treat the path as available
+    /// again if the caller re-adds it later.
+    pub fn remove_directory(&mut self, path: &Path) -> bool {
+        let Some(dir) = self
+            .directories
+            .iter_mut()
+            .find(|d| !d.removed && d.path == path)
+        else {
+            return false;
+        };
+
+        unsafe {
+            let _ = CloseHandle(dir.handle);
+        }
+        // INVALID_HANDLE_VALUE is never a value CreateFileW hands back for a
+        // real handle, so Drop's own CloseHandle call on this entry later is
+        // a harmless no-op rather than a double-close of a live handle.
+        dir.handle = INVALID_HANDLE_VALUE;
+        dir.removed = true;
+        true
     }
 
     /// Decides what a `GetQueuedCompletionStatus` completion means, without
@@ -294,6 +340,12 @@ impl ManifestWatcher {
         }
 
         let dir = &mut self.directories[completion_key];
+        if dir.removed {
+            // A rare race with `remove_directory`: a notification queued
+            // just before the handle closed can still surface here. There is
+            // no live watch left to re-arm or report against.
+            return PollResult::default();
+        }
         let mut result = PollResult::default();
 
         // Only `Data` and `Overflow` can reach this point - `Error` already
@@ -327,7 +379,11 @@ impl ManifestWatcher {
     }
 
     pub fn watched_paths(&self) -> Vec<PathBuf> {
-        self.directories.iter().map(|d| d.path.clone()).collect()
+        self.directories
+            .iter()
+            .filter(|d| !d.removed)
+            .map(|d| d.path.clone())
+            .collect()
     }
 
     pub fn pause(&self) {
@@ -457,19 +513,45 @@ pub fn enumerate_manifest_files(dir: &Path, launcher: LauncherKind) -> Vec<PathB
         .collect()
 }
 
-/// Discovers all manifest directories across Steam, Epic, GOG, and custom DB libraries.
-pub fn discover_watch_directories(db_path: Option<&Path>) -> Vec<(PathBuf, LauncherKind)> {
+/// Discovers all manifest directories across Steam, Epic, GOG, and custom DB
+/// libraries, skipping any the user excluded from scanning.
+///
+/// `excluded` is `Settings::excluded_libraries` - [`comparable_path`] keys of
+/// registered library roots (`game_libraries.path`), computed the same way
+/// the Settings UI computes them (see `ui::settings::scanning::show_libraries`
+/// in the `app` crate) so a directory is skipped here exactly when its
+/// checkbox is unchecked there, no separate comparison invented.
+pub fn discover_watch_directories(
+    db_path: Option<&Path>,
+    excluded: &[String],
+) -> Vec<(PathBuf, LauncherKind)> {
     let mut dirs = Vec::new();
     let mut seen = HashSet::new();
 
-    // 1. Steam discovery
+    // 1. Steam discovery. Each `steam_dir` is a `steamapps` folder; its
+    // parent is the library root that `Settings::excluded_libraries` keys
+    // on (see `providers::steam::discover_steam` - `DiscoveredLibrary::path`
+    // is that same root, never the `steamapps` folder under it).
     for steam_dir in discover_steam_manifest_dirs() {
+        let excluded_root = steam_dir
+            .parent()
+            .is_some_and(|root| excluded.contains(&comparable_path(root)));
+        if excluded_root {
+            continue;
+        }
         if seen.insert(steam_dir.to_string_lossy().to_lowercase()) {
             dirs.push((steam_dir, LauncherKind::Steam));
         }
     }
 
-    // 2. Epic discovery
+    // 2. Epic discovery. Deliberately not filtered against `excluded`: Epic
+    // has one shared Manifests directory covering every installed Epic game
+    // regardless of which drive it lives on, so unlike Steam's per-library
+    // `steamapps` folder it has no 1:1 "library" to exclude it by - the
+    // `game_libraries` row(s) for vendor "epic" name a games' install
+    // directory (see `providers::epic::discover_manifests`'s
+    // `group_by_parent_dir`), not this folder. Excluding one such row must
+    // not stop watching manifests for every other Epic install.
     if let Some(epic_dir) = discover_epic_manifest_dir() {
         if seen.insert(epic_dir.to_string_lossy().to_lowercase()) {
             dirs.push((epic_dir, LauncherKind::Epic));
@@ -488,6 +570,13 @@ pub fn discover_watch_directories(db_path: Option<&Path>) -> Vec<(PathBuf, Launc
                     }) {
                         for row in rows.flatten() {
                             let (vendor, path) = row;
+                            // `path` here is exactly `game_libraries.path`,
+                            // the same value the exclusion key is derived
+                            // from - compare before it is turned into a
+                            // vendor-specific watch target below.
+                            if excluded.contains(&comparable_path(&path)) {
+                                continue;
+                            }
                             let (target_dir, kind) = match vendor.to_lowercase().as_str() {
                                 "steam" => (path.join("steamapps"), LauncherKind::Steam),
                                 "epic" => (path, LauncherKind::Epic),
@@ -703,5 +792,117 @@ mod tests {
     fn enumerate_manifest_files_returns_empty_for_missing_directory() {
         let missing = Path::new(r"Z:\definitely\does\not\exist\gametrimmer-test");
         assert!(enumerate_manifest_files(missing, LauncherKind::Steam).is_empty());
+    }
+
+    #[test]
+    fn discover_watch_directories_skips_a_db_library_whose_root_is_excluded() {
+        // GT-205: `excluded_libraries` used to be ignored entirely here, so a
+        // library the user unchecked in Settings still got a live watch.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let kept = temp_dir.path().join("kept_lib");
+        let excluded_lib = temp_dir.path().join("excluded_lib");
+        std::fs::create_dir_all(&kept).expect("create kept");
+        std::fs::create_dir_all(&excluded_lib).expect("create excluded");
+
+        let db_path = temp_dir.path().join("gametrimmer.db");
+        let conn = db::open(&db_path).expect("open db");
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('custom', ?1)",
+            [kept.to_string_lossy().to_string()],
+        )
+        .expect("insert kept library");
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('custom', ?1)",
+            [excluded_lib.to_string_lossy().to_string()],
+        )
+        .expect("insert excluded library");
+        drop(conn);
+
+        let excluded = vec![comparable_path(&excluded_lib)];
+        let dirs = discover_watch_directories(Some(&db_path), &excluded);
+        let watched: Vec<&PathBuf> = dirs.iter().map(|(p, _)| p).collect();
+
+        assert!(
+            watched.iter().any(|p| **p == kept),
+            "a library that was not excluded must still be watched"
+        );
+        assert!(
+            !watched.iter().any(|p| **p == excluded_lib),
+            "an excluded library must never enter the watch set"
+        );
+    }
+
+    #[test]
+    fn discover_watch_directories_watches_everything_when_nothing_is_excluded() {
+        // Contrast case for the test above: an empty exclusion list must not
+        // accidentally drop libraries too.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let lib = temp_dir.path().join("some_lib");
+        std::fs::create_dir_all(&lib).expect("create lib");
+
+        let db_path = temp_dir.path().join("gametrimmer.db");
+        let conn = db::open(&db_path).expect("open db");
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('custom', ?1)",
+            [lib.to_string_lossy().to_string()],
+        )
+        .expect("insert library");
+        drop(conn);
+
+        let dirs = discover_watch_directories(Some(&db_path), &[]);
+        assert!(dirs.iter().any(|(p, _)| *p == lib));
+    }
+
+    #[test]
+    fn remove_directory_takes_it_off_the_watch_set() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let steamapps = temp_dir.path().join("steamapps");
+        std::fs::create_dir_all(&steamapps).expect("create steamapps");
+
+        let paths = vec![(steamapps.clone(), LauncherKind::Steam)];
+        let mut watcher = ManifestWatcher::new(&paths).expect("create watcher");
+        assert_eq!(watcher.watched_paths(), vec![steamapps.clone()]);
+
+        assert!(
+            watcher.remove_directory(&steamapps),
+            "remove_directory must report it found a matching watched directory"
+        );
+        assert!(
+            watcher.watched_paths().is_empty(),
+            "a removed directory must no longer appear in watched_paths"
+        );
+
+        // Removing the same path twice must not double-close the handle or
+        // report a second match.
+        assert!(!watcher.remove_directory(&steamapps));
+
+        // Polling after removal must not panic or resurrect the directory.
+        let result = watcher.poll_events(10);
+        assert!(result.events.is_empty());
+        assert!(result.overflowed_dirs.is_empty());
+    }
+
+    #[test]
+    fn add_directory_after_remove_directory_re_arms_the_same_path() {
+        // Re-including a library after an exclusion (a ReloadSettings that
+        // later removes the exclusion) must be able to reuse the same path,
+        // not be permanently blocked by the stale, now-removed entry.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let steamapps = temp_dir.path().join("steamapps");
+        std::fs::create_dir_all(&steamapps).expect("create steamapps");
+
+        let mut watcher = ManifestWatcher::new(&[]).expect("create watcher");
+        watcher
+            .add_directory(steamapps.clone(), LauncherKind::Steam)
+            .expect("add");
+        assert_eq!(watcher.watched_paths(), vec![steamapps.clone()]);
+
+        watcher.remove_directory(&steamapps);
+        assert!(watcher.watched_paths().is_empty());
+
+        watcher
+            .add_directory(steamapps.clone(), LauncherKind::Steam)
+            .expect("re-add after removal");
+        assert_eq!(watcher.watched_paths(), vec![steamapps]);
     }
 }

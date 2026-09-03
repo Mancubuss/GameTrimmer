@@ -8,6 +8,7 @@
 #![windows_subsystem = "windows"]
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -42,6 +43,10 @@ use watcher::{
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const APP_TITLE: &str = "GameTrimmer";
 const EXE_NAME: &str = "gametrimmer.exe";
+/// Same file the `app` crate reads and writes (see
+/// `gametrimmer_core::settings` module docs and `app::worker::mod::
+/// SETTINGS_FILE_NAME`) - the daemon has no writer of its own, only a reader.
+const SETTINGS_FILE_NAME: &str = "gametrimmer.ini";
 
 struct SingleInstanceGuard(HANDLE);
 
@@ -155,6 +160,44 @@ fn open_local_db(db_path: &Path) -> Option<Connection> {
     }
 }
 
+/// Makes `watcher`'s live watch set equal `new_dirs`: directories no longer
+/// present (e.g. a library newly excluded since the last reload, GT-205)
+/// are taken off watch, then every directory in `new_dirs` is (re-)added.
+/// Split out from the `ReloadSettings` handler so the reconciliation - the
+/// actual fix, not just the newly-added `remove_directory` call it relies
+/// on - is directly unit-testable against a real `ManifestWatcher` without
+/// going through IPC.
+fn reconcile_watch_directories(
+    watcher: &mut ManifestWatcher,
+    new_dirs: Vec<(PathBuf, LauncherKind)>,
+) {
+    let new_keys: HashSet<String> = new_dirs
+        .iter()
+        .map(|(dir, _)| dir.to_string_lossy().to_lowercase())
+        .collect();
+    for watched_path in watcher.watched_paths() {
+        let key = watched_path.to_string_lossy().to_lowercase();
+        if !new_keys.contains(&key) {
+            watcher.remove_directory(&watched_path);
+        }
+    }
+    for (dir, launcher) in new_dirs {
+        let _ = watcher.add_directory(dir, launcher);
+    }
+}
+
+/// Reads `Settings::excluded_libraries` from `gametrimmer.ini` so
+/// `discover_watch_directories` can leave excluded libraries off the watch
+/// set (GT-205). Best-effort like `open_local_db`: a missing or unreadable
+/// ini is not a startup blocker, it just means nothing is treated as
+/// excluded yet - the same fallback `Settings::default()` gives every other
+/// caller of `load_file` before the user has saved settings once.
+fn load_excluded_libraries(settings_path: &Path) -> Vec<String> {
+    gametrimmer_core::settings::load_file(settings_path)
+        .map(|s| s.excluded_libraries)
+        .unwrap_or_default()
+}
+
 /// Recovers from a lost `ReadDirectoryChangesW` buffer (GT-202) by
 /// re-enumerating the manifest files that currently exist in each
 /// overflowed directory and feeding them into the FSM as synthetic events.
@@ -227,8 +270,9 @@ fn main() {
         }
     };
 
-    // 2. Resolve database path
+    // 2. Resolve database and settings paths
     let db_path = exe_dir.join("gametrimmer.db");
+    let settings_path = exe_dir.join(SETTINGS_FILE_NAME);
 
     // 3. Initialize components with localization
     let mut strings = WatchStrings::load(&exe_dir);
@@ -239,7 +283,8 @@ fn main() {
 
     let ipc_server = IpcServer::start(None).ok();
 
-    let initial_dirs = discover_watch_directories(Some(&db_path));
+    let initial_dirs =
+        discover_watch_directories(Some(&db_path), &load_excluded_libraries(&settings_path));
     let mut watcher = match ManifestWatcher::new(&initial_dirs) {
         Ok(w) => w,
         Err(_) => return,
@@ -337,10 +382,11 @@ fn main() {
                         });
                     }
                     IpcRequest::ReloadSettings => {
-                        let refreshed_dirs = discover_watch_directories(Some(&db_path));
-                        for (dir, launcher) in refreshed_dirs {
-                            let _ = watcher.add_directory(dir, launcher);
-                        }
+                        let refreshed_dirs = discover_watch_directories(
+                            Some(&db_path),
+                            &load_excluded_libraries(&settings_path),
+                        );
+                        reconcile_watch_directories(&mut watcher, refreshed_dirs);
                         let refreshed_strings = WatchStrings::load(&exe_dir);
                         tray.update_i18n(refreshed_strings.clone());
                         strings = refreshed_strings;
@@ -517,5 +563,82 @@ mod tests {
     fn updates_to_toasts_returns_empty_for_no_updates() {
         let strings = WatchStrings::english();
         assert!(updates_to_toasts(&strings, Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn reconcile_watch_directories_removes_a_directory_dropped_from_the_new_set() {
+        // GT-205, second half: ReloadSettings used to only ever call
+        // add_directory, so a library newly excluded stayed under watch
+        // until the daemon restarted. This is the reconciliation that fixes
+        // that - the watch set after it must equal `new_dirs` exactly, not
+        // `new_dirs` plus whatever was already there.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let kept = temp_dir.path().join("kept");
+        let newly_excluded = temp_dir.path().join("newly_excluded");
+        std::fs::create_dir_all(&kept).expect("create kept");
+        std::fs::create_dir_all(&newly_excluded).expect("create newly_excluded");
+
+        let mut watcher = ManifestWatcher::new(&[
+            (kept.clone(), LauncherKind::Steam),
+            (newly_excluded.clone(), LauncherKind::Steam),
+        ])
+        .expect("create watcher");
+        assert_eq!(
+            watcher.watched_paths().len(),
+            2,
+            "sanity: both start watched"
+        );
+
+        // `newly_excluded` is missing from the new set - as it would be once
+        // discover_watch_directories filters it out for the caller.
+        reconcile_watch_directories(&mut watcher, vec![(kept.clone(), LauncherKind::Steam)]);
+
+        let watched = watcher.watched_paths();
+        assert_eq!(
+            watched,
+            vec![kept],
+            "watch set must equal the new set exactly"
+        );
+    }
+
+    #[test]
+    fn reconcile_watch_directories_adds_a_directory_newly_present() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let new_dir = temp_dir.path().join("new_dir");
+        std::fs::create_dir_all(&new_dir).expect("create new_dir");
+
+        let mut watcher = ManifestWatcher::new(&[]).expect("create watcher");
+        assert!(watcher.watched_paths().is_empty());
+
+        reconcile_watch_directories(&mut watcher, vec![(new_dir.clone(), LauncherKind::Epic)]);
+
+        assert_eq!(watcher.watched_paths(), vec![new_dir]);
+    }
+
+    #[test]
+    fn load_excluded_libraries_reads_settings_saved_to_the_ini() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let settings_path = temp_dir.path().join("gametrimmer.ini");
+
+        let excluded_path = temp_dir.path().join("excluded_lib");
+        let settings = gametrimmer_core::settings::Settings {
+            excluded_libraries: vec![gametrimmer_core::providers::comparable_path(&excluded_path)],
+            ..gametrimmer_core::settings::Settings::default()
+        };
+        gametrimmer_core::settings::save_file(&settings_path, &settings)
+            .expect("save settings ini");
+
+        let loaded = load_excluded_libraries(&settings_path);
+        assert_eq!(
+            loaded,
+            vec![gametrimmer_core::providers::comparable_path(&excluded_path)]
+        );
+    }
+
+    #[test]
+    fn load_excluded_libraries_is_empty_when_the_ini_is_missing() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let missing = temp_dir.path().join("does-not-exist.ini");
+        assert!(load_excluded_libraries(&missing).is_empty());
     }
 }
