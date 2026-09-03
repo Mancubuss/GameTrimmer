@@ -462,9 +462,13 @@ pub fn classify_game(
         })
         .collect();
 
-    let anti_cheat_safe = crate::anti_cheat::AntiCheatShield::is_safe_from_relative_paths(
-        entries.iter().map(|e| &e.rel_path),
-    );
+    // Two questions, because a file walk cannot answer the second: VAC lives
+    // in the Steam client, so a VAC-secured title leaves no signature in its
+    // own folder for the path check to find.
+    let anti_cheat_safe =
+        crate::anti_cheat::AntiCheatShield::is_safe_from_relative_paths(
+            entries.iter().map(|e| &e.rel_path),
+        ) && !crate::anti_cheat::AntiCheatShield::is_vac_protected(game.app_id, game.install_dir);
 
     perf::add(perf::Stage::Safety, safety_started.elapsed());
 

@@ -42,6 +42,160 @@ impl std::fmt::Display for AntiCheatEngine {
     }
 }
 
+impl AntiCheatEngine {
+    /// The user-facing reason trimming is held back for this engine.
+    fn warning(&self) -> &'static str {
+        match self {
+            AntiCheatEngine::EasyAntiCheat => {
+                "Easy Anti-Cheat protected title. Archive modification may trigger integrity violations."
+            }
+            AntiCheatEngine::BattlEye => {
+                "BattlEye protected title. Archive modification may cause game launch rejection."
+            }
+            AntiCheatEngine::RiotVanguard => {
+                "Riot Vanguard protected title. Client modification strictly prohibited."
+            }
+            AntiCheatEngine::ValveAntiCheat => {
+                "Valve Anti-Cheat module detected. Archive modification is blocked."
+            }
+            AntiCheatEngine::DenuvoAntiCheat => "Denuvo Anti-Tamper / Anti-Cheat detected.",
+            AntiCheatEngine::Ricochet => "Activision Ricochet driver detected.",
+            AntiCheatEngine::GameGuard => "nProtect GameGuard detected.",
+            AntiCheatEngine::TencentACE => "Tencent Anti-Cheat Expert detected.",
+            AntiCheatEngine::PunkBuster => "PunkBuster detected.",
+            AntiCheatEngine::Custom(_) => "Anti-cheat software detected.",
+        }
+    }
+}
+
+/// Folder names that mean an anti-cheat, matched against one *path segment*
+/// and never as a substring of the whole path.
+///
+/// Whole-path substring matching is what made a single-player game look
+/// protected: "Ricochet" and "Vanguard" are ordinary English words, and
+/// `cfg\skills\hero\bountyhunter\ricochet.cfg` is a Bounty Hunter skill
+/// config, not Activision's driver. A `Ricochet\` *folder* still matches.
+///
+/// These three tables are the one declared policy. Both detectors read them -
+/// the on-disk walk in [`check_game_safety`] and the in-memory path check in
+/// [`AntiCheatShield::is_safe_from_relative_paths`] - so the two verdicts
+/// cannot drift apart the way two hand-maintained chains of `||` did. Split by
+/// how a row is matched rather than by engine because that is what lets a
+/// segment skip the rules that cannot apply to it.
+static DIR_SIGNATURES: &[(AntiCheatEngine, &str)] = {
+    use AntiCheatEngine as E;
+    &[
+        (E::EasyAntiCheat, "easyanticheat"),
+        (E::EasyAntiCheat, "easyanticheat_eos"),
+        (E::BattlEye, "battleye"),
+        (E::BattlEye, "be"),
+        // The folder rule the disk walk never had; until now the preflight had
+        // to take the union of both detectors to cover it (GT-443).
+        (E::RiotVanguard, "vanguard"),
+        (E::DenuvoAntiCheat, "denuvo"),
+        (E::Ricochet, "ricochet"),
+        (E::GameGuard, "gameguard"),
+        (E::TencentACE, "anticheatexpert"),
+        (E::TencentACE, "sguard"),
+        (E::PunkBuster, "punkbuster"),
+        (E::PunkBuster, "pb"),
+    ]
+};
+
+/// Exact file names that mean an anti-cheat.
+static FILE_SIGNATURES: &[(AntiCheatEngine, &str)] = {
+    use AntiCheatEngine as E;
+    &[
+        (E::BattlEye, "beservice.exe"),
+        (E::BattlEye, "beservice_x64.exe"),
+        (E::BattlEye, "bedaisy.sys"),
+        (E::BattlEye, "beclient.dll"),
+        (E::BattlEye, "beclient_x64.dll"),
+        (E::RiotVanguard, "vgk.sys"),
+        (E::RiotVanguard, "vgtray.exe"),
+        (E::RiotVanguard, "vgc.exe"),
+        // Valve module names only. Broad Steam-runtime names such as
+        // steamservice.dll are present in non-VAC titles too.
+        (E::ValveAntiCheat, "vac.dll"),
+        (E::ValveAntiCheat, "vac2.dll"),
+        (E::ValveAntiCheat, "vacmodule.dll"),
+        (E::ValveAntiCheat, "vacmodule2.dll"),
+        (E::ValveAntiCheat, "vac_module.dll"),
+        (E::DenuvoAntiCheat, "dbdata.dll"),
+        (E::Ricochet, "randgrid.sys"),
+        (E::GameGuard, "gamemon.des"),
+        (E::TencentACE, "sguard64.dll"),
+        (E::PunkBuster, "pbsvc.exe"),
+        (E::PunkBuster, "pbcl.dll"),
+    ]
+};
+
+/// File name prefixes that mean an anti-cheat: these engines ship a family of
+/// modules under one stem (`EasyAntiCheat_x64.dll`, `EasyAntiCheat_EOS.sys`,
+/// `denuvo64.dll`).
+static FILE_PREFIX_SIGNATURES: &[(AntiCheatEngine, &str)] = {
+    use AntiCheatEngine as E;
+    &[
+        (E::EasyAntiCheat, "easyanticheat"),
+        (E::DenuvoAntiCheat, "denuvo"),
+        (E::TencentACE, "anticheatexpert"),
+    ]
+};
+
+/// Steam AppIDs of VAC-secured titles.
+///
+/// VAC lives in the Steam client, not in the game folder: Counter-Strike 2
+/// ships no file any walk of its directory could recognise, so without this
+/// list the most obviously protected game in a library scans as unprotected.
+/// Kept deliberately short - every entry is a title checked to be VAC-secured
+/// rather than protected by a file-detectable engine such as EAC or BattlEye.
+static VAC_STEAM_APP_IDS: &[&str] = &[
+    "10",   // Counter-Strike
+    "240",  // Counter-Strike: Source
+    "320",  // Half-Life 2: Deathmatch
+    "440",  // Team Fortress 2
+    "500",  // Left 4 Dead
+    "550",  // Left 4 Dead 2
+    "570",  // Dota 2
+    "730",  // Counter-Strike 2 (formerly CS:GO)
+    "4000", // Garry's Mod
+];
+
+/// ASCII-case-insensitive prefix test that does not allocate.
+fn starts_with_ignore_ascii_case(haystack: &str, prefix: &str) -> bool {
+    haystack.len() >= prefix.len()
+        && haystack.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+}
+
+/// Matches one path segment against the signature tables.
+///
+/// `is_dir` keeps a folder rule from firing on a file that merely shares the
+/// word, a file rule from firing on a folder, and - because it picks the table
+/// first - lets each segment skip every rule that cannot apply to it.
+/// Comparison is case-insensitive in place: no lowercased copy of the segment
+/// is allocated, because this runs once per segment of every scanned path in
+/// the library.
+fn match_segment(segment: &str, is_dir: bool) -> Option<&'static AntiCheatEngine> {
+    let exact = if is_dir {
+        DIR_SIGNATURES
+    } else {
+        FILE_SIGNATURES
+    };
+    if let Some((engine, _)) = exact
+        .iter()
+        .find(|(_, name)| segment.eq_ignore_ascii_case(name))
+    {
+        return Some(engine);
+    }
+    if is_dir {
+        return None;
+    }
+    FILE_PREFIX_SIGNATURES
+        .iter()
+        .find(|(_, prefix)| starts_with_ignore_ascii_case(segment, prefix))
+        .map(|(engine, _)| engine)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AntiCheatFinding {
     pub engine: AntiCheatEngine,
@@ -76,175 +230,36 @@ pub fn check_game_safety(
     game_dir: &Path,
     enforce_safety: bool,
 ) -> Result<SafetyReport, SafetyError> {
-    let mut findings = Vec::new();
-
-    let mut eac_files = Vec::new();
-    let mut be_files = Vec::new();
-    let mut vanguard_files = Vec::new();
-    let mut vac_files = Vec::new();
-    let mut denuvo_files = Vec::new();
-    let mut ricochet_files = Vec::new();
-    let mut gameguard_files = Vec::new();
-    let mut ace_files = Vec::new();
-    let mut pb_files = Vec::new();
+    // One bucket per engine actually hit, in the order the walk meets them.
+    let mut hits: Vec<(&'static AntiCheatEngine, Vec<PathBuf>)> = Vec::new();
 
     // Walk the complete declared game root. A depth cap can miss a protected
     // module while later archive discovery descends further into the tree.
-    for entry in WalkDir::new(game_dir).follow_links(false).into_iter() {
+    for entry in WalkDir::new(game_dir).follow_links(false) {
         let entry = entry.map_err(|error| SafetyError::Traversal(error.to_string()))?;
         let path = entry.path();
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        let relative = path.strip_prefix(game_dir).unwrap_or(path);
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(engine) = match_segment(name, entry.file_type().is_dir()) else {
+            continue;
+        };
 
-        // EasyAntiCheat checks
-        if file_name.contains("easyanticheat")
-            || file_name == "easyanticheat.sys"
-            || file_name == "easyanticheat_eos.sys"
-            || file_name == "easyanticheat_setup.exe"
-            || file_name.starts_with("easyanticheat_")
-            || (entry.file_type().is_dir()
-                && (file_name == "easyanticheat" || file_name == "easyanticheat_eos"))
-        {
-            eac_files.push(relative.to_path_buf());
-        }
-
-        // BattlEye checks
-        if file_name == "beservice.exe"
-            || file_name == "beservice_x64.exe"
-            || file_name == "bedaisy.sys"
-            || file_name == "beclient_x64.dll"
-            || file_name == "beclient.dll"
-            || (entry.file_type().is_dir() && (file_name == "battleye" || file_name == "be"))
-        {
-            be_files.push(relative.to_path_buf());
-        }
-
-        // Vanguard checks
-        if file_name == "vgk.sys" || file_name == "vgtray.exe" || file_name == "vgc.exe" {
-            vanguard_files.push(relative.to_path_buf());
-        }
-
-        // Valve Anti-Cheat module names. Avoid broad Steam-runtime matches such
-        // as steamservice.dll, which is present in non-VAC titles too.
-        if matches!(
-            file_name.as_str(),
-            "vac.dll" | "vac2.dll" | "vacmodule.dll" | "vac_module.dll" | "vacmodule2.dll"
-        ) {
-            vac_files.push(relative.to_path_buf());
-        }
-
-        // Denuvo checks
-        if file_name == "dbdata.dll" || file_name.starts_with("denuvo") {
-            denuvo_files.push(relative.to_path_buf());
-        }
-
-        // Ricochet checks
-        if file_name == "randgrid.sys" {
-            ricochet_files.push(relative.to_path_buf());
-        }
-
-        // GameGuard checks
-        if file_name == "gamemon.des" || (entry.file_type().is_dir() && file_name == "gameguard") {
-            gameguard_files.push(relative.to_path_buf());
-        }
-
-        // Tencent ACE checks
-        if file_name.contains("anticheatexpert")
-            || file_name == "sguard64.dll"
-            || (entry.file_type().is_dir()
-                && (file_name == "anticheatexpert" || file_name == "sguard"))
-        {
-            ace_files.push(relative.to_path_buf());
-        }
-
-        // PunkBuster checks
-        if file_name == "pbsvc.exe"
-            || file_name == "pbcl.dll"
-            || (entry.file_type().is_dir() && file_name == "pb")
-        {
-            pb_files.push(relative.to_path_buf());
+        let relative = path.strip_prefix(game_dir).unwrap_or(path).to_path_buf();
+        match hits.iter_mut().find(|(hit, _)| *hit == engine) {
+            Some((_, files)) => files.push(relative),
+            None => hits.push((engine, vec![relative])),
         }
     }
 
-    if !eac_files.is_empty() {
-        findings.push(AntiCheatFinding {
-            engine: AntiCheatEngine::EasyAntiCheat,
-            detected_files: eac_files,
-            warning: "Easy Anti-Cheat protected title. Archive modification may trigger integrity violations.".to_string(),
-        });
-    }
-
-    if !be_files.is_empty() {
-        findings.push(AntiCheatFinding {
-            engine: AntiCheatEngine::BattlEye,
-            detected_files: be_files,
-            warning:
-                "BattlEye protected title. Archive modification may cause game launch rejection."
-                    .to_string(),
-        });
-    }
-
-    if !vanguard_files.is_empty() {
-        findings.push(AntiCheatFinding {
-            engine: AntiCheatEngine::RiotVanguard,
-            detected_files: vanguard_files,
-            warning: "Riot Vanguard protected title. Client modification strictly prohibited."
-                .to_string(),
-        });
-    }
-
-    if !vac_files.is_empty() {
-        findings.push(AntiCheatFinding {
-            engine: AntiCheatEngine::ValveAntiCheat,
-            detected_files: vac_files,
-            warning: "Valve Anti-Cheat module detected. Archive modification is blocked."
-                .to_string(),
-        });
-    }
-
-    if !denuvo_files.is_empty() {
-        findings.push(AntiCheatFinding {
-            engine: AntiCheatEngine::DenuvoAntiCheat,
-            detected_files: denuvo_files,
-            warning: "Denuvo Anti-Tamper / Anti-Cheat detected.".to_string(),
-        });
-    }
-
-    if !ricochet_files.is_empty() {
-        findings.push(AntiCheatFinding {
-            engine: AntiCheatEngine::Ricochet,
-            detected_files: ricochet_files,
-            warning: "Activision Ricochet driver detected.".to_string(),
-        });
-    }
-
-    if !gameguard_files.is_empty() {
-        findings.push(AntiCheatFinding {
-            engine: AntiCheatEngine::GameGuard,
-            detected_files: gameguard_files,
-            warning: "nProtect GameGuard detected.".to_string(),
-        });
-    }
-
-    if !ace_files.is_empty() {
-        findings.push(AntiCheatFinding {
-            engine: AntiCheatEngine::TencentACE,
-            detected_files: ace_files,
-            warning: "Tencent Anti-Cheat Expert detected.".to_string(),
-        });
-    }
-
-    if !pb_files.is_empty() {
-        findings.push(AntiCheatFinding {
-            engine: AntiCheatEngine::PunkBuster,
-            detected_files: pb_files,
-            warning: "PunkBuster detected.".to_string(),
-        });
-    }
+    let findings: Vec<AntiCheatFinding> = hits
+        .into_iter()
+        .map(|(engine, detected_files)| AntiCheatFinding {
+            engine: engine.clone(),
+            detected_files,
+            warning: engine.warning().to_string(),
+        })
+        .collect();
 
     let is_safe = findings.is_empty();
 
@@ -266,54 +281,40 @@ pub struct AntiCheatShield;
 impl AntiCheatShield {
     /// Checks a list of relative paths purely in memory without disk I/O.
     /// Returns `true` if no anti-cheat software signatures are detected.
+    ///
+    /// Reads the same [`SIGNATURES`] table as the on-disk walk. Every segment
+    /// but the last names a directory; the last one names the file.
     pub fn is_safe_from_relative_paths(
         rel_paths: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> bool {
-        for p in rel_paths {
-            let s = p.as_ref();
-            let lower = s.to_ascii_lowercase();
-
-            // Direct substring matches
-            if lower.contains("easyanticheat")
-                || lower.contains("beservice")
-                || lower.contains("bedaisy.sys")
-                || lower.contains("beclient")
-                || lower.contains("battleye")
-                || lower.contains("vgk.sys")
-                || lower.contains("vgtray.exe")
-                || lower.contains("vgc.exe")
-                || lower.contains("vanguard")
-                || lower.contains("vacmodule.dll")
-                || lower.contains("vac_module.dll")
-                || lower.contains("vacmodule2.dll")
-                || lower.contains("denuvo")
-                || lower.contains("dbdata.dll")
-                || lower.contains("randgrid.sys")
-                || lower.contains("ricochet")
-                || lower.contains("gameguard")
-                || lower.contains("gamemon.des")
-                || lower.contains("anticheatexpert")
-                || lower.contains("sguard64.dll")
-                || lower.contains("punkbuster")
-                || lower.contains("pbsvc.exe")
-                || lower.contains("pbcl.dll")
-            {
-                return false;
-            }
-
-            // Segment checks for short names (to avoid false positive substrings like "maybe" for "be")
-            for segment in lower.split(['\\', '/']) {
-                if segment == "be"
-                    || segment == "pb"
-                    || segment == "sguard"
-                    || segment == "vac.dll"
-                    || segment == "vac2.dll"
-                {
+        for path in rel_paths {
+            let mut segments = path.as_ref().split(['\\', '/']).peekable();
+            while let Some(segment) = segments.next() {
+                let is_dir = segments.peek().is_some();
+                if !segment.is_empty() && match_segment(segment, is_dir).is_some() {
                     return false;
                 }
             }
         }
         true
+    }
+
+    /// Returns `true` when this Steam title is VAC-secured.
+    ///
+    /// The install directory is required because `app_id` is vendor-specific:
+    /// a GOG, itch or Ubisoft id can be the same digits as a Steam AppID,
+    /// while a Steam game always lives under a `steamapps` library folder.
+    pub fn is_vac_protected(app_id: Option<&str>, install_dir: &Path) -> bool {
+        let Some(app_id) = app_id else {
+            return false;
+        };
+        VAC_STEAM_APP_IDS.contains(&app_id)
+            && install_dir.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_str()
+                    .is_some_and(|segment| segment.eq_ignore_ascii_case("steamapps"))
+            })
     }
 
     /// Checks a game directory for anti-cheat software.
@@ -334,6 +335,21 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    /// Materializes relative paths as real files (with their parent folders)
+    /// under a fresh directory, so the on-disk walk sees exactly what the
+    /// in-memory check is given.
+    fn materialize(rel_paths: &[&str]) -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        for rel in rel_paths {
+            let full = dir.path().join(rel.replace('\\', "/"));
+            if let Some(parent) = full.parent() {
+                fs::create_dir_all(parent).expect("create parents");
+            }
+            fs::write(&full, b"x").expect("write");
+        }
+        dir
+    }
 
     #[test]
     fn test_safe_directory_returns_is_safe_true() {
@@ -439,6 +455,105 @@ mod tests {
         assert!(!AntiCheatShield::is_safe_from_relative_paths([
             "bin/vacmodule.dll",
         ]));
+    }
+
+    /// GT-222 regression: The Incredible Adventures of Van Helsing ships a
+    /// Bounty Hunter skill named Ricochet. A single-player game must not be
+    /// shielded because one of its config files is called after an English
+    /// word that also names an anti-cheat.
+    #[test]
+    fn test_skill_config_named_ricochet_is_not_anti_cheat() {
+        let paths = [
+            "cfg\\skills\\hero\\bountyhunter\\ricochet.cfg",
+            "cfg\\skills\\hero\\bountyhunter\\ricochet_lvl2.cfg",
+            "data\\vanguard_armour.tex",
+        ];
+        assert!(AntiCheatShield::is_safe_from_relative_paths(paths));
+
+        let dir = materialize(&paths);
+        assert!(AntiCheatShield::is_safe(dir.path()));
+    }
+
+    /// The same word as a *directory* is the real signature and still fires.
+    #[test]
+    fn test_ricochet_directory_is_anti_cheat() {
+        let paths = ["Game\\Ricochet\\anticheat.dll"];
+        assert!(!AntiCheatShield::is_safe_from_relative_paths(paths));
+
+        let dir = materialize(&paths);
+        let report = check_game_safety(dir.path(), false).expect("check safety");
+        assert_eq!(report.findings[0].engine, AntiCheatEngine::Ricochet);
+    }
+
+    /// The folder rule the disk walk was missing entirely before GT-222.
+    #[test]
+    fn test_vanguard_directory_is_anti_cheat_on_disk_too() {
+        let paths = ["Riot\\Vanguard\\readme.txt"];
+        assert!(!AntiCheatShield::is_safe_from_relative_paths(paths));
+
+        let dir = materialize(&paths);
+        let report = check_game_safety(dir.path(), false).expect("check safety");
+        assert_eq!(report.findings[0].engine, AntiCheatEngine::RiotVanguard);
+    }
+
+    /// The two detectors read one table, so they must never disagree.
+    #[test]
+    fn test_both_detectors_agree_on_the_same_paths() {
+        let cases: &[&[&str]] = &[
+            &["bin\\Game.exe", "content\\paks\\pakchunk0.pak"],
+            &["cfg\\skills\\hero\\bountyhunter\\ricochet.cfg"],
+            &["Game\\Ricochet\\anticheat.dll"],
+            &["Riot\\Vanguard\\readme.txt"],
+            &["EasyAntiCheat\\EasyAntiCheat_x64.dll"],
+            &["be\\BEClient_x64.dll"],
+            &["pb\\pbsvc.exe"],
+            &["AntiCheatExpert\\SGuard64.dll"],
+            &["bin\\denuvo64.dll"],
+            &["GameGuard\\GameMon.des"],
+            &["maybe\\pbs\\vanguards.txt", "art\\ricochet_icon.png"],
+        ];
+
+        for paths in cases {
+            let dir = materialize(paths);
+            let from_disk = AntiCheatShield::is_safe(dir.path());
+            let from_memory = AntiCheatShield::is_safe_from_relative_paths(*paths);
+            assert_eq!(
+                from_disk, from_memory,
+                "detectors disagree on {paths:?}: disk={from_disk}, memory={from_memory}"
+            );
+        }
+    }
+
+    /// Counter-Strike 2 carries no anti-cheat file at all - VAC lives in the
+    /// Steam client - so only the AppID list can shield it.
+    #[test]
+    fn test_vac_app_id_shields_a_game_with_no_signature_files() {
+        let install_dir =
+            Path::new("F:\\SteamLibrary\\steamapps\\common\\Counter-Strike Global Offensive");
+        assert!(AntiCheatShield::is_safe_from_relative_paths([
+            "game\\csgo\\pak01_dir.vpk",
+            "game\\bin\\win64\\cs2.exe",
+        ]));
+        assert!(AntiCheatShield::is_vac_protected(Some("730"), install_dir));
+    }
+
+    #[test]
+    fn test_vac_app_id_list_ignores_other_launchers_and_unknown_ids() {
+        // Same digits, but a GOG install directory - not a Steam AppID.
+        assert!(!AntiCheatShield::is_vac_protected(
+            Some("730"),
+            Path::new("F:\\GOG Games\\Some Game")
+        ));
+        // A Steam game that is simply not on the list.
+        assert!(!AntiCheatShield::is_vac_protected(
+            Some("292030"),
+            Path::new("F:\\SteamLibrary\\steamapps\\common\\The Witcher 3")
+        ));
+        // A folder-scan or manual game has no id at all.
+        assert!(!AntiCheatShield::is_vac_protected(
+            None,
+            Path::new("F:\\SteamLibrary\\steamapps\\common\\Whatever")
+        ));
     }
 
     #[test]
