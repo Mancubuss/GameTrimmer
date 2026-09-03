@@ -213,3 +213,93 @@ fn plain_dll_in_language_folder_stays_excluded_as_executable() {
     let findings = analyze_one("localization\\pol\\quests.dll");
     assert!(findings.is_empty(), "{findings:?}");
 }
+
+/// GT-392: Delta Force ships a CEF `locales/` folder in three places, 66
+/// files / 45.1 MB in total, and the detector found none of them - not
+/// because the shape was hard, but because seventeen of the codes were not
+/// in the dictionary at all.
+///
+/// The set is the check: the folder holds one file per language, so if any
+/// one code is unknown it simply goes missing while its neighbours are
+/// found. `uk` and `en-US` are the control - they were always known and are
+/// keep-listed by default, so they must stay unflagged for a different
+/// reason.
+#[test]
+fn delta_forces_locales_folder_is_found_in_every_language_it_ships() {
+    let dir = "Launcher\\service\\locales";
+    let codes = [
+        "am", "bn", "ca", "de", "es", "et", "fa", "fil", "fr", "gu", "hi", "hr", "id", "it", "ja",
+        "kn", "ko", "lt", "lv", "ml", "mr", "ms", "nb", "nl", "pl", "pt-BR", "pt-PT", "ro", "ru",
+        "sk", "sl", "sv", "sw", "ta", "te", "th", "tr", "vi", "zh-CN", "zh-TW",
+    ];
+    let paths: Vec<String> = codes
+        .iter()
+        .map(|code| format!("{dir}\\{code}.pak"))
+        .collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let findings = find_for(&refs);
+
+    let missing: Vec<&str> = codes
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !findings.iter().any(|(hit, _)| hit == idx))
+        .map(|(_, code)| *code)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these locales stayed invisible: {missing:?}"
+    );
+
+    // The seventeen GT-392 added, spelled as the launcher spells them.
+    for (code, expected) in [
+        ("am", "am"),
+        ("bn", "bn"),
+        ("ca", "ca"),
+        ("et", "et"),
+        ("fa", "fa"),
+        ("fil", "fil"),
+        ("gu", "gu"),
+        ("kn", "kn"),
+        ("lt", "lt"),
+        ("lv", "lv"),
+        ("ml", "ml"),
+        ("mr", "mr"),
+        ("ms", "ms"),
+        ("nb", "no"),
+        ("sw", "sw"),
+        ("ta", "ta"),
+        ("te", "te"),
+    ] {
+        let idx = codes.iter().position(|c| *c == code).expect("code listed");
+        let (_, finding) = findings
+            .iter()
+            .find(|(hit, _)| *hit == idx)
+            .unwrap_or_else(|| panic!("{code}.pak was not flagged"));
+        assert_eq!(finding.lang_tag, expected, "{code}.pak");
+    }
+}
+
+/// The other half of GT-392: a wider dictionary must not turn short words
+/// into languages. Every code added is two or three letters, which is the
+/// exact class the family gate exists for (8b03b91).
+#[test]
+fn the_long_tail_codes_do_not_flag_on_their_own() {
+    for path in [
+        // "ms" is milliseconds far more often than it is Malay.
+        "Config\\timeout_ms.ini",
+        // "ca" is a certificate authority, "lt"/"gt" are comparisons.
+        "Binaries\\Win64\\ca.crt",
+        "Shaders\\compare_lt.hlsl",
+        // "sl" ships as an NVIDIA Streamline DLL and is deliberately never
+        // read as Slovenian - .dll/.exe are ignored outright.
+        "Binaries\\Win64\\sl.dlss.dll",
+        // A rifle called "ar 2" is not Arabic (8b03b91), and a game's own
+        // initials are not a language.
+        "data\\items\\ar 2 lady (luckystrike).item.bytes",
+    ] {
+        assert!(
+            analyze_one(path).is_empty(),
+            "{path} must not read as a language"
+        );
+    }
+}

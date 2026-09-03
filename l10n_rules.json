@@ -379,7 +379,8 @@
         "nno"
       ],
       "level_c": [
-        "no"
+        "no",
+        "nb"
       ]
     },
     {
@@ -554,6 +555,214 @@
       "level_c": [
         "he",
         "iw"
+      ]
+    },
+    {
+      "key": "ca",
+      "level_a": [
+        "catalan",
+        "catala",
+        "català",
+        "ca-es"
+      ],
+      "level_b": [],
+      "level_c": [
+        "ca"
+      ]
+    },
+    {
+      "key": "lt",
+      "level_a": [
+        "lithuanian",
+        "lietuviu",
+        "lietuvių",
+        "lt-lt"
+      ],
+      "level_b": [],
+      "level_c": [
+        "lt"
+      ]
+    },
+    {
+      "key": "lv",
+      "level_a": [
+        "latvian",
+        "latviesu",
+        "latviešu",
+        "lv-lv"
+      ],
+      "level_b": [
+        "lav"
+      ],
+      "level_c": [
+        "lv"
+      ]
+    },
+    {
+      "key": "et",
+      "level_a": [
+        "estonian",
+        "eesti",
+        "et-ee"
+      ],
+      "level_b": [],
+      "level_c": [
+        "et"
+      ]
+    },
+    {
+      "key": "fa",
+      "level_a": [
+        "persian",
+        "farsi",
+        "fa-ir"
+      ],
+      "level_b": [
+        "fas"
+      ],
+      "level_c": [
+        "fa"
+      ]
+    },
+    {
+      "key": "ms",
+      "level_a": [
+        "malay",
+        "bahasamelayu",
+        "ms-my"
+      ],
+      "level_b": [
+        "msa"
+      ],
+      "level_c": [
+        "ms"
+      ]
+    },
+    {
+      "key": "fil",
+      "level_a": [
+        "filipino",
+        "tagalog",
+        "fil-ph"
+      ],
+      "level_b": [
+        "fil"
+      ],
+      "level_c": []
+    },
+    {
+      "key": "sw",
+      "level_a": [
+        "swahili",
+        "kiswahili",
+        "sw-ke"
+      ],
+      "level_b": [
+        "swa"
+      ],
+      "level_c": [
+        "sw"
+      ]
+    },
+    {
+      "key": "am",
+      "level_a": [
+        "amharic",
+        "amarenya",
+        "am-et"
+      ],
+      "level_b": [
+        "amh"
+      ],
+      "level_c": [
+        "am"
+      ]
+    },
+    {
+      "key": "bn",
+      "level_a": [
+        "bengali",
+        "bangla",
+        "bn-bd",
+        "bn-in"
+      ],
+      "level_b": [],
+      "level_c": [
+        "bn"
+      ]
+    },
+    {
+      "key": "gu",
+      "level_a": [
+        "gujarati",
+        "gu-in"
+      ],
+      "level_b": [
+        "guj"
+      ],
+      "level_c": [
+        "gu"
+      ]
+    },
+    {
+      "key": "kn",
+      "level_a": [
+        "kannada",
+        "kn-in"
+      ],
+      "level_b": [
+        "kan"
+      ],
+      "level_c": [
+        "kn"
+      ]
+    },
+    {
+      "key": "ml",
+      "level_a": [
+        "malayalam",
+        "ml-in"
+      ],
+      "level_b": [
+        "mal"
+      ],
+      "level_c": [
+        "ml"
+      ]
+    },
+    {
+      "key": "mr",
+      "level_a": [
+        "marathi",
+        "mr-in"
+      ],
+      "level_b": [],
+      "level_c": [
+        "mr"
+      ]
+    },
+    {
+      "key": "ta",
+      "level_a": [
+        "tamil",
+        "ta-in"
+      ],
+      "level_b": [
+        "tam"
+      ],
+      "level_c": [
+        "ta"
+      ]
+    },
+    {
+      "key": "te",
+      "level_a": [
+        "telugu",
+        "te-in"
+      ],
+      "level_b": [],
+      "level_c": [
+        "te"
       ]
     }
   ],
