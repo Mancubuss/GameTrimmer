@@ -65,6 +65,20 @@ pub enum OrphanKind {
     /// first user (GT-23): a manifest no installed app's `InstalledDepots`
     /// still names, across every discovered Steam library.
     UnreferencedFile,
+    /// A Steam Workshop item folder under
+    /// `steamapps/workshop/content/<appid>/<publishedfileid>` that appid's own
+    /// `appworkshop_<appid>.acf` no longer lists as installed - a mod left on
+    /// disk after unsubscribing, or after the game itself went away.
+    ///
+    /// Evidence-wise this is an [`UnmanagedFolder`](OrphanKind::UnmanagedFolder)
+    /// with a narrower proof (one appid's own state file rather than a whole
+    /// library's manifests), and it was that variant until GT-187. It has its
+    /// own kind because it is the only orphan that belongs to a *different*
+    /// display category: Workshop mods are residue the user recognises by name
+    /// and may well want back, so they get their own branch and their own
+    /// "have a look" badge instead of being poured into the generic orphan
+    /// pile. See `worker::classify::display_category`.
+    WorkshopItem,
 }
 
 /// One detected piece of orphaned residue on disk.
@@ -346,7 +360,7 @@ pub fn workshop_item_orphans(
         .into_iter()
         .map(|path| OrphanCandidate {
             path,
-            kind: OrphanKind::UnmanagedFolder,
+            kind: OrphanKind::WorkshopItem,
         })
         .collect())
 }
@@ -723,9 +737,10 @@ mod tests {
             orphans,
             vec![OrphanCandidate {
                 path: appid_dir.join("999"),
-                kind: OrphanKind::UnmanagedFolder,
+                kind: OrphanKind::WorkshopItem,
             }],
-            "only the id absent from the live set is residue"
+            "only the id absent from the live set is residue, and it is a \
+             Workshop item rather than a generic unmanaged folder (GT-187)"
         );
     }
 

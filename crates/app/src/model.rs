@@ -313,12 +313,23 @@ pub const ORPHAN_SERVICE_CONFIDENCE: u8 = 80;
 /// gathered.
 pub const ORPHAN_UNREFERENCED_FILE_CONFIDENCE: u8 = 75;
 
+/// Default confidence for an [`OrphanKind::WorkshopItem`] finding (GT-187): a
+/// Workshop item folder that appid's own `appworkshop_<appid>.acf` no longer
+/// lists as installed. Held to the same figure as
+/// [`ORPHAN_UNMANAGED_CONFIDENCE`], and for a stricter reason than the
+/// evidence alone would suggest: a mod is content the user chose and can want
+/// back, and Steam re-subscribing writes the folder again behind the app's
+/// back, so this stays below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] and is never
+/// pre-ticked. It carries the `Review` badge for the same reason.
+pub const ORPHAN_WORKSHOP_ITEM_CONFIDENCE: u8 = 60;
+
 /// The confidence [`FindingSource::Orphan`] carries for a given kind.
 pub fn orphan_confidence(kind: OrphanKind) -> u8 {
     match kind {
         OrphanKind::UnmanagedFolder => ORPHAN_UNMANAGED_CONFIDENCE,
         OrphanKind::ServiceFolder => ORPHAN_SERVICE_CONFIDENCE,
         OrphanKind::UnreferencedFile => ORPHAN_UNREFERENCED_FILE_CONFIDENCE,
+        OrphanKind::WorkshopItem => ORPHAN_WORKSHOP_ITEM_CONFIDENCE,
     }
 }
 

@@ -3704,10 +3704,20 @@ mod tests {
              this is the load-bearing acceptance criterion"
         );
 
+        // GT-187: a Workshop item is its own orphan kind, and that kind is what
+        // routes it to the Workshop branch of the tree. Both halves are asserted
+        // because either one alone passes while the bug is present: the folders
+        // were always detected, they were just filed as generic residue, so the
+        // Workshop branch the user has a toggle and a badge for stayed empty.
         for orphan in &orphans {
             assert_eq!(
                 orphan.source,
-                FindingSource::Orphan(OrphanKind::UnmanagedFolder)
+                FindingSource::Orphan(OrphanKind::WorkshopItem)
+            );
+            assert_eq!(
+                crate::model::display_category(orphan.source),
+                DisplayCategory::Workshop,
+                "a workshop orphan belongs in the Workshop branch, not the orphan pile"
             );
         }
     }

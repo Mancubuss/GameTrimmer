@@ -390,6 +390,10 @@ pub fn orphan_reason(lang: Lang, kind: gametrimmer_core::orphans::OrphanKind) ->
             "Cached file no installed app still references (e.g. an old Steam depot manifest)"
                 .to_string()
         }
+        (Lang::En | Lang::Custom(_), OrphanKind::WorkshopItem) => {
+            "Workshop mod this game's own subscription state no longer lists as installed"
+                .to_string()
+        }
     }
 }
 

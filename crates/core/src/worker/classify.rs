@@ -98,7 +98,16 @@ pub fn display_category(source: FindingSource) -> DisplayCategory {
         FindingSource::Rule(Category::LauncherWebCache)
         | FindingSource::Rule(Category::ModManagerDownloads) => DisplayCategory::LauncherCache,
         FindingSource::Loc(_) => DisplayCategory::Loc,
-        FindingSource::Orphan(_) => DisplayCategory::Orphan,
+        // Listed one kind at a time rather than as `Orphan(_)`: the wildcard is
+        // what hid GT-187 for a release. Workshop item folders were detected
+        // correctly all along, then swept into the generic orphan branch by
+        // this arm, leaving the Workshop branch permanently empty while the
+        // user had a toggle and a badge for it. A new orphan kind must now fail
+        // to compile until someone says which branch it belongs in.
+        FindingSource::Orphan(OrphanKind::WorkshopItem) => DisplayCategory::Workshop,
+        FindingSource::Orphan(
+            OrphanKind::UnmanagedFolder | OrphanKind::ServiceFolder | OrphanKind::UnreferencedFile,
+        ) => DisplayCategory::Orphan,
     }
 }
 
@@ -133,6 +142,7 @@ pub fn source_key(source: FindingSource) -> &'static str {
         FindingSource::Orphan(OrphanKind::UnmanagedFolder) => "orphan_folder",
         FindingSource::Orphan(OrphanKind::ServiceFolder) => "orphan_service",
         FindingSource::Orphan(OrphanKind::UnreferencedFile) => "orphan_unreferenced_file",
+        FindingSource::Orphan(OrphanKind::WorkshopItem) => "orphan_workshop_item",
     }
 }
 
@@ -175,6 +185,7 @@ pub fn parse_source_key(key: &str) -> Option<FindingSource> {
         "orphan_folder" => Some(FindingSource::Orphan(OrphanKind::UnmanagedFolder)),
         "orphan_service" => Some(FindingSource::Orphan(OrphanKind::ServiceFolder)),
         "orphan_unreferenced_file" => Some(FindingSource::Orphan(OrphanKind::UnreferencedFile)),
+        "orphan_workshop_item" => Some(FindingSource::Orphan(OrphanKind::WorkshopItem)),
         _ => None,
     }
 }
