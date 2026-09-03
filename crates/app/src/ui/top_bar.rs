@@ -120,24 +120,6 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                 };
                 ui.add(egui::ProgressBar::new(frac).text(label));
             }
-
-            if let Some(p3) = &phase_state.phase3 {
-                let frac = if p3.total > 0 {
-                    p3.current as f32 / p3.total as f32
-                } else {
-                    0.0
-                };
-                let label = if !p3.detail.is_empty() {
-                    format!(
-                        "{}: {}",
-                        i18n::scan_phase_3_label(lang, p3.current, p3.total),
-                        p3.detail
-                    )
-                } else {
-                    i18n::scan_phase_3_label(lang, p3.current, p3.total)
-                };
-                ui.add(egui::ProgressBar::new(frac).text(label));
-            }
         } else if let Some(progress) = app.progress.clone() {
             let fraction = if progress.total == 0 {
                 0.0

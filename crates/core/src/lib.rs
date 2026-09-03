@@ -1,9 +1,5 @@
+pub mod anti_cheat;
 pub mod atomic_file;
-// Recovery primitives for a future archive executor. This module is kept
-// private and intentionally has no handler call site: archive mutation stays
-// disabled until a format-specific executor is independently validated.
-#[allow(dead_code)]
-mod archive_recovery;
 pub mod autostart;
 pub mod bundle;
 pub mod db;
@@ -32,7 +28,7 @@ pub mod stub;
 pub mod sysinfo;
 pub mod worker;
 
-pub use models::{Finding, FindingAction};
+pub use models::Finding;
 pub use worker::WorkerProgress;
 
 #[cfg(test)]

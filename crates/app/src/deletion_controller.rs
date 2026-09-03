@@ -62,11 +62,6 @@ pub(crate) fn validate_batch(
                 reason: reason.clone(),
             });
         }
-        if item.row.anti_cheat_protected && item.row.is_monolithic_archive() {
-            return Err(BatchBlock {
-                reason: "anti-cheat protected monolithic archives cannot be trimmed".to_string(),
-            });
-        }
         checked.push(index);
     }
     Ok(checked)
@@ -127,9 +122,7 @@ mod tests {
                 deletion_block_reason: blocked.map(str::to_string),
                 imported_untrusted: false,
                 library: None,
-                action: gametrimmer_core::models::FindingAction::DirectDelete,
                 anti_cheat_protected: false,
-                monolith_badge: None,
             },
             selected,
             removed,
@@ -198,54 +191,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn anti_cheat_protected_monolithic_archive_rejects_batch_and_skips_select_all() {
-        let mut row_ac = item(1, None, false, false);
-        row_ac.row.anti_cheat_protected = true;
-        row_ac.row.action = gametrimmer_core::models::FindingAction::SparseZero {
-            format: "Wwise".to_string(),
-            languages: vec!["french".to_string()],
-            stream_count: 1,
-            offsets: vec![(1024, 2048)],
-            streams: vec![],
-            estimated_savings: 2048,
-        };
-
-        let normal = item(2, None, false, false);
-        let mut items = vec![row_ac, normal];
-
-        select_all(&mut items);
-        assert!(
-            !items[0].selected,
-            "anti-cheat monolithic file must not be selected by select_all"
-        );
-        assert!(
-            items[1].selected,
-            "normal file must be selected by select_all"
-        );
-
-        items[0].selected = true;
-        let err = validate_batch(&items, &[0]).unwrap_err();
-        assert!(err
-            .reason
-            .contains("anti-cheat protected monolithic archives"));
-    }
-
-    /// The non-monolith case, narrowed: an intro finding -
-    /// replaced by a micro-stub rather than deleted, but still a whole-file-
-    /// shaped operation, not a container edit - inside an EAC/BattlEye game
-    /// is exactly as ordinary as any other whole-file delete. It is swept up
-    /// by `select_all` like any unprotected row, and a manual tick on the
-    /// same row still passes the batch preflight - the hard block stays
-    /// reserved for monolithic archives only.
+    /// An intro finding - replaced by a micro-stub rather than deleted, but
+    /// still a whole-file-shaped operation - inside an EAC/BattlEye game is
+    /// exactly as ordinary as any other whole-file delete. It is swept up by
+    /// `select_all` like any unprotected row, and a manual tick on the same
+    /// row still passes the batch preflight: anti-cheat protection no longer
+    /// blocks selection of anything, only an unattended re-trim.
     #[test]
     fn anti_cheat_protected_intro_row_is_swept_by_select_all_and_passes_batch() {
         let mut row_ac = item(1, None, false, false);
         row_ac.row.anti_cheat_protected = true;
         row_ac.row.source = FindingSource::Rule(Category::Intro);
-        // Default action from `item()` is DirectDelete, so this row is not
-        // a monolithic archive - only the anti-cheat flag plus the intro
-        // source guards it here.
 
         let mut items = vec![row_ac];
 

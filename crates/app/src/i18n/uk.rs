@@ -327,7 +327,6 @@ pub(super) const STRINGS: Strings = Strings {
     category_docs: "Документація і довідкові матеріали",
     category_bonus: "Бонусні матеріали",
     category_loc: "Файли локалізацій",
-    category_archives: "Монолітні архіви",
     category_dev_leftovers: "Залишки розробки",
     category_orphan: "Осиротіле",
     category_workshop: "Моди Workshop",
@@ -359,22 +358,16 @@ pub(super) const STRINGS: Strings = Strings {
 
     already_running_title: "GameTrimmer уже запущено",
 
-    monolithic_archives_label: "Монолітні архіви",
-    scan_monolithic_archives_checkbox: "Глибокий аналіз монолітних архівів (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
-    scan_monolithic_archives_subtitle: "Лише читає вміст контейнерів. Обрізання недоступне до реалізації безпечного відновлення.",
     scan_phase_1_title: "1. Сканування дисків та бібліотек",
     scan_phase_2_title: "2. Аналіз звичайних файлів",
-    scan_phase_3_title: "3. Аналіз монолітних архівів",
     scan_overall_title: "Загальний прогрес",
-    badge_monolith: "Моноліт",
     badge_anticheat_shield: "🛡️ Захищено античитом",
     // Раніше опис стосувався окремого рядка (intro-знахідки, яку пропускало
-    // «Вибрати все»). Власник звузив виняток лише до монолітних архівів -
-    // тепер це підпис не рядка, а всієї гри (див.
+    // «Вибрати все»). Власник звузив виняток лише до монолітних архівів, а
+    // тепер вирізав і їх - лишився лише сам факт: підпис усієї гри (див.
     // `ui::tree_view::show_game_row`), і опис має говорити правду про нове
     // правило, а не про старе.
-    anticheat_shield_tooltip: "Ця гра захищена античитом. Монолітні архіви в ній не можна \
-                                обрізати; усе інше працює як зазвичай.",
-    archive_action_unavailable: "Обрізання архівів недоступне до реалізації безпечного відновлення",
+    anticheat_shield_tooltip: "Ця гра захищена античитом. Це лише блокує неконтрольоване \
+                                повторне обрізання цієї гри; усе інше працює як зазвичай.",
     group_checkbox_disabled_hint: "Тут нічого не вибрано, і нічого не підпадає під «Вибрати все».",
 };

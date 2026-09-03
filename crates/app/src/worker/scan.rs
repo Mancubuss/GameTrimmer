@@ -32,7 +32,6 @@ use gametrimmer_core::rules::{Finding, RuleEngine, RuleProvenance, Verdict};
 use gametrimmer_core::safety::{SafetySnapshot, SnapshotCapture};
 use gametrimmer_core::scanner::{scan_dir_cancellable, store_files_no_tx, FileEntry, ScanStats};
 use gametrimmer_core::sysinfo;
-use rayon::prelude::*;
 use rusqlite::{params, Connection};
 
 use crate::i18n::{self, Lang, Verb};
@@ -161,8 +160,6 @@ pub struct ScanOptions {
     /// scan does not descend into. Applied in `discovery::discover_libraries`,
     /// after the cross-provider merge/dedupe pass - see `discovery::drop_excluded`.
     pub excluded_libraries: Vec<String>,
-    /// The persisted `scan_monolithic_archives` setting.
-    pub scan_monolithic_archives: bool,
 }
 
 /// Spawns the scan job on a new thread. `cancel` is polled between games so
@@ -195,7 +192,6 @@ fn run_scan(
         keep_languages,
         enabled_categories,
         excluded_libraries,
-        scan_monolithic_archives: _,
     } = options;
     let (lang, keep_languages, enabled_categories, excluded_libraries) = (
         *lang,
@@ -583,445 +579,6 @@ fn run_scan(
         generation.abort(&mut conn, "cancelled");
         notifier.send(WorkerMsg::Cancelled);
         return;
-    }
-
-    // Phase 3: Monolithic archives deep inspection
-    if options.scan_monolithic_archives && !cancel.load(Ordering::Relaxed) {
-        let phase3_start = Instant::now();
-
-        #[derive(Clone)]
-        struct CandidateArchiveRow {
-            file_id: i64,
-            game_id: i64,
-            rel_path: String,
-            size: u64,
-            install_dir: PathBuf,
-            game_name: String,
-            app_id: Option<String>,
-            library_vendor: String,
-            library_path: PathBuf,
-        }
-
-        struct InspectedCandidate {
-            cand: CandidateArchiveRow,
-            monolith_finding: gametrimmer_core::rules::Finding,
-            safety_res: std::result::Result<SafetySnapshot, String>,
-        }
-
-        let candidate_rows: Vec<CandidateArchiveRow> = {
-            let mut candidate_stmt = match conn.prepare(
-                "SELECT f.id, f.game_id, f.rel_path, f.size, g.install_dir, g.name, g.app_id, gl.vendor, gl.path \
-                 FROM files f \
-                 JOIN games g ON f.game_id = g.id \
-                 JOIN game_libraries gl ON gl.id = g.library_id \
-                 WHERE f.scan_id = ?1 AND (
-                   f.id NOT IN (SELECT file_id FROM findings)
-                   OR EXISTS (
-                     SELECT 1 FROM file_safety fs
-                     WHERE fs.file_id = f.id
-                       AND fs.block_reason = 'archive container is read-only until safe rollback is implemented'
-                   )
-                 )",
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    notifier.report_error(i18n::Reported::new(lang, |l| {
-                        i18n::scan_incomplete(l, &err)
-                    }));
-                    return;
-                }
-            };
-
-            let rows_iter = match candidate_stmt.query_map(params![scan_id], |row| {
-                let file_id: i64 = row.get(0)?;
-                let game_id: i64 = row.get(1)?;
-                let rel_path: String = row.get(2)?;
-                let size: i64 = row.get(3)?;
-                let install_dir_str: String = row.get(4)?;
-                let game_name: String = row.get(5)?;
-                let app_id: Option<String> = row.get(6)?;
-                let library_vendor: String = row.get(7)?;
-                let library_path_str: String = row.get(8)?;
-                Ok(CandidateArchiveRow {
-                    file_id,
-                    game_id,
-                    rel_path,
-                    size: size as u64,
-                    install_dir: PathBuf::from(install_dir_str),
-                    game_name,
-                    app_id,
-                    library_vendor,
-                    library_path: PathBuf::from(library_path_str),
-                })
-            }) {
-                Ok(mapped) => mapped,
-                Err(err) => {
-                    notifier.report_error(i18n::Reported::new(lang, |l| {
-                        i18n::scan_incomplete(l, &err)
-                    }));
-                    return;
-                }
-            };
-
-            rows_iter
-                .filter_map(|r| r.ok())
-                .filter(|row| phase3_candidate(&row.install_dir, &row.rel_path))
-                .collect()
-        };
-
-        let total_candidates = candidate_rows.len();
-
-        // 1. Read each candidate game's anti-cheat verdict back from the row
-        // Phase 2 wrote it to. Phase 3 used to walk every candidate game's
-        // install directory again to re-derive it, which was both a second
-        // full traversal per game and a second opinion that could disagree
-        // with the one already shown in the UI. The stored verdict was
-        // decided from that game's complete live inventory, so nothing is
-        // lost by reading it - and a game with no stored verdict stays
-        // absent from the map, which the lookup below reads as protected.
-        let mut anti_cheat_cache: HashMap<i64, bool> = HashMap::new();
-        // A read failure here silently fails closed via `unwrap_or(true)`
-        // below - correct, but with nothing in gametrimmer.log to say why a
-        // game the user just watched come back clean is suddenly shielded
-        // again. Every failure mode is logged so the fail-closed outcome
-        // stays diagnosable instead of just mysterious.
-        match conn.prepare(
-            "SELECT id, anti_cheat_protected FROM games \
-             WHERE scan_id = ?1 AND anti_cheat_protected IS NOT NULL",
-        ) {
-            Ok(mut ac_stmt) => match ac_stmt.query_map(params![scan_id], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?))
-            }) {
-                Ok(mapped) => {
-                    for row in mapped {
-                        match row {
-                            Ok((game_id, protected)) => {
-                                anti_cheat_cache.insert(game_id, protected);
-                            }
-                            Err(err) => crate::logger::error(&format!(
-                                "Phase 3 anti-cheat verdict row decode failed: {err}"
-                            )),
-                        }
-                    }
-                }
-                Err(err) => {
-                    crate::logger::error(&format!("Phase 3 anti-cheat verdict query failed: {err}"))
-                }
-            },
-            Err(err) => crate::logger::error(&format!(
-                "Phase 3 anti-cheat verdict statement prepare failed: {err}"
-            )),
-        }
-
-        // Preload library evidence status
-        let mut library_evidence_map: HashMap<String, Option<String>> = HashMap::new();
-        if let Ok(mut ev_stmt) = conn
-            .prepare("SELECT library_path, status FROM scan_library_evidence WHERE scan_id = ?1")
-        {
-            if let Ok(mapped) = ev_stmt.query_map(params![scan_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            }) {
-                for item in mapped.flatten() {
-                    library_evidence_map.insert(item.0, Some(item.1));
-                }
-            }
-        }
-
-        // 2. Parallel candidate inspections across scan_threads() using rayon
-        let completed_atomic = std::sync::atomic::AtomicUsize::new(0);
-        let monoliths_atomic = std::sync::atomic::AtomicUsize::new(0);
-
-        let inspect_fn = || {
-            candidate_rows
-                .into_par_iter()
-                .filter_map(|cand| {
-                    if cancel.load(Ordering::Relaxed) {
-                        return None;
-                    }
-
-                    let archive_full_path = cand.install_dir.join(&cand.rel_path);
-                    let inspect_res = gametrimmer_core::worker::inspect_monolithic_archive(
-                        &archive_full_path,
-                        keep_languages,
-                    );
-
-                    let mut found = None;
-                    if let Ok(Some(monolith_finding)) = inspect_res {
-                        let category = monolith_finding.category;
-                        if category_enabled(
-                            enabled_categories,
-                            display_category(FindingSource::Rule(category)),
-                        ) {
-                            let mut capture = SnapshotCapture::new();
-                            let safety_res = capture
-                                .capture(&cand.install_dir, &cand.rel_path, None)
-                                .map_err(|reason| reason.to_string());
-
-                            found = Some(InspectedCandidate {
-                                cand: cand.clone(),
-                                monolith_finding,
-                                safety_res,
-                            });
-                        }
-                    }
-
-                    let is_monolith = found.is_some();
-                    let curr = completed_atomic.fetch_add(1, Ordering::Relaxed) + 1;
-                    let monoliths_count = if is_monolith {
-                        monoliths_atomic.fetch_add(1, Ordering::Relaxed) + 1
-                    } else {
-                        monoliths_atomic.load(Ordering::Relaxed)
-                    };
-
-                    // Smooth throttled non-blocking progress update
-                    if curr.is_multiple_of(16) || curr == total_candidates {
-                        notifier.send(WorkerMsg::ScanPhaseProgress(
-                            gametrimmer_core::worker::WorkerProgress::ScanPhase3 {
-                                current: curr,
-                                total: total_candidates,
-                                archive_name: cand.rel_path,
-                                monoliths_count,
-                            },
-                        ));
-                    }
-
-                    found
-                })
-                .collect::<Vec<InspectedCandidate>>()
-        };
-
-        let inspected_candidates: Vec<InspectedCandidate> = if let Ok(pool) =
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(scan_threads())
-                .build()
-        {
-            pool.install(inspect_fn)
-        } else {
-            inspect_fn()
-        };
-
-        if cancel.load(Ordering::Relaxed) {
-            crate::logger::log("Scan cancelled during Phase 3");
-            generation.abort(&mut conn, "cancelled");
-            notifier.send(WorkerMsg::Cancelled);
-            return;
-        }
-
-        // 3. Insert findings in a single SQLite transaction
-        let tx = match conn.transaction() {
-            Ok(tx) => tx,
-            Err(err) => {
-                notifier.report_error(i18n::Reported::new(lang, |l| {
-                    i18n::scan_incomplete(l, &err)
-                }));
-                return;
-            }
-        };
-
-        let monolithic_findings_count = inspected_candidates.len();
-
-        {
-            let mut insert_finding = match tx.prepare_cached(
-                "INSERT INTO findings \
-                 (file_id, category, rule_id, confidence, lang_tag, group_dir, provenance, action) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    notifier.report_error(i18n::Reported::new(lang, |l| {
-                        i18n::scan_incomplete(l, &err)
-                    }));
-                    return;
-                }
-            };
-
-            let mut insert_safety_ok = match tx.prepare_cached(
-                "INSERT OR REPLACE INTO file_safety \
-                 (file_id, scan_id, evidence_library_path, trusted_root, rel_path, root_identity, \
-                  target_identity, target_kind, tree_fingerprint, block_reason) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    notifier.report_error(i18n::Reported::new(lang, |l| {
-                        i18n::scan_incomplete(l, &err)
-                    }));
-                    return;
-                }
-            };
-
-            let mut insert_safety_err = match tx.prepare_cached(
-                "INSERT OR REPLACE INTO file_safety \
-                 (file_id, scan_id, evidence_library_path, trusted_root, rel_path, root_identity, \
-                  target_identity, target_kind, tree_fingerprint, block_reason) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    notifier.report_error(i18n::Reported::new(lang, |l| {
-                        i18n::scan_incomplete(l, &err)
-                    }));
-                    return;
-                }
-            };
-
-            for inspected in inspected_candidates {
-                let InspectedCandidate {
-                    cand,
-                    monolith_finding,
-                    safety_res,
-                } = inspected;
-
-                let category = monolith_finding.category;
-                let anti_cheat_protected =
-                    anti_cheat_cache.get(&cand.game_id).copied().unwrap_or(true);
-                let evidence_library_path_str = cand.library_path.to_string_lossy().to_string();
-                let evidence_status = library_evidence_map
-                    .get(&evidence_library_path_str)
-                    .cloned()
-                    .flatten();
-                let evidence_block_reason = gametrimmer_core::safety::discovery_block_reason(
-                    true,
-                    evidence_status.as_deref(),
-                )
-                .map(str::to_string);
-
-                // A Phase 2 rule may have recognized the file under an
-                // ordinary category before the content probe identified it
-                // as a container. That read-only blocked placeholder remains
-                // useful when inspection is disabled or unsupported; once
-                // Phase 3 has a real archive action, replace it atomically so
-                // the database and UI never expose duplicate meanings for one
-                // file.
-                if let Err(err) =
-                    tx.execute("DELETE FROM findings WHERE file_id = ?1", [cand.file_id])
-                {
-                    notifier.report_error(i18n::Reported::new(lang, |l| {
-                        i18n::scan_incomplete(l, &err)
-                    }));
-                    return;
-                }
-
-                let action_json = monolith_finding.action.to_json();
-                if let Err(err) = insert_finding.execute(params![
-                    cand.file_id,
-                    source_key(FindingSource::Rule(category)),
-                    &monolith_finding.rule_desc,
-                    monolith_finding.confidence,
-                    Option::<String>::None,
-                    Option::<String>::None,
-                    "builtin",
-                    action_json,
-                ]) {
-                    notifier.report_error(i18n::Reported::new(lang, |l| {
-                        i18n::scan_incomplete(l, &err)
-                    }));
-                    return;
-                }
-
-                let deletion_block_reason = match &safety_res {
-                    Ok(snapshot) => {
-                        let trusted_root = snapshot.trusted_root.to_string_lossy();
-                        let rel_path_lossy = snapshot.rel_path.to_string_lossy();
-                        let root_identity = snapshot.root_identity.encode();
-                        let target_identity = snapshot.target_identity.encode();
-                        if let Err(err) = insert_safety_ok.execute(params![
-                            cand.file_id,
-                            scan_id,
-                            &evidence_library_path_str,
-                            trusted_root,
-                            rel_path_lossy,
-                            root_identity,
-                            target_identity,
-                            snapshot.target_identity.kind.as_str(),
-                            &snapshot.tree_fingerprint,
-                            None::<String>,
-                        ]) {
-                            notifier.report_error(i18n::Reported::new(lang, |l| {
-                                i18n::scan_incomplete(l, &err)
-                            }));
-                            return;
-                        }
-                        evidence_block_reason
-                    }
-                    Err(reason) => {
-                        if let Err(err) = insert_safety_err.execute(params![
-                            cand.file_id,
-                            scan_id,
-                            &evidence_library_path_str,
-                            cand.install_dir.to_string_lossy(),
-                            &cand.rel_path,
-                            None::<String>,
-                            None::<String>,
-                            None::<String>,
-                            None::<String>,
-                            reason,
-                        ]) {
-                            notifier.report_error(i18n::Reported::new(lang, |l| {
-                                i18n::scan_incomplete(l, &err)
-                            }));
-                            return;
-                        }
-                        Some(reason.clone())
-                    }
-                };
-
-                let estimated_savings = monolith_finding.action.estimated_savings();
-                let monolith_badge =
-                    Some(i18n::monolithic_badge(lang, estimated_savings, cand.size));
-
-                findings.retain(|row| row.file_id != cand.file_id);
-                findings.push(FindingRow {
-                    file_id: cand.file_id,
-                    game_id: cand.game_id,
-                    game_name: cand.game_name,
-                    app_id: cand.app_id,
-                    install_dir: cand.install_dir,
-                    rel_path: cand.rel_path,
-                    size: cand.size,
-                    size_on_disk: estimated_savings,
-                    source: FindingSource::Rule(category),
-                    rule_desc: monolith_finding.rule_desc,
-                    confidence: monolith_finding.confidence,
-                    lang_tag: None,
-                    group_dir: None,
-                    deletion_block_reason,
-                    imported_untrusted: false,
-                    library: Some(LibraryOrigin {
-                        vendor: Some(cand.library_vendor),
-                        root: cand.library_path,
-                    }),
-                    action: monolith_finding.action,
-                    anti_cheat_protected,
-                    monolith_badge,
-                });
-            }
-        }
-
-        if let Err(err) = tx.commit() {
-            notifier.report_error(i18n::Reported::new(lang, |l| {
-                i18n::scan_incomplete(l, &err)
-            }));
-            return;
-        }
-
-        if total_candidates > 0 {
-            notifier.send(WorkerMsg::ScanPhaseProgress(
-                gametrimmer_core::worker::WorkerProgress::ScanPhase3 {
-                    current: total_candidates,
-                    total: total_candidates,
-                    archive_name: String::new(),
-                    monoliths_count: monolithic_findings_count,
-                },
-            ));
-        }
-
-        crate::logger::log(&format!(
-            "Phase 3 completed in {:?}: {} candidates inspected, {} monolithic findings",
-            phase3_start.elapsed(),
-            total_candidates,
-            monolithic_findings_count
-        ));
     }
 
     // The findings that belong to no game: orphaned launcher residue
@@ -1986,7 +1543,6 @@ struct PreparedFinding {
     /// transaction made one thread pay for every finding in the scan while
     /// holding the database lock. The writer only inserts what it is handed.
     safety: std::result::Result<SafetySnapshot, String>,
-    action: gametrimmer_core::models::FindingAction,
 }
 
 /// The result of scanning and classifying one game: no DB state, so it can
@@ -2104,12 +1660,7 @@ fn classify_game(
     // the entry's index into `entries` so `assign_group_dirs` (which needs
     // the full file list, not just the flagged ones) can be run afterwards.
     let rules_started = Instant::now();
-    let mut combined_by_index: Vec<(
-        usize,
-        CombinedFinding,
-        Option<String>,
-        gametrimmer_core::models::FindingAction,
-    )> = Vec::new();
+    let mut combined_by_index: Vec<(usize, CombinedFinding)> = Vec::new();
     let mut kept = 0usize;
     // A personal keep rule outranks the same-name sweep below just as it
     // outranks every rule: a file the user vetoed by name must not come back
@@ -2157,32 +1708,13 @@ fn classify_game(
             }
         }
 
+        // A monolithic archive candidate (see `is_candidate_archive_path`) is
+        // never offered for whole-file deletion - by a rule or by the
+        // localization detector. GameTrimmer has no way to trim just the
+        // parts of a container that are safe to remove, so the file is
+        // skipped entirely rather than shown as a finding it cannot safely
+        // act on.
         if gametrimmer_core::worker::is_candidate_archive_path(&entry.rel_path) {
-            let source = FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
-            if category_enabled(enabled_categories, display_category(source)) {
-                combined_by_index.push((
-                    index,
-                    CombinedFinding {
-                        source,
-                        rule_id: "Archive candidate pending read-only inspection".to_string(),
-                        confidence: 100,
-                        provenance: RuleProvenance::Builtin,
-                        lang_tag: None,
-                    },
-                    Some(
-                        "archive container is read-only until safe rollback is implemented"
-                            .to_string(),
-                    ),
-                    gametrimmer_core::models::FindingAction::SparseZero {
-                        format: "Pending read-only inspection".to_string(),
-                        languages: vec![],
-                        stream_count: 0,
-                        offsets: vec![],
-                        streams: vec![],
-                        estimated_savings: 0,
-                    },
-                ));
-            }
             continue;
         }
         let lang_finding = lang_findings.get(&index);
@@ -2192,33 +1724,7 @@ fn classify_game(
                 continue;
             }
 
-            // A rule/category is never authority to whole-delete a supported
-            // container. Probe only files that would otherwise become an
-            // ordinary DirectDelete finding. Supported formats are reserved
-            // for Phase 3 even when their name looks like documentation or a
-            // standalone language file; probe errors keep the finding but
-            // block it through the existing safety diagnostic.
-            let archive_probe_error =
-                if should_probe_archive_contents(combined.provenance, &entry.rel_path) {
-                    match archive_trimmer::formats::FormatDetector::detect_file(
-                        &game.install_dir.join(&entry.rel_path),
-                    ) {
-                        Ok(Some(_)) => Some(
-                            "archive container is read-only until safe rollback is implemented"
-                                .to_string(),
-                        ),
-                        Ok(None) => None,
-                        Err(err) => Some(format!("archive format probe failed: {err}")),
-                    }
-                } else {
-                    None
-                };
-            combined_by_index.push((
-                index,
-                combined,
-                archive_probe_error,
-                gametrimmer_core::models::FindingAction::DirectDelete,
-            ));
+            combined_by_index.push((index, combined));
         }
     }
 
@@ -2232,10 +1738,7 @@ fn classify_game(
 
     perf::add(perf::Stage::Rules, rules_started.elapsed());
 
-    let flagged: HashSet<usize> = combined_by_index
-        .iter()
-        .map(|(index, _, _, _)| *index)
-        .collect();
+    let flagged: HashSet<usize> = combined_by_index.iter().map(|(index, _)| *index).collect();
     let group_dirs = perf::timed(perf::Stage::Grouping, || {
         assign_group_dirs(&entries, &flagged)
     });
@@ -2247,29 +1750,20 @@ fn classify_game(
     let mut capture = SnapshotCapture::new();
     let findings: Vec<PreparedFinding> = combined_by_index
         .into_iter()
-        .map(|(index, combined, archive_probe_error, action)| {
+        .map(|(index, combined)| {
             let entry = &entries[index];
-            let read_only_archive = archive_probe_error.as_deref()
-                == Some("archive container is read-only until safe rollback is implemented");
-            let safety = match archive_probe_error {
-                Some(reason) => Err(reason),
-                None => capture
-                    .capture(
-                        game.install_dir,
-                        &entry.rel_path,
-                        entry.mft_identity.as_ref(),
-                    )
-                    .map_err(|reason| reason.to_string()),
-            };
+            let safety = capture
+                .capture(
+                    game.install_dir,
+                    &entry.rel_path,
+                    entry.mft_identity.as_ref(),
+                )
+                .map_err(|reason| reason.to_string());
             PreparedFinding {
                 entry_index: index,
                 rel_path: entry.rel_path.clone(),
                 size: entry.size,
-                size_on_disk: if read_only_archive {
-                    0
-                } else {
-                    entry.size_on_disk
-                },
+                size_on_disk: entry.size_on_disk,
                 source: combined.source,
                 rule_id: combined.rule_id,
                 confidence: combined.confidence,
@@ -2277,14 +1771,14 @@ fn classify_game(
                 lang_tag: combined.lang_tag,
                 group_dir: group_dirs.get(&index).cloned(),
                 safety,
-                action,
             }
         })
         .collect();
 
-    let anti_cheat_safe = archive_trimmer::anti_cheat::AntiCheatShield::is_safe_from_relative_paths(
-        entries.iter().map(|e| &e.rel_path),
-    );
+    let anti_cheat_safe =
+        gametrimmer_core::anti_cheat::AntiCheatShield::is_safe_from_relative_paths(
+            entries.iter().map(|e| &e.rel_path),
+        );
 
     perf::add(perf::Stage::Safety, safety_started.elapsed());
 
@@ -2298,40 +1792,6 @@ fn classify_game(
         kept,
         anti_cheat_protected: !anti_cheat_safe,
     })
-}
-
-/// Phase 3 accepts both name-based candidates and supported archive content
-/// that was deliberately reserved from an ordinary rule. The content probe
-/// is essential for containers with misleading names such as `manual.txt`;
-/// an I/O failure cannot grant deletion authority and therefore simply keeps
-/// the file out of both the Phase 2 finding list and this inspection pass.
-fn phase3_candidate(install_dir: &Path, rel_path: &str) -> bool {
-    gametrimmer_core::worker::is_candidate_archive_path(rel_path)
-        || matches!(
-            archive_trimmer::formats::FormatDetector::detect_file(&install_dir.join(rel_path)),
-            Ok(Some(_))
-        )
-}
-
-/// Content detection is intentionally not random I/O over every ordinary
-/// finding. Archive-looking extensions need it because external-language
-/// naming can suppress the Phase 3 path heuristic, and every imported rule
-/// needs it because an untrusted pack can label `manual.txt` as documentation
-/// even when its bytes are a supported container. Built-in ordinary files
-/// stay on the no-probe hot path; the execution preflight remains the final
-/// authority for every selected file.
-fn should_probe_archive_contents(provenance: RuleProvenance, rel_path: &str) -> bool {
-    if provenance == RuleProvenance::ImportedUntrusted {
-        return true;
-    }
-    // The same list the classifier refuses to touch - see
-    // `gametrimmer_core::worker::CANDIDATE_ARCHIVE_EXTENSIONS`. It was spelled
-    // out here as well until the two copies had to change together and one of
-    // them would have been forgotten.
-    Path::new(rel_path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(gametrimmer_core::worker::is_candidate_archive_extension)
 }
 
 /// Assigns each flagged file (identified by its index into `entries`) the
@@ -2534,28 +1994,22 @@ struct CombinedFinding {
 ///   contract, never to a whole-file delete.
 fn add_same_name_intro_siblings(
     entries: &[FileEntry],
-    combined: &mut Vec<(
-        usize,
-        CombinedFinding,
-        Option<String>,
-        gametrimmer_core::models::FindingAction,
-    )>,
+    combined: &mut Vec<(usize, CombinedFinding)>,
     vetoed: &HashSet<usize>,
 ) {
     let sources: Vec<usize> = combined
         .iter()
-        .filter(|(_, finding, probe_error, _)| {
+        .filter(|(_, finding)| {
             finding.source == FindingSource::Rule(gametrimmer_core::rules::Category::Intro)
                 && finding.provenance != RuleProvenance::ImportedUntrusted
-                && probe_error.is_none()
         })
-        .map(|(index, _, _, _)| *index)
+        .map(|(index, _)| *index)
         .collect();
     if sources.is_empty() {
         return;
     }
 
-    let mut skip: HashSet<usize> = combined.iter().map(|(index, _, _, _)| *index).collect();
+    let mut skip: HashSet<usize> = combined.iter().map(|(index, _)| *index).collect();
     skip.extend(vetoed.iter().copied());
 
     let pairs = gametrimmer_core::scanner::same_name_siblings(entries, &sources, &skip);
@@ -2565,7 +2019,7 @@ fn add_same_name_intro_siblings(
     let by_index: HashMap<usize, usize> = combined
         .iter()
         .enumerate()
-        .map(|(position, (index, _, _, _))| (*index, position))
+        .map(|(position, (index, _))| (*index, position))
         .collect();
     for (sibling, source) in pairs {
         if gametrimmer_core::worker::is_candidate_archive_path(&entries[sibling].rel_path) {
@@ -2586,16 +2040,11 @@ fn add_same_name_intro_siblings(
         // nobody stubbed.
         let mut swept = combined[position].1.clone();
         swept.rule_id = gametrimmer_core::scanner::SIBLING_FINDING_DESC.to_string();
-        combined.push((
-            sibling,
-            swept,
-            None,
-            gametrimmer_core::models::FindingAction::DirectDelete,
-        ));
+        combined.push((sibling, swept));
     }
     // Findings are read back positionally by the UI tree; keeping them in
     // file order stops a swept copy from surfacing detached from its group.
-    combined.sort_by_key(|(index, _, _, _)| *index);
+    combined.sort_by_key(|(index, _)| *index);
 }
 
 /// Merges a rules-engine finding with a localization finding for the same
@@ -2735,7 +2184,6 @@ mod tests {
             confidence: 85,
             provenance: RuleProvenance::Builtin,
             localized_content: false,
-            action: gametrimmer_core::models::FindingAction::DirectDelete,
         };
 
         let combined = combine_finding(Some(rule), Some(&lang_finding_de()))
@@ -5576,18 +5024,16 @@ mod tests {
 
     /// The blocker this whole column exists for: an Easy Anti-Cheat game's
     /// `anti_cheat_protected` verdict used to come back from the database as
-    /// `false` for an ORDINARY (non-monolithic) finding, because the load
-    /// path only ever asked the anti-cheat question for monolithic archives.
-    /// Scan an EAC game, restart the app, and the shield the scan had just
-    /// raised was gone.
+    /// `false` for an ordinary finding, because the load path used to ask
+    /// the anti-cheat question only for the now-removed monolithic-archive
+    /// findings. Scan an EAC game, restart the app, and the shield the scan
+    /// had just raised was gone.
     ///
-    /// An ordinary whole-file delete stays bulk-selectable either way (see
-    /// `FindingRow::bulk_selectable` - only a monolithic archive is excluded
-    /// by the anti-cheat carve-out) - this test is about the flag itself
-    /// surviving the round trip, not about what it does to selection, so
-    /// `bulk_selectable` here is a control: it must read the same before and
-    /// after reload, proving the reload did not silently change what the row
-    /// means.
+    /// An ordinary whole-file delete stays bulk-selectable either way - this
+    /// test is about the flag itself surviving the round trip, not about
+    /// what it does to selection, so `bulk_selectable` here is a control: it
+    /// must read the same before and after reload, proving the reload did
+    /// not silently change what the row means.
     #[test]
     fn an_anti_cheat_game_keeps_its_shield_across_the_database_round_trip() {
         let mut conn = db::open_in_memory().expect("open in-memory db");
@@ -5637,10 +5083,6 @@ mod tests {
             .iter()
             .find(|row| row.rel_path.ends_with("readme.txt"))
             .expect("the docs file must be a finding");
-        assert!(
-            !readme.is_monolithic_archive(),
-            "the point of this test is an ordinary whole-file row"
-        );
         assert!(readme.anti_cheat_protected, "the scan raises the shield");
         assert!(
             readme.bulk_selectable(),
@@ -5727,267 +5169,6 @@ mod tests {
             loaded.iter().all(|row| row.anti_cheat_protected),
             "an unassessed game must not be silently reported as clear"
         );
-    }
-
-    #[test]
-    fn test_candidate_archives_are_persisted_to_files_for_phase3_query() {
-        let mut conn = db::open_in_memory().expect("open in-memory db");
-        let engine = RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON)
-            .expect("builtin rules compile");
-        let lang_detector = LangDetector::new();
-
-        let install_dir = tempfile::tempdir().expect("create temp install dir");
-        write_file(&install_dir.path().join("manual.pdf"), b"flagged");
-        write_file(&install_dir.path().join("game.exe"), b"not flagged at all");
-        write_file(
-            &install_dir.path().join("Voices.pck"),
-            b"candidate monolithic archive",
-        );
-
-        let library = DiscoveredLibrary {
-            vendor: "steam",
-            path: PathBuf::from(r"D:\SteamLibrary"),
-            orphan_evidence: OrphanEvidence::Heuristic,
-            games: vec![GameInstall {
-                name: "Test Game".to_string(),
-                install_dir: install_dir.path().to_path_buf(),
-                app_id: None,
-            }],
-        };
-        let scan_id = 0;
-        let games = persist_libraries(&conn, std::slice::from_ref(&library), scan_id)
-            .expect("persist library");
-        let ScannedGame {
-            id: game_id,
-            name,
-            install_dir: path,
-            ..
-        } = &games[0];
-
-        let prepared = scan_and_prepare_game(
-            &engine,
-            &lang_detector,
-            GameIdentity {
-                id: *game_id,
-                name,
-                install_dir: path,
-                app_id: None,
-            },
-            &[],
-            &AtomicBool::new(false),
-        )
-        .expect("prepare game");
-
-        let db_tx = conn.transaction().expect("begin tx");
-        let findings = persist_prepared_game(&db_tx, &prepared, scan_id).expect("persist game");
-        db_tx.commit().expect("commit tx");
-
-        // Phase 2 keeps the ordinary finding plus a visible, non-selectable
-        // archive placeholder. Phase 3 replaces the latter if inspection can
-        // produce an explicit action.
-        assert_eq!(findings.len(), 2);
-        let archive_placeholder = findings
-            .iter()
-            .find(|finding| finding.rel_path == "Voices.pck")
-            .expect("visible archive placeholder");
-        assert!(!archive_placeholder.individually_selectable());
-        assert_eq!(archive_placeholder.size_on_disk, 0);
-
-        // Files table should contain BOTH manual.pdf (flagged) AND Voices.pck (candidate archive)
-        let stored_files: Vec<String> = {
-            let mut stmt = conn
-                .prepare("SELECT rel_path FROM files WHERE game_id = ?1 ORDER BY rel_path")
-                .expect("prepare");
-            stmt.query_map([game_id], |row| row.get(0))
-                .expect("query")
-                .collect::<rusqlite::Result<_>>()
-                .expect("collect")
-        };
-        assert_eq!(
-            stored_files,
-            vec!["Voices.pck".to_string(), "manual.pdf".to_string()]
-        );
-
-        // Phase 3 query: unflagged candidates plus blocked placeholders.
-        let phase3_candidates: Vec<String> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT f.rel_path FROM files f \
-                     WHERE f.scan_id = ?1 AND (\
-                       f.id NOT IN (SELECT file_id FROM findings) \
-                       OR EXISTS (\
-                         SELECT 1 FROM file_safety fs \
-                         WHERE fs.file_id = f.id \
-                           AND fs.block_reason = 'archive container is read-only until safe rollback is implemented'\
-                       )\
-                     )",
-                )
-                .expect("prepare");
-            stmt.query_map([scan_id], |row| row.get(0))
-                .expect("query")
-                .collect::<rusqlite::Result<_>>()
-                .expect("collect")
-        };
-        assert_eq!(phase3_candidates, vec!["Voices.pck".to_string()]);
-    }
-
-    #[test]
-    fn imported_docs_rule_cannot_turn_named_archive_candidate_into_direct_delete() {
-        let engine = RuleEngine::from_json(
-            r#"{"version":1,"rules":[{"category":"docs_file","pattern":"^voices\\.pck$","desc":"smuggled archive","confidence":99,"provenance":"imported_untrusted"}]}"#,
-        )
-        .expect("compile imported rule");
-        let install = tempfile::tempdir().expect("create install dir");
-        write_file(
-            &install.path().join("voices.pck"),
-            b"ordinary fixture bytes",
-        );
-
-        let prepared = classify_game(
-            &engine,
-            &LangDetector::new(),
-            GameIdentity {
-                id: 1,
-                name: "Archive Game",
-                install_dir: install.path(),
-                app_id: None,
-            },
-            vec![entry("voices.pck")],
-            &[],
-            &AtomicBool::new(false),
-        )
-        .expect("classify game");
-
-        assert_eq!(prepared.findings.len(), 1);
-        assert!(prepared.findings[0].action.is_monolithic_archive());
-        assert_eq!(prepared.findings[0].size_on_disk, 0);
-        assert!(prepared.findings[0]
-            .safety
-            .as_ref()
-            .is_err_and(|reason| reason.contains("archive container is read-only")));
-        assert!(phase3_candidate(install.path(), "voices.pck"));
-    }
-
-    #[test]
-    fn supported_archive_magic_overrides_external_language_or_document_name() {
-        let engine = RuleEngine::from_json(
-            r#"{"version":1,"rules":[{"category":"docs_file","pattern":"^(sounds_fra\\.pck|manual\\.txt)$","desc":"ambiguous docs","confidence":99,"provenance":"imported_untrusted"}]}"#,
-        )
-        .expect("compile imported rule");
-        let install = tempfile::tempdir().expect("create install dir");
-        let pck = archive_trimmer::formats::wwise::create_synthetic_wwise_pck(
-            &[(1, "English"), (2, "French")],
-            &[(10, 1, 32), (20, 2, 48)],
-        );
-        for name in ["sounds_fra.pck", "manual.txt"] {
-            write_file(&install.path().join(name), &pck);
-        }
-
-        let prepared = classify_game(
-            &engine,
-            &LangDetector::new(),
-            GameIdentity {
-                id: 1,
-                name: "Ambiguous Archive Game",
-                install_dir: install.path(),
-                app_id: None,
-            },
-            vec![entry("sounds_fra.pck"), entry("manual.txt")],
-            &[],
-            &AtomicBool::new(false),
-        )
-        .expect("classify game");
-
-        assert_eq!(prepared.findings.len(), 2);
-        assert!(prepared.findings.iter().all(|finding| {
-            finding
-                .safety
-                .as_ref()
-                .is_err_and(|reason| reason.contains("archive container is read-only"))
-        }));
-        assert!(phase3_candidate(install.path(), "sounds_fra.pck"));
-        assert!(phase3_candidate(install.path(), "manual.txt"));
-    }
-
-    #[test]
-    fn unsupported_archive_stays_visible_and_blocked_until_phase3_can_replace_it() {
-        let engine = RuleEngine::from_json(
-            r#"{"version":1,"rules":[{"category":"intro","pattern":"^trailer\\.dat$","desc":"video","confidence":99,"provenance":"imported_untrusted"}]}"#,
-        )
-        .expect("compile rule");
-        let install = tempfile::tempdir().expect("create install dir");
-        // `KB2n`, not the `BIKi` this used to use. The subject is a file a rule
-        // claims by name whose *content* belongs to the deep archive inspector,
-        // and Bink 1 is no longer such a content: it is a plain video that the
-        // intro rules are meant to replace with a stub, so a `BIKi` payload here
-        // now produces an ordinary, deletable finding. Bink 2 is still claimed,
-        // so it still demonstrates the block. See GT-204.
-        let mut bink = b"KB2n".to_vec();
-        bink.resize(64, 0);
-        write_file(&install.path().join("trailer.dat"), &bink);
-
-        let mut conn = db::open_in_memory().expect("open in-memory db");
-        let libraries = [DiscoveredLibrary {
-            vendor: "steam",
-            path: install.path().to_path_buf(),
-            orphan_evidence: OrphanEvidence::Heuristic,
-            games: vec![GameInstall {
-                name: "Video Game".to_string(),
-                install_dir: install.path().to_path_buf(),
-                app_id: None,
-            }],
-        }];
-        let games = persist_libraries(&conn, &libraries, 0).expect("persist test game");
-
-        let prepared = classify_game(
-            &engine,
-            &LangDetector::new(),
-            GameIdentity {
-                id: games[0].id,
-                name: "Video Game",
-                install_dir: install.path(),
-                app_id: None,
-            },
-            vec![entry("trailer.dat")],
-            &[],
-            &AtomicBool::new(false),
-        )
-        .expect("classify game");
-
-        assert_eq!(prepared.findings.len(), 1);
-        assert!(prepared.findings[0].safety.as_ref().is_err_and(|reason| {
-            reason == "archive container is read-only until safe rollback is implemented"
-        }));
-
-        let tx = conn.transaction().expect("start persistence transaction");
-        let rows = persist_prepared_game(&tx, &prepared, 0).expect("persist blocked placeholder");
-        tx.commit().expect("commit placeholder");
-        assert_eq!(
-            rows.len(),
-            1,
-            "the placeholder remains visible in the UI model"
-        );
-        assert_eq!(
-            rows[0].deletion_block_reason.as_deref(),
-            Some("archive container is read-only until safe rollback is implemented")
-        );
-        assert!(!rows[0].individually_selectable());
-    }
-
-    #[test]
-    fn archive_content_probe_is_bounded_to_untrusted_or_archive_looking_findings() {
-        assert!(should_probe_archive_contents(
-            RuleProvenance::ImportedUntrusted,
-            "manual.txt"
-        ));
-        assert!(should_probe_archive_contents(
-            RuleProvenance::Builtin,
-            "sounds_fra.pck"
-        ));
-        assert!(!should_probe_archive_contents(
-            RuleProvenance::Builtin,
-            "manual.pdf"
-        ));
     }
 
     /// The interactive half of the keep-language guard, and the line the

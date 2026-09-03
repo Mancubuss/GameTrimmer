@@ -235,7 +235,6 @@
     "category_docs": "Dokumentace a příručky",
     "category_bonus": "Bonusový obsah",
     "category_loc": "Lokalizační soubory",
-    "category_archives": "Monolitické archivy",
     "category_dev_leftovers": "Ostatní",
     "category_orphan": "Osiřelé soubory",
     "orphan_branch_label": "Osiřelé pozůstatky",
@@ -260,15 +259,9 @@
     "saves_auto_backup_label": "Automatická záloha do ZIP před smazáním",
     "saves_backup_success": "Záloha uložených pozic byla úspěšně vytvořena",
     "saves_total_prunable": "Nalezeny nadbytečné automatické uložené pozice",
-    "monolithic_archives_label": "Monolithic archives",
-    "scan_monolithic_archives_checkbox": "Deep scan monolithic archives (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
-    "scan_monolithic_archives_subtitle": "Read-only inspection of container internals. Trimming is unavailable until safe rollback is implemented.",
     "scan_phase_1_title": "1. Disks & libraries discovery",
     "scan_phase_2_title": "2. Regular file analysis",
-    "scan_phase_3_title": "3. Monolithic archives inspection",
     "scan_overall_title": "Overall progress",
-    "badge_monolith": "Monolith",
-    "badge_anticheat_shield": "🛡️ Anti-Cheat",
-    "archive_action_unavailable": "Archive trimming is unavailable until safe rollback is implemented"
+    "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

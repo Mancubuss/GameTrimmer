@@ -615,7 +615,6 @@ pub struct Strings {
     pub category_docs: &'static str,
     pub category_bonus: &'static str,
     pub category_loc: &'static str,
-    pub category_archives: &'static str,
     pub category_dev_leftovers: &'static str,
     pub category_orphan: &'static str,
     pub category_workshop: &'static str,
@@ -658,30 +657,22 @@ pub struct Strings {
     /// so it lives in `messages::already_running_body` instead.
     pub already_running_title: &'static str,
 
-    // -- monolithic archives & 3-phase scanning --
-    pub monolithic_archives_label: &'static str,
-    pub scan_monolithic_archives_checkbox: &'static str,
-    pub scan_monolithic_archives_subtitle: &'static str,
+    // -- 2-phase scanning --
     pub scan_phase_1_title: &'static str,
     pub scan_phase_2_title: &'static str,
-    pub scan_phase_3_title: &'static str,
     pub scan_overall_title: &'static str,
-    pub badge_monolith: &'static str,
     /// Badge drawn once on a game row's name (see
     /// `ui::tree_view::show_game_row`, next to `[🔄 Updated]`) for a game
     /// whose findings carry `anti_cheat_protected`. The verdict is a
     /// per-*game* fact, not a per-row one, so it is marked on the game
-    /// instead of repeated on every one of its rows - a monolithic archive
-    /// row, the only kind the carve-out still affects, already explains its
-    /// own block via its `deletion_block_reason`.
+    /// instead of repeated on every one of its rows.
     pub badge_anticheat_shield: &'static str,
     /// Hover text for [`Self::badge_anticheat_shield`]. States what the
-    /// anti-cheat verdict means under the current rule: only monolithic
-    /// archives inside the game are excluded from trimming, everything else
-    /// (redist, docs, unused language packs, intro videos, ...) behaves
-    /// normally. Must never promise a wider carve-out than that.
+    /// anti-cheat verdict actually does: it blocks an unattended re-trim of
+    /// that game, nothing else - every whole-file delete (redist, docs,
+    /// unused language packs, intro videos, ...) still behaves normally.
+    /// Must never promise a wider carve-out than that.
     pub anticheat_shield_tooltip: &'static str,
-    pub archive_action_unavailable: &'static str,
     /// Hover text on a category/game/folder header checkbox when it is
     /// disabled: nothing in the group is selected, and nothing in it is
     /// bulk-selectable either, so a click could never do anything (see
@@ -1383,9 +1374,6 @@ impl Strings {
         if let Some(val) = map.get("category_loc") {
             s.category_loc = Box::leak(val.clone().into_boxed_str());
         }
-        if let Some(val) = map.get("category_archives") {
-            s.category_archives = Box::leak(val.clone().into_boxed_str());
-        }
         if let Some(val) = map.get("category_dev_leftovers") {
             s.category_dev_leftovers = Box::leak(val.clone().into_boxed_str());
         }
@@ -1461,38 +1449,20 @@ impl Strings {
         if let Some(val) = map.get("already_running_title") {
             s.already_running_title = Box::leak(val.clone().into_boxed_str());
         }
-        if let Some(val) = map.get("monolithic_archives_label") {
-            s.monolithic_archives_label = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("scan_monolithic_archives_checkbox") {
-            s.scan_monolithic_archives_checkbox = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("scan_monolithic_archives_subtitle") {
-            s.scan_monolithic_archives_subtitle = Box::leak(val.clone().into_boxed_str());
-        }
         if let Some(val) = map.get("scan_phase_1_title") {
             s.scan_phase_1_title = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("scan_phase_2_title") {
             s.scan_phase_2_title = Box::leak(val.clone().into_boxed_str());
         }
-        if let Some(val) = map.get("scan_phase_3_title") {
-            s.scan_phase_3_title = Box::leak(val.clone().into_boxed_str());
-        }
         if let Some(val) = map.get("scan_overall_title") {
             s.scan_overall_title = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("badge_monolith") {
-            s.badge_monolith = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("badge_anticheat_shield") {
             s.badge_anticheat_shield = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("anticheat_shield_tooltip") {
             s.anticheat_shield_tooltip = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("archive_action_unavailable") {
-            s.archive_action_unavailable = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("group_checkbox_disabled_hint") {
             s.group_checkbox_disabled_hint = Box::leak(val.clone().into_boxed_str());
@@ -1819,7 +1789,6 @@ impl Strings {
             ("category_docs", self.category_docs),
             ("category_bonus", self.category_bonus),
             ("category_loc", self.category_loc),
-            ("category_archives", self.category_archives),
             ("category_dev_leftovers", self.category_dev_leftovers),
             ("category_orphan", self.category_orphan),
             ("category_workshop", self.category_workshop),
@@ -1845,26 +1814,11 @@ impl Strings {
             ("csv_yes", self.csv_yes),
             ("csv_no", self.csv_no),
             ("already_running_title", self.already_running_title),
-            ("monolithic_archives_label", self.monolithic_archives_label),
-            (
-                "scan_monolithic_archives_checkbox",
-                self.scan_monolithic_archives_checkbox,
-            ),
-            (
-                "scan_monolithic_archives_subtitle",
-                self.scan_monolithic_archives_subtitle,
-            ),
             ("scan_phase_1_title", self.scan_phase_1_title),
             ("scan_phase_2_title", self.scan_phase_2_title),
-            ("scan_phase_3_title", self.scan_phase_3_title),
             ("scan_overall_title", self.scan_overall_title),
-            ("badge_monolith", self.badge_monolith),
             ("badge_anticheat_shield", self.badge_anticheat_shield),
             ("anticheat_shield_tooltip", self.anticheat_shield_tooltip),
-            (
-                "archive_action_unavailable",
-                self.archive_action_unavailable,
-            ),
             (
                 "group_checkbox_disabled_hint",
                 self.group_checkbox_disabled_hint,

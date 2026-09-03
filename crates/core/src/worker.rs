@@ -1,18 +1,12 @@
-//! 3-Phase Scanning and Analysis Pipeline.
+//! 2-Phase Scanning and Analysis Pipeline.
 //!
 //! Orchestrates:
 //! - Phase 1: Disk & Library discovery / file indexing
 //! - Phase 2: Regex rules & whole-file localization detections
-//! - Phase 3: Monolithic archive deep inspection & internal stream discovery
 
-use std::collections::HashSet;
-use std::path::Path;
+use crate::models::Finding;
 
-use crate::error::{CoreError, Result};
-use crate::models::{Finding, FindingAction, MonolithicStreamInfo};
-use crate::rules::{Category, RuleProvenance};
-
-/// Progress reported across the 3-phase scanning architecture.
+/// Progress reported across the 2-phase scanning architecture.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkerProgress {
     /// Phase 1: Discovering and indexing filesystem entries.
@@ -28,40 +22,29 @@ pub enum WorkerProgress {
         file_name: String,
         findings_count: usize,
     },
-    /// Phase 3: Monolithic archive deep inspection and internal stream discovery.
-    ScanPhase3 {
-        current: usize,
-        total: usize,
-        archive_name: String,
-        monoliths_count: usize,
-    },
     /// Overall scan progress across phases and games.
     OverallProgress { fraction: f32, message: String },
 }
 
-/// Extensions the deep archive inspector claims, to the exclusion of every
-/// other path in the application.
+/// Extensions a monolithic-archive deep inspector used to claim, to the
+/// exclusion of every other path in the application. That inspector is gone:
+/// it never shipped a working mutation, and every `trim()` returned
+/// `Unsupported`. The extensions themselves are still worth refusing
+/// whole-file deletion for, though: a `.pak`/`.pck`/`.bnk`/... is a
+/// multi-asset container, and a rule or import that matched one by name could
+/// otherwise delete an entire 40 GB archive because a keyword happened to
+/// match its path.
 ///
-/// A file whose extension is on this list is refused by [`crate::rules::RuleEngine::classify`]
-/// and blocked at delete preflight, so that a container holding data the user
-/// wants can never be deleted whole because a rule matched its name. That
-/// guard is worth its bluntness for a 40 GB archive; it was not worth it for
-/// `bik`, which used to be here.
+/// One list, read by the classifier's veto ([`RuleEngine::classify`]) and by
+/// the delete preflight ([`crate::ops`]). It used to be written out twice, in
+/// two crates, with no constant between them.
 ///
-/// Bink 1 and Bink 2 are videos, not containers of separable language
-/// streams: the archive handler reports zero trimmable bytes for both and
-/// refuses to trim them, so listing either here bought nothing and cost the
-/// intro rules - seven of the eight match `.bik`/`.bk2` - every file they
-/// exist for. `bk2` stayed until a header-derived stub for it was verified
-/// live in a real game (Scars Above, variant B); see GT-204.
-///
-/// One list, read by both the classifier and the content prober. It used to be
-/// written out twice, in two crates, with no constant between them.
+/// [`RuleEngine::classify`]: crate::rules::RuleEngine::classify
 pub const CANDIDATE_ARCHIVE_EXTENSIONS: &[&str] =
     &["pck", "bnk", "pak", "asar", "bundle", "unity3d", "assets"];
 
-/// Whether `ext` (without its dot, any case) belongs to the deep archive
-/// inspector. See [`CANDIDATE_ARCHIVE_EXTENSIONS`].
+/// Whether `ext` (without its dot, any case) belongs to the protected
+/// archive list. See [`CANDIDATE_ARCHIVE_EXTENSIONS`].
 pub fn is_candidate_archive_extension(ext: &str) -> bool {
     CANDIDATE_ARCHIVE_EXTENSIONS
         .iter()
@@ -121,7 +104,9 @@ pub fn keep_language_vetoes_rule(
     finding.localized_content && detector.carries_kept_language(rel_path)
 }
 
-/// Identifies whether a file is a candidate for monolithic archive deep inspection.
+/// Identifies whether a file is a monolithic archive candidate that must
+/// never be offered as a whole-file deletion. See
+/// [`CANDIDATE_ARCHIVE_EXTENSIONS`].
 ///
 /// The extension is tested first, and it decides almost every call: seven
 /// extensions against a `.exe`, a `.uasset` or a texture is a handful of byte
@@ -133,8 +118,6 @@ pub fn keep_language_vetoes_rule(
 /// (1637 games, 874 k findings) with the old order: 646 s of worker CPU in the
 /// rules stage and 223 s of single-threaded row building in the writer, on a
 /// scan that took 281 s wall.
-///
-/// [`is_external_single_language_file`]: archive_trimmer::formats::is_external_single_language_file
 pub fn is_candidate_archive_path(rel_path: &str) -> bool {
     let filename = rel_path.rsplit(['\\', '/']).next().unwrap_or(rel_path);
     let Some((_, ext)) = filename.rsplit_once('.') else {
@@ -145,119 +128,194 @@ pub fn is_candidate_archive_path(rel_path: &str) -> bool {
     }
 
     // An external single-language file (`sound_fre.pck`, `locales/es.pak`) is
-    // a whole-file deletion candidate for Phase 2, never a container for the
-    // deep inspector - even when it carries one of the extensions above.
-    !archive_trimmer::formats::is_external_single_language_file(rel_path)
+    // a whole-file deletion candidate for Phase 2, not a protected container
+    // - even when it carries one of the extensions above.
+    !is_external_single_language_file(rel_path)
 }
 
-/// Deeply inspects one monolithic archive for trimmable language streams.
-pub fn inspect_monolithic_archive(
-    archive_path: &Path,
-    keep_languages: &[String],
-) -> Result<Option<Finding>> {
-    let detector_res = archive_trimmer::formats::FormatDetector::detect_file(archive_path)
-        .map_err(|e| {
-            CoreError::Other(format!(
-                "failed to detect format for {}: {e}",
-                archive_path.display()
-            ))
-        })?;
+/// Language tags as a filename spells them, shared by
+/// [`is_external_single_language_file`] and its corpus test. Module-level so
+/// both see one list: two copies of a table this long drift the moment a tag
+/// is added.
+const LANG_CODES: &[&str] = &[
+    "en", "eng", "us", "gb", "fra", "fre", "fr", "ger", "deu", "de", "spa", "esn", "es", "es419",
+    "ita", "it", "rus", "ru", "jpn", "ja", "jap", "zho", "chi", "chn", "zh", "zhcn", "zhtw", "kor",
+    "ko", "pol", "pl", "por", "pt", "ptbr", "bra", "ukr", "uk", "tur", "tr", "cze", "cs", "cz",
+    "hun", "hu", "nld", "nl", "ara", "ar", "dan", "da", "fin", "fi", "nor", "no", "swe", "sv",
+    "ell", "el", "gre", "tha", "th", "vie", "vi", "ind", "id",
+];
 
-    let Some(archive_type) = detector_res else {
-        return Ok(None);
+const LANG_NAMES: &[&str] = &[
+    "english",
+    "french",
+    "german",
+    "spanish",
+    "italian",
+    "russian",
+    "japanese",
+    "chinese",
+    "korean",
+    "polish",
+    "portuguese",
+    "ukrainian",
+    "turkish",
+    "czech",
+    "hungarian",
+    "dutch",
+    "arabic",
+    "danish",
+    "finnish",
+    "norwegian",
+    "swedish",
+    "greek",
+    "thai",
+    "vietnamese",
+    "indonesian",
+    "francais",
+    "deutsch",
+    "espanol",
+    "italiano",
+    "brazilian",
+];
+
+/// Whether `stem` ends with `tag` preceded by `_` or `-` (`sounds_fra` for
+/// `fra`, `vo-german` for `german`).
+///
+/// Written as a byte check rather than `stem.ends_with(&format!("_{tag}"))`:
+/// the caller runs it against ~100 language tags, twice, for every file in
+/// every game, and the formatted version allocated a `String` per tag per
+/// file - some 400 allocations to answer "is this an ordinary .exe". That was
+/// the single largest cost in a full scan.
+fn ends_with_separated_tag(stem: &str, tag: &str) -> bool {
+    let Some(head) = stem.strip_suffix(tag) else {
+        return false;
     };
+    matches!(head.as_bytes().last(), Some(b'_') | Some(b'-'))
+}
 
-    let handler = archive_trimmer::formats::FormatDetector::get_handler(archive_type);
-    let analysis = match handler.analyze(archive_path) {
-        Ok(a) => a,
-        Err(e) => {
-            // Unparseable, corrupted or encrypted archive - skip gracefully
-            log_debug_archive(&format!("Skipping archive {}: {e}", archive_path.display()));
-            return Ok(None);
-        }
-    };
-
-    let mut trimmable_offsets = Vec::new();
-    let mut trimmable_languages = Vec::new();
-    let mut trimmable_streams = Vec::new();
-    let mut seen_langs = HashSet::new();
-
-    let mut selected_chunks: Vec<_> = analysis
-        .trimmable_chunks
-        .iter()
-        .filter(|chunk| chunk.is_language && chunk.can_zero_in_place)
-        .filter(|chunk| {
-            chunk.language.as_deref().is_some_and(|language| {
-                archive_trimmer::formats::is_known_language(language)
-                    && !archive_trimmer::formats::is_language_kept(language, keep_languages)
-            })
-        })
-        .filter_map(|chunk| {
-            let end = chunk.offset.checked_add(chunk.length)?;
-            (chunk.length > 0 && end <= analysis.total_size).then_some((chunk, end))
+/// Determines if a file path points to a standalone external single-language
+/// file: a whole-file localization the rest of the app already deletes
+/// safely, as opposed to a monolithic container whose internal streams a
+/// whole-file delete could not separate. Kept as the exception to
+/// [`is_candidate_archive_path`]'s protection, not for an in-place trimmer -
+/// GameTrimmer no longer has one.
+///
+/// Matches paths such as:
+/// - `*/locales/*.pak`, `*/locales/*.json`, `locales/*`, `*/locale/*`
+/// - `*_fra.pck`, `*_ger.pck`, `*_rus.pck`, `*_spa.pck`, `*_deu.pck`, `*_ita.pck`
+/// - `*German.pck`, `*French.pck`, `*Spanish.pck`, `*Russian.pck`
+/// - `*/Localization/Spanish.pak`, `*/Sound/Russian.pck`, `*/Audio/de.pck`, `*/Audio/German.pck`
+///
+/// Returns `false` for monolithic archives containing internal multi-language data:
+/// - `VO_AMICIA_MEDIA.PC.PCK`, `VO_D1_MEDIA.PC.PCK`
+/// - `re_chunk_000.pak`, `app.asar`, `pakchunk0.pak`, `voices.pck`, `soundbanks.pck`, `audio.pck`
+pub fn is_external_single_language_file(path: &str) -> bool {
+    // Separator normalization and ASCII-only lowering in one pass, one
+    // allocation instead of two. Every tag compared below is ASCII, so a
+    // non-ASCII character left as it is cannot change any answer - while
+    // `str::to_lowercase` walks the Unicode tables for every character of
+    // every path in the library.
+    let lower: String = path
+        .chars()
+        .map(|c| {
+            if c == '\\' {
+                '/'
+            } else {
+                c.to_ascii_lowercase()
+            }
         })
         .collect();
-    selected_chunks.sort_by_key(|(chunk, _)| chunk.offset);
 
-    let mut previous_end = 0u64;
-    for (chunk, end) in selected_chunks {
-        // Overlapping parser output is ambiguous. Keep the first valid range and
-        // conservatively skip subsequent overlaps so savings are never double-counted.
-        if chunk.offset < previous_end {
-            continue;
-        }
-        let lang_str = chunk.language.as_deref().expect("filtered language");
-        let canon = archive_trimmer::formats::canonical_language(lang_str);
-        trimmable_offsets.push((chunk.offset, chunk.length));
-        if seen_langs.insert(canon.to_string()) {
-            trimmable_languages.push(canon.to_string());
-        }
-        trimmable_streams.push(MonolithicStreamInfo {
-            name: chunk.name.clone(),
-            language: canon.to_string(),
-            size: chunk.length,
-        });
-        previous_end = end;
+    // 1. Locales directory match (e.g. 3DMark/bin/x64/locales/ar.pak, locales/en-US.pak, locales/fr.json)
+    if lower.starts_with("locales/")
+        || lower.starts_with("locale/")
+        || lower.contains("/locales/")
+        || lower.contains("/locale/")
+    {
+        return true;
     }
 
-    if !trimmable_offsets.is_empty() {
-        // Savings must describe the finalized, user-selected, non-overlapping
-        // ranges above. Handler-wide estimates may use a different keep-list.
-        let total_savings: u64 = trimmable_offsets.iter().map(|(_, length)| *length).sum();
-        let finding = Finding {
-            category: Category::MonolithicArchive,
-            rule_desc: format!(
-                "{}: Monolithic archive localized streams",
-                analysis.archive_type
-            ),
-            confidence: 90,
-            provenance: RuleProvenance::Builtin,
-            // Archive stream trimming carries its own per-language keep-list
-            // (`trimmable_offsets` is already filtered by it), so the
-            // whole-file guard has nothing left to decide here.
-            localized_content: false,
-            action: FindingAction::SparseZero {
-                format: analysis.archive_type.to_string(),
-                languages: trimmable_languages,
-                stream_count: trimmable_offsets.len(),
-                offsets: trimmable_offsets,
-                streams: trimmable_streams,
-                estimated_savings: total_savings,
-            },
-        };
-        Ok(Some(finding))
-    } else {
-        Ok(None)
+    // Extract filename and stem
+    let filename = lower.rsplit('/').next().unwrap_or(&lower);
+    let stem = match filename.rsplit_once('.') {
+        Some((s, _)) => s,
+        None => filename,
+    };
+
+    // Strip common secondary platform tags (e.g., sounds_fra.pc.pck -> sounds_fra)
+    let effective_stem = stem
+        .strip_suffix(".pc")
+        .or_else(|| stem.strip_suffix(".win"))
+        .or_else(|| stem.strip_suffix(".windows"))
+        .or_else(|| stem.strip_suffix(".ps4"))
+        .or_else(|| stem.strip_suffix(".xbox"))
+        .unwrap_or(stem);
+
+    for s in [stem, effective_stem] {
+        // 2. Exact match on stem (e.g. ar.pak, de.pak, spanish.pak, russian.pck, en-us.pak, zh-cn.pak)
+        let clean_s = s.replace(['-', '_'], "");
+        if LANG_CODES.contains(&s)
+            || LANG_CODES.contains(&clean_s.as_str())
+            || LANG_NAMES.contains(&s)
+            || LANG_NAMES.contains(&clean_s.as_str())
+        {
+            return true;
+        }
+
+        // 3. Suffix with underscore / hyphen (e.g. sounds_fra.pck, vo_german.pak, speech_rus.pck, audio_de.pck)
+        if LANG_CODES
+            .iter()
+            .chain(LANG_NAMES.iter())
+            .any(|tag| ends_with_separated_tag(s, tag))
+        {
+            return true;
+        }
+
+        // 4. Suffix without separator for language names (e.g. *German.pck, *French.pck, *Spanish.pck, *Russian.pck)
+        for name in LANG_NAMES {
+            if s.ends_with(name) {
+                return true;
+            }
+        }
     }
+
+    // 5. Parent directory is a dedicated localization/audio/language folder and stem is a language code or name
+    // e.g. Localization/Spanish.pak, Sound/Russian.pck, Audio/de.pck, Audio/German.pck
+    //
+    // Outside the stem loop, and last: the folder test is fourteen substring
+    // searches over the whole path and does not depend on the stem, so running
+    // it per stem scanned every path twice for the same answer. The checks
+    // above are pure "does anything match" tests, so the order between them
+    // and this one cannot change the result.
+    if [stem, effective_stem]
+        .iter()
+        .any(|s| LANG_CODES.contains(s) || LANG_NAMES.contains(s))
+    {
+        let is_loc_folder = lower.contains("/localization/")
+            || lower.contains("/localisation/")
+            || lower.contains("/languages/")
+            || lower.contains("/language/")
+            || lower.contains("/lang/")
+            || lower.contains("/audio/")
+            || lower.contains("/sound/")
+            || lower.contains("/sounds/")
+            || lower.contains("/speech/")
+            || lower.contains("/dialogue/")
+            || lower.contains("/dialogues/")
+            || lower.contains("/vo/")
+            || lower.contains("/voice/")
+            || lower.contains("/voices/");
+        if is_loc_folder {
+            return true;
+        }
+    }
+
+    false
 }
-
-fn log_debug_archive(_msg: &str) {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::tempdir;
 
     #[test]
     fn test_candidate_archive_path_detection() {
@@ -278,8 +336,8 @@ mod tests {
         assert!(!is_candidate_archive_path("readme.txt"));
 
         // Bink 1 and Bink 2 are videos, not archives of separable language
-        // streams - both now belong to the intro rules, not the archive
-        // inspector. See GT-204.
+        // streams - both belong to the intro rules, not the archive
+        // extension list. See GT-204.
         assert!(!is_candidate_archive_path("movies/intro.bik"));
         assert!(!is_candidate_archive_path("movies/intro.bk2"));
     }
@@ -297,21 +355,14 @@ mod tests {
             file_name: "file.txt".to_string(),
             findings_count: 3,
         };
-        let p3 = WorkerProgress::ScanPhase3 {
-            current: 1,
-            total: 2,
-            archive_name: "voices.pck".to_string(),
-            monoliths_count: 1,
-        };
-        let p4 = WorkerProgress::OverallProgress {
+        let p3 = WorkerProgress::OverallProgress {
             fraction: 0.5,
             message: "Analyzing...".to_string(),
         };
 
         assert!(matches!(p1, WorkerProgress::ScanPhase1 { .. }));
         assert!(matches!(p2, WorkerProgress::ScanPhase2 { .. }));
-        assert!(matches!(p3, WorkerProgress::ScanPhase3 { .. }));
-        assert!(matches!(p4, WorkerProgress::OverallProgress { .. }));
+        assert!(matches!(p3, WorkerProgress::OverallProgress { .. }));
     }
 
     #[test]
@@ -325,32 +376,16 @@ mod tests {
     }
 
     #[test]
-    fn monolithic_finding_uses_only_safe_selected_ranges_for_savings() {
-        let dir = tempdir().expect("tempdir");
-        let archive = dir.path().join("voices.pck");
-        let bytes = archive_trimmer::formats::wwise::create_synthetic_wwise_pck(
-            &[(1, "English(US)"), (2, "German")],
-            &[(100, 1, 4096), (200, 2, 8192), (300, 999, 16384)],
-        );
-        fs::write(&archive, bytes).expect("write pck");
+    fn external_single_language_files_are_recognized() {
+        assert!(is_external_single_language_file("locales/es.pak"));
+        assert!(is_external_single_language_file("Audio/sounds_fre.pck"));
+        assert!(is_external_single_language_file("sound_rus.pck"));
+        assert!(is_external_single_language_file("Localization/Spanish.pak"));
 
-        let finding = inspect_monolithic_archive(&archive, &["english".to_string()])
-            .expect("inspect")
-            .expect("finding");
-        let FindingAction::SparseZero {
-            offsets,
-            streams,
-            estimated_savings,
-            ..
-        } = finding.action
-        else {
-            panic!("expected sparse-zero finding");
-        };
-
-        assert_eq!(offsets.len(), 1);
-        assert_eq!(streams.len(), 1);
-        assert_eq!(streams[0].language, "german");
-        assert_eq!(estimated_savings, 8192);
+        // Monolithic multi-language containers are not single-language files.
+        assert!(!is_external_single_language_file("voices.pck"));
+        assert!(!is_external_single_language_file("re_chunk_000.pak"));
+        assert!(!is_external_single_language_file("app.asar"));
     }
 }
 
@@ -358,7 +393,7 @@ mod tests {
 mod keep_language_veto_tests {
     use super::*;
     use crate::langdetect::LangDetector;
-    use crate::rules::RuleProvenance;
+    use crate::rules::{Category, RuleProvenance};
 
     fn detector(keep: &[&str]) -> LangDetector {
         LangDetector::with_keep_list(&keep.iter().map(|k| k.to_string()).collect::<Vec<_>>())
@@ -371,7 +406,6 @@ mod keep_language_veto_tests {
             confidence: 80,
             provenance: RuleProvenance::Builtin,
             localized_content,
-            action: FindingAction::DirectDelete,
         }
     }
 

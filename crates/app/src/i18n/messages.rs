@@ -7,7 +7,7 @@
 use gametrimmer_core::langdetect::{LangEvidence, LangReason};
 
 use super::{strings, Lang};
-use crate::model::{format_size, RiskLevel};
+use crate::model::RiskLevel;
 
 /// One report rendered twice: English for the diagnostic log, the interface
 /// language for the window.
@@ -506,9 +506,6 @@ pub fn manual_library_unavailable(lang: Lang, path: impl std::fmt::Display) -> S
 // -- worker::delete --
 
 pub fn deletion_block_reason(lang: Lang, reason: &str) -> String {
-    if reason == "archive container is read-only until safe rollback is implemented" {
-        return super::strings(lang).archive_action_unavailable.to_string();
-    }
     if lang == Lang::En {
         return reason.to_string();
     }
@@ -993,11 +990,9 @@ pub fn selection_hint(lang: Lang) -> String {
         Lang::En | Lang::Custom(_) => {
             "Files the app is not sure enough about are marked \u{26a0} and are never \
              ticked for you after a scan - look at them before deleting.\n\n\
-             In a game protected by anti-cheat, a file that gets rewritten in place \
-             instead of deleted outright is marked \u{1f6e1}\u{fe0f}: a monolithic archive \
-             stays blocked either way, and an intro video replaced by a micro-stub is \
-             skipped by Select all - tick it by hand to delete it. Every other file in a \
-             protected game deletes normally, marked or not.\n\n\
+             A game protected by anti-cheat has its own row marked \
+             \u{1f6e1}\u{fe0f} Anti-Cheat Protected: its files still delete normally, the \
+             shield only stops an unattended re-trim from touching that game.\n\n\
              Checkboxes on tree rows select a whole disk, game, category, or folder. \
              Right-clicking a disk, game, or category opens bulk selection actions \
              (including a category across the whole disk).\n\n\
@@ -1008,11 +1003,9 @@ pub fn selection_hint(lang: Lang) -> String {
         Lang::Uk => "Файли, щодо яких застосунок недостатньо впевнений, позначені \u{26a0} і \
              ніколи не обираються за вас після сканування — гляньте на них перед \
              видаленням.\n\n\
-             У грі під захистом античиту файл, який перезаписується на місці замість \
-             видалення, позначений \u{1f6e1}\u{fe0f}: монолітний архів лишається заблокованим \
-             у будь-якому разі, а вступний ролик, замінений мікро-заглушкою, пропускається \
-             «Вибрати все» — позначте його вручну, щоб видалити. Решта файлів у захищеній грі \
-             видаляється як завжди, незалежно від позначки.\n\n\
+             У грі під захистом античиту сам рядок гри позначений \
+             \u{1f6e1}\u{fe0f} Захищено античитом: її файли видаляються як завжди, захист \
+             лише блокує неконтрольоване повторне обрізання цієї гри.\n\n\
              Прапорці на рядках дерева вибирають цілий диск, гру, категорію чи теку. \
              Права кнопка миші на диску, грі або категорії відкриває дії масового вибору \
              (зокрема категорію на всьому диску).\n\n\
@@ -1499,7 +1492,7 @@ pub fn csv_header(lang: Lang) -> &'static str {
     }
 }
 
-// -- 3-phase scanning & monolithic archives --
+// -- 2-phase scanning --
 
 pub fn scan_phase_1_label(lang: Lang, current: usize, total: usize) -> String {
     match lang {
@@ -1512,81 +1505,6 @@ pub fn scan_phase_2_label(lang: Lang, current: usize, total: usize) -> String {
     match lang {
         Lang::Uk => format!("2. Аналіз звичайних файлів ({current} / {total} файлів)"),
         _ => format!("2. Regular file analysis ({current} / {total} files)"),
-    }
-}
-
-pub fn scan_phase_3_label(lang: Lang, current: usize, total: usize) -> String {
-    match lang {
-        Lang::Uk => format!("3. Аналіз монолітних архівів ({current} / {total} архівів)"),
-        _ => format!("3. Monolithic archives inspection ({current} / {total} archives)"),
-    }
-}
-
-pub fn monolithic_badge(lang: Lang, savings: u64, total: u64) -> String {
-    let savings_str = format_size(lang, savings);
-    let total_str = format_size(lang, total);
-    match lang {
-        Lang::Uk => format!("📦 Моноліт [Економія: {savings_str} / Разом: {total_str}]"),
-        _ => format!("📦 Monolith [Savings: {savings_str} / Total: {total_str}]"),
-    }
-}
-
-pub fn hover_monolith_suffix(
-    lang: Lang,
-    action: &gametrimmer_core::models::FindingAction,
-) -> String {
-    match action {
-        gametrimmer_core::models::FindingAction::SparseZero {
-            format,
-            languages,
-            stream_count,
-            offsets,
-            ..
-        } => {
-            let total_stream_bytes: u64 = offsets.iter().map(|(_, l)| *l).sum();
-            let size_str = format_size(lang, total_stream_bytes);
-            let langs = if languages.is_empty() {
-                match lang {
-                    Lang::Uk => "всі мови",
-                    _ => "all languages",
-                }
-            } else {
-                &languages.join(", ")
-            };
-            match lang {
-                Lang::Uk => format!(
-                    "\n\n📦 Монолітний контейнер: {format}\nВиявлено невикористовуваних потоків: {stream_count} ({langs})\nПотенційна економія простору: {size_str}"
-                ),
-                _ => format!(
-                    "\n\n📦 Monolithic container: {format}\nUnused localized streams found: {stream_count} ({langs})\nPotential space savings: {size_str}"
-                ),
-            }
-        }
-        gametrimmer_core::models::FindingAction::Repack {
-            format,
-            languages,
-            estimated_savings,
-            ..
-        } => {
-            let size_str = format_size(lang, *estimated_savings);
-            let langs = if languages.is_empty() {
-                match lang {
-                    Lang::Uk => "всі мови",
-                    _ => "all languages",
-                }
-            } else {
-                &languages.join(", ")
-            };
-            match lang {
-                Lang::Uk => format!(
-                    "\n\n📦 Монолітний архів (перепакування): {format}\nМови для видалення: {langs}\nПотенційна економія простору: {size_str}"
-                ),
-                _ => format!(
-                    "\n\n📦 Monolithic archive (repack): {format}\nLanguages to strip: {langs}\nPotential space savings: {size_str}"
-                ),
-            }
-        }
-        _ => String::new(),
     }
 }
 

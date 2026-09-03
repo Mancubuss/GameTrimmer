@@ -9,7 +9,6 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 use gametrimmer_core::db;
-use gametrimmer_core::models::FindingAction;
 use gametrimmer_core::ops::{
     execute_delete_plans_observed, prepare_delete_plans_with_skips, DeleteAttendance, FsOutcome,
     OpOutcome,
@@ -26,9 +25,6 @@ use super::{Notifier, RemoveOutcome, WorkerMsg};
 pub struct DeleteItem {
     pub file_id: i64,
     pub size_on_disk: u64,
-    /// The exact action shown to the user. Archive actions are not file
-    /// deletions and must never be silently routed through this worker.
-    pub action: FindingAction,
 }
 
 /// `ctx` is the app's `egui::Context` (see `Notifier`) so per-file delete
@@ -61,11 +57,6 @@ fn run_delete(
             return;
         }
     };
-
-    if let Err(err) = validate_direct_delete_batch(&conn, &items) {
-        notifier.report_error(i18n::Reported::new(lang, |l| i18n::delete_failed(l, &err)));
-        return;
-    }
 
     let file_ids: Vec<i64> = items.iter().map(|item| item.file_id).collect();
     let intro_file_ids: HashSet<i64> = {
@@ -454,59 +445,6 @@ fn report_stub_write_failure_if_any(
         i18n::intro_stub_write_failed(l, path.display(), &err)
     }));
     Some(detail)
-}
-
-/// Proves that the whole batch is made only of ordinary file deletions and
-/// that the persisted action still agrees with the UI model. Validation is
-/// all-or-nothing and happens before save backups, delete-plan preparation or
-/// any filesystem mutation.
-fn validate_direct_delete_batch(
-    conn: &rusqlite::Connection,
-    items: &[DeleteItem],
-) -> Result<(), String> {
-    let mut stmt = conn
-        .prepare("SELECT category, action FROM findings WHERE file_id = ?1")
-        .map_err(|err| format!("could not verify finding action: {err}"))?;
-    for item in items {
-        if item.action != FindingAction::DirectDelete {
-            return Err(format!(
-                "file_id {} uses an archive action; whole-file deletion is blocked",
-                item.file_id
-            ));
-        }
-
-        let raw_actions = stmt
-            .query_map([item.file_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-            })
-            .map_err(|err| format!("could not read finding action: {err}"))?;
-        let mut found = false;
-        for persisted_row in raw_actions {
-            found = true;
-            let (category, raw) =
-                persisted_row.map_err(|err| format!("could not read finding action: {err}"))?;
-            let persisted = FindingAction::from_persisted_contract(&category, raw.as_deref())
-                .map_err(|err| {
-                format!(
-                    "file_id {} has an invalid persisted finding contract; deletion is blocked: {err}",
-                    item.file_id
-                )
-            })?;
-            if persisted != item.action {
-                return Err(format!(
-                    "file_id {} has inconsistent queued and persisted actions; whole-file deletion is blocked",
-                    item.file_id
-                ));
-            }
-        }
-        if !found {
-            return Err(format!(
-                "file_id {} has no finding row; deletion is blocked",
-                item.file_id
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Writes the batch's space accounting where it outlives the dialog that
@@ -927,12 +865,10 @@ mod tests {
             DeleteItem {
                 file_id: intro_file_id,
                 size_on_disk: 1000,
-                action: FindingAction::DirectDelete,
             },
             DeleteItem {
                 file_id: docs_file_id,
                 size_on_disk: 1000,
-                action: FindingAction::DirectDelete,
             },
         ];
 
@@ -1013,17 +949,14 @@ mod tests {
             DeleteItem {
                 file_id: intro_id,
                 size_on_disk: 1000,
-                action: FindingAction::DirectDelete,
             },
             DeleteItem {
                 file_id: container_id,
                 size_on_disk: 4000,
-                action: FindingAction::DirectDelete,
             },
             DeleteItem {
                 file_id: docs_id,
                 size_on_disk: 2000,
-                action: FindingAction::DirectDelete,
             },
         ];
 
@@ -1104,7 +1037,6 @@ mod tests {
         let items = vec![DeleteItem {
             file_id,
             size_on_disk: 1000,
-            action: FindingAction::DirectDelete,
         }];
 
         run_delete(
@@ -1160,7 +1092,6 @@ mod tests {
         let items = vec![DeleteItem {
             file_id,
             size_on_disk: 1000,
-            action: FindingAction::DirectDelete,
         }];
 
         run_delete(
@@ -1248,12 +1179,10 @@ mod tests {
             DeleteItem {
                 file_id: skipped_id,
                 size_on_disk: 1000,
-                action: FindingAction::DirectDelete,
             },
             DeleteItem {
                 file_id: deleted_id,
                 size_on_disk: 2000,
-                action: FindingAction::DirectDelete,
             },
         ];
 

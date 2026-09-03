@@ -889,11 +889,8 @@ mod tests {
         )
         .expect("write EAC marker");
         let target = game_dir.join("manual.txt");
-        let archive = archive_trimmer::formats::wwise::create_synthetic_wwise_pck(
-            &[(1, "English(US)"), (2, "French")],
-            &[(1, 1, 128), (2, 2, 128)],
-        );
-        fs::write(&target, archive).expect("write disguised archive");
+        fs::write(&target, b"bytes do not matter, only the path does")
+            .expect("write disguised archive");
         let rules = format!(
             r#"{{"version":{},"rules":[{{"category":"docs_file","pattern":"^manual\\.txt$","desc":"Trusted docs rule","confidence":90}}]}}"#,
             crate::rules::RULE_PACK_VERSION

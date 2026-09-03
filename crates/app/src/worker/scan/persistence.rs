@@ -357,9 +357,9 @@ pub(super) fn persist_prepared_game(
     )?;
     // The anti-cheat verdict is decided once, here, from the complete
     // inventory this scan just walked (`classify_game`), and stored so every
-    // later reader - Phase 3, the startup load - can read the same answer
-    // instead of re-deriving its own. A game whose scan never reaches this
-    // line keeps `NULL`, which reads as protected.
+    // later reader - the delete preflight, the startup load - can read the
+    // same answer instead of re-deriving its own. A game whose scan never
+    // reaches this line keeps `NULL`, which reads as protected.
     conn.execute(
         "UPDATE games SET anti_cheat_protected = ?2 WHERE id = ?1",
         params![prepared.game_id, prepared.anti_cheat_protected],
@@ -483,7 +483,11 @@ pub(super) fn persist_prepared_game(
         let file_id = file_ids[position];
 
         let sql_started = std::time::Instant::now();
-        let action_json = finding.action.to_json();
+        // `action` has carried no meaning since the in-place archive trimmer
+        // was removed - every finding is a whole-file delete now. The
+        // column stays in the schema (existing databases keep whatever an
+        // older build wrote into it), but nothing this build writes reads
+        // it back as anything but the legacy blank/`NULL` representation.
         insert_finding.execute(params![
             file_id,
             source_key(finding.source),
@@ -495,7 +499,7 @@ pub(super) fn persist_prepared_game(
                 RuleProvenance::Builtin => "builtin",
                 RuleProvenance::ImportedUntrusted => "imported_untrusted",
             },
-            action_json,
+            None::<String>,
         ])?;
         sql += sql_started.elapsed();
 
@@ -564,9 +568,7 @@ pub(super) fn persist_prepared_game(
             deletion_block_reason,
             imported_untrusted: finding.provenance == RuleProvenance::ImportedUntrusted,
             library: Some(library.clone()),
-            action: finding.action.clone(),
             anti_cheat_protected: prepared.anti_cheat_protected,
-            monolith_badge: None,
         });
     }
 

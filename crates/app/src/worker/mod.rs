@@ -76,7 +76,7 @@ pub enum WorkerMsg {
         total: usize,
         detail: String,
     },
-    /// Granular progress across the 3-phase scanning architecture.
+    /// Granular progress across the 2-phase scanning architecture.
     ScanPhaseProgress(gametrimmer_core::worker::WorkerProgress),
     /// The scan finished successfully with the given findings.
     Done {

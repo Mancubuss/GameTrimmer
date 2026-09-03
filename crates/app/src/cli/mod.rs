@@ -204,7 +204,6 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         keep_languages: settings.keep_languages.clone(),
         enabled_categories: settings.enabled_categories.clone(),
         excluded_libraries: settings.excluded_libraries.clone(),
-        scan_monolithic_archives: settings.scan_monolithic_archives,
     };
 
     let (findings, scan_summary) = match run_scan_headless(&db_path, elevated, options) {
@@ -239,7 +238,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     // failure keeps read-only (fresh scan required, legacy snapshot, ...).
     // This also gates `--apply` below: any one of these aborts the whole run
     // rather than silently deleting less than the operator asked for.
-    let mut blocked: Vec<String> = items
+    let blocked: Vec<String> = items
         .iter()
         .filter_map(|item| {
             let reason = item.row.deletion_block_reason.as_ref()?;
@@ -260,48 +259,6 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         return EXIT_RUNTIME;
     }
 
-    // Anti-cheat protected findings the profile would otherwise pick too, but
-    // are left out of bulk selection by `FindingRow::bulk_selectable` alone,
-    // by design, on every run (see the GUI's `anticheat_shield_tooltip`).
-    // Added to the report only *after* the apply gate above: unlike a safety
-    // failure this is not a one-off to fix and retry, so it must not make
-    // `--apply` refuse to run at all against a library that has an
-    // anti-cheat protected game. Without this, the report's selected count
-    // came in smaller than the findings total with nothing under "blocked"
-    // to explain why.
-    //
-    // `is_monolithic_archive()` narrows this to the rows anti-cheat actually
-    // excludes: the carve-out was narrowed to monolithic archives only (an
-    // ordinary whole-file delete, or an intro's micro-stub swap, is
-    // ordinary in a protected game and already counted as selected above,
-    // so listing it here too would claim a block that never happened). Every
-    // monolithic archive already carries its own `deletion_block_reason`
-    // ("archive container is read-only until safe rollback is implemented")
-    // regardless of anti-cheat, so an anti-cheat protected one also appears
-    // in `blocked` above with that reason - this entry adds the anti-cheat
-    // verdict on top rather than replacing it, which is intentional: once
-    // archive execution ships and the blanket block reason lifts, this is
-    // the line that keeps explaining the protected ones.
-    blocked.extend(
-        items
-            .iter()
-            .filter(|item| {
-                item.row.anti_cheat_protected
-                    && item.row.is_monolithic_archive()
-                    && model::profile_auto_selects(
-                        profile,
-                        item.row.display_category(),
-                        item.row.confidence,
-                    )
-            })
-            .map(|item| {
-                format!(
-                    "{}: anti-cheat protected",
-                    item.row.install_dir.join(&item.row.rel_path).display()
-                )
-            }),
-    );
-
     // For --apply, delete the selected set through the same worker the GUI uses.
     let apply = match config.mode {
         Mode::DryRun => None,
@@ -311,7 +268,6 @@ fn run_headless(config: HeadlessConfig) -> u8 {
                 .map(|item| DeleteItem {
                     file_id: item.row.file_id,
                     size_on_disk: item.row.size_on_disk,
-                    action: item.row.action.clone(),
                 })
                 .collect();
 

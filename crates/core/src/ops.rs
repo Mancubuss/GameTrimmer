@@ -333,7 +333,6 @@ fn prepare_delete_plans_for_action(
     // and only ever populated on the unattended path.
     let mut anti_cheat_cache: HashMap<i64, Option<String>> = HashMap::new();
     for file_id in file_ids {
-        validate_persisted_direct_delete_contract(conn, *file_id)?;
         let row = conn.query_row(
             "SELECT f.scan_id, f.game_id, fs.trusted_root, fs.rel_path,
                     fs.root_identity, fs.target_identity, fs.target_kind,
@@ -579,7 +578,7 @@ fn prepare_delete_plans_for_action(
 /// actually happened is that a launcher update moved its folder - in the one
 /// line an operator reads to find out what the re-trim did.
 fn unattended_skip_reason(install_dir: &Path) -> Option<String> {
-    match archive_trimmer::anti_cheat::AntiCheatShield::check_directory(install_dir, false) {
+    match crate::anti_cheat::AntiCheatShield::check_directory(install_dir, false) {
         Ok(report) if report.is_safe => None,
         Ok(report) => {
             let engine = report
@@ -598,40 +597,6 @@ fn unattended_skip_reason(install_dir: &Path) -> Option<String> {
             install_dir.display()
         )),
     }
-}
-
-/// Authoritative persisted contract gate for every whole-file removal path.
-/// All finding rows attached to the file must be recognized ordinary
-/// direct-delete contracts. One monolithic, malformed, unknown or conflicting
-/// row blocks the file and therefore the whole plan batch.
-fn validate_persisted_direct_delete_contract(conn: &Connection, file_id: i64) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT category, action FROM findings WHERE file_id = ?1")?;
-    let rows = stmt.query_map([file_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-    })?;
-    let mut found = false;
-    for row in rows {
-        found = true;
-        let (category, raw_action) = row?;
-        let action =
-            crate::models::FindingAction::from_persisted_contract(&category, raw_action.as_deref())
-                .map_err(|error| {
-                    crate::error::CoreError::Other(format!(
-                "delete preflight blocked file_id {file_id}: invalid finding contract: {error}"
-            ))
-                })?;
-        if action != crate::models::FindingAction::DirectDelete {
-            return Err(crate::error::CoreError::Other(format!(
-                "delete preflight blocked file_id {file_id}: archive action is not a whole-file deletion"
-            )));
-        }
-    }
-    if !found {
-        return Err(crate::error::CoreError::Other(format!(
-            "delete preflight blocked file_id {file_id}: no finding contract"
-        )));
-    }
-    Ok(())
 }
 
 /// Executes a preflighted batch. The whole batch is validated before the first
@@ -1493,7 +1458,14 @@ mod tests {
     }
 
     #[test]
-    fn monolithic_category_with_null_action_cannot_prepare_a_direct_delete() {
+    /// A `findings.category = 'monolithic_archive'` row is residue from a
+    /// build that had an in-place archive trimmer; that feature is gone and
+    /// no code writes this category any more, but an old database can still
+    /// carry the row. It must never turn into a whole-file delete plan - the
+    /// path-based block in [`prepare_delete_plans_with_skips`] is what
+    /// guarantees that, entirely by the file's extension, before the
+    /// category or the (also legacy) `action` column is even read.
+    fn monolithic_category_row_is_skipped_by_the_path_based_block() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("archive.pck"), b"archive").unwrap();
         let mut conn = crate::db::open_in_memory().unwrap();
@@ -1507,14 +1479,19 @@ mod tests {
         .unwrap();
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
 
-        let error = prepare_delete_plans(
+        let (plans, skips) = prepare_delete_plans_with_skips(
             &conn,
             &[file_id],
             DeleteMethod::Permanent,
             DeleteAttendance::Interactive,
         )
-        .unwrap_err();
-        assert!(error.to_string().contains("invalid finding contract"));
+        .unwrap();
+        assert!(
+            plans.is_empty(),
+            "a monolithic archive candidate must never get a delete plan"
+        );
+        assert_eq!(skips.len(), 1);
+        assert!(skips[0].reason.contains("monolithic archive candidate"));
         assert!(temp.path().join("archive.pck").is_file());
     }
 
@@ -1549,23 +1526,12 @@ mod tests {
 
     #[test]
     /// A misleading name is classification's problem, not the preflight's.
-    ///
-    /// This used to assert the opposite: the preflight read both files and
-    /// held them back on their magic. It no longer reads anything, so both
-    /// reach a plan here - and neither reaches *here* in the first place
-    /// unless classification let it through. `should_probe_archive_contents`
-    /// probes `sounds_fra.pck` because `.pck` is an archive extension, and
-    /// probes `manual.txt` whenever the rule that claimed it was imported;
-    /// either way the finding is blocked as a read-only archive and can never
-    /// be selected. What is deliberately no longer covered is the third case,
-    /// a *built-in* rule claiming `manual.txt`, which classification skips for
-    /// speed - a bug to fix in that rule rather than at the exit.
+    /// The preflight never reads a file's bytes to decide whether it may be
+    /// deleted whole - only its path, against
+    /// [`crate::worker::is_candidate_archive_path`].
     fn a_misleading_name_reaches_a_plan_because_the_preflight_stopped_reading() {
         let temp = tempfile::tempdir().unwrap();
-        let bytes = archive_trimmer::formats::wwise::create_synthetic_wwise_pck(
-            &[(0, "English(US)"), (1, "French")],
-            &[(10, 0, 64), (11, 1, 64)],
-        );
+        let bytes = b"AKPK-shaped bytes do not matter to the preflight".to_vec();
         std::fs::write(temp.path().join("sounds_fra.pck"), &bytes).unwrap();
         std::fs::write(temp.path().join("manual.txt"), &bytes).unwrap();
         // Neither name is a monolithic archive candidate, so the name check
@@ -1617,10 +1583,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("intro.bik"), crate::stub::BIK1_STUB).unwrap();
         std::fs::write(temp.path().join("logo.bk2"), crate::stub::BINK2_STUB).unwrap();
-        let container = archive_trimmer::formats::wwise::create_synthetic_wwise_pck(
-            &[(0, "English(US)"), (1, "French")],
-            &[(10, 0, 64), (11, 1, 64)],
-        );
+        let container = b"AKPK-shaped bytes do not matter to the preflight".to_vec();
         // Same bytes, two names. `voices.pck` is a monolithic archive
         // candidate by name alone; `manual.txt` is not, and nothing but its
         // contents could say otherwise.
@@ -1665,13 +1628,9 @@ mod tests {
         assert_eq!(skips.len(), 1);
         assert!(skips[0].reason.contains("monolithic archive candidate"));
 
-        // And the byte probe is gone. The same container under a name no
-        // check objects to now reaches a delete plan, because deciding whether
-        // a container may be whole-deleted is classification's job - see
-        // `should_probe_archive_contents`, which blocks it there as read-only
-        // for every imported rule and every archive-looking extension. By this
-        // point the file is one the user selected, and the preflight does not
-        // reopen it to second-guess that.
+        // The same container under a name the preflight has no opinion about
+        // reaches a delete plan: the preflight never reads a file's bytes,
+        // only its path.
         let (plans, skips) = prepare_delete_plans_with_skips(
             &conn,
             &[disguised],
@@ -1740,22 +1699,23 @@ mod tests {
         let mut conn = crate::db::open_in_memory().unwrap();
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
         let first_id = insert_safe_finding(&conn, scan_id, temp.path(), "first.bin", "first");
-        let archive_id = insert_safe_finding(&conn, scan_id, temp.path(), "second.bin", "second");
+        let second_id = insert_safe_finding(&conn, scan_id, temp.path(), "second.bin", "second");
         crate::db::activate_scan(&mut conn, scan_id).unwrap();
         let plans = prepare_delete_plans(
             &conn,
-            &[first_id, archive_id],
+            &[first_id, second_id],
             DeleteMethod::Permanent,
             DeleteAttendance::Interactive,
         )
         .unwrap();
 
-        conn.execute(
-            "UPDATE findings SET category = 'monolithic_archive', action = NULL \
-             WHERE file_id = ?1",
-            [archive_id],
-        )
-        .unwrap();
+        // The batch went stale between planning and execution: the library
+        // this scan trusted no longer verifies. Any one of the preflight's
+        // contracts would serve here - what is pinned is that execution
+        // re-derives all of them, and does so before touching the first
+        // file rather than one plan at a time.
+        crate::db::record_scan_library_evidence(&conn, scan_id, temp.path(), "test", "failed")
+            .unwrap();
         assert!(execute_delete_plans_observed(
             &mut conn,
             DeleteMethod::Permanent,

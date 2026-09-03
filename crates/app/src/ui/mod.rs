@@ -121,7 +121,6 @@ pub fn danger_frame(ui: &mut egui::Ui, label: &str, contents: impl FnOnce(&mut e
 mod tests {
     use super::*;
     use crate::model::{FindingRow, FindingSource};
-    use gametrimmer_core::models::FindingAction;
     use gametrimmer_core::rules::Category;
     use std::path::PathBuf;
 
@@ -146,9 +145,7 @@ mod tests {
                 deletion_block_reason: None,
                 imported_untrusted: false,
                 library: None,
-                action: FindingAction::DirectDelete,
                 anti_cheat_protected: false,
-                monolith_badge: None,
             },
             selected: false,
             removed: false,

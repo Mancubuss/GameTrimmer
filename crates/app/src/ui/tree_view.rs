@@ -79,11 +79,6 @@ const INDENT_PX: f32 = 18.0;
 const LANG_COLUMN_PX: f32 = 48.0;
 const COUNT_COLUMN_PX: f32 = 64.0;
 const SIZE_COLUMN_PX: f32 = 92.0;
-/// A monolithic archive can contain thousands of localized chunks. Materialize
-/// a bounded page at a time, otherwise expanding one archive defeats the
-/// surrounding row virtualization before `ScrollArea::show_rows` gets a
-/// chance to do its work.
-const MONOLITHIC_STREAM_PAGE_SIZE: usize = 128;
 
 /// Width held before every file name for the "look at this one" mark, so the
 /// names of marked and unmarked rows still line up in one column.
@@ -148,25 +143,6 @@ enum Row {
         c: usize,
         n: usize,
         member: Option<usize>,
-    },
-    MonolithicStream {
-        d: usize,
-        g: usize,
-        c: usize,
-        n: usize,
-        member: Option<usize>,
-        stream_index: usize,
-    },
-    /// Explicitly loads the next bounded page of streams for one monolithic
-    /// archive. This is a navigation row, not a selectable deletion target.
-    MonolithicStreamsMore {
-        d: usize,
-        g: usize,
-        c: usize,
-        n: usize,
-        member: Option<usize>,
-        next_page: usize,
-        remaining: usize,
     },
 }
 
@@ -776,20 +752,6 @@ fn build_visible_rows(
                                     },
                                     indent: node_indent + 1,
                                 });
-                                push_monolithic_stream_rows(
-                                    &mut rows,
-                                    findings,
-                                    toggles,
-                                    &top_group.key,
-                                    game.game_id,
-                                    d,
-                                    g,
-                                    c,
-                                    n,
-                                    Some(member),
-                                    index,
-                                    node_indent + 2,
-                                );
                             }
                         }
                         TreeNode::File { index } => {
@@ -813,20 +775,6 @@ fn build_visible_rows(
                                 },
                                 indent: node_indent,
                             });
-                            push_monolithic_stream_rows(
-                                &mut rows,
-                                findings,
-                                toggles,
-                                &top_group.key,
-                                game.game_id,
-                                d,
-                                g,
-                                c,
-                                n,
-                                None,
-                                *index,
-                                node_indent + 1,
-                            );
                         }
                     }
                 }
@@ -887,90 +835,6 @@ fn folder_key(
     )
 }
 
-/// Stable, collision-free key for an expandable monolithic container file row.
-fn monolith_key(top: &TopKey, game_id: i64, rel_path: &str) -> String {
-    format!("m|{}|{game_id}|{rel_path}", top.collapse_key())
-}
-
-/// Key that records one extra materialized stream page. Page zero is implicit
-/// once its archive row is expanded, so this only stores user requests beyond
-/// the initial bounded page.
-fn monolith_stream_page_key(monolith_key: &str, page: usize) -> String {
-    format!("{monolith_key}|page|{page}")
-}
-
-fn loaded_monolith_stream_pages(toggles: &HashMap<String, bool>, monolith_key: &str) -> usize {
-    // Page zero is always available after expansion. Stop at the first gap so
-    // a stale key from a changed scan cannot make us materialize a later page.
-    let mut pages = 1;
-    while toggles
-        .get(&monolith_stream_page_key(monolith_key, pages))
-        .copied()
-        .unwrap_or(false)
-    {
-        pages += 1;
-    }
-    pages
-}
-
-#[allow(clippy::too_many_arguments)]
-fn push_monolithic_stream_rows(
-    rows: &mut Vec<VisibleRow>,
-    findings: &[FindingItem],
-    toggles: &HashMap<String, bool>,
-    top: &TopKey,
-    game_id: i64,
-    d: usize,
-    g: usize,
-    c: usize,
-    n: usize,
-    member: Option<usize>,
-    finding_index: usize,
-    indent: usize,
-) {
-    let finding = &findings[finding_index].row;
-    let streams = finding.action.streams();
-    if !finding.is_monolithic_archive() || streams.is_empty() {
-        return;
-    }
-    let key = monolith_key(top, game_id, &finding.rel_path);
-    if !is_open(toggles, &key, false) {
-        return;
-    }
-
-    let pages = loaded_monolith_stream_pages(toggles, &key);
-    let end = streams
-        .len()
-        .min(pages.saturating_mul(MONOLITHIC_STREAM_PAGE_SIZE));
-    for stream_index in 0..end {
-        rows.push(VisibleRow {
-            row: Row::MonolithicStream {
-                d,
-                g,
-                c,
-                n,
-                member,
-                stream_index,
-            },
-            indent,
-        });
-    }
-    if end < streams.len() {
-        rows.push(VisibleRow {
-            row: Row::MonolithicStreamsMore {
-                d,
-                g,
-                c,
-                n,
-                member,
-                next_page: pages,
-                remaining: streams.len() - end,
-            },
-            indent,
-        });
-    }
-}
-
 /// Whether a node keyed by `key` is currently open: an explicit user choice
 /// if present in `toggles`, otherwise the node kind's default.
 fn is_open(toggles: &HashMap<String, bool>, key: &str, default_open: bool) -> bool {
@@ -992,7 +856,7 @@ fn parent_row_index(rows: &[VisibleRow], index: usize) -> Option<usize> {
 
 /// The expand/collapse toggle key and default-open state of a row, if the
 /// row is expandable at all.
-fn row_toggle_key(tree: &[TopGroup], findings: &[FindingItem], row: Row) -> Option<(String, bool)> {
+fn row_toggle_key(tree: &[TopGroup], row: Row) -> Option<(String, bool)> {
     match row {
         Row::Top { d } => Some((top_key(&tree[d].key), true)),
         Row::Game { d, g } => Some((game_key(&tree[d].key, tree[d].games[g].game_id), false)),
@@ -1021,19 +885,9 @@ fn row_toggle_key(tree: &[TopGroup], findings: &[FindingItem], row: Row) -> Opti
                 false,
             ))
         }
-        Row::File { d, g, c, n, member } => {
-            let index = file_row_index(tree, d, g, c, n, member);
-            let row = &findings[index].row;
-            if row.is_monolithic_archive() && !row.action.streams().is_empty() {
-                Some((
-                    monolith_key(&tree[d].key, tree[d].games[g].game_id, &row.rel_path),
-                    false,
-                ))
-            } else {
-                None
-            }
-        }
-        Row::MonolithicStream { .. } | Row::MonolithicStreamsMore { .. } => None,
+        // A file row is never expandable: GameTrimmer has no way to look
+        // inside a container, and every non-container file is a leaf.
+        Row::File { .. } => None,
     }
 }
 
@@ -1079,10 +933,6 @@ fn toggle_row_selection(tree: &[TopGroup], findings: &mut [FindingItem], row: Ro
                 false
             }
         }
-        // A stream is explanatory detail of its container, not its own
-        // independently removable file. Mouse clicks only focus it, so the
-        // keyboard must not silently toggle the parent container either.
-        Row::MonolithicStream { .. } | Row::MonolithicStreamsMore { .. } => false,
     }
 }
 
@@ -1208,7 +1058,7 @@ fn handle_keyboard(
             app.mark_selection_custom();
         }
         if keys.expand || keys.collapse {
-            match row_toggle_key(&app.tree, &app.findings, row) {
+            match row_toggle_key(&app.tree, row) {
                 Some((key, default_open)) => {
                     let open = is_open(&app.tree_toggles, &key, default_open);
                     if keys.expand && !open {
@@ -1353,7 +1203,7 @@ fn show_row(
         // and it is undone by clicking again; ticking, per this module's
         // header, stays out of reach of a stray click. File rows have nothing
         // to fold and keep cursor-only behaviour.
-        if let Some((key, default_open)) = row_toggle_key(tree, findings, row) {
+        if let Some((key, default_open)) = row_toggle_key(tree, row) {
             let open = is_open(toggles, &key, default_open);
             toggles.insert(key, !open);
         }
@@ -1373,41 +1223,7 @@ fn show_row(
             ui, tree, findings, toggles, cursor, d, g, c, n, row_index, indent, ctx,
         ),
         Row::File { d, g, c, n, member } => show_file_row(
-            ui, tree, findings, toggles, cursor, d, g, c, n, member, row_index, indent, ctx,
-        ),
-        Row::MonolithicStream {
-            d,
-            g,
-            c,
-            n,
-            member,
-            stream_index,
-        } => show_monolithic_stream_row(
-            ui,
-            tree,
-            findings,
-            cursor,
-            d,
-            g,
-            c,
-            n,
-            member,
-            stream_index,
-            row_index,
-            indent,
-            ctx,
-        ),
-        Row::MonolithicStreamsMore {
-            d,
-            g,
-            c,
-            n,
-            member,
-            next_page,
-            remaining,
-        } => show_monolithic_stream_more_row(
-            ui, tree, findings, toggles, cursor, d, g, c, n, member, next_page, remaining,
-            row_index, indent, ctx,
+            ui, tree, findings, cursor, d, g, c, n, member, row_index, indent, ctx,
         ),
     }
 }
@@ -2052,7 +1868,6 @@ fn show_file_row(
     ui: &mut egui::Ui,
     tree: &[TopGroup],
     findings: &mut [FindingItem],
-    toggles: &mut HashMap<String, bool>,
     cursor: &mut Option<usize>,
     d: usize,
     g: usize,
@@ -2085,16 +1900,7 @@ fn show_file_row(
                 .strip_prefix(&format!("{group_dir}\\"))
                 .unwrap_or(rel_path)
                 .to_string();
-            let mut parts = vec![Part::searched(name)];
-            if row.is_monolithic_archive() {
-                let badge = if let Some(b) = &row.monolith_badge {
-                    b.clone()
-                } else {
-                    i18n::monolithic_badge(lang, row.size_on_disk, row.size)
-                };
-                parts.push(Part::decoration(" "));
-                parts.push(Part::decoration(badge));
-            }
+            let parts = vec![Part::searched(name)];
             // The anti-cheat verdict is a per-*game* fact (see
             // `ui::tree_view::show_game_row`, which marks it once on the
             // game's own row), not drawn again here - see that function for
@@ -2108,7 +1914,7 @@ fn show_file_row(
             // all, so a bare relative path would leave a list of "loc_0.pak"
             // with nothing to tell one game's from another's - the row has to
             // carry that itself.
-            let mut parts = if ctx.axis == GroupAxis::Flat {
+            let parts = if ctx.axis == GroupAxis::Flat {
                 let (open, close) = i18n::quote_marks(lang);
                 // On the orphan branch the leading name is a UI heading rather
                 // than a game the search index knows, so it is decoration.
@@ -2126,15 +1932,6 @@ fn show_file_row(
             } else {
                 vec![Part::searched(row.rel_path.clone())]
             };
-            if row.is_monolithic_archive() {
-                let badge = if let Some(b) = &row.monolith_badge {
-                    b.clone()
-                } else {
-                    i18n::monolithic_badge(lang, row.size_on_disk, row.size)
-                };
-                parts.push(Part::decoration(" "));
-                parts.push(Part::decoration(badge));
-            }
             // The anti-cheat verdict is a per-*game* fact (see
             // `ui::tree_view::show_game_row`, which marks it once on the
             // game's own row), not drawn again here - see that function for
@@ -2181,15 +1978,8 @@ fn show_file_row(
             &format_size(lang, item.row.size),
         ));
     }
-    if item.row.is_monolithic_archive() {
-        hover.push_str(&i18n::hover_monolith_suffix(lang, &item.row.action));
-    }
     // The anti-cheat verdict is explained once, on the game's own row (see
-    // `show_game_row`), not repeated per-file here: after the carve-out
-    // narrowed to monolithic archives only, the one row type it still
-    // affects already explains its own block via `deletion_block_reason`
-    // below (archives stay read-only until safe rollback ships), so a
-    // second paragraph here would either repeat that or never fire.
+    // `show_game_row`), not repeated per-file here.
 
     row_columns(
         ui,
@@ -2203,28 +1993,8 @@ fn show_file_row(
             if checkbox.changed() {
                 ctx.selection_changed.set(true);
             }
-            // `individually_selectable` has a third clause - the anti-cheat
-            // monolith hard block - but it can never be the sole reason this
-            // checkbox is disabled: `is_monolithic_archive` only holds for a
-            // `SparseZero`/`Repack` action, and `action_is_executable_by_gui`
-            // only holds for `DirectDelete`, so whenever that clause fires
-            // the `!action_is_executable_by_gui()` branch above has already
-            // matched. No disabled-hover branch is needed for it here.
             if let Some(reason) = item.row.deletion_block_reason.as_deref() {
                 checkbox.on_disabled_hover_text(i18n::deletion_block_reason(lang, reason));
-            } else if !item.row.action_is_executable_by_gui() {
-                checkbox.on_disabled_hover_text(i18n::strings(lang).archive_action_unavailable);
-            }
-            if item.row.is_monolithic_archive() && !item.row.action.streams().is_empty() {
-                let m_key =
-                    monolith_key(&tree[d].key, tree[d].games[g].game_id, &item.row.rel_path);
-                let open = is_open(toggles, &m_key, false);
-                if ui
-                    .button(if open { "\u{25bc}" } else { "\u{25b6}" })
-                    .clicked()
-                {
-                    toggles.insert(m_key, !open);
-                }
             }
             show_review_mark(ui, needs_review, review_hint);
             let response = ui
@@ -2243,103 +2013,6 @@ fn show_file_row(
                 Some(ShellTarget::File(abs_path.clone())),
                 |ui| never_touch_entry(ui, lang, item, ctx.keep_request, index),
             );
-        },
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn show_monolithic_stream_row(
-    ui: &mut egui::Ui,
-    tree: &[TopGroup],
-    findings: &[FindingItem],
-    cursor: &mut Option<usize>,
-    d: usize,
-    g: usize,
-    c: usize,
-    n: usize,
-    member: Option<usize>,
-    stream_index: usize,
-    row_index: usize,
-    indent: usize,
-    ctx: RowCtx<'_>,
-) {
-    let lang = ctx.lang;
-    let index = file_row_index(tree, d, g, c, n, member);
-    let finding = &findings[index];
-    let streams = finding.row.action.streams();
-    let Some(stream) = streams.get(stream_index) else {
-        return;
-    };
-
-    let lang_col = egui::RichText::new(format!("[{}]", stream.language));
-    let size_col = egui::RichText::new(format_size(lang, stream.size));
-
-    let stream_desc = format!(
-        "{}\n{}: {}\n{}: {}",
-        stream.name,
-        i18n::strings(lang).col_language,
-        stream.language,
-        i18n::strings(lang).col_size,
-        format_size(lang, stream.size)
-    );
-
-    row_columns(ui, lang_col, egui::RichText::new(""), size_col, |ui| {
-        ui.add_space(INDENT_PX * indent as f32);
-        let response = ui
-            .add(
-                egui::Label::new(
-                    egui::RichText::new(format!("\u{21b3} {}", stream.name))
-                        .color(ui.visuals().weak_text_color()),
-                )
-                .truncate()
-                .sense(egui::Sense::click()),
-            )
-            .on_hover_text(stream_desc);
-        if response.clicked() {
-            *cursor = Some(row_index);
-        }
-    });
-}
-
-#[allow(clippy::too_many_arguments)]
-fn show_monolithic_stream_more_row(
-    ui: &mut egui::Ui,
-    tree: &[TopGroup],
-    findings: &[FindingItem],
-    toggles: &mut HashMap<String, bool>,
-    cursor: &mut Option<usize>,
-    d: usize,
-    g: usize,
-    c: usize,
-    n: usize,
-    member: Option<usize>,
-    next_page: usize,
-    remaining: usize,
-    row_index: usize,
-    indent: usize,
-    _ctx: RowCtx<'_>,
-) {
-    let index = file_row_index(tree, d, g, c, n, member);
-    let finding = &findings[index].row;
-    let key = monolith_key(&tree[d].key, tree[d].games[g].game_id, &finding.rel_path);
-    // Numeric continuation is language-neutral: this row must work in every
-    // bundled locale without introducing a partially translated new label.
-    let label = format!("↳ +{}…", MONOLITHIC_STREAM_PAGE_SIZE.min(remaining));
-
-    row_columns(
-        ui,
-        egui::RichText::new(""),
-        egui::RichText::new(""),
-        egui::RichText::new(""),
-        |ui| {
-            ui.add_space(INDENT_PX * indent as f32);
-            let response = ui
-                .add(egui::Button::new(label).frame(false))
-                .on_hover_text(format!("{remaining}"));
-            if response.clicked() {
-                toggles.insert(monolith_stream_page_key(&key, next_page), true);
-                *cursor = Some(row_index);
-            }
         },
     );
 }
@@ -3565,252 +3238,6 @@ mod tests {
         test.assert_no_label("movies/intro_logo.bik");
     }
 
-    #[test]
-    fn monolithic_archive_category_renders_tree_node_category_filter_and_expandable_streams() {
-        use gametrimmer_core::models::{FindingAction, MonolithicStreamInfo};
-
-        let mut test = tree_of_files([90; 2]);
-        let lang = test.app().lang();
-        let archives_heading = category_display(lang, DisplayCategory::Archives);
-
-        let savings = 182 * 1024 * 1024;
-        let total_size = 1200 * 1024 * 1024;
-        let streams = vec![
-            MonolithicStreamInfo {
-                name: "French audio stream".to_string(),
-                language: "fr".to_string(),
-                size: 92 * 1024 * 1024,
-            },
-            MonolithicStreamInfo {
-                name: "German audio stream".to_string(),
-                language: "de".to_string(),
-                size: 90 * 1024 * 1024,
-            },
-        ];
-
-        let mut monolith_finding = test.app().findings[0].clone();
-        monolith_finding.row.file_id = 99;
-        monolith_finding.row.rel_path = "sound/voices.pck".to_string();
-        monolith_finding.row.size = total_size;
-        monolith_finding.row.size_on_disk = savings;
-        monolith_finding.row.source =
-            model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
-        monolith_finding.row.rule_desc =
-            "Wwise PCK: Monolithic archive localized streams".to_string();
-        monolith_finding.row.lang_tag = None;
-        monolith_finding.row.action = FindingAction::SparseZero {
-            format: "Audiokinetic Wwise PCK".to_string(),
-            languages: vec!["fr".to_string(), "de".to_string()],
-            stream_count: 2,
-            offsets: vec![(0, 92 * 1024 * 1024), (92 * 1024 * 1024, 90 * 1024 * 1024)],
-            streams,
-            estimated_savings: savings,
-        };
-        monolith_finding.row.monolith_badge =
-            Some(i18n::monolithic_badge(lang, savings, total_size));
-
-        test.app_mut().findings.push(monolith_finding);
-        test.app_mut().rebuild_tree();
-        test.app_mut().clear_search();
-        open_every_branch(&mut test);
-
-        test.assert_label(archives_heading);
-        test.assert_label_containing("sound/voices.pck");
-        test.assert_label_containing("📦");
-
-        // Before expanding monolithic container, stream rows are not visible
-        test.assert_no_label_containing("French audio stream");
-
-        // Expand the monolithic container
-        let top_key = &test.app().tree[0].key;
-        let game_id = test.app().tree[0].games[0].game_id;
-        let m_key = monolith_key(top_key, game_id, "sound/voices.pck");
-        test.app_mut().tree_toggles.insert(m_key, true);
-        test.run();
-
-        // After expanding, stream rows are visible
-        test.assert_label_containing("French audio stream");
-        test.assert_label_containing("German audio stream");
-
-        // Filtering by Archives category shows voices.pck and hides regular locs
-        test.app_mut()
-            .set_category_filter(Some(DisplayCategory::Archives));
-        test.run();
-        test.assert_label_containing("sound/voices.pck");
-        test.assert_no_label(SEEDED_FILE_NAME);
-    }
-
-    #[test]
-    fn expanded_monolith_materializes_streams_in_bounded_pages() {
-        use gametrimmer_core::models::{FindingAction, MonolithicStreamInfo};
-
-        let mut test = tree_of_files([90; 2]);
-        let mut monolith = test.app().findings[0].clone();
-        monolith.row.file_id = 200;
-        monolith.row.rel_path = "sound/large.pck".to_string();
-        monolith.row.source =
-            model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
-        let streams: Vec<_> = (0..(MONOLITHIC_STREAM_PAGE_SIZE * 2 + 1))
-            .map(|index| MonolithicStreamInfo {
-                name: format!("stream {index}"),
-                language: "de".to_string(),
-                size: 1,
-            })
-            .collect();
-        monolith.row.action = FindingAction::SparseZero {
-            format: "Wwise".to_string(),
-            languages: vec!["de".to_string()],
-            stream_count: streams.len(),
-            offsets: vec![(0, streams.len() as u64)],
-            streams,
-            estimated_savings: 1,
-        };
-
-        test.app_mut().findings.push(monolith);
-        test.app_mut().rebuild_tree();
-        test.app_mut().clear_search();
-        open_every_branch(&mut test);
-
-        let (top_key, game_id) = test
-            .app()
-            .tree
-            .iter()
-            .flat_map(|top| {
-                top.games
-                    .iter()
-                    .map(move |game| (top.key.clone(), game.game_id))
-            })
-            .find(|(_, game_id)| *game_id == 0)
-            .expect("the seeded game remains in the tree");
-        let key = monolith_key(&top_key, game_id, "sound/large.pck");
-        test.app_mut().tree_toggles.insert(key.clone(), true);
-
-        let rows = build_visible_rows(
-            &test.app().tree,
-            &test.app().findings,
-            test.app().tree_axis,
-            &test.app().tree_toggles,
-            test.app().tree_category_filter,
-            &test.app().tree_search_index,
-        );
-        assert_eq!(
-            rows.iter()
-                .filter(|row| matches!(row.row, Row::MonolithicStream { .. }))
-                .count(),
-            MONOLITHIC_STREAM_PAGE_SIZE,
-            "one expanded archive may not materialize every stream at once"
-        );
-        assert!(rows.iter().any(|row| {
-            matches!(
-                row.row,
-                Row::MonolithicStreamsMore { remaining, .. }
-                    if remaining == MONOLITHIC_STREAM_PAGE_SIZE + 1
-            )
-        }));
-
-        test.app_mut()
-            .tree_toggles
-            .insert(monolith_stream_page_key(&key, 1), true);
-        let rows = build_visible_rows(
-            &test.app().tree,
-            &test.app().findings,
-            test.app().tree_axis,
-            &test.app().tree_toggles,
-            test.app().tree_category_filter,
-            &test.app().tree_search_index,
-        );
-        assert_eq!(
-            rows.iter()
-                .filter(|row| matches!(row.row, Row::MonolithicStream { .. }))
-                .count(),
-            MONOLITHIC_STREAM_PAGE_SIZE * 2,
-        );
-        assert!(rows
-            .iter()
-            .any(|row| { matches!(row.row, Row::MonolithicStreamsMore { remaining: 1, .. }) }));
-    }
-
-    #[test]
-    fn keyboard_cannot_select_a_protected_monolith_or_its_stream_detail() {
-        use gametrimmer_core::models::{FindingAction, MonolithicStreamInfo};
-
-        let mut test = tree_of_files([90; 2]);
-        let mut monolith = test.app().findings[0].clone();
-        monolith.row.file_id = 201;
-        monolith.row.rel_path = "sound/protected.pck".to_string();
-        monolith.row.source =
-            model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
-        monolith.row.anti_cheat_protected = true;
-        monolith.row.action = FindingAction::SparseZero {
-            format: "Wwise".to_string(),
-            languages: vec!["de".to_string()],
-            stream_count: 1,
-            offsets: vec![(0, 1)],
-            streams: vec![MonolithicStreamInfo {
-                name: "protected stream".to_string(),
-                language: "de".to_string(),
-                size: 1,
-            }],
-            estimated_savings: 1,
-        };
-        monolith.selected = false;
-
-        test.app_mut().findings.push(monolith);
-        test.app_mut().rebuild_tree();
-        test.app_mut().clear_search();
-        open_every_branch(&mut test);
-
-        let (top_key, game_id) = test
-            .app()
-            .tree
-            .iter()
-            .flat_map(|top| {
-                top.games
-                    .iter()
-                    .map(move |game| (top.key.clone(), game.game_id))
-            })
-            .find(|(_, game_id)| *game_id == 0)
-            .expect("the seeded game remains in the tree");
-        let key = monolith_key(&top_key, game_id, "sound/protected.pck");
-        test.app_mut().tree_toggles.insert(key, true);
-
-        let rows = build_visible_rows(
-            &test.app().tree,
-            &test.app().findings,
-            test.app().tree_axis,
-            &test.app().tree_toggles,
-            test.app().tree_category_filter,
-            &test.app().tree_search_index,
-        );
-        let protected_file = rows
-            .iter()
-            .find_map(|visible| match visible.row {
-                Row::File {
-                    d, g, c, n, member, ..
-                } if file_row_index(&test.app().tree, d, g, c, n, member) == 2 => Some(visible.row),
-                _ => None,
-            })
-            .expect("protected monolith file row");
-        let stream = rows
-            .iter()
-            .find_map(|visible| match visible.row {
-                Row::MonolithicStream { .. } => Some(visible.row),
-                _ => None,
-            })
-            .expect("monolith stream detail row");
-
-        {
-            let app = test.app_mut();
-            let (tree, findings) = (&app.tree, &mut app.findings);
-            assert!(!toggle_row_selection(tree, findings, protected_file));
-            assert!(!toggle_row_selection(tree, findings, stream));
-        }
-        assert!(
-            !test.app().findings[2].selected,
-            "no keyboard route may select the protected container"
-        );
-    }
-
     /// The owner's decision after testing on their real library: intro is no
     /// longer treated as risky. A protected row that rewrites bytes in place
     /// without being a monolithic archive - an intro finding, replaced by a
@@ -3881,13 +3308,9 @@ mod tests {
 
     /// A game where every row is still `imported_untrusted` (an older
     /// database's evidence this scan never re-checked) has zero
-    /// bulk-selectable rows in its group - after the anti-cheat carve-out
-    /// narrowed to monolithic archives, this is the only remaining way a
-    /// whole group reaches zero bulk-selectable rows while still allowing a
-    /// hand tick (a protected monolithic archive is excluded from
-    /// individual selection too, so it never reaches this path - see
-    /// `group_selection_never_selects_an_anti_cheat_monolith`). The old
-    /// header math counted only bulk-selectable rows on both sides of the
+    /// bulk-selectable rows in its group, while every row remains
+    /// individually selectable by hand. The old header math counted only
+    /// bulk-selectable rows on both sides of the
     /// fraction, so a hand tick here was invisible to it and the header kept
     /// reporting "nothing selected" - `(false, false)` - while a file really
     /// was queued for deletion. This is the game-level header
@@ -4037,60 +3460,6 @@ mod tests {
         );
     }
 
-    /// A mixed game - one anti-cheat protected monolithic archive alongside
-    /// ordinary rows, the one remaining case the narrowed carve-out still
-    /// excludes - must keep behaving normally for the ordinary rows: the
-    /// header still selects and clears them like any other group, the
-    /// archive row just never joins in on its own.
-    #[test]
-    fn group_header_selects_only_the_ordinary_rows_in_a_mixed_anti_cheat_group() {
-        use gametrimmer_core::models::FindingAction;
-
-        let mut test = UiTest::new(show);
-        test.seed_many_findings(1, 3);
-        {
-            let app = test.app_mut();
-            for item in &mut app.findings {
-                item.selected = false;
-            }
-            app.findings[0].row.anti_cheat_protected = true;
-            app.findings[0].row.source =
-                model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
-            app.findings[0].row.action = FindingAction::SparseZero {
-                format: "Wwise".to_string(),
-                languages: vec!["de".to_string()],
-                stream_count: 1,
-                offsets: vec![(0, 1)],
-                streams: vec![],
-                estimated_savings: 1,
-            };
-            app.rebuild_tree();
-        }
-        open_every_branch(&mut test);
-
-        let indices = test.app().tree[0].games[0].all_indices.clone();
-        assert_eq!(indices.len(), 3);
-
-        assert!(
-            toggle_group(&mut test.app_mut().findings, &indices),
-            "selecting a mixed group must still pick up its ordinary rows"
-        );
-        assert!(
-            !test.app().findings[0].selected,
-            "the anti-cheat monolithic archive must not be swept in"
-        );
-        assert!(
-            test.app().findings[1].selected && test.app().findings[2].selected,
-            "both ordinary rows must be selected"
-        );
-
-        assert!(
-            toggle_group(&mut test.app_mut().findings, &indices),
-            "clicking again must clear the selection it just made"
-        );
-        assert!(test.app().findings.iter().all(|item| !item.selected));
-    }
-
     /// This is what the narrowed carve-out actually restores: a game that is
     /// entirely anti-cheat protected but holds only ordinary (whole-file
     /// delete) findings behaves like any unprotected group - the header
@@ -4133,68 +3502,9 @@ mod tests {
         );
     }
 
-    /// Regression guard for the hard block: an anti-cheat protected
-    /// monolithic archive must never be pulled in by any group-selection
-    /// path, whether that is a header click (`toggle_group`) or a direct
-    /// bulk-selection action (`set_group_selection`, what "select this
-    /// category" and the selection profiles use). The keyboard route is
-    /// covered separately by
-    /// `keyboard_cannot_select_a_protected_monolith_or_its_stream_detail`;
-    /// this covers the group-header route that this change touches.
-    #[test]
-    fn group_selection_never_selects_an_anti_cheat_monolith() {
-        use gametrimmer_core::models::{FindingAction, MonolithicStreamInfo};
-
-        let mut test = UiTest::new(show);
-        test.seed_many_findings(1, 2);
-        {
-            let app = test.app_mut();
-            app.findings[1].row.source =
-                model::FindingSource::Rule(gametrimmer_core::rules::Category::MonolithicArchive);
-            app.findings[1].row.anti_cheat_protected = true;
-            app.findings[1].row.action = FindingAction::SparseZero {
-                format: "Wwise".to_string(),
-                languages: vec!["de".to_string()],
-                stream_count: 1,
-                offsets: vec![(0, 1)],
-                streams: vec![MonolithicStreamInfo {
-                    name: "protected stream".to_string(),
-                    language: "de".to_string(),
-                    size: 1,
-                }],
-                estimated_savings: 1,
-            };
-            for item in &mut app.findings {
-                item.selected = false;
-            }
-            app.rebuild_tree();
-        }
-        open_every_branch(&mut test);
-
-        let indices = test.app().tree[0].games[0].all_indices.clone();
-
-        assert!(
-            toggle_group(&mut test.app_mut().findings, &indices),
-            "the ordinary row must still be picked up by the header"
-        );
-        assert!(test.app().findings[0].selected);
-        assert!(
-            !test.app().findings[1].selected,
-            "the anti-cheat monolith must never be group-selected"
-        );
-
-        assert!(
-            !set_group_selection(&mut test.app_mut().findings, &[indices[1]], true),
-            "a direct bulk-select attempt on the anti-cheat monolith alone must be a no-op"
-        );
-        assert!(!test.app().findings[1].selected);
-    }
-
     /// The game-level marking Change 2 adds: the anti-cheat verdict is a
     /// per-*game* fact (`FindingRow::anti_cheat_protected`, uniform across
-    /// every one of a game's findings), and after the carve-out narrowed to
-    /// monolithic archives it is otherwise invisible - an intro row no
-    /// longer carries a badge of its own. It is marked once on the game's
+    /// every one of a game's findings). It is marked once on the game's
     /// own row instead (see `show_game_row`, mirroring the `[🔄 Updated]`
     /// decoration), so it stays visible on games where the row-level shield
     /// used to appear but does not need one to explain itself, and it must

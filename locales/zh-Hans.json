@@ -235,7 +235,6 @@
     "category_docs": "文档与参考资料",
     "category_bonus": "额外奖励内容",
     "category_loc": "本地化文件",
-    "category_archives": "单体归档",
     "category_dev_leftovers": "其他",
     "category_orphan": "残留孤立文件",
     "orphan_branch_label": "卸载残留数据",
@@ -260,15 +259,9 @@
     "saves_auto_backup_label": "删除前自动创建 ZIP 备份",
     "saves_backup_success": "存档备份创建成功",
     "saves_total_prunable": "找到可精简的自动存档",
-    "monolithic_archives_label": "Monolithic archives",
-    "scan_monolithic_archives_checkbox": "Deep scan monolithic archives (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
-    "scan_monolithic_archives_subtitle": "Read-only inspection of container internals. Trimming is unavailable until safe rollback is implemented.",
     "scan_phase_1_title": "1. Disks & libraries discovery",
     "scan_phase_2_title": "2. Regular file analysis",
-    "scan_phase_3_title": "3. Monolithic archives inspection",
     "scan_overall_title": "Overall progress",
-    "badge_monolith": "Monolith",
-    "badge_anticheat_shield": "🛡️ Anti-Cheat",
-    "archive_action_unavailable": "Archive trimming is unavailable until safe rollback is implemented"
+    "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

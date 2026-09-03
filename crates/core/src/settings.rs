@@ -561,14 +561,11 @@ pub struct Settings {
     pub watch_autostart: bool,
     /// Operating mode for the background monitor companion daemon.
     pub watch_mode: WatchMode,
-    /// Whether to perform deep inspection and localized stream trimming on monolithic game archives.
-    pub scan_monolithic_archives: bool,
 }
 
 const DEFAULT_LOGGING_ENABLED: bool = true;
 const DEFAULT_WATCH_ENABLED: bool = true;
 const DEFAULT_WATCH_AUTOSTART: bool = false;
-const DEFAULT_SCAN_MONOLITHIC_ARCHIVES: bool = true;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -589,7 +586,6 @@ impl Default for Settings {
             watch_enabled: DEFAULT_WATCH_ENABLED,
             watch_autostart: DEFAULT_WATCH_AUTOSTART,
             watch_mode: WatchMode::default(),
-            scan_monolithic_archives: DEFAULT_SCAN_MONOLITHIC_ARCHIVES,
         }
     }
 }
@@ -616,9 +612,8 @@ const DISCLAIMER_ACCEPTED_KEY: &str = "disclaimer_accepted";
 const WATCH_ENABLED_KEY: &str = "watch_enabled";
 const WATCH_AUTOSTART_KEY: &str = "watch_autostart";
 const WATCH_MODE_KEY: &str = "watch_mode";
-const SCAN_MONOLITHIC_ARCHIVES_KEY: &str = "scan_monolithic_archives";
 
-const SETTINGS_KEYS: [&str; 18] = [
+const SETTINGS_KEYS: [&str; 17] = [
     DELETE_METHOD_KEY,
     APP_LANGUAGE_KEY,
     KEEP_LANGUAGES_KEY,
@@ -636,7 +631,6 @@ const SETTINGS_KEYS: [&str; 18] = [
     WATCH_ENABLED_KEY,
     WATCH_AUTOSTART_KEY,
     WATCH_MODE_KEY,
-    SCAN_MONOLITHIC_ARCHIVES_KEY,
 ];
 
 const INI_HEADER: &str = "; GameTrimmer user settings. Unknown keys are ignored.\n[settings]\n";
@@ -697,9 +691,6 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
         watch_mode: value(WATCH_MODE_KEY)
             .and_then(WatchMode::parse)
             .unwrap_or_default(),
-        scan_monolithic_archives: value(SCAN_MONOLITHIC_ARCHIVES_KEY)
-            .and_then(parse_bool)
-            .unwrap_or(DEFAULT_SCAN_MONOLITHIC_ARCHIVES),
     }
 }
 
@@ -707,7 +698,7 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
 /// reports the parsed settings: `Settings` is not serde-backed, and this is
 /// already the canonical text form of every field, so a `Serialize` derive
 /// would be a second description of the same thing to keep in sync.
-pub fn settings_values(settings: &Settings) -> [(&'static str, String); 17] {
+pub fn settings_values(settings: &Settings) -> [(&'static str, String); 16] {
     [
         (DELETE_METHOD_KEY, settings.delete_method.as_str().into()),
         (APP_LANGUAGE_KEY, settings.app_language.as_str().into()),
@@ -758,10 +749,6 @@ pub fn settings_values(settings: &Settings) -> [(&'static str, String); 17] {
             bool_as_str(settings.watch_autostart).into(),
         ),
         (WATCH_MODE_KEY, settings.watch_mode.as_str().into()),
-        (
-            SCAN_MONOLITHIC_ARCHIVES_KEY,
-            bool_as_str(settings.scan_monolithic_archives).into(),
-        ),
     ]
 }
 
@@ -1876,38 +1863,15 @@ mod tests {
     }
 
     #[test]
-    fn defaults_for_scan_monolithic_archives() {
-        let conn = crate::db::open_in_memory().expect("open in-memory db");
-        let settings = load(&conn).expect("load settings");
-        assert!(settings.scan_monolithic_archives);
-        assert!(Settings::default().scan_monolithic_archives);
-    }
-
-    #[test]
-    fn save_then_load_round_trips_scan_monolithic_archives() {
-        let conn = crate::db::open_in_memory().expect("open in-memory db");
-
-        for val in [true, false] {
-            let settings = Settings {
-                scan_monolithic_archives: val,
-                ..Settings::default()
-            };
-            save(&conn, &settings).expect("save settings");
-            let loaded = load(&conn).expect("load settings");
-            assert_eq!(loaded.scan_monolithic_archives, val);
-        }
-    }
-
-    #[test]
     fn load_from_ini_parses_scan_section_and_keys() {
-        let ini = "[Scan]\nscan_monolithic_archives = false\n";
+        let ini = "[Scan]\nwatch_enabled = false\n";
         let values = parse_ini(ini);
         let settings = settings_from_values(&values);
-        assert!(!settings.scan_monolithic_archives);
+        assert!(!settings.watch_enabled);
 
-        let ini_settings = "[settings]\nscan_monolithic_archives=true\n";
+        let ini_settings = "[settings]\nwatch_enabled=true\n";
         let values_settings = parse_ini(ini_settings);
         let settings2 = settings_from_values(&values_settings);
-        assert!(settings2.scan_monolithic_archives);
+        assert!(settings2.watch_enabled);
     }
 }

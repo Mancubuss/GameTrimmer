@@ -39,7 +39,6 @@ pub enum DisplayCategory {
     Docs,
     Bonus,
     Loc,
-    Archives,
     /// Build and OS residue a shipped game has no use for: PDB symbol files,
     /// `Thumbs.db`, `desktop.ini`, test executables. It used to be called
     /// `Other`, which was never true - [`Category::DevLeftovers`] was the
@@ -144,12 +143,8 @@ pub struct FindingRow {
     /// [`GroupAxis`]) and by nothing else - in particular by nothing on the
     /// deletion path, per [`LibraryOrigin`]'s own boundary.
     pub library: Option<LibraryOrigin>,
-    /// The action to be taken for this finding (DirectDelete, SparseZero, Repack).
-    pub action: gametrimmer_core::models::FindingAction,
     /// Whether the owning game has active anti-cheat protection.
     pub anti_cheat_protected: bool,
-    /// Precomputed monolithic container badge text.
-    pub monolith_badge: Option<String>,
 }
 
 impl FindingRow {
@@ -158,30 +153,11 @@ impl FindingRow {
         display_category(self.source)
     }
 
-    /// Whether this finding targets localized streams inside a monolithic container.
-    pub fn is_monolithic_archive(&self) -> bool {
-        self.action.is_monolithic_archive()
-    }
-
-    /// The GUI deletion worker currently executes only whole-file deletes.
-    /// Archive actions remain visible for audit/review, but cannot be queued
-    /// until their rollback-capable executor is available.
-    pub fn action_is_executable_by_gui(&self) -> bool {
-        matches!(
-            self.action,
-            gametrimmer_core::models::FindingAction::DirectDelete
-        )
-    }
-
     /// Whether the user may select this individual finding for a deletion
     /// request. This is deliberately narrower than [`Self::bulk_selectable`]:
-    /// imported rows still require an explicit individual decision, but a
-    /// protected monolithic archive may never be selected through either the
-    /// mouse or keyboard.
+    /// imported rows still require an explicit individual decision.
     pub fn individually_selectable(&self) -> bool {
         self.deletion_block_reason.is_none()
-            && self.action_is_executable_by_gui()
-            && !(self.anti_cheat_protected && self.is_monolithic_archive())
     }
 
     /// A row may be taken by *bulk* selection (select-all, profile
@@ -190,24 +166,14 @@ impl FindingRow {
     /// an older database supplied and this scan never re-checked, so they
     /// must be ticked one at a time, deliberately.
     ///
-    /// Anti-cheat protection no longer has a clause of its own here: the
-    /// owner narrowed "risky" from every byte-rewriting finding (a
-    /// monolithic archive edit *or* an intro's micro-stub replacement) down
-    /// to monolithic archives only, and a protected monolithic archive is
-    /// already hard-blocked by [`Self::individually_selectable`] - which this
-    /// method calls first. Re-excluding it here would just repeat that
-    /// block. `anti_cheat_protected` is a per-*game* verdict, so in a
-    /// protected game it is true on every one of that game's rows; the wider
-    /// exclusion this used to carry (any byte-rewriting row, including an
-    /// ordinary intro finding) took Select All and every group header dark
-    /// for the game the moment any part of it tripped an anti-cheat
-    /// detector, measured on the owner's library as 100% hand-ticking across
-    /// 112k+ findings in 162 games, for content (redist, docs, unused
-    /// language packs, intro videos) that is trivially safe to bulk-delete.
-    /// A whole-file delete or an intro's stub swap in a protected game is
-    /// exactly what this program did before anti-cheat detection existed,
-    /// and the worst case is the launcher's own integrity check
-    /// re-downloading it, not a ban.
+    /// Anti-cheat protection has no clause of its own here: the owner
+    /// narrowed "risky" down to a now-removed archive-editing action, and a
+    /// whole-file delete or an intro's stub swap in a protected game is
+    /// exactly what this program did before anti-cheat detection existed -
+    /// the worst case is the launcher's own integrity check re-downloading
+    /// it, not a ban. `anti_cheat_protected` still gates the unattended
+    /// re-trim path (see `gametrimmer_core::ops`) and drives the game row's
+    /// anti-cheat badge; it has nothing left to gate here.
     pub fn bulk_selectable(&self) -> bool {
         self.individually_selectable() && !self.imported_untrusted
     }
@@ -230,7 +196,7 @@ pub struct FindingItem {
 /// [`ORPHAN_GAME_ID`]), never inside a real game, so its position relative to
 /// the other six is immaterial - but it must still be listed so the settings
 /// dialog offers a checkbox for it and [`category_enabled`] can gate it.
-pub const CATEGORY_ORDER: [DisplayCategory; 13] = [
+pub const CATEGORY_ORDER: [DisplayCategory; 12] = [
     DisplayCategory::Redist,
     // Right behind redist on purpose: a PDB or a Thumbs.db is the second
     // easiest thing in a game folder to be certain about, and certainty is
@@ -240,7 +206,6 @@ pub const CATEGORY_ORDER: [DisplayCategory; 13] = [
     DisplayCategory::Docs,
     DisplayCategory::Bonus,
     DisplayCategory::Loc,
-    DisplayCategory::Archives,
     DisplayCategory::Orphan,
     DisplayCategory::Workshop,
     DisplayCategory::ShaderCache,
@@ -269,7 +234,6 @@ impl DisplayCategory {
             DisplayCategory::Intro
             | DisplayCategory::Bonus
             | DisplayCategory::Loc
-            | DisplayCategory::Archives
             | DisplayCategory::DevLeftovers
             | DisplayCategory::Orphan
             | DisplayCategory::Workshop => SafetyBadge::Review,
@@ -468,7 +432,6 @@ pub fn display_category(source: FindingSource) -> DisplayCategory {
             DisplayCategory::Docs
         }
         FindingSource::Rule(Category::Bonus) => DisplayCategory::Bonus,
-        FindingSource::Rule(Category::MonolithicArchive) => DisplayCategory::Archives,
         FindingSource::Rule(Category::DevLeftovers) => DisplayCategory::DevLeftovers,
         FindingSource::Rule(Category::Intro) => DisplayCategory::Intro,
         FindingSource::Rule(Category::WorkshopOrphan) => DisplayCategory::Workshop,
@@ -493,7 +456,6 @@ pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &
         DisplayCategory::Docs => s.category_docs,
         DisplayCategory::Bonus => s.category_bonus,
         DisplayCategory::Loc => s.category_loc,
-        DisplayCategory::Archives => s.category_archives,
         DisplayCategory::DevLeftovers => s.category_dev_leftovers,
         DisplayCategory::Orphan => s.category_orphan,
         DisplayCategory::Workshop => s.category_workshop,
@@ -516,7 +478,6 @@ pub fn source_key(source: FindingSource) -> &'static str {
         FindingSource::Rule(Category::DocsFolder) => "docs_folder",
         FindingSource::Rule(Category::DocsFile) => "docs_file",
         FindingSource::Rule(Category::Bonus) => "bonus",
-        FindingSource::Rule(Category::MonolithicArchive) => "monolithic_archive",
         FindingSource::Rule(Category::DevLeftovers) => "dev_leftovers",
         FindingSource::Rule(Category::Intro) => "intro",
         FindingSource::Rule(Category::WorkshopOrphan) => "workshop_orphan",
@@ -543,9 +504,15 @@ pub fn source_key(source: FindingSource) -> &'static str {
 /// from the database into its granular [`FindingSource`]. Returns `None` for
 /// any string that isn't one of the keys `source_key` produces - e.g. a
 /// category written by a future version of the app, or by `rules.json`
-/// changes that predate a saved scan. Callers (see `worker::load`) must skip
-/// such rows rather than fail the whole load, since the row is otherwise
-/// perfectly readable.
+/// changes that predate a saved scan.
+///
+/// That includes `"monolithic_archive"`: an in-place archive trimmer used to
+/// write it, and no code writes it any more, but a database from that build
+/// can still carry rows with it - and no `Category` variant backs it any
+/// more either. Callers (see `worker::load`) must skip such rows rather than
+/// fail the whole load, since the row is otherwise perfectly readable, and
+/// this is what makes them skip: they never resolve to a [`FindingSource`] in
+/// the first place.
 pub fn parse_source_key(key: &str) -> Option<FindingSource> {
     match key {
         "redist_folder" => Some(FindingSource::Rule(Category::RedistFolder)),
@@ -553,7 +520,6 @@ pub fn parse_source_key(key: &str) -> Option<FindingSource> {
         "docs_folder" => Some(FindingSource::Rule(Category::DocsFolder)),
         "docs_file" => Some(FindingSource::Rule(Category::DocsFile)),
         "bonus" => Some(FindingSource::Rule(Category::Bonus)),
-        "monolithic_archive" => Some(FindingSource::Rule(Category::MonolithicArchive)),
         "dev_leftovers" => Some(FindingSource::Rule(Category::DevLeftovers)),
         "intro" => Some(FindingSource::Rule(Category::Intro)),
         "workshop_orphan" => Some(FindingSource::Rule(Category::WorkshopOrphan)),
@@ -586,7 +552,6 @@ pub fn category_ui_key(category: DisplayCategory) -> &'static str {
         DisplayCategory::Docs => "docs",
         DisplayCategory::Bonus => "bonus",
         DisplayCategory::Loc => "loc",
-        DisplayCategory::Archives => "archives",
         DisplayCategory::DevLeftovers => "dev_leftovers",
         DisplayCategory::Orphan => "orphan",
         DisplayCategory::Workshop => "workshop",
@@ -725,7 +690,6 @@ pub fn category_risk(category: DisplayCategory) -> RiskLevel {
         | DisplayCategory::Docs
         | DisplayCategory::Loc
         | DisplayCategory::Intro
-        | DisplayCategory::Archives
         | DisplayCategory::Workshop => RiskLevel::Low,
         // Dev leftovers and saves: review / backup recommended
         DisplayCategory::DevLeftovers | DisplayCategory::Saves => RiskLevel::Medium,
@@ -1912,9 +1876,7 @@ mod tests {
                 deletion_block_reason: None,
                 imported_untrusted: false,
                 library: None,
-                action: gametrimmer_core::models::FindingAction::DirectDelete,
                 anti_cheat_protected: false,
-                monolith_badge: None,
             },
             selected: default_selected(confidence),
             removed: false,
@@ -1999,10 +1961,6 @@ mod tests {
             DisplayCategory::Bonus
         );
         assert_eq!(
-            display_category(FindingSource::Rule(Category::MonolithicArchive)),
-            DisplayCategory::Archives
-        );
-        assert_eq!(
             display_category(FindingSource::Rule(Category::DevLeftovers)),
             DisplayCategory::DevLeftovers
         );
@@ -2047,35 +2005,6 @@ mod tests {
         let mut untrusted = item(1, "Game", FindingSource::Rule(Category::Bonus), 90, 10);
         untrusted.row.imported_untrusted = true;
         assert!(!untrusted.row.bulk_selectable());
-
-        let mut protected_monolith = item(
-            1,
-            "Game",
-            FindingSource::Rule(Category::MonolithicArchive),
-            90,
-            10,
-        );
-        protected_monolith.row.anti_cheat_protected = true;
-        protected_monolith.row.action = gametrimmer_core::models::FindingAction::SparseZero {
-            format: "Wwise".to_string(),
-            languages: vec!["de".to_string()],
-            stream_count: 1,
-            offsets: vec![(0, 1)],
-            streams: vec![],
-            estimated_savings: 1,
-        };
-        assert!(
-            !protected_monolith.row.individually_selectable(),
-            "the keyboard and per-row checkbox must share this rejection"
-        );
-        assert!(!protected_monolith.row.bulk_selectable());
-        let mut unsupported_archive = protected_monolith.clone();
-        unsupported_archive.row.anti_cheat_protected = false;
-        assert!(
-            !unsupported_archive.row.individually_selectable(),
-            "an unprotected archive action is still not executable by this GUI"
-        );
-        assert!(!unsupported_archive.row.bulk_selectable());
     }
 
     /// The owner's decision (GT: narrow the anti-cheat carve-out to
@@ -2140,10 +2069,6 @@ mod tests {
         );
         assert_eq!(source_key(FindingSource::Rule(Category::Bonus)), "bonus");
         assert_eq!(
-            source_key(FindingSource::Rule(Category::MonolithicArchive)),
-            "monolithic_archive"
-        );
-        assert_eq!(
             source_key(FindingSource::Rule(Category::DevLeftovers)),
             "dev_leftovers"
         );
@@ -2174,7 +2099,6 @@ mod tests {
             FindingSource::Rule(Category::DocsFolder),
             FindingSource::Rule(Category::DocsFile),
             FindingSource::Rule(Category::Bonus),
-            FindingSource::Rule(Category::MonolithicArchive),
             FindingSource::Rule(Category::DevLeftovers),
             FindingSource::Rule(Category::Intro),
             FindingSource::Loc(LangKind::Audio),
@@ -2199,6 +2123,14 @@ mod tests {
             None,
             "an unrecognized category string must parse to None, not panic"
         );
+        // "monolithic_archive" is not a synthetic unknown string: it is what
+        // the removed in-place archive trimmer wrote, and a database from
+        // that build can still carry rows with it. No `Category` variant
+        // backs it any more, so it must parse to `None` just like any other
+        // unrecognized category - which is what makes `worker::load` skip
+        // such a row instead of showing it as an ordinary (and unsafe)
+        // whole-file delete.
+        assert_eq!(parse_source_key("monolithic_archive"), None);
     }
 
     #[test]
@@ -2213,7 +2145,6 @@ mod tests {
                 "docs",
                 "bonus",
                 "loc",
-                "archives",
                 "orphan",
                 "workshop",
                 "shader_cache",
@@ -2787,27 +2718,28 @@ mod tests {
 
     #[test]
     fn build_tree_files_a_weightless_group_under_a_category_it_actually_has() {
-        // A read-only monolithic archive is deliberately worth zero on-disk
-        // bytes: it frees nothing until in-place trimming exists, so the scan
-        // zeroes `size_on_disk` to keep it out of every total while its real
-        // size still shows. A whole folder of them therefore weighs nothing,
-        // and the winner used to be seeded with `CATEGORY_ORDER[0]` and need a
-        // strict `>` to be unseated - so Delta Force's `Content\Paks\`, 1.5 GB
-        // monoliths and nothing else, was filed under "Redistributables", a
-        // category with no member in that folder at all.
+        // Originally reported against a read-only monolithic archive, which
+        // used to be worth zero on-disk bytes deliberately (it froze nothing
+        // until in-place trimming existed, which never shipped before the
+        // feature was removed): a whole folder of them weighed nothing, and
+        // the winner was seeded with `CATEGORY_ORDER[0]` and needed a strict
+        // `>` to be unseated - so a folder of nothing but zero-weight members
+        // was filed under "Redistributables", a category with no member in
+        // that folder at all. The archive category is gone, but the bug is
+        // general: any group whose members all have `size_on_disk == 0`
+        // (a hardlink, a sparse file, ...) must still land under the
+        // category it actually has.
         //
         // The sizes below are the shape that matters: large logical, zero on
-        // disk. Weighing `size` instead would hide this without fixing it, and
-        // would put back into the totals the bytes the zeroing exists to keep
-        // out.
-        let monolith = |name: &str| {
+        // disk. Weighing `size` instead would hide this without fixing it.
+        let weightless = |name: &str| {
             let mut item = with_group_dir(
                 item_at(
                     1,
                     "Delta Force",
                     "F:\\SteamLibrary\\steamapps\\common\\Delta Force",
                     &format!("Game\\DeltaForce\\Content\\Paks\\{name}"),
-                    FindingSource::Rule(Category::MonolithicArchive),
+                    FindingSource::Rule(Category::DevLeftovers),
                     90,
                     1_632_087_572,
                 ),
@@ -2817,8 +2749,8 @@ mod tests {
             item
         };
         let items = vec![
-            monolith("pak-0-0-pakchunk1-WindowsClient.pak"),
-            monolith("pak-0-0-pakchunk2-WindowsClient.pak"),
+            weightless("pak-0-0-pakchunk1-WindowsClient.pak"),
+            weightless("pak-0-0-pakchunk2-WindowsClient.pak"),
         ];
 
         let tree = build_tree(&items, GroupAxis::Disk);
@@ -2827,9 +2759,9 @@ mod tests {
         assert_eq!(categories.len(), 1);
         assert_eq!(
             categories[0].category,
-            Some(DisplayCategory::Archives),
-            "a folder of monolithic archives belongs in Archives, not in whichever \
-             category happens to head CATEGORY_ORDER"
+            Some(DisplayCategory::DevLeftovers),
+            "a folder of weightless members belongs in the category it actually has, not \
+             whichever category happens to head CATEGORY_ORDER"
         );
     }
 
@@ -3747,11 +3679,11 @@ mod tests {
     }
 
     #[test]
-    fn group_size_uses_reclaimable_on_disk_bytes_not_logical_archive_size() {
+    fn group_size_uses_reclaimable_on_disk_bytes_not_logical_size() {
         let mut items = vec![item(
             1,
             "Game A",
-            FindingSource::Rule(Category::MonolithicArchive),
+            FindingSource::Rule(Category::DevLeftovers),
             90,
             10_000,
         )];
@@ -3791,10 +3723,6 @@ mod tests {
             "Файли локалізацій"
         );
         assert_eq!(
-            category_display(Lang::Uk, DisplayCategory::Archives),
-            "Монолітні архіви"
-        );
-        assert_eq!(
             category_display(Lang::Uk, DisplayCategory::DevLeftovers),
             "Залишки розробки"
         );
@@ -3805,10 +3733,6 @@ mod tests {
         assert_eq!(
             category_display(Lang::En, DisplayCategory::Redist),
             "Redistributables"
-        );
-        assert_eq!(
-            category_display(Lang::En, DisplayCategory::Archives),
-            "Monolithic Archives"
         );
         assert_eq!(
             category_display(Lang::En, DisplayCategory::Orphan),

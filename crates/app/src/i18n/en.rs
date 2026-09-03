@@ -330,7 +330,6 @@ pub(super) const STRINGS: Strings = Strings {
     category_docs: "Documentation and reference material",
     category_bonus: "Bonus content",
     category_loc: "Localization files",
-    category_archives: "Monolithic Archives",
     category_dev_leftovers: "Development leftovers",
     category_orphan: "Orphaned",
     category_workshop: "Workshop mods",
@@ -362,17 +361,11 @@ pub(super) const STRINGS: Strings = Strings {
 
     already_running_title: "GameTrimmer is already running",
 
-    monolithic_archives_label: "Monolithic archives",
-    scan_monolithic_archives_checkbox: "Deep scan monolithic archives (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
-    scan_monolithic_archives_subtitle: "Read-only inspection of container internals. Trimming is unavailable until safe rollback is implemented.",
     scan_phase_1_title: "1. Disks & libraries discovery",
     scan_phase_2_title: "2. Regular file analysis",
-    scan_phase_3_title: "3. Monolithic archives inspection",
     scan_overall_title: "Overall progress",
-    badge_monolith: "Monolith",
     badge_anticheat_shield: "🛡️ Anti-Cheat Protected",
-    anticheat_shield_tooltip: "This game uses anti-cheat. Monolithic archives inside it cannot be \
-                                trimmed; everything else behaves normally.",
-    archive_action_unavailable: "Archive trimming is unavailable until safe rollback is implemented",
+    anticheat_shield_tooltip: "This game uses anti-cheat. This only blocks an unattended \
+                                re-trim of it; everything else behaves normally.",
     group_checkbox_disabled_hint: "Nothing here is selected, and nothing qualifies for Select all.",
 };

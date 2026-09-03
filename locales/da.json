@@ -235,7 +235,6 @@
     "category_docs": "Dokumentation og referencemateriale",
     "category_bonus": "Bonusmateriale",
     "category_loc": "Lokaliseringsfiler",
-    "category_archives": "Monolitiske arkiver",
     "category_dev_leftovers": "Andet",
     "category_orphan": "Efterladte rester",
     "orphan_branch_label": "Efterladte rester",
@@ -260,15 +259,9 @@
     "saves_auto_backup_label": "Automatisk ZIP-sikkerhedskopiering før sletning",
     "saves_backup_success": "Sikkerhedskopi af gemte spil oprettet",
     "saves_total_prunable": "Overflødige automatiske gem fundet",
-    "monolithic_archives_label": "Monolithic archives",
-    "scan_monolithic_archives_checkbox": "Deep scan monolithic archives (Wwise, Unreal .pak, RE Engine, ASAR, Bink)",
-    "scan_monolithic_archives_subtitle": "Read-only inspection of container internals. Trimming is unavailable until safe rollback is implemented.",
     "scan_phase_1_title": "1. Disks & libraries discovery",
     "scan_phase_2_title": "2. Regular file analysis",
-    "scan_phase_3_title": "3. Monolithic archives inspection",
     "scan_overall_title": "Overall progress",
-    "badge_monolith": "Monolith",
-    "badge_anticheat_shield": "🛡️ Anti-Cheat",
-    "archive_action_unavailable": "Archive trimming is unavailable until safe rollback is implemented"
+    "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

@@ -62,7 +62,6 @@ pub enum Category {
     SaveBloat,
     LauncherWebCache,
     ModManagerDownloads,
-    MonolithicArchive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -124,7 +123,6 @@ impl Category {
             Category::SaveBloat => "save_bloat",
             Category::LauncherWebCache => "launcher_web_cache",
             Category::ModManagerDownloads => "mod_manager_downloads",
-            Category::MonolithicArchive => "monolithic_archive",
         }
     }
 
@@ -197,10 +195,7 @@ impl Category {
         match self {
             Category::RedistFolder | Category::RedistFile => 0,
             Category::Intro => 1,
-            Category::DevLeftovers
-            | Category::CrashDump
-            | Category::DiagnosticLogs
-            | Category::MonolithicArchive => 2,
+            Category::DevLeftovers | Category::CrashDump | Category::DiagnosticLogs => 2,
             Category::WorkshopOrphan
             | Category::DownloadingStaging
             | Category::ShaderCache
@@ -377,6 +372,27 @@ pub struct RulePack {
 /// [`RuleEngine::from_json`]. A pack from a newer GameTrimmer is refused
 /// here, before any rule of it is looked at.
 pub fn parse_rule_list(json: &str) -> Result<Vec<Rule>> {
+    // `monolithic_archive` is a reserved category name: no `Category` variant
+    // has ever existed for a personal or imported rule to legitimately claim
+    // it (only the now-removed archive inspector produced it, directly as a
+    // `Finding`, never through a parsed rule). Checked here, against the raw
+    // JSON, before the typed parse below: `Category` deserializes strictly,
+    // so a pack naming an unknown variant already fails that parse - this
+    // exists only to give the specific reserved-name rejection a chance to
+    // fire first, with a clearer message than serde's "unknown variant".
+    if let Ok(serde_json::Value::Object(pack)) = serde_json::from_str(json) {
+        if let Some(serde_json::Value::Array(rules)) = pack.get("rules") {
+            for (index, rule) in rules.iter().enumerate() {
+                if rule.get("category").and_then(serde_json::Value::as_str)
+                    == Some("monolithic_archive")
+                {
+                    return Err(CoreError::Other(format!(
+                        "rules.json: rule #{index} uses reserved category monolithic_archive"
+                    )));
+                }
+            }
+        }
+    }
     let pack: RulePack = serde_json::from_str(json)?;
     if pack.version > RULE_PACK_VERSION {
         return Err(CoreError::Other(format!(
@@ -399,7 +415,7 @@ pub fn serialize_rule_list(rules: &[Rule]) -> Result<String> {
     .map_err(CoreError::from)
 }
 
-pub use crate::models::{Finding, FindingAction};
+pub use crate::models::Finding;
 
 /// Everything the engine can conclude about one file.
 ///
@@ -598,12 +614,6 @@ impl RuleEngine {
                     rule.pattern
                 )));
             };
-            if category == Category::MonolithicArchive {
-                return Err(CoreError::Other(format!(
-                    "rules.json: rule #{index} uses reserved category monolithic_archive; \
-                     only the archive inspector may emit an explicit SparseZero or Repack action"
-                )));
-            }
             let Some(confidence) = rule.confidence else {
                 return Err(CoreError::Other(format!(
                     "rules.json: rule #{index} (desc \"{desc}\", pattern `{}`) has no confidence; \
@@ -688,11 +698,12 @@ impl RuleEngine {
             }
         }
 
-        // Archive candidates belong exclusively to the deep archive
-        // inspector, which emits an explicit SparseZero/Repack contract. An
-        // ordinary or imported rule may use any display category it wants;
-        // letting it claim `voices.pck` as `docs_file` would otherwise smuggle
-        // the container into the whole-file delete path.
+        // A monolithic archive candidate is never a whole-file deletion
+        // target - GameTrimmer has no way to remove just the parts of a
+        // container that are safe to lose. An ordinary or imported rule may
+        // use any display category it wants; letting it claim `voices.pck`
+        // as `docs_file` would otherwise smuggle the container into the
+        // whole-file delete path.
         if crate::worker::is_candidate_archive_path(rel_path) {
             return Verdict::Unmatched;
         }
@@ -764,7 +775,6 @@ impl RuleEngine {
                     confidence: rule.confidence,
                     provenance: rule.provenance,
                     localized_content: rule.localized_content,
-                    action: FindingAction::DirectDelete,
                 });
             }
         }
@@ -942,8 +952,9 @@ mod tests {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
         // Support/help folders are reference material, but an archive-shaped
-        // file is reserved for Phase 3 and must not become a whole-file rule
-        // finding merely because of its parent folder.
+        // file is a protected monolithic archive candidate (see
+        // `crate::worker::is_candidate_archive_path`) and must not become a
+        // whole-file rule finding merely because of its parent folder.
         assert_eq!(
             engine.classify(r"Support\ru\voices.pak", None),
             Verdict::Unmatched
@@ -1137,13 +1148,12 @@ mod tests {
 
     /// GT-204, resolved for Bink 1 and still open for Bink 2.
     ///
-    /// `classify` returns `Unmatched` for every archive-shaped path so a
-    /// container can only be claimed by the deep archive inspector, which emits
-    /// an explicit SparseZero/Repack contract. `bik` was on that list and should
-    /// not have been: a Bink 1 file is a video, not a container of separable
-    /// language streams, and the archive handler reports zero trimmable bytes
-    /// for it. Claiming it only blocked the intro rules - seven of the eight
-    /// match `.bik` - from ever seeing the files they exist for.
+    /// `classify` returns `Unmatched` for every archive-shaped path, so a
+    /// monolithic container is never offered as a whole-file deletion
+    /// target. `bik` was on that list and should not have been: a Bink 1
+    /// file is a video, not a container of separable language streams.
+    /// Claiming it only blocked the intro rules - seven of the eight match
+    /// `.bik` - from ever seeing the files they exist for.
     ///
     /// `bk2` is still claimed, deliberately. The stub for it has never been
     /// through a decoder, and it cannot be: ffmpeg rejects genuine, working
