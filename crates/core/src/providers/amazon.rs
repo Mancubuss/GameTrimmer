@@ -12,8 +12,8 @@ use rusqlite::{Connection, OpenFlags};
 use crate::error::Result;
 
 use super::{
-    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
-    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
+    degrades_evidence, diagnostic, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport,
+    DiscoveryStatus, GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const DATABASE_RELATIVE_PATH: &str = r"Amazon Games\Data\Games\Sql\GameInstallInfo.sqlite";
@@ -34,19 +34,6 @@ impl LibraryProvider for AmazonProvider {
     }
 }
 
-fn diagnostic(
-    stage: &'static str,
-    path: Option<PathBuf>,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "amazon",
-        stage,
-        path,
-        message: message.to_string(),
-    }
-}
-
 fn discover_amazon() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     let Some(db_path) = database_path() else {
         return DiscoveryReport::not_installed(Vec::new());
@@ -57,6 +44,7 @@ fn discover_amazon() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             return DiscoveryReport::failed(
                 Vec::new(),
                 diagnostic(
+                    "amazon",
                     "database-path",
                     Some(db_path),
                     "database path is not a file",
@@ -69,7 +57,7 @@ fn discover_amazon() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                diagnostic("database-metadata", Some(db_path), err),
+                diagnostic("amazon", "database-metadata", Some(db_path), err),
             )
         }
     }
@@ -78,7 +66,7 @@ fn discover_amazon() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                diagnostic("database-open", Some(db_path), err),
+                diagnostic("amazon", "database-open", Some(db_path), err),
             )
         }
     };
@@ -97,7 +85,7 @@ fn discover_amazon_from_conn(
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                diagnostic("games-query", Some(db_path), err),
+                diagnostic("amazon", "games-query", Some(db_path), err),
             )
         }
     };
@@ -112,12 +100,12 @@ fn discover_amazon_from_conn(
         match super::try_is_dir(&game.install_dir) {
             Ok(true) => games.push(game),
             // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
-            Ok(false) => diagnostics.push(diagnostic(
+            Ok(false) => diagnostics.push(diagnostic("amazon",
                 GAME_ABSENT,
                 Some(game.install_dir),
                 "database entry present, install directory absent (uninstalled outside Amazon Games, or a stale record)",
             )),
-            Err(err) => diagnostics.push(diagnostic("game-path", Some(game.install_dir), err)),
+            Err(err) => diagnostics.push(diagnostic("amazon", "game-path", Some(game.install_dir), err)),
         }
     }
     let mut libraries = super::group_by_parent_dir("amazon", games);
@@ -171,6 +159,7 @@ fn read_games_report(
             Ok(entry) => entry,
             Err(err) => {
                 diagnostics.push(diagnostic(
+                    "amazon",
                     "row-decode",
                     None,
                     format!("row {index}: {err}"),

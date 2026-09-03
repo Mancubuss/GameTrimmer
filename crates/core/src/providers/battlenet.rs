@@ -16,8 +16,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
-    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
+    degrades_evidence, diagnostic, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport,
+    DiscoveryStatus, GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const PUBLISHER: &str = "Blizzard Entertainment";
@@ -41,15 +41,6 @@ impl LibraryProvider for BattleNetProvider {
     }
 }
 
-fn diagnostic(stage: &'static str, message: impl std::fmt::Display) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "battlenet",
-        stage,
-        path: None,
-        message: message.to_string(),
-    }
-}
-
 fn discover_battlenet() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     let mut games = Vec::new();
     let mut diagnostics = Vec::new();
@@ -58,7 +49,7 @@ fn discover_battlenet() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             Ok(key) => key,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {
-                diagnostics.push(diagnostic("registry-root-open", err));
+                diagnostics.push(diagnostic("battlenet", "registry-root-open", None, err));
                 continue;
             }
         };
@@ -66,14 +57,14 @@ fn discover_battlenet() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             let key_name = match key_name {
                 Ok(name) => name,
                 Err(err) => {
-                    diagnostics.push(diagnostic("registry-enumeration", err));
+                    diagnostics.push(diagnostic("battlenet", "registry-enumeration", None, err));
                     continue;
                 }
             };
             let subkey = match uninstall_key.open_subkey(&key_name) {
                 Ok(key) => key,
                 Err(err) => {
-                    diagnostics.push(diagnostic("game-key-open", err));
+                    diagnostics.push(diagnostic("battlenet", "game-key-open", None, err));
                     continue;
                 }
             };
@@ -81,7 +72,7 @@ fn discover_battlenet() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
                 Ok(publisher) => publisher,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(err) => {
-                    diagnostics.push(diagnostic("publisher-read", err));
+                    diagnostics.push(diagnostic("battlenet", "publisher-read", None, err));
                     continue;
                 }
             };
@@ -98,7 +89,7 @@ fn discover_battlenet() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
                 Ok(value) => Some(value),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
                 Err(err) => {
-                    diagnostics.push(diagnostic("game-value-read", err));
+                    diagnostics.push(diagnostic("battlenet", "game-value-read", None, err));
                     continue;
                 }
             };

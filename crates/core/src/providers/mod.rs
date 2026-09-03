@@ -62,6 +62,28 @@ pub struct DiscoveryDiagnostic {
     pub message: String,
 }
 
+/// Builds one provider's [`DiscoveryDiagnostic`]. `path` accepts `None`,
+/// `Some(path_buf)`, or a bare `PathBuf`/owned path via [`Into`].
+fn diagnostic(
+    provider: &'static str,
+    stage: &'static str,
+    path: impl Into<Option<PathBuf>>,
+    message: impl std::fmt::Display,
+) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic {
+        provider,
+        stage,
+        path: path.into(),
+        message: message.to_string(),
+    }
+}
+
+/// Normalizes a forward-slashed path (as JSON/registry data sometimes stores
+/// it) to Windows backslashes.
+fn normalize_slashes(raw: &str) -> String {
+    raw.replace('/', "\\")
+}
+
 /// Provider data plus an explicit statement about its completeness.
 #[derive(Debug, Clone)]
 pub struct DiscoveryReport<T> {

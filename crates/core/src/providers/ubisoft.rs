@@ -14,8 +14,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
-    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
+    degrades_evidence, diagnostic, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport,
+    DiscoveryStatus, GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const REGISTRY_KEY: &str = r"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs";
@@ -43,7 +43,12 @@ fn discover_ubisoft() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return DiscoveryReport::not_installed(Vec::new())
         }
-        Err(err) => return DiscoveryReport::failed(Vec::new(), diagnostic("registry-open", err)),
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic("ubisoft", "registry-open", None, err),
+            )
+        }
     };
     let mut games = Vec::new();
     let mut diagnostics = Vec::new();
@@ -51,14 +56,14 @@ fn discover_ubisoft() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         let id = match id {
             Ok(id) => id,
             Err(err) => {
-                diagnostics.push(diagnostic("registry-enumeration", err));
+                diagnostics.push(diagnostic("ubisoft", "registry-enumeration", None, err));
                 continue;
             }
         };
         let subkey = match installs_key.open_subkey(&id) {
             Ok(key) => key,
             Err(err) => {
-                diagnostics.push(diagnostic("game-key-open", err));
+                diagnostics.push(diagnostic("ubisoft", "game-key-open", None, err));
                 continue;
             }
         };
@@ -71,7 +76,7 @@ fn discover_ubisoft() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             Ok(value) => Some(value),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                diagnostics.push(diagnostic("game-value-read", err));
+                diagnostics.push(diagnostic("ubisoft", "game-value-read", None, err));
                 continue;
             }
         };
@@ -127,14 +132,6 @@ fn discover_ubisoft() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     }
 }
 
-fn diagnostic(stage: &'static str, message: impl std::fmt::Display) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "ubisoft",
-        stage,
-        path: None,
-        message: message.to_string(),
-    }
-}
 /// Builds a `GameInstall` from a raw registry entry: `id` is the subkey name
 /// (Ubisoft's internal game id), `install_dir` is the `InstallDir` value if
 /// present. Returns `None` when `install_dir` is missing/empty, or has no

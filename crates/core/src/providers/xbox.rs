@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall, LibraryProvider,
-    OrphanEvidence,
+    diagnostic, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, GameInstall,
+    LibraryProvider, OrphanEvidence,
 };
 
 const GAMING_ROOT_FILE: &str = ".GamingRoot";
@@ -46,19 +46,6 @@ impl LibraryProvider for XboxProvider {
     }
 }
 
-fn diagnostic(
-    stage: &'static str,
-    path: impl Into<Option<PathBuf>>,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "xbox",
-        stage,
-        path: path.into(),
-        message: message.to_string(),
-    }
-}
-
 fn discover_xbox_from_roots(
     drive_roots: impl IntoIterator<Item = PathBuf>,
 ) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
@@ -76,14 +63,14 @@ fn discover_xbox_from_roots(
             }
             Err(err) if err.kind() == ErrorKind::NotFound => continue,
             Err(err) => {
-                diagnostics.push(diagnostic("gaming-root-read", marker, err));
+                diagnostics.push(diagnostic("xbox", "gaming-root-read", marker, err));
                 continue;
             }
         };
         let relative_roots = match parse_gaming_root_checked(&bytes) {
             Ok(roots) => roots,
             Err(err) => {
-                diagnostics.push(diagnostic("gaming-root-parse", marker, err));
+                diagnostics.push(diagnostic("xbox", "gaming-root-parse", marker, err));
                 continue;
             }
         };
@@ -92,7 +79,7 @@ fn discover_xbox_from_roots(
             let relative = match crate::safety::normalize_relative_path(&relative) {
                 Ok(relative) => relative,
                 Err(err) => {
-                    diagnostics.push(diagnostic("library-path", marker.clone(), err));
+                    diagnostics.push(diagnostic("xbox", "library-path", marker.clone(), err));
                     continue;
                 }
             };
@@ -175,7 +162,12 @@ fn read_root_games_report(root: &Path) -> (Vec<GameInstall>, Vec<DiscoveryDiagno
         Err(err) => {
             return (
                 Vec::new(),
-                vec![diagnostic("library-enumeration", root.to_path_buf(), err)],
+                vec![diagnostic(
+                    "xbox",
+                    "library-enumeration",
+                    root.to_path_buf(),
+                    err,
+                )],
             )
         }
     };
@@ -185,7 +177,7 @@ fn read_root_games_report(root: &Path) -> (Vec<GameInstall>, Vec<DiscoveryDiagno
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                diagnostics.push(diagnostic("library-entry", root.to_path_buf(), err));
+                diagnostics.push(diagnostic("xbox", "library-entry", root.to_path_buf(), err));
                 continue;
             }
         };
@@ -193,7 +185,7 @@ fn read_root_games_report(root: &Path) -> (Vec<GameInstall>, Vec<DiscoveryDiagno
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {
-                diagnostics.push(diagnostic("entry-type", game_dir, err));
+                diagnostics.push(diagnostic("xbox", "entry-type", game_dir, err));
                 continue;
             }
         };
@@ -209,7 +201,7 @@ fn read_root_games_report(root: &Path) -> (Vec<GameInstall>, Vec<DiscoveryDiagno
             Ok(true) => {}
             Ok(false) => continue,
             Err(err) => {
-                diagnostics.push(diagnostic("game-probe", game_dir, err));
+                diagnostics.push(diagnostic("xbox", "game-probe", game_dir, err));
                 continue;
             }
         }
@@ -217,6 +209,7 @@ fn read_root_games_report(root: &Path) -> (Vec<GameInstall>, Vec<DiscoveryDiagno
         diagnostics.append(&mut name_diagnostics);
         let Some(name) = name else {
             diagnostics.push(diagnostic(
+                "xbox",
                 "game-name",
                 game_dir,
                 "game directory has no usable file name",
@@ -264,7 +257,7 @@ fn display_name_for(game_dir: &Path) -> (Option<String>, Vec<DiscoveryDiagnostic
                 }
             }
             Err(err) if err.kind() == ErrorKind::NotFound => {}
-            Err(err) => diagnostics.push(diagnostic("game-config-read", config, err)),
+            Err(err) => diagnostics.push(diagnostic("xbox", "game-config-read", config, err)),
         }
     }
 

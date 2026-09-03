@@ -9,8 +9,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, GameInstall,
-    LibraryProvider, OrphanEvidence,
+    diagnostic, DiscoveredLibrary, DiscoveryReport, DiscoveryStatus, GameInstall, LibraryProvider,
+    OrphanEvidence,
 };
 
 // `GAME_ABSENT` and `degrades_evidence` live in `super` - see
@@ -38,24 +38,11 @@ impl LibraryProvider for EpicProvider {
     }
 }
 
-fn epic_diagnostic(
-    stage: &'static str,
-    path: Option<PathBuf>,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "epic",
-        stage,
-        path,
-        message: message.to_string(),
-    }
-}
-
 fn discover_epic() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     let manifests_dir = match find_manifests_dir() {
         Ok(path) => path,
         Err(err) => {
-            return DiscoveryReport::failed(Vec::new(), epic_diagnostic("registry", None, err))
+            return DiscoveryReport::failed(Vec::new(), diagnostic("epic", "registry", None, err))
         }
     };
     discover_manifests(&manifests_dir)
@@ -75,7 +62,8 @@ fn discover_manifests(manifests_dir: &Path) -> DiscoveryReport<Vec<DiscoveredLib
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                epic_diagnostic(
+                diagnostic(
+                    "epic",
                     "manifest-enumeration",
                     Some(manifests_dir.to_path_buf()),
                     err,
@@ -89,7 +77,8 @@ fn discover_manifests(manifests_dir: &Path) -> DiscoveryReport<Vec<DiscoveredLib
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                diagnostics.push(epic_diagnostic(
+                diagnostics.push(diagnostic(
+                    "epic",
                     "manifest-entry",
                     Some(manifests_dir.to_path_buf()),
                     err,
@@ -104,14 +93,14 @@ fn discover_manifests(manifests_dir: &Path) -> DiscoveryReport<Vec<DiscoveredLib
         let contents = match std::fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(err) => {
-                diagnostics.push(epic_diagnostic("manifest-read", Some(path), err));
+                diagnostics.push(diagnostic("epic", "manifest-read", Some(path), err));
                 continue;
             }
         };
         let game = match parse_item_result(&contents) {
             Ok(game) => game,
             Err(err) => {
-                diagnostics.push(epic_diagnostic("manifest-parse", Some(path), err));
+                diagnostics.push(diagnostic("epic", "manifest-parse", Some(path), err));
                 continue;
             }
         };
@@ -126,12 +115,12 @@ fn discover_manifests(manifests_dir: &Path) -> DiscoveryReport<Vec<DiscoveredLib
         match super::try_is_dir(&game.install_dir) {
             Ok(true) => games.push(game),
             // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
-            Ok(false) => diagnostics.push(epic_diagnostic(
+            Ok(false) => diagnostics.push(diagnostic("epic", 
                 GAME_ABSENT,
                 Some(game.install_dir),
                 "manifest present, install directory absent (uninstalled outside the Epic launcher, or a queued/paused download)",
             )),
-            Err(err) => diagnostics.push(epic_diagnostic(
+            Err(err) => diagnostics.push(diagnostic("epic", 
                 "game-path",
                 Some(game.install_dir),
                 err,
@@ -162,7 +151,7 @@ fn discover_manifests(manifests_dir: &Path) -> DiscoveryReport<Vec<DiscoveredLib
 /// well-known default `ProgramData` location.
 fn find_manifests_dir() -> std::io::Result<PathBuf> {
     let base = read_app_data_path()?
-        .map(|raw| PathBuf::from(normalize_slashes(&raw)))
+        .map(|raw| PathBuf::from(super::normalize_slashes(&raw)))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR));
     Ok(base.join("Manifests"))
 }
@@ -179,10 +168,6 @@ fn read_app_data_path() -> std::io::Result<Option<String>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err),
     }
-}
-
-fn normalize_slashes(raw: &str) -> String {
-    raw.replace('/', "\\")
 }
 
 fn is_item_manifest(path: &Path) -> bool {

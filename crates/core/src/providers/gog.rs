@@ -9,7 +9,7 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
+    degrades_evidence, diagnostic, DiscoveredLibrary, DiscoveryReport, DiscoveryStatus,
     GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
@@ -31,19 +31,6 @@ impl LibraryProvider for GogProvider {
     }
 }
 
-fn diagnostic(
-    stage: &'static str,
-    path: Option<PathBuf>,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "gog",
-        stage,
-        path,
-        message: message.to_string(),
-    }
-}
-
 fn discover_gog() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let games_key = match hklm.open_subkey(REGISTRY_KEY) {
@@ -52,7 +39,10 @@ fn discover_gog() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             return DiscoveryReport::not_installed(Vec::new())
         }
         Err(err) => {
-            return DiscoveryReport::failed(Vec::new(), diagnostic("registry-open", None, err))
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic("gog", "registry-open", None, err),
+            )
         }
     };
 
@@ -62,14 +52,14 @@ fn discover_gog() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         let app_id = match app_id {
             Ok(app_id) => app_id,
             Err(err) => {
-                diagnostics.push(diagnostic("registry-enumeration", None, err));
+                diagnostics.push(diagnostic("gog", "registry-enumeration", None, err));
                 continue;
             }
         };
         let subkey = match games_key.open_subkey(&app_id) {
             Ok(subkey) => subkey,
             Err(err) => {
-                diagnostics.push(diagnostic("game-key-open", None, err));
+                diagnostics.push(diagnostic("gog", "game-key-open", None, err));
                 continue;
             }
         };
@@ -81,7 +71,7 @@ fn discover_gog() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             Ok(value) => Some(value),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                diagnostics.push(diagnostic("game-value-read", None, err));
+                diagnostics.push(diagnostic("gog", "game-value-read", None, err));
                 continue;
             }
         };
@@ -109,11 +99,14 @@ fn discover_gog() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             Ok(true) => games.push(game),
             // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
             Ok(false) => diagnostics.push(diagnostic(
+                "gog",
                 GAME_ABSENT,
                 Some(game.install_dir),
                 "registry entry present, install directory absent (uninstalled without cleanup)",
             )),
-            Err(err) => diagnostics.push(diagnostic("game-path", Some(game.install_dir), err)),
+            Err(err) => {
+                diagnostics.push(diagnostic("gog", "game-path", Some(game.install_dir), err))
+            }
         }
     }
 

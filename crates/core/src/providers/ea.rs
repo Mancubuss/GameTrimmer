@@ -24,8 +24,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, GameInstall,
-    LibraryProvider, OrphanEvidence,
+    diagnostic, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
+    GameInstall, LibraryProvider, OrphanEvidence,
 };
 
 // `GAME_ABSENT` and `degrades_evidence` live in `super` - see
@@ -65,15 +65,6 @@ struct ProviderRead {
     games: Vec<GameInstall>,
     diagnostics: Vec<DiscoveryDiagnostic>,
     ea_evidence_found: bool,
-}
-
-fn diagnostic(stage: &'static str, message: impl std::fmt::Display) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "ea",
-        stage,
-        path: None,
-        message: message.to_string(),
-    }
 }
 
 fn discover_ea() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
@@ -165,7 +156,7 @@ fn read_uninstall_games_report() -> ProviderRead {
             Err(err) => {
                 report
                     .diagnostics
-                    .push(diagnostic("uninstall-root-open", err));
+                    .push(diagnostic("ea", "uninstall-root-open", None, err));
                 continue;
             }
         };
@@ -175,7 +166,7 @@ fn read_uninstall_games_report() -> ProviderRead {
                 Err(err) => {
                     report
                         .diagnostics
-                        .push(diagnostic("uninstall-enumeration", err));
+                        .push(diagnostic("ea", "uninstall-enumeration", None, err));
                     continue;
                 }
             };
@@ -184,7 +175,7 @@ fn read_uninstall_games_report() -> ProviderRead {
                 Err(err) => {
                     report
                         .diagnostics
-                        .push(diagnostic("uninstall-entry-open", err));
+                        .push(diagnostic("ea", "uninstall-entry-open", None, err));
                     continue;
                 }
             };
@@ -192,7 +183,9 @@ fn read_uninstall_games_report() -> ProviderRead {
                 Ok(publisher) => publisher,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(err) => {
-                    report.diagnostics.push(diagnostic("publisher-read", err));
+                    report
+                        .diagnostics
+                        .push(diagnostic("ea", "publisher-read", None, err));
                     continue;
                 }
             };
@@ -211,7 +204,9 @@ fn read_uninstall_games_report() -> ProviderRead {
                 Ok(value) => Some(value),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
                 Err(err) => {
-                    report.diagnostics.push(diagnostic("game-value-read", err));
+                    report
+                        .diagnostics
+                        .push(diagnostic("ea", "game-value-read", None, err));
                     continue;
                 }
             };
@@ -225,7 +220,9 @@ fn read_uninstall_games_report() -> ProviderRead {
                 Ok(value) => Some(value),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
                 Err(err) => {
-                    report.diagnostics.push(diagnostic("game-value-read", err));
+                    report
+                        .diagnostics
+                        .push(diagnostic("ea", "game-value-read", None, err));
                     None
                 }
             };
@@ -297,7 +294,9 @@ fn read_registry_games_report(registry_key: &str) -> ProviderRead {
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return report,
         Err(err) => {
-            report.diagnostics.push(diagnostic("games-root-open", err));
+            report
+                .diagnostics
+                .push(diagnostic("ea", "games-root-open", None, err));
             return report;
         }
     };
@@ -307,14 +306,16 @@ fn read_registry_games_report(registry_key: &str) -> ProviderRead {
             Err(err) => {
                 report
                     .diagnostics
-                    .push(diagnostic("games-enumeration", err));
+                    .push(diagnostic("ea", "games-enumeration", None, err));
                 continue;
             }
         };
         let subkey = match games_key.open_subkey(&id) {
             Ok(key) => key,
             Err(err) => {
-                report.diagnostics.push(diagnostic("game-key-open", err));
+                report
+                    .diagnostics
+                    .push(diagnostic("ea", "game-key-open", None, err));
                 continue;
             }
         };
@@ -329,7 +330,9 @@ fn read_registry_games_report(registry_key: &str) -> ProviderRead {
             Ok(value) => Some(value),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                report.diagnostics.push(diagnostic("game-value-read", err));
+                report
+                    .diagnostics
+                    .push(diagnostic("ea", "game-value-read", None, err));
                 continue;
             }
         };
@@ -342,7 +345,9 @@ fn read_registry_games_report(registry_key: &str) -> ProviderRead {
             Ok(value) => Some(value),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                report.diagnostics.push(diagnostic("game-value-read", err));
+                report
+                    .diagnostics
+                    .push(diagnostic("ea", "game-value-read", None, err));
                 None
             }
         };

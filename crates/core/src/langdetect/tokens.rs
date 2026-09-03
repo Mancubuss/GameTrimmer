@@ -42,16 +42,15 @@ pub fn split_path_segments(rel_path: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Extracts the lowercase file extension (without the dot) of `rel_path`, if
-/// any. Only looks at the final path segment.
-pub fn file_extension(rel_path: &str) -> Option<String> {
-    let segments = split_path_segments(rel_path);
-    let filename = segments.last()?;
-    let dot = filename.rfind('.')?;
-    if dot == 0 || dot == filename.len() - 1 {
+/// Extracts the extension (without the dot) of an already-lowercased final
+/// path segment - `Segment::lower` of the last segment of a tokenized path.
+/// A leading dot (a dotfile) and a trailing dot are both "no extension".
+pub fn extension_of(lower_filename: &str) -> Option<&str> {
+    let dot = lower_filename.rfind('.')?;
+    if dot == 0 || dot == lower_filename.len() - 1 {
         return None;
     }
-    Some(filename[dot + 1..].to_lowercase())
+    Some(&lower_filename[dot + 1..])
 }
 
 /// Splits `text` on the given delimiter set, returning non-empty pieces with
@@ -104,8 +103,9 @@ fn split_camel(original: &str) -> Vec<(usize, usize)> {
 
 /// Tokenizes one path segment: strong-delimiter split, then CamelCase split
 /// within each piece. Also computes the weak-delimiter pieces used for
-/// locale-tag / literal compound matching.
-fn tokenize_segment(raw: &str) -> (Vec<Piece>, Vec<Piece>) {
+/// locale-tag / literal compound matching, and the lowercased segment text
+/// itself (so callers that also need it don't lowercase `raw` again).
+fn tokenize_segment(raw: &str) -> (String, Vec<Piece>, Vec<Piece>) {
     // CamelCase boundaries must be computed on the original-case text before
     // lowercasing (lowercasing erases the case transitions).
     let strong_pieces_raw = split_on(raw, &STRONG_DELIMS);
@@ -124,7 +124,7 @@ fn tokenize_segment(raw: &str) -> (Vec<Piece>, Vec<Piece>) {
     let lower = raw.to_lowercase();
     let weak_pieces = split_on(&lower, &WEAK_DELIMS);
 
-    (atoms, weak_pieces)
+    (lower, atoms, weak_pieces)
 }
 
 /// Tokenizes a full `rel_path` into segments with atomic and weak-split
@@ -137,9 +137,9 @@ pub fn tokenize_path(rel_path: &str) -> Vec<Segment> {
         .iter()
         .enumerate()
         .map(|(index, raw)| {
-            let (atoms, weak_pieces) = tokenize_segment(raw);
+            let (lower, atoms, weak_pieces) = tokenize_segment(raw);
             Segment {
-                lower: raw.to_lowercase(),
+                lower,
                 index,
                 is_filename: index == last_idx,
                 atoms,
@@ -155,24 +155,32 @@ mod tests {
 
     #[test]
     fn splits_camel_case_boundaries() {
-        let (atoms, _) = tokenize_segment("SpanishNation.txt");
+        let (_, atoms, _) = tokenize_segment("SpanishNation.txt");
         let texts: Vec<&str> = atoms.iter().map(|p| p.text.as_str()).collect();
         assert_eq!(texts, vec!["spanish", "nation", "txt"]);
     }
 
     #[test]
     fn weak_pieces_preserve_hyphen_locale_tags() {
-        let (_, weak) = tokenize_segment("Spanish(Spain)_patch_1.snd");
+        let (_, _, weak) = tokenize_segment("Spanish(Spain)_patch_1.snd");
         let texts: Vec<&str> = weak.iter().map(|p| p.text.as_str()).collect();
         assert_eq!(texts, vec!["spanish", "spain", "_patch_1", "snd"]);
     }
 
     #[test]
     fn extension_extraction() {
+        assert_eq!(extension_of("intro_german.bik"), Some("bik"));
+        assert_eq!(extension_of("noext"), None);
+        assert_eq!(extension_of(".gitignore"), None);
+        assert_eq!(extension_of("trailing."), None);
+    }
+
+    #[test]
+    fn extension_comes_off_the_last_segment_of_a_tokenized_path() {
+        let segs = tokenize_path(r"a\b.old\intro_german.bik");
         assert_eq!(
-            file_extension("a\\b\\intro_german.bik"),
-            Some("bik".to_string())
+            segs.last().and_then(|s| extension_of(&s.lower)),
+            Some("bik")
         );
-        assert_eq!(file_extension("a\\b\\noext"), None);
     }
 }

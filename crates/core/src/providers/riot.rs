@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, GameInstall,
-    LibraryProvider, OrphanEvidence,
+    diagnostic, DiscoveredLibrary, DiscoveryReport, DiscoveryStatus, GameInstall, LibraryProvider,
+    OrphanEvidence,
 };
 
 // `GAME_ABSENT` and `degrades_evidence` live in `super` - see `steam.rs` for
@@ -70,19 +70,6 @@ impl LibraryProvider for RiotProvider {
     }
 }
 
-fn diagnostic(
-    stage: &'static str,
-    path: Option<PathBuf>,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "riot",
-        stage,
-        path,
-        message: message.to_string(),
-    }
-}
-
 fn discover_riot() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     let metadata_dir = program_data_dir().join(METADATA_RELATIVE_PATH);
     let entries = match std::fs::read_dir(&metadata_dir) {
@@ -93,7 +80,7 @@ fn discover_riot() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                diagnostic("metadata-enumeration", Some(metadata_dir), err),
+                diagnostic("riot", "metadata-enumeration", Some(metadata_dir), err),
             )
         }
     };
@@ -104,6 +91,7 @@ fn discover_riot() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             Ok(entry) => entry,
             Err(err) => {
                 diagnostics.push(diagnostic(
+                    "riot",
                     "metadata-entry",
                     Some(metadata_dir.clone()),
                     err,
@@ -115,7 +103,12 @@ fn discover_riot() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {
-                diagnostics.push(diagnostic("metadata-entry-type", Some(product_dir), err));
+                diagnostics.push(diagnostic(
+                    "riot",
+                    "metadata-entry-type",
+                    Some(product_dir),
+                    err,
+                ));
                 continue;
             }
         };
@@ -133,18 +126,18 @@ fn discover_riot() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             Ok(Some(product)) => match super::try_is_dir(&product.game.install_dir) {
                 Ok(true) => products.push(product),
                 // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
-                Ok(false) => diagnostics.push(diagnostic(
+                Ok(false) => diagnostics.push(diagnostic("riot", 
                     GAME_ABSENT,
                     Some(product.game.install_dir),
                     "product metadata present, install directory absent (uninstall that left the metadata behind)",
                 )),
                 Err(err) => {
-                    diagnostics.push(diagnostic("game-path", Some(product.game.install_dir), err))
+                    diagnostics.push(diagnostic("riot", "game-path", Some(product.game.install_dir), err))
                 }
             },
             Ok(None) => {}
             Err(err) => {
-                diagnostics.push(diagnostic("product-settings-read", Some(product_dir), err))
+                diagnostics.push(diagnostic("riot", "product-settings-read", Some(product_dir), err))
             }
         }
     }

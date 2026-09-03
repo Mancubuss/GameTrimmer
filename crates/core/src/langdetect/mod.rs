@@ -34,7 +34,7 @@ pub use data::{LangData, LangPack, LANG_PACK_VERSION};
 use family::FamilyHit;
 use markers::{scan_markers, MarkerContext, MarkerKind};
 use occurrences::{collect_occurrences, Occurrence};
-use tokens::{file_extension, tokenize_path};
+use tokens::{extension_of, tokenize_path};
 
 /// What kind of localization asset a finding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -152,7 +152,11 @@ impl LangDetector {
             if i % CANCEL_POLL_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
                 return Err(CoreError::Other("cancelled".to_string()));
             }
-            let ext = file_extension(&file.rel_path);
+            // `segs` is already `tokenize_path(&file.rel_path)` and its last
+            // segment's `lower` is the lowercased filename, so the extension
+            // is read off that instead of re-splitting and re-lowercasing the
+            // path for every one of a scan's ~875k findings.
+            let ext = segs.last().and_then(|seg| extension_of(&seg.lower));
 
             // Executable code is never a removable localization, whatever
             // its name says: NVIDIA Streamline ships `sl.dlss.dll` ("sl" is
@@ -162,7 +166,7 @@ impl LangDetector {
             // resource containers.
             let is_satellite_assembly =
                 ends_with_ignore_ascii_case(&file.rel_path, b".resources.dll");
-            if matches!(ext.as_deref(), Some("dll") | Some("exe")) && !is_satellite_assembly {
+            if matches!(ext, Some("dll") | Some("exe")) && !is_satellite_assembly {
                 continue;
             }
             // A file living under a keep-language folder belongs to that
@@ -178,7 +182,7 @@ impl LangDetector {
             }
 
             let has_filename_lang_token = occ_lists[i].iter().any(|o| o.is_filename);
-            let ctx = scan_markers(&self.data, segs, has_filename_lang_token, ext.as_deref());
+            let ctx = scan_markers(&self.data, segs, has_filename_lang_token, ext);
 
             if let Some(finding) = decide_finding(
                 &self.data,

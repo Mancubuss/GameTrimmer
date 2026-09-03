@@ -34,7 +34,7 @@
 //! iterates `env::vars()`, whose values carry account, machine and domain
 //! names, and in a corporate setting internal UNC paths.
 
-pub mod redact;
+mod redact;
 pub mod sections;
 
 // Both `Write`s are needed here and they are different traits: `fmt` for

@@ -81,8 +81,8 @@ use serde::Deserialize;
 use crate::error::Result;
 
 use super::{
-    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
-    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
+    degrades_evidence, diagnostic, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport,
+    DiscoveryStatus, GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const LAUNCHER_RELATIVE_DIR: &str = r"Paradox Interactive\launcher-v2";
@@ -108,19 +108,6 @@ impl LibraryProvider for ParadoxProvider {
 
     fn discover(&self) -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         discover_paradox()
-    }
-}
-
-fn paradox_diagnostic(
-    stage: &'static str,
-    path: Option<PathBuf>,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "paradox",
-        stage,
-        path,
-        message: message.to_string(),
     }
 }
 
@@ -150,7 +137,7 @@ fn discover_paradox_at(launcher_dir: &Path) -> DiscoveryReport<Vec<DiscoveredLib
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                paradox_diagnostic("settings-read", Some(settings_path), err),
+                diagnostic("paradox", "settings-read", Some(settings_path), err),
             )
         }
     };
@@ -159,7 +146,7 @@ fn discover_paradox_at(launcher_dir: &Path) -> DiscoveryReport<Vec<DiscoveredLib
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                paradox_diagnostic("settings-parse", Some(settings_path), err),
+                diagnostic("paradox", "settings-parse", Some(settings_path), err),
             )
         }
     };
@@ -190,7 +177,8 @@ fn discover_paradox_from_settings(
                     continue;
                 };
                 if pending.contains(&candidate.game_id) {
-                    diagnostics.push(paradox_diagnostic(
+                    diagnostics.push(diagnostic(
+                        "paradox",
                         GAME_ABSENT,
                         Some(candidate.install_dir),
                         "gameId listed in pendingGameInstallations (download in progress)",
@@ -221,7 +209,8 @@ fn discover_paradox_from_settings(
         if root.is_dir() {
             super::register_root(&mut libraries, "paradox", root);
         } else {
-            diagnostics.push(paradox_diagnostic(
+            diagnostics.push(diagnostic(
+                "paradox",
                 "default-root",
                 Some(root),
                 "configured default Paradox install root is unavailable",
@@ -264,7 +253,7 @@ fn classify_candidate(
                 install_dir: candidate.install_dir,
                 app_id: Some(candidate.game_id),
             }),
-            Ok(false) => diagnostics.push(paradox_diagnostic(
+            Ok(false) => diagnostics.push(diagnostic("paradox", 
                 GAME_ABSENT,
                 Some(candidate.install_dir),
                 "install directory holds only .cpatch - still mid-download (.cpatch is confirmed \
@@ -272,16 +261,16 @@ fn classify_candidate(
                  its exclusivity here does)",
             )),
             Err(err) => {
-                diagnostics.push(paradox_diagnostic("game-path", Some(candidate.install_dir), err))
+                diagnostics.push(diagnostic("paradox", "game-path", Some(candidate.install_dir), err))
             }
         },
-        Ok(false) => diagnostics.push(paradox_diagnostic(
+        Ok(false) => diagnostics.push(diagnostic("paradox", 
             GAME_ABSENT,
             Some(candidate.install_dir),
             "entry present, install directory absent (not yet downloaded, or uninstalled outside the launcher)",
         )),
         Err(err) => {
-            diagnostics.push(paradox_diagnostic("game-path", Some(candidate.install_dir), err))
+            diagnostics.push(diagnostic("paradox", "game-path", Some(candidate.install_dir), err))
         }
     }
 }

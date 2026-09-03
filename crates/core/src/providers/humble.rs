@@ -16,7 +16,7 @@ use serde::Deserialize;
 use crate::error::Result;
 
 use super::{
-    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
+    degrades_evidence, diagnostic, DiscoveredLibrary, DiscoveryReport, DiscoveryStatus,
     GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
@@ -41,19 +41,6 @@ impl LibraryProvider for HumbleProvider {
     }
 }
 
-fn diagnostic(
-    stage: &'static str,
-    path: Option<PathBuf>,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "humble",
-        stage,
-        path,
-        message: message.to_string(),
-    }
-}
-
 fn discover_humble() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     let Some(config_path) = config_path().filter(|path| path.is_file()) else {
         return DiscoveryReport::not_installed(Vec::new());
@@ -64,7 +51,7 @@ fn discover_humble() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                diagnostic("config-read", Some(config_path), err),
+                diagnostic("humble", "config-read", Some(config_path), err),
             )
         }
     };
@@ -73,7 +60,7 @@ fn discover_humble() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                diagnostic("config-parse", Some(config_path), err),
+                diagnostic("humble", "config-parse", Some(config_path), err),
             )
         }
     };
@@ -97,12 +84,12 @@ fn discover_humble_from_config(config: ParsedConfig) -> DiscoveryReport<Vec<Disc
         match super::try_is_dir(&game.install_dir) {
             Ok(true) => games.push(game),
             // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
-            Ok(false) => diagnostics.push(diagnostic(
+            Ok(false) => diagnostics.push(diagnostic("humble", 
                 GAME_ABSENT,
                 Some(game.install_dir),
                 "config entry present, install directory absent (uninstalled outside the Humble App, or a stale entry)",
             )),
-            Err(err) => diagnostics.push(diagnostic("game-path", Some(game.install_dir), err)),
+            Err(err) => diagnostics.push(diagnostic("humble", "game-path", Some(game.install_dir), err)),
         }
     }
 
@@ -118,6 +105,7 @@ fn discover_humble_from_config(config: ParsedConfig) -> DiscoveryReport<Vec<Disc
             super::register_root(&mut libraries, "humble", root);
         } else {
             diagnostics.push(diagnostic(
+                "humble",
                 "download-location",
                 Some(root),
                 "configured Humble download location is unavailable",

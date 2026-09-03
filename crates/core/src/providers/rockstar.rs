@@ -13,8 +13,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
-    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
+    degrades_evidence, diagnostic, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport,
+    DiscoveryStatus, GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const REGISTRY_KEY: &str = r"SOFTWARE\WOW6432Node\Rockstar Games";
@@ -45,7 +45,12 @@ fn discover_rockstar() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return DiscoveryReport::not_installed(Vec::new())
         }
-        Err(err) => return DiscoveryReport::failed(Vec::new(), diagnostic("registry-open", err)),
+        Err(err) => {
+            return DiscoveryReport::failed(
+                Vec::new(),
+                diagnostic("rockstar", "registry-open", None, err),
+            )
+        }
     };
     let mut games = Vec::new();
     let mut diagnostics = Vec::new();
@@ -53,14 +58,14 @@ fn discover_rockstar() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         let name = match name {
             Ok(name) => name,
             Err(err) => {
-                diagnostics.push(diagnostic("registry-enumeration", err));
+                diagnostics.push(diagnostic("rockstar", "registry-enumeration", None, err));
                 continue;
             }
         };
         let subkey = match root_key.open_subkey(&name) {
             Ok(key) => key,
             Err(err) => {
-                diagnostics.push(diagnostic("game-key-open", err));
+                diagnostics.push(diagnostic("rockstar", "game-key-open", None, err));
                 continue;
             }
         };
@@ -73,7 +78,7 @@ fn discover_rockstar() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             Ok(value) => Some(value),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                diagnostics.push(diagnostic("game-value-read", err));
+                diagnostics.push(diagnostic("rockstar", "game-value-read", None, err));
                 continue;
             }
         };
@@ -112,15 +117,6 @@ fn discover_rockstar() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         }
     }
     finish_report("rockstar", games, diagnostics)
-}
-
-fn diagnostic(stage: &'static str, message: impl std::fmt::Display) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "rockstar",
-        stage,
-        path: None,
-        message: message.to_string(),
-    }
 }
 
 fn finish_report(

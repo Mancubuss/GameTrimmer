@@ -16,8 +16,8 @@ use rusqlite::{Connection, OpenFlags};
 use crate::error::Result;
 
 use super::{
-    degrades_evidence, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
-    GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
+    degrades_evidence, diagnostic, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport,
+    DiscoveryStatus, GameInstall, LibraryProvider, OrphanEvidence, GAME_ABSENT,
 };
 
 const DATABASE_RELATIVE_PATH: &str = r"itch\db\butler.db";
@@ -48,7 +48,7 @@ fn discover_itch() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                itch_diagnostic("database-open", Some(db_path), err),
+                diagnostic("itch", "database-open", Some(db_path), err),
             )
         }
     };
@@ -67,7 +67,7 @@ fn discover_itch_from_conn(
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                itch_diagnostic("games-query", Some(db_path.clone()), err),
+                diagnostic("itch", "games-query", Some(db_path.clone()), err),
             )
         }
     };
@@ -83,12 +83,12 @@ fn discover_itch_from_conn(
         match super::try_is_dir(&game.install_dir) {
             Ok(true) => games.push(game),
             // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
-            Ok(false) => diagnostics.push(itch_diagnostic(
+            Ok(false) => diagnostics.push(diagnostic("itch", 
                 GAME_ABSENT,
                 Some(game.install_dir.clone()),
                 "cave record present, install directory absent (uninstalled outside the itch app, or a stale record)",
             )),
-            Err(err) => diagnostics.push(itch_diagnostic(
+            Err(err) => diagnostics.push(diagnostic("itch", 
                 "game-path",
                 Some(game.install_dir.clone()),
                 err,
@@ -107,7 +107,7 @@ fn discover_itch_from_conn(
         Err(err) => {
             return DiscoveryReport::failed(
                 Vec::new(),
-                itch_diagnostic("locations-query", Some(db_path), err),
+                diagnostic("itch", "locations-query", Some(db_path), err),
             )
         }
     };
@@ -122,7 +122,8 @@ fn discover_itch_from_conn(
         if root.is_dir() {
             super::register_root(&mut libraries, "itch", root);
         } else {
-            diagnostics.push(itch_diagnostic(
+            diagnostics.push(diagnostic(
+                "itch",
                 "location-path",
                 Some(root),
                 "configured itch install location is unavailable",
@@ -145,19 +146,6 @@ fn discover_itch_from_conn(
             status: DiscoveryStatus::Complete,
             diagnostics,
         }
-    }
-}
-
-fn itch_diagnostic(
-    stage: &'static str,
-    path: Option<PathBuf>,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "itch",
-        stage,
-        path,
-        message: message.to_string(),
     }
 }
 
@@ -186,7 +174,8 @@ fn read_install_locations_report(
             Ok(_) => {}
             // A row that failed to *decode* is the real failure and keeps
             // its own diagnostic, distinct from the silent case above.
-            Err(err) => diagnostics.push(itch_diagnostic(
+            Err(err) => diagnostics.push(diagnostic(
+                "itch",
                 "location-decode",
                 None,
                 format!("row #{index} could not be decoded: {err}"),
@@ -241,7 +230,8 @@ fn read_games_report(
             }
             // A row that failed to *decode* is the real failure: it keeps
             // its own diagnostic, distinct from the silent case above.
-            Err(err) => diagnostics.push(itch_diagnostic(
+            Err(err) => diagnostics.push(diagnostic(
+                "itch",
                 "game-decode",
                 None,
                 format!("row #{index} could not be decoded: {err}"),

@@ -123,6 +123,26 @@ fn previous_generation(conn: &Connection) -> String {
     }
 }
 
+/// The discovered libraries counted per vendor, e.g. `steam x12, gog x2,
+/// manual x3`, ordered by count and then name so two runs of the same
+/// machine produce byte-identical text.
+///
+/// Written into the scan log beside the totals: a timing is only comparable
+/// against another timing over the same workload, and the vendor mix is the
+/// part of "same workload" that the counts alone hide.
+fn vendor_tally(libraries: &[gametrimmer_core::providers::DiscoveredLibrary]) -> String {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for library in libraries {
+        *counts.entry(library.vendor).or_default() += 1;
+    }
+    let mut rows: Vec<(&str, usize)> = counts.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    rows.iter()
+        .map(|(vendor, count)| format!("{vendor} x{count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// How many games' `files`/`findings` writes share one database transaction.
 /// Bigger batches commit less often (fewer WAL syncs), but hold a batch's
 /// results in memory and delay their visibility to the UI's "Done" message
@@ -393,9 +413,15 @@ fn run_scan(
         libraries: libraries.len(),
         games: games.len(),
     });
+    // The vendor breakdown rides along because a run's *workload* is what
+    // makes two timings comparable, and "17 libraries" alone does not say
+    // whether a Steam library dropped off and a manual folder took its
+    // place. `scripts/scan-bench.ps1` reads this line; a perf comparison
+    // against a run with a different mix is not a comparison.
     crate::logger::log(&format!(
-        "Libraries: {}, games: {}",
+        "Libraries: {} ({}), games: {}",
         libraries.len(),
+        vendor_tally(&libraries),
         games.len()
     ));
 
@@ -623,8 +649,8 @@ fn run_scan(
                     }));
                     return;
                 }
+                let root = issue.library_path.to_string_lossy().to_lowercase();
                 for row in &mut findings {
-                    let root = issue.library_path.to_string_lossy().to_lowercase();
                     let install = row.install_dir.to_string_lossy().to_lowercase();
                     let nested = install == root
                         || install
@@ -1590,6 +1616,30 @@ mod tests {
 
     use gametrimmer_core::orphans::OrphanKind;
     use gametrimmer_core::providers::DiscoveredLibrary;
+
+    /// The tally orders by count first and name second, so the same machine
+    /// scanned twice writes the same string - a perf log that reorders its
+    /// own vendors turns every diff into noise.
+    #[test]
+    fn vendor_tally_orders_by_count_then_name() {
+        let library = |vendor: &'static str| DiscoveredLibrary {
+            vendor,
+            path: PathBuf::from("C:/Games"),
+            orphan_evidence: OrphanEvidence::Heuristic,
+            games: Vec::new(),
+        };
+        let libraries = vec![
+            library("gog"),
+            library("steam"),
+            library("epic"),
+            library("steam"),
+            library("gog"),
+            library("steam"),
+        ];
+
+        assert_eq!(vendor_tally(&libraries), "steam x3, gog x2, epic x1");
+        assert_eq!(vendor_tally(&[]), "");
+    }
     use rusqlite::params;
 
     use crate::model::LibraryOrigin;

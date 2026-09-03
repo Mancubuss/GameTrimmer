@@ -9,8 +9,8 @@ use winreg::RegKey;
 use crate::error::Result;
 
 use super::{
-    DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus, GameInstall,
-    LibraryProvider, OrphanEvidence,
+    diagnostic, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport, DiscoveryStatus,
+    GameInstall, LibraryProvider, OrphanEvidence,
 };
 
 pub struct SteamProvider;
@@ -42,11 +42,17 @@ fn discover_steam() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             library_roots.extend(parse_libraryfolders(&contents));
         }
         Ok(_) => diagnostics.push(diagnostic(
+            "steam",
             "libraryfolders-parse",
-            &libraryfolders_path,
+            libraryfolders_path.to_path_buf(),
             "malformed libraryfolders.vdf",
         )),
-        Err(err) => diagnostics.push(diagnostic("libraryfolders-read", &libraryfolders_path, err)),
+        Err(err) => diagnostics.push(diagnostic(
+            "steam",
+            "libraryfolders-read",
+            libraryfolders_path.to_path_buf(),
+            err,
+        )),
     }
 
     let mut seen = HashSet::new();
@@ -87,19 +93,6 @@ fn discover_steam() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
 // they now live in `super` - see `providers::GAME_ABSENT`.
 use super::{degrades_evidence, GAME_ABSENT};
 
-fn diagnostic(
-    stage: &'static str,
-    path: &Path,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider: "steam",
-        stage,
-        path: Some(path.to_path_buf()),
-        message: message.to_string(),
-    }
-}
-
 /// Reads one library's `steamapps` directory and returns its discovered games.
 /// Returns `None` if the library root or its `steamapps` folder doesn't exist.
 fn discover_library(library_root: &Path) -> (Option<DiscoveredLibrary>, Vec<DiscoveryDiagnostic>) {
@@ -108,8 +101,9 @@ fn discover_library(library_root: &Path) -> (Option<DiscoveredLibrary>, Vec<Disc
         return (
             None,
             vec![diagnostic(
+                "steam",
                 "library-root",
-                &steamapps_dir,
+                steamapps_dir.to_path_buf(),
                 "declared Steam library is unavailable",
             )],
         );
@@ -120,7 +114,12 @@ fn discover_library(library_root: &Path) -> (Option<DiscoveredLibrary>, Vec<Disc
         Err(err) => {
             return (
                 None,
-                vec![diagnostic("manifest-enumeration", &steamapps_dir, err)],
+                vec![diagnostic(
+                    "steam",
+                    "manifest-enumeration",
+                    steamapps_dir.to_path_buf(),
+                    err,
+                )],
             )
         }
     };
@@ -130,7 +129,12 @@ fn discover_library(library_root: &Path) -> (Option<DiscoveredLibrary>, Vec<Disc
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                diagnostics.push(diagnostic("manifest-entry", &steamapps_dir, err));
+                diagnostics.push(diagnostic(
+                    "steam",
+                    "manifest-entry",
+                    steamapps_dir.to_path_buf(),
+                    err,
+                ));
                 continue;
             }
         };
@@ -141,18 +145,29 @@ fn discover_library(library_root: &Path) -> (Option<DiscoveredLibrary>, Vec<Disc
         let contents = match std::fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(err) => {
-                diagnostics.push(diagnostic("manifest-read", &path, err));
+                diagnostics.push(diagnostic(
+                    "steam",
+                    "manifest-read",
+                    path.to_path_buf(),
+                    err,
+                ));
                 continue;
             }
         };
         if !vdf_well_formed(&contents) {
-            diagnostics.push(diagnostic("manifest-parse", &path, "malformed VDF"));
+            diagnostics.push(diagnostic(
+                "steam",
+                "manifest-parse",
+                path.to_path_buf(),
+                "malformed VDF",
+            ));
             continue;
         }
         let Some(game) = parse_appmanifest(&contents, library_root) else {
             diagnostics.push(diagnostic(
+                "steam",
                 "manifest-parse",
-                &path,
+                path.to_path_buf(),
                 "missing required AppState fields",
             ));
             continue;
@@ -166,11 +181,17 @@ fn discover_library(library_root: &Path) -> (Option<DiscoveredLibrary>, Vec<Disc
             Ok(true) => games.push(game),
             // Recorded, but explicitly not degrading - see `GAME_ABSENT`.
             Ok(false) => diagnostics.push(diagnostic(
+                "steam",
                 GAME_ABSENT,
-                &game.install_dir,
+                game.install_dir.clone(),
                 "manifest present, install directory absent (queued or paused download)",
             )),
-            Err(err) => diagnostics.push(diagnostic("game-path", &game.install_dir, err)),
+            Err(err) => diagnostics.push(diagnostic(
+                "steam",
+                "game-path",
+                game.install_dir.clone(),
+                err,
+            )),
         }
     }
 
@@ -239,7 +260,7 @@ fn is_appmanifest(path: &Path) -> bool {
 /// (`HKCU\Software\Valve\Steam\SteamPath`, fallback `HKLM\SOFTWARE\WOW6432Node\Valve\Steam\InstallPath`).
 pub fn find_steam_root() -> Option<PathBuf> {
     let raw = read_hkcu_steam_path().or_else(read_hklm_install_path)?;
-    let path = PathBuf::from(normalize_slashes(&raw));
+    let path = PathBuf::from(super::normalize_slashes(&raw));
     path.is_dir().then_some(path)
 }
 
@@ -255,10 +276,6 @@ fn read_hklm_install_path() -> Option<String> {
         .open_subkey("SOFTWARE\\WOW6432Node\\Valve\\Steam")
         .ok()?;
     key.get_value::<String, _>("InstallPath").ok()
-}
-
-fn normalize_slashes(raw: &str) -> String {
-    raw.replace('/', "\\")
 }
 
 /// Parses the text of `steamapps/libraryfolders.vdf` and returns the library root paths.
@@ -287,7 +304,7 @@ fn collect_library_paths(value: &VdfValue, out: &mut Vec<PathBuf>) {
     for (key, val) in entries {
         if key.eq_ignore_ascii_case("path") {
             if let VdfValue::Str(s) = val {
-                out.push(PathBuf::from(normalize_slashes(s)));
+                out.push(PathBuf::from(super::normalize_slashes(s)));
             }
         }
     }

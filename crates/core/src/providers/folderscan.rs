@@ -23,7 +23,7 @@ use serde::Deserialize;
 use crate::error::Result;
 
 use super::{
-    try_holds_installed_files, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport,
+    diagnostic, try_holds_installed_files, DiscoveredLibrary, DiscoveryDiagnostic, DiscoveryReport,
     GameInstall, LibraryProvider, OrphanEvidence,
 };
 
@@ -73,20 +73,6 @@ impl LibraryProvider for FolderScanProvider {
     }
 }
 
-fn diagnostic(
-    provider: &'static str,
-    stage: &'static str,
-    path: &Path,
-    message: impl std::fmt::Display,
-) -> DiscoveryDiagnostic {
-    DiscoveryDiagnostic {
-        provider,
-        stage,
-        path: Some(path.to_path_buf()),
-        message: message.to_string(),
-    }
-}
-
 fn discover_folder_scan() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
     let mut libraries = Vec::new();
     let mut diagnostics = Vec::new();
@@ -96,7 +82,12 @@ fn discover_folder_scan() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             Ok(_) => continue,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {
-                diagnostics.push(diagnostic("folderscan", "drive-metadata", &drive, err));
+                diagnostics.push(diagnostic(
+                    "folderscan",
+                    "drive-metadata",
+                    drive.to_path_buf(),
+                    err,
+                ));
                 continue;
             }
         }
@@ -142,7 +133,12 @@ fn scan_container_report(container: &Path) -> (Vec<DiscoveredLibrary>, Vec<Disco
                 Ok(_) => continue,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(err) => {
-                    diagnostics.push(diagnostic(vendor, "vendor-root-metadata", &root, err));
+                    diagnostics.push(diagnostic(
+                        vendor,
+                        "vendor-root-metadata",
+                        root.to_path_buf(),
+                        err,
+                    ));
                     continue;
                 }
             }
@@ -179,7 +175,12 @@ fn read_vendor_library_report(
         Err(err) => {
             return (
                 None,
-                vec![diagnostic(vendor, "vendor-root-enumeration", root, err)],
+                vec![diagnostic(
+                    vendor,
+                    "vendor-root-enumeration",
+                    root.to_path_buf(),
+                    err,
+                )],
             )
         }
     };
@@ -189,7 +190,12 @@ fn read_vendor_library_report(
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                diagnostics.push(diagnostic(vendor, "vendor-root-entry", root, err));
+                diagnostics.push(diagnostic(
+                    vendor,
+                    "vendor-root-entry",
+                    root.to_path_buf(),
+                    err,
+                ));
                 continue;
             }
         };
@@ -197,7 +203,12 @@ fn read_vendor_library_report(
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {
-                diagnostics.push(diagnostic(vendor, "game-entry-type", &path, err));
+                diagnostics.push(diagnostic(
+                    vendor,
+                    "game-entry-type",
+                    path.to_path_buf(),
+                    err,
+                ));
                 continue;
             }
         };
@@ -208,7 +219,12 @@ fn read_vendor_library_report(
             Ok(false) => continue,
             Ok(true) => {}
             Err(err) => {
-                diagnostics.push(diagnostic(vendor, "game-content-probe", &path, err));
+                diagnostics.push(diagnostic(
+                    vendor,
+                    "game-content-probe",
+                    path.to_path_buf(),
+                    err,
+                ));
                 continue;
             }
         }
@@ -261,7 +277,7 @@ fn build_game_report(
         diagnostics.push(diagnostic(
             vendor,
             "game-name",
-            &install_dir,
+            install_dir,
             "game path has no usable folder name",
         ));
         return (None, diagnostics);
@@ -300,7 +316,12 @@ fn read_gog_info_report(
         Err(err) => {
             return (
                 None,
-                vec![diagnostic("gog", "manifest-enumeration", dir, err)],
+                vec![diagnostic(
+                    "gog",
+                    "manifest-enumeration",
+                    dir.to_path_buf(),
+                    err,
+                )],
             )
         }
     };
@@ -310,7 +331,7 @@ fn read_gog_info_report(
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                diagnostics.push(diagnostic("gog", "manifest-entry", dir, err));
+                diagnostics.push(diagnostic("gog", "manifest-entry", dir.to_path_buf(), err));
                 continue;
             }
         };
@@ -321,13 +342,15 @@ fn read_gog_info_report(
         let contents = match std::fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(err) => {
-                diagnostics.push(diagnostic("gog", "manifest-read", &path, err));
+                diagnostics.push(diagnostic("gog", "manifest-read", path.to_path_buf(), err));
                 continue;
             }
         };
         match serde_json::from_str::<GogInfo>(&contents) {
             Ok(info) => parsed.push(info),
-            Err(err) => diagnostics.push(diagnostic("gog", "manifest-parse", &path, err)),
+            Err(err) => {
+                diagnostics.push(diagnostic("gog", "manifest-parse", path.to_path_buf(), err))
+            }
         }
     }
 
