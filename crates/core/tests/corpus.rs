@@ -353,3 +353,74 @@ fn corpus_regression() {
         agreement_rate * 100.0
     );
 }
+
+/// GT-449: the localization detector **does** flag protected containers, so
+/// every path that acts on its findings has to veto them itself.
+///
+/// The question this answers is whether
+/// [`gametrimmer_core::worker::is_protected_container`] is redundant next to
+/// the detector - whether the detector already declines a `.pak`/`.pck`/
+/// `.bnk` the way it declines a `.dll` or an `.exe`. It does not. It has no
+/// notion of containers at all: it reads the path, and a container sitting in
+/// `Localization\` or `French(Canada)\` reads exactly like the localized
+/// asset next to it.
+///
+/// That makes the container veto load-bearing rather than belt-and-braces,
+/// and it is why the veto has to sit *before* localization findings are
+/// considered, not only inside the same-name sweep afterwards.
+///
+/// Asserts the fact rather than a threshold: if a future change teaches the
+/// detector to skip containers, this test fails and whoever made that change
+/// gets to decide, deliberately, whether the downstream vetoes may go too.
+#[test]
+fn the_localization_detector_flags_protected_containers() {
+    let path = corpus_path();
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        eprintln!("skipped: no corpus at {}", path.display());
+        return;
+    };
+    let rows = parse_corpus(&contents);
+    if rows.is_empty() {
+        return;
+    }
+
+    let mut by_game: HashMap<String, Vec<&Row>> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for row in &rows {
+        by_game.entry(row.game_key.clone()).or_insert_with(|| {
+            order.push(row.game_key.clone());
+            Vec::new()
+        });
+        by_game.get_mut(&row.game_key).unwrap().push(row);
+    }
+
+    let detector = LangDetector::new();
+    let mut flagged_containers = Vec::new();
+    for game_key in &order {
+        let game_rows = &by_game[game_key];
+        let files: Vec<FileEntry> = game_rows
+            .iter()
+            .map(|r| FileEntry::logical_only(r.rel_path.clone(), 0, None))
+            .collect();
+        for (idx, finding) in detector.analyze_game(&files) {
+            let rel_path = &game_rows[idx].rel_path;
+            if gametrimmer_core::worker::is_protected_container(rel_path) {
+                flagged_containers.push((game_key.clone(), rel_path.clone(), finding.lang_tag));
+            }
+        }
+    }
+
+    eprintln!(
+        "protected containers the detector flags: {} of {} corpus rows",
+        flagged_containers.len(),
+        rows.len()
+    );
+    for (game, rel_path, lang) in flagged_containers.iter().take(20) {
+        eprintln!("  [{game}] {rel_path} -> {lang}");
+    }
+
+    assert!(
+        !flagged_containers.is_empty(),
+        "the detector is expected to flag containers - the container veto exists because it does"
+    );
+}

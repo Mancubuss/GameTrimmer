@@ -322,6 +322,20 @@ pub fn retrim_game_with_new_build(
                 });
             }
             crate::rules::Verdict::Unmatched => {
+                // The container veto, on the same side of the localization
+                // findings the interactive scan puts it
+                // (`app::worker::scan::classify_game`). The rule engine's own
+                // veto (`RuleEngine::classify`) never reaches this arm: a
+                // container leaves it as `Unmatched`, which is exactly the
+                // value that lets a localization finding through. The
+                // detector has no notion of containers and flags them
+                // readily - 247 of them in the hand-checked corpus, see
+                // `core/tests/corpus.rs` - so without this an unattended
+                // re-trim would delete whole multi-asset archives the manual
+                // scan refuses to even offer (GT-449).
+                if crate::worker::is_protected_container(&entry.rel_path) {
+                    continue;
+                }
                 if let Some(lang_finding) = lang_findings.get(&index) {
                     candidates.push(Candidate {
                         entry,
@@ -968,6 +982,52 @@ mod tests {
             })
             .expect("persisted localization finding");
         assert_eq!(category, "localization");
+    }
+
+    /// GT-449: a container the localization detector flags is still refused,
+    /// because the manual scan refuses it too.
+    ///
+    /// The rule engine's own container veto cannot cover this: it answers
+    /// `Unmatched`, which is the very verdict that hands the file to the
+    /// localization findings. A `.pck` under a language folder looks to the
+    /// detector exactly like the `.json` next to it - and the detector is the
+    /// one that has no idea an archive holds more than one asset.
+    ///
+    /// The counterpart is `ordinary_localization_category_remains_retrim_deletable`
+    /// above: same tree, same language folder, an ordinary file - deleted.
+    /// If that one starts failing too, the veto has grown past containers.
+    #[test]
+    fn a_localization_flagged_container_is_never_deleted_unattended() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let game_dir = temp_dir.path().join("Container Game");
+        let mut conn = setup_game(&temp_dir, &game_dir);
+        let target = game_dir
+            .join("localization")
+            .join("french")
+            .join("voices.pck");
+        fs::create_dir_all(target.parent().expect("localization parent"))
+            .expect("create localization tree");
+        fs::write(&target, b"AKPK-shaped bytes, many assets inside").expect("write container");
+        let rules = format!(
+            r#"{{"version":{},"rules":[]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&rules).expect("parse empty rule pack");
+
+        let report = retrim_game(
+            &mut conn,
+            10,
+            &engine,
+            &LangDetector::new(),
+            DeleteMethod::Permanent,
+        )
+        .expect("a refused container is not an error");
+
+        assert_eq!(report.files_deleted, 0);
+        assert!(
+            target.exists(),
+            "a multi-asset container must survive an unattended re-trim"
+        );
     }
 
     #[test]
