@@ -86,14 +86,12 @@ pub(super) fn collect_janitor(
     if category_enabled(enabled_categories, DisplayCategory::Crashes) {
         // The WER folder catches every dump on the machine, not just games'
         // (GT-230), so a dump is only offered once it is attributed to a
-        // known game executable. Building that attribution means walking
-        // every game's install directory, which is only worth doing when the
-        // WER folder actually has candidate dumps waiting - checking that
-        // first costs one `read_dir` instead of a full library walk on every
-        // scan of a library that has never crashed a game.
+        // known game executable. Reading the folder's names first means a
+        // machine with no dumps waiting pays one `read_dir` and builds no
+        // index at all.
         let wer_candidates = janitor::crashes::wer_crash_dump_candidate_exes();
         if !wer_candidates.is_empty() {
-            let known_games = known_game_executables(libraries, &wer_candidates, cancel);
+            let known_games = known_game_executables(libraries, &wer_candidates);
             artifacts.extend(janitor::crashes::scan_windows_wer_crash_dumps(
                 &known_games,
                 cancel,
@@ -162,90 +160,58 @@ fn installed_app_ids(libraries: &[DiscoveredLibrary]) -> HashSet<String> {
         .collect()
 }
 
-/// How deep under a game's install directory to look for its executables
-/// when attributing a WER crash dump (GT-230). `Binaries\Win64\game.exe`
-/// sits three segments below the install root, and that is the ceiling: a
-/// game that buries its executable deeper is not matched, and an unmatched
-/// dump is dropped rather than offered, which is the safe direction.
-const MAX_EXE_SEARCH_DEPTH: usize = 3;
+/// Reduces a name to the letters and digits in it, lowercased, so an
+/// executable and the game it belongs to can be compared across the
+/// punctuation and spacing that separate them: `Portal2.exe` against
+/// `Portal 2`, `Fallout76.exe` against `Fallout 76`.
+fn comparable_name(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
 
 /// Builds the `lowercased exe name -> game title` index the WER crash pass
 /// needs to attribute a dump to a game.
 ///
-/// Only resolves the executables named in `candidates`: walking every game's
-/// install directory is not free on a library of thousands of games, so this
-/// stops as soon as every candidate has been found (or cancellation fires).
+/// Matching is by name, against both the game's title and the folder it is
+/// installed in, and touches no disk at all. The first version of this read
+/// the executables off disk instead - correct, and unaffordable: with the
+/// candidates in the WER folder belonging to no game (which is the ordinary
+/// case, since a game's own dumps land inside its install directory), the
+/// early exit never fires and every game in the library gets walked three
+/// levels deep. That measured 327.6 s of housekeeping against 2.8 s before
+/// it, on a library of 1637 games.
+///
+/// The trade is false negatives: a game whose executable is named nothing
+/// like the game (`RDR2.exe`) is not matched, and its dump is dropped rather
+/// than offered. That is the direction this card chose to err in.
 fn known_game_executables(
     libraries: &[DiscoveredLibrary],
     candidates: &HashSet<String>,
-    cancel: &AtomicBool,
 ) -> HashMap<String, String> {
+    let wanted: HashMap<String, &str> = candidates
+        .iter()
+        .map(|exe| (comparable_name(exe.trim_end_matches(".exe")), exe.as_str()))
+        .collect();
     let mut index = HashMap::new();
     for library in libraries {
         for game in &library.games {
-            if cancel.load(Ordering::Relaxed) || index.len() >= candidates.len() {
-                return index;
+            let folder = game
+                .install_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            for name in [game.name.as_str(), folder] {
+                if let Some(exe) = wanted.get(&comparable_name(name)) {
+                    index
+                        .entry((*exe).to_string())
+                        .or_insert_with(|| game.name.clone());
+                }
             }
-            collect_exe_names(
-                &game.install_dir,
-                0,
-                &game.name,
-                candidates,
-                &mut index,
-                cancel,
-            );
         }
     }
     index
-}
-
-/// Recursive, depth-bounded, cancellable walk collecting `*.exe` base names
-/// under `dir` that appear in `candidates`, keyed lowercased with `game_title`
-/// as the value.
-fn collect_exe_names(
-    dir: &Path,
-    depth: usize,
-    game_title: &str,
-    candidates: &HashSet<String>,
-    index: &mut HashMap<String, String>,
-    cancel: &AtomicBool,
-) {
-    if depth > MAX_EXE_SEARCH_DEPTH
-        || index.len() >= candidates.len()
-        || cancel.load(Ordering::Relaxed)
-    {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if index.len() >= candidates.len() || cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            collect_exe_names(&path, depth + 1, game_title, candidates, index, cancel);
-        } else if file_type.is_file() {
-            let is_exe = path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-            if !is_exe {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let lower = name.to_ascii_lowercase();
-            if candidates.contains(&lower) {
-                index.entry(lower).or_insert_with(|| game_title.to_string());
-            }
-        }
-    }
 }
 
 /// Measures each artifact and turns it into a persistable finding.
@@ -418,58 +384,58 @@ mod tests {
         );
     }
 
-    #[test]
-    fn known_game_executables_finds_an_exe_within_the_bounded_depth() {
-        let temp = tempdir().expect("tempdir");
-        let install_dir = temp.path().join("Portal 2");
-        let bin_dir = install_dir.join("bin").join("win64");
-        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
-        std::fs::write(bin_dir.join("portal2.exe"), b"exe").expect("write exe");
-
-        let library = DiscoveredLibrary {
+    /// One library, so every test below can say what it holds in one line.
+    fn library_of(games: &[(&str, &str)]) -> DiscoveredLibrary {
+        DiscoveredLibrary {
             vendor: "steam",
-            path: temp.path().to_path_buf(),
-            games: vec![GameInstall {
-                name: "Portal 2".to_string(),
-                install_dir,
-                app_id: Some("620".to_string()),
-            }],
+            path: PathBuf::from(r"F:\SteamLibrary"),
+            games: games
+                .iter()
+                .map(|(name, folder)| GameInstall {
+                    name: (*name).to_string(),
+                    install_dir: PathBuf::from(r"F:\SteamLibrary\common").join(folder),
+                    app_id: None,
+                })
+                .collect(),
             orphan_evidence: OrphanEvidence::Authoritative,
-        };
+        }
+    }
 
-        let mut candidates = HashSet::new();
-        candidates.insert("portal2.exe".to_string());
-        let cancel = AtomicBool::new(false);
+    #[test]
+    fn known_game_executables_matches_a_dump_to_the_game_it_is_named_after() {
+        let library = library_of(&[("Portal 2", "Portal 2")]);
+        let candidates = HashSet::from(["portal2.exe".to_string()]);
 
-        let index = known_game_executables(&[library], &candidates, &cancel);
+        let index = known_game_executables(&[library], &candidates);
 
         assert_eq!(index.get("portal2.exe"), Some(&"Portal 2".to_string()));
     }
 
     #[test]
-    fn known_game_executables_ignores_an_exe_that_is_not_a_candidate() {
-        let temp = tempdir().expect("tempdir");
-        let install_dir = temp.path().join("Some Game");
-        std::fs::create_dir_all(&install_dir).expect("create install dir");
-        std::fs::write(install_dir.join("somegame.exe"), b"exe").expect("write exe");
+    fn known_game_executables_matches_on_the_install_folder_when_the_title_differs() {
+        // Steam's display name and the folder it installs into are not
+        // always the same string, and either is evidence enough.
+        let library = library_of(&[("Fallout 76", "Fallout76")]);
+        let candidates = HashSet::from(["fallout76.exe".to_string()]);
 
-        let library = DiscoveredLibrary {
-            vendor: "steam",
-            path: temp.path().to_path_buf(),
-            games: vec![GameInstall {
-                name: "Some Game".to_string(),
-                install_dir,
-                app_id: None,
-            }],
-            orphan_evidence: OrphanEvidence::Authoritative,
-        };
+        let index = known_game_executables(&[library], &candidates);
 
-        // Candidate set names an unrelated executable, so nothing resolves.
-        let mut candidates = HashSet::new();
-        candidates.insert("link.exe".to_string());
-        let cancel = AtomicBool::new(false);
+        assert_eq!(index.get("fallout76.exe"), Some(&"Fallout 76".to_string()));
+    }
 
-        let index = known_game_executables(&[library], &candidates, &cancel);
+    #[test]
+    fn known_game_executables_leaves_an_executable_that_is_no_game_unresolved() {
+        // The ten false positives GT-230 was opened for: a linker, a music
+        // tagger, a KDE Connect daemon, Ubisoft Connect.
+        let library = library_of(&[("Portal 2", "Portal 2")]);
+        let candidates = HashSet::from([
+            "link.exe".to_string(),
+            "picard.exe".to_string(),
+            "kdeconnectd.exe".to_string(),
+            "upc.exe".to_string(),
+        ]);
+
+        let index = known_game_executables(&[library], &candidates);
 
         assert!(index.is_empty());
     }
