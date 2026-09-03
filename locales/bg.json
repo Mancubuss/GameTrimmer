@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "Автоматичен ZIP архив преди изтриване",
     "saves_backup_success": "Резервното копие на записите е създадено успешно",
     "saves_total_prunable": "Намерени са излишни автозаписи",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

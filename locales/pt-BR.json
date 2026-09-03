@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "Backup automático em ZIP antes de excluir",
     "saves_backup_success": "Backup de saves criado com sucesso",
     "saves_total_prunable": "Salvamentos automáticos descartáveis encontrados",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

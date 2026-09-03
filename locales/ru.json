@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "Автоматический ZIP-бэкап перед удалением",
     "saves_backup_success": "Бэкап сохранений успешно создан",
     "saves_total_prunable": "Найдено лишних автосохранений",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

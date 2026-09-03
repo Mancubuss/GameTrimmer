@@ -1273,16 +1273,6 @@ pub fn csv_header(lang: Lang) -> &'static str {
     }
 }
 
-// -- 2-phase scanning --
-
-pub fn scan_phase_1_label(_lang: Lang, current: usize, total: usize) -> String {
-    format!("1. Disks & libraries discovery ({current} / {total} games)")
-}
-
-pub fn scan_phase_2_label(_lang: Lang, current: usize, total: usize) -> String {
-    format!("2. Regular file analysis ({current} / {total} files)")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

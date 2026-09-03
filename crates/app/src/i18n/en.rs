@@ -311,6 +311,7 @@ pub(super) const STRINGS: Strings = Strings {
     db_path_error: "Failed to determine the database path.",
     detecting_libraries: "Detecting game libraries...",
     preparing_database: "Preparing the database...",
+    finishing_scan: "Finishing...",
     loading_previous_scan: "Loading previous scan results...",
     deleting_selected_files: "Deleting selected files...",
     compacting_database: "Compacting the database...",
@@ -363,9 +364,6 @@ pub(super) const STRINGS: Strings = Strings {
 
     already_running_title: "GameTrimmer is already running",
 
-    scan_phase_1_title: "1. Disks & libraries discovery",
-    scan_phase_2_title: "2. Regular file analysis",
-    scan_overall_title: "Overall progress",
     badge_anticheat_shield: "🛡️ Anti-Cheat Protected",
     anticheat_shield_tooltip: "This game uses anti-cheat. This only blocks an unattended \
                                 re-trim of it; everything else behaves normally.",

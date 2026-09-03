@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "Automatikus ZIP mentés törlés előtt",
     "saves_backup_success": "A mentés biztonsági másolata sikeresen létrejött",
     "saves_total_prunable": "Törölhető automatikus mentések találhatók",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

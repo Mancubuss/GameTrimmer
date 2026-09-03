@@ -468,12 +468,6 @@ fn run_scan(
     // progress label.
     let completed = std::sync::atomic::AtomicUsize::new(0);
 
-    // Phase 2 reports classified *games*, not files. File lists are produced
-    // lazily and concurrently by the MFT/walkdir paths, so a global file
-    // denominator does not exist until the phase has already finished. A
-    // stable game denominator keeps Phase2's counter monotonic and honest.
-    let phase2_completed = std::sync::atomic::AtomicUsize::new(0);
-
     // Files this run's personal exceptions vetoed, summed across the scan
     // threads - the number the final status line reports (see
     // [`PreparedGame::kept`]).
@@ -517,7 +511,6 @@ fn run_scan(
         cancel,
         notifier,
         completed: &completed,
-        phase2_completed: &phase2_completed,
         kept: &kept,
         total,
     };
@@ -552,6 +545,14 @@ fn run_scan(
     // computation) that the user does not see as part of the progress bar.
     // See `crate::model::ScanTiming`.
     let analyze_phase_end = Instant::now();
+
+    // The last per-game `Progress` message stays on screen for this whole
+    // stretch otherwise - orphan/janitor detection, generation activation,
+    // the WAL checkpoint, the summary and occupancy queries - which has
+    // measured ~3s and reads as a hang once the analysis bar stops moving.
+    notifier.send(WorkerMsg::Status {
+        text: i18n::strings(lang).finishing_scan.to_string(),
+    });
 
     crate::logger::log(&format!(
         "MFT pass: {} via MFT, {} via walkdir",
@@ -914,10 +915,6 @@ struct ClassifyContext<'a> {
     /// Games the writer has finished persisting - written by the writer,
     /// only read here, to label the "started scanning <game>" progress.
     completed: &'a std::sync::atomic::AtomicUsize,
-    /// Number of games whose Phase 2 classification attempt finished. This
-    /// deliberately counts games rather than files; see `run_scan` where its
-    /// denominator is established before any lazy inventory is materialized.
-    phase2_completed: &'a std::sync::atomic::AtomicUsize,
     /// Files vetoed by a personal exception across the whole run, summed by
     /// the scan threads and read once at the end (see [`PreparedGame::kept`]).
     kept: &'a std::sync::atomic::AtomicUsize,
@@ -998,13 +995,6 @@ fn run_one(ctx: &ClassifyContext<'_>, task: GameTask) {
         total: ctx.total,
         detail: name.clone(),
     });
-    notifier.send(WorkerMsg::ScanPhaseProgress(
-        gametrimmer_core::worker::WorkerProgress::ScanPhase1 {
-            current: current_done,
-            total: ctx.total,
-            game_name: name.clone(),
-        },
-    ));
 
     // Both paths funnel the game through `classify_game`; either reports a
     // cancelled game through the same `Failed { .. "cancelled" .. }` channel
@@ -1032,33 +1022,20 @@ fn run_one(ctx: &ClassifyContext<'_>, task: GameTask) {
             ctx.cancel,
         ),
     };
-    let (outcome, findings_count) = match result {
+    let outcome = match result {
         Ok(prepared) => {
             // Summed across every game of the run, on the scan threads, so the
             // final status line can report what the exceptions actually did -
             // see [`PreparedGame::kept`].
             ctx.kept.fetch_add(prepared.kept, Ordering::Relaxed);
-            let findings_count = prepared.findings.len();
-            (GameOutcome::Scanned(prepared), findings_count)
+            GameOutcome::Scanned(prepared)
         }
-        Err(error) => (
-            GameOutcome::Failed {
-                name: name.clone(),
-                install_dir,
-                error,
-            },
-            0,
-        ),
-    };
-    let classified = ctx.phase2_completed.fetch_add(1, Ordering::Relaxed) + 1;
-    notifier.send(WorkerMsg::ScanPhaseProgress(
-        gametrimmer_core::worker::WorkerProgress::ScanPhase2 {
-            current: classified,
-            total: ctx.total,
-            file_name: name,
-            findings_count,
+        Err(error) => GameOutcome::Failed {
+            name,
+            install_dir,
+            error,
         },
-    ));
+    };
     let _ = result_tx.send(outcome);
 }
 
@@ -2953,7 +2930,6 @@ mod tests {
         cancel: AtomicBool,
         notifier: Notifier,
         completed: std::sync::atomic::AtomicUsize,
-        phase2_completed: std::sync::atomic::AtomicUsize,
         kept: std::sync::atomic::AtomicUsize,
         /// Held only so the notifier's channel stays open; nothing reads it.
         _msg_rx: Receiver<WorkerMsg>,
@@ -2968,7 +2944,6 @@ mod tests {
                 cancel: AtomicBool::new(false),
                 notifier: Notifier::silent(msg_tx),
                 completed: std::sync::atomic::AtomicUsize::new(0),
-                phase2_completed: std::sync::atomic::AtomicUsize::new(0),
                 kept: std::sync::atomic::AtomicUsize::new(0),
                 _msg_rx: msg_rx,
             }
@@ -2983,55 +2958,10 @@ mod tests {
                 cancel: &self.cancel,
                 notifier: &self.notifier,
                 completed: &self.completed,
-                phase2_completed: &self.phase2_completed,
                 kept: &self.kept,
                 total,
             }
         }
-    }
-
-    #[test]
-    fn phase2_reports_completed_games_with_a_stable_game_denominator() {
-        let harness = Harness::new();
-        let ctx = harness.context(2);
-        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
-        run_one(
-            &ctx,
-            GameTask {
-                game_id: 1,
-                name: "Phase Two Game".to_string(),
-                app_id: None,
-                install_dir: PathBuf::from(r"C:\Games\PhaseTwo"),
-                entries: Some(vec![entry("data\\loc_de.pak")]),
-                result_tx,
-                notifier: harness.notifier.clone(),
-            },
-        );
-        assert!(
-            matches!(
-                result_rx.recv().expect("one outcome"),
-                GameOutcome::Scanned(_)
-            ),
-            "the test task should finish classification"
-        );
-
-        let messages: Vec<_> = harness._msg_rx.try_iter().collect();
-        assert!(
-            messages.iter().any(|message| {
-                matches!(
-                    message,
-                    WorkerMsg::ScanPhaseProgress(
-                        gametrimmer_core::worker::WorkerProgress::ScanPhase2 {
-                            current: 1,
-                            total: 2,
-                            file_name,
-                            ..
-                        }
-                    ) if file_name == "Phase Two Game"
-                )
-            }),
-            "Phase2 must use completed games/total games, never an unknown global file total"
-        );
     }
 
     /// The point of the whole overlap: a game that needs nothing from the

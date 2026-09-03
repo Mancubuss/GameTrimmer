@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "Silmeden önce otomatik ZIP yedeklemesi",
     "saves_backup_success": "Kayıt yedeklemesi başarıyla oluşturuldu",
     "saves_total_prunable": "Temizlenebilir otomatik kayıtlar bulundu",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

@@ -29,7 +29,6 @@ pub mod sysinfo;
 pub mod worker;
 
 pub use models::Finding;
-pub use worker::WorkerProgress;
 
 #[cfg(test)]
 mod portability_regression_tests {

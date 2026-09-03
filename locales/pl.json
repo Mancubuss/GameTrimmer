@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "Automatyczna kopia zapasowa ZIP przed usunięciem",
     "saves_backup_success": "Kopia zapasowa zapisów została pomyślnie utworzona",
     "saves_total_prunable": "Znaleziono nadmiarowe autozapisy",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

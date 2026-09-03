@@ -23,26 +23,6 @@ pub use classify::{
 
 use crate::models::Finding;
 
-/// Progress a scan reports as it walks a library.
-#[derive(Debug, Clone, PartialEq)]
-pub enum WorkerProgress {
-    /// Phase 1: Discovering and indexing filesystem entries.
-    ScanPhase1 {
-        current: usize,
-        total: usize,
-        game_name: String,
-    },
-    /// Phase 2: Rule classification and whole-file detection.
-    ScanPhase2 {
-        current: usize,
-        total: usize,
-        file_name: String,
-        findings_count: usize,
-    },
-    /// Overall scan progress across phases and games.
-    OverallProgress { fraction: f32, message: String },
-}
-
 /// Extensions of files GameTrimmer refuses to delete whole, because deleting
 /// one throws away assets the user never asked to lose: a `.pak`/`.pck`/
 /// `.bnk`/... holds many assets in one file, and a rule - especially an
@@ -361,29 +341,6 @@ mod tests {
         // extension list. See GT-204.
         assert!(!is_protected_container("movies/intro.bik"));
         assert!(!is_protected_container("movies/intro.bk2"));
-    }
-
-    #[test]
-    fn test_worker_progress_variants() {
-        let p1 = WorkerProgress::ScanPhase1 {
-            current: 1,
-            total: 10,
-            game_name: "Doom".to_string(),
-        };
-        let p2 = WorkerProgress::ScanPhase2 {
-            current: 5,
-            total: 100,
-            file_name: "file.txt".to_string(),
-            findings_count: 3,
-        };
-        let p3 = WorkerProgress::OverallProgress {
-            fraction: 0.5,
-            message: "Analyzing...".to_string(),
-        };
-
-        assert!(matches!(p1, WorkerProgress::ScanPhase1 { .. }));
-        assert!(matches!(p2, WorkerProgress::ScanPhase2 { .. }));
-        assert!(matches!(p3, WorkerProgress::OverallProgress { .. }));
     }
 
     #[test]

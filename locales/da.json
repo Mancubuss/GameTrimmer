@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "Automatisk ZIP-sikkerhedskopiering før sletning",
     "saves_backup_success": "Sikkerhedskopi af gemte spil oprettet",
     "saves_total_prunable": "Overflødige automatiske gem fundet",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

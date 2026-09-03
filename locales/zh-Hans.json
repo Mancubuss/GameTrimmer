@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "删除前自动创建 ZIP 备份",
     "saves_backup_success": "存档备份创建成功",
     "saves_total_prunable": "找到可精简的自动存档",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

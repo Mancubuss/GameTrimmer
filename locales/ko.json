@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "삭제 전 자동 ZIP 백업 생성",
     "saves_backup_success": "저장 파일 백업이 생성되었습니다",
     "saves_total_prunable": "정리 가능한 자동 저장 파일을 찾았습니다",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

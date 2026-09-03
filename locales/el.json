@@ -259,9 +259,6 @@
     "saves_auto_backup_label": "Αυτόματο αντίγραφο ασφαλείας ZIP πριν από τη διαγραφή",
     "saves_backup_success": "Το αντίγραφο ασφαλείας αποθηκεύσεων δημιουργήθηκε με επιτυχία",
     "saves_total_prunable": "Βρέθηκαν περιττές αυτόματες αποθηκεύσεις",
-    "scan_phase_1_title": "1. Disks & libraries discovery",
-    "scan_phase_2_title": "2. Regular file analysis",
-    "scan_overall_title": "Overall progress",
     "badge_anticheat_shield": "🛡️ Anti-Cheat"
   }
 }

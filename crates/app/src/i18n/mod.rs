@@ -570,6 +570,7 @@ pub struct Strings {
     pub db_path_error: &'static str,
     pub detecting_libraries: &'static str,
     pub preparing_database: &'static str,
+    pub finishing_scan: &'static str,
     pub loading_previous_scan: &'static str,
     pub deleting_selected_files: &'static str,
     pub compacting_database: &'static str,
@@ -635,10 +636,6 @@ pub struct Strings {
     /// so it lives in `messages::already_running_body` instead.
     pub already_running_title: &'static str,
 
-    // -- 2-phase scanning --
-    pub scan_phase_1_title: &'static str,
-    pub scan_phase_2_title: &'static str,
-    pub scan_overall_title: &'static str,
     /// Badge drawn once on a game row's name (see
     /// `ui::tree_view::show_game_row`, next to `[🔄 Updated]`) for a game
     /// whose findings carry `anti_cheat_protected`. The verdict is a
@@ -1295,6 +1292,9 @@ impl Strings {
         if let Some(val) = map.get("preparing_database") {
             s.preparing_database = Box::leak(val.clone().into_boxed_str());
         }
+        if let Some(val) = map.get("finishing_scan") {
+            s.finishing_scan = Box::leak(val.clone().into_boxed_str());
+        }
         if let Some(val) = map.get("loading_previous_scan") {
             s.loading_previous_scan = Box::leak(val.clone().into_boxed_str());
         }
@@ -1426,15 +1426,6 @@ impl Strings {
         }
         if let Some(val) = map.get("already_running_title") {
             s.already_running_title = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("scan_phase_1_title") {
-            s.scan_phase_1_title = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("scan_phase_2_title") {
-            s.scan_phase_2_title = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("scan_overall_title") {
-            s.scan_overall_title = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("badge_anticheat_shield") {
             s.badge_anticheat_shield = Box::leak(val.clone().into_boxed_str());
@@ -1745,6 +1736,7 @@ impl Strings {
             ("db_path_error", self.db_path_error),
             ("detecting_libraries", self.detecting_libraries),
             ("preparing_database", self.preparing_database),
+            ("finishing_scan", self.finishing_scan),
             ("loading_previous_scan", self.loading_previous_scan),
             ("deleting_selected_files", self.deleting_selected_files),
             ("compacting_database", self.compacting_database),
@@ -1792,9 +1784,6 @@ impl Strings {
             ("csv_yes", self.csv_yes),
             ("csv_no", self.csv_no),
             ("already_running_title", self.already_running_title),
-            ("scan_phase_1_title", self.scan_phase_1_title),
-            ("scan_phase_2_title", self.scan_phase_2_title),
-            ("scan_overall_title", self.scan_overall_title),
             ("badge_anticheat_shield", self.badge_anticheat_shield),
             ("anticheat_shield_tooltip", self.anticheat_shield_tooltip),
             (

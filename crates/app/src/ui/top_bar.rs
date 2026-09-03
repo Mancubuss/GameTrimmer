@@ -79,48 +79,7 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             ui.colored_label(ui.visuals().error_fg_color, db_error);
         }
 
-        if let Some(phase_state) = &app.scan_phase_state {
-            ui.add_space(2.0);
-            let overall_pct = (phase_state.overall_fraction * 100.0) as u32;
-            let overall_text = format!("{}: {}%", s.scan_overall_title, overall_pct);
-            ui.add(egui::ProgressBar::new(phase_state.overall_fraction).text(overall_text));
-
-            if let Some(p1) = &phase_state.phase1 {
-                let frac = if p1.total > 0 {
-                    p1.current as f32 / p1.total as f32
-                } else {
-                    0.0
-                };
-                let label = if !p1.detail.is_empty() {
-                    format!(
-                        "{}: {}",
-                        i18n::scan_phase_1_label(lang, p1.current, p1.total),
-                        p1.detail
-                    )
-                } else {
-                    i18n::scan_phase_1_label(lang, p1.current, p1.total)
-                };
-                ui.add(egui::ProgressBar::new(frac).text(label));
-            }
-
-            if let Some(p2) = &phase_state.phase2 {
-                let frac = if p2.total > 0 {
-                    p2.current as f32 / p2.total as f32
-                } else {
-                    0.0
-                };
-                let label = if !p2.detail.is_empty() {
-                    format!(
-                        "{}: {}",
-                        i18n::scan_phase_2_label(lang, p2.current, p2.total),
-                        p2.detail
-                    )
-                } else {
-                    i18n::scan_phase_2_label(lang, p2.current, p2.total)
-                };
-                ui.add(egui::ProgressBar::new(frac).text(label));
-            }
-        } else if let Some(progress) = app.progress.clone() {
+        if let Some(progress) = app.progress.clone() {
             let fraction = if progress.total == 0 {
                 0.0
             } else {
@@ -418,6 +377,129 @@ mod tests {
 
         let verb = i18n::verb_label(test.app().lang(), i18n::Verb::Analyze);
         test.assert_label_containing(&format!("{verb} 7/1603: Test Game"));
+    }
+
+    /// GT-389. The three-bar panel used to feed one game-start message and
+    /// one game-finish message into the same `overall_fraction`, one mapped
+    /// to 0-50% and the other to 50-100% - and since the pool classifies
+    /// games in parallel, the two interleaved and the combined bar visibly
+    /// jumped backward and forward between the two ranges. There is one
+    /// producer now: the bar's fraction is `current / total` off the same
+    /// monotonic game counter every time, so a later update replaces the
+    /// earlier one instead of sitting alongside it. Nothing clamps the
+    /// value: what removed the jumping was removing the second producer, so
+    /// this pins the single counter reaching the bar rather than a guard
+    /// against going backwards.
+    #[test]
+    fn the_scan_bar_reads_one_counter_and_each_update_replaces_the_last() {
+        let mut test = UiTest::new(show);
+        test.app_mut().begin_job(true);
+        test.app_mut().apply_message(WorkerMsg::Progress {
+            verb: i18n::Verb::Analyze,
+            current: 40,
+            total: 100,
+            detail: "Game A".to_string(),
+        });
+        test.run();
+        test.assert_label_containing("40/100");
+
+        test.app_mut().apply_message(WorkerMsg::Progress {
+            verb: i18n::Verb::Analyze,
+            current: 41,
+            total: 100,
+            detail: "Game B".to_string(),
+        });
+        test.run();
+        test.assert_label_containing("41/100");
+        test.assert_no_label_containing("40/100");
+    }
+
+    /// GT-389, state 1. Library discovery has no per-item denominator yet -
+    /// `WorkerMsg::Status` is what a scan sends for it, and its handler
+    /// clears `progress` so the bar has nothing to divide by. Before this
+    /// fix that was moot: the three-bar panel primed itself on the very
+    /// first game and never let this branch run again for the rest of the
+    /// scan. Now it renders through the plain status branch: a spinner next
+    /// to the status text, with no numbered progress bar underneath it.
+    #[test]
+    fn discovery_renders_as_an_indeterminate_spinner() {
+        let mut test = UiTest::new(show);
+        test.app_mut().begin_job(true);
+        let text = i18n::strings(test.app().lang())
+            .detecting_libraries
+            .to_string();
+        test.app_mut().apply_message(WorkerMsg::Status { text });
+        // Busy + a status message draws `ui.spinner()`, which asks for a
+        // repaint every frame by design - `run` would report that as a
+        // repaint loop, so this state settles through `run_animated` instead.
+        test.run_animated();
+
+        let s = test.strings();
+        test.assert_label(s.detecting_libraries);
+        // No game/file counter exists yet during discovery.
+        test.assert_no_label_containing("/");
+    }
+
+    /// GT-389, state 3. Once the writer joins, orphan/janitor detection,
+    /// generation activation, the WAL checkpoint and the summary/occupancy
+    /// queries all run before `Done` - measured at ~3s in a real scan - and
+    /// used to leave the last analysis bar frozen on screen for that whole
+    /// stretch, which reads as a hang the moment the counter stops moving.
+    /// `run_scan` now sends a `Status` here too, the same way it already
+    /// does for discovery; its handler clears the stale bar so only the
+    /// tail's own caption is left.
+    #[test]
+    fn the_housekeeping_tail_shows_its_own_caption() {
+        let mut test = UiTest::new(show);
+        test.app_mut().begin_job(true);
+        test.app_mut().apply_message(WorkerMsg::Progress {
+            verb: i18n::Verb::Analyze,
+            current: 100,
+            total: 100,
+            detail: "Last Game".to_string(),
+        });
+        let text = i18n::strings(test.app().lang()).finishing_scan.to_string();
+        test.app_mut().apply_message(WorkerMsg::Status { text });
+        // Same spinner as the discovery state - see the comment in
+        // `discovery_renders_as_an_indeterminate_spinner`.
+        test.run_animated();
+
+        let s = test.strings();
+        test.assert_label(s.finishing_scan);
+        test.assert_no_label_containing("Last Game");
+    }
+
+    /// GT-389. The anti-freeze spinner (below) used to be unreachable during
+    /// a scan at all: the three-bar panel's `else` branch, the only place it
+    /// lives, never ran again once the panel primed itself on the first
+    /// game. Pin the detail as already-seen far enough in the past that any
+    /// plausible animation-clock "now" clears the 1s stall threshold, and
+    /// check that the previously-exact line grows a trailing glyph.
+    #[test]
+    fn a_stalled_detail_shows_the_anti_freeze_spinner() {
+        let mut test = UiTest::new(show);
+        let verb = i18n::verb_label(test.app().lang(), i18n::Verb::Analyze);
+        let base_text = format!("{verb} 41/42: ARK: Survival Evolved");
+
+        test.app_mut().begin_job(true);
+        test.app_mut().apply_message(WorkerMsg::Progress {
+            verb: i18n::Verb::Analyze,
+            current: 41,
+            total: 42,
+            detail: "ARK: Survival Evolved".to_string(),
+        });
+        test.run();
+        // Fresh detail, not yet stalled: the line is exactly the base text.
+        test.assert_label(&base_text);
+
+        test.app_mut().last_progress_detail = "ARK: Survival Evolved".to_string();
+        test.app_mut().last_progress_detail_at = -1_000.0;
+        test.run();
+
+        // Stalled: a spinner glyph is appended, so the line is no longer
+        // exactly the base text, though it still starts with it.
+        test.assert_no_label(&base_text);
+        test.assert_label_containing(&base_text);
     }
 
     // At 8 fps each frame lasts 0.125s; sample the middle of each slot.
