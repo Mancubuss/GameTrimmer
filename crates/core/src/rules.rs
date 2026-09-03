@@ -1,7 +1,7 @@
 //! Regex rule engine for non-essential file categories (redist, docs, bonus, ...).
 //! Rules are loaded from an external `rules.json` next to the executable.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use regex::{Regex, RegexBuilder};
@@ -74,6 +74,47 @@ pub enum RuleProvenance {
 
 fn is_builtin_provenance(provenance: &RuleProvenance) -> bool {
     *provenance == RuleProvenance::Builtin
+}
+
+/// Where a rule's knowledge comes from - a guess, or a lookup.
+///
+/// A built-in rule is a *heuristic*: `^(.*[_. -])?logos?.*\.bik$` is a
+/// pattern someone wrote because startup videos tend to be named that way,
+/// and for a game nobody has catalogued it is the only answer available.
+/// A reference rule is an *entry*: PCGamingWiki names this game's intro
+/// videos one by one, so for that game there is nothing left to guess.
+///
+/// This is separate from [`RuleProvenance`], which answers a different
+/// question - whether the rule came from outside and should be treated with
+/// suspicion. A reference rule is ours and trusted; it simply knows more.
+/// Keeping them apart also keeps `provenance` exactly as the database, the
+/// bundle and the UI already store it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleOrigin {
+    /// A pattern that generalizes over games. The shape of every rule
+    /// written before this field existed, which is why it is the default.
+    #[default]
+    Builtin,
+    /// A file list an external catalogue gives for one named game.
+    Reference,
+}
+
+impl RuleOrigin {
+    /// Precedence within one category: the lowest wins. A catalogue entry
+    /// for *this* game beats a heuristic aimed at games in general, however
+    /// confident the heuristic is - the heuristic is guessing at an answer
+    /// the entry already has.
+    fn rank(self) -> u8 {
+        match self {
+            RuleOrigin::Reference => 0,
+            RuleOrigin::Builtin => 1,
+        }
+    }
+}
+
+fn is_builtin_origin(origin: &RuleOrigin) -> bool {
+    *origin == RuleOrigin::Builtin
 }
 
 /// Which way a rule points: does matching a file make it a deletion candidate,
@@ -267,6 +308,11 @@ pub struct Rule {
     pub app_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_builtin_provenance")]
     pub provenance: RuleProvenance,
+    /// Whether this rule generalizes or looks up; see [`RuleOrigin`]. Only
+    /// meaningful together with [`Rule::app_id`] - a reference entry is
+    /// about one named game by definition, and the parser says so.
+    #[serde(default, skip_serializing_if = "is_builtin_origin")]
+    pub origin: RuleOrigin,
     /// Optional per-rule override of the category's default depth limit
     /// ([`MAX_SHALLOW_DEPTH`] for the categories [`Category::is_depth_limited`]
     /// names, unlimited for the rest).
@@ -344,6 +390,8 @@ impl Rule {
             // own machine, not an imported pack of someone else's rules - the
             // untrusted marking exists to warn about the latter.
             provenance: RuleProvenance::Builtin,
+            // A veto ranks against nothing, so it has nothing to look up.
+            origin: RuleOrigin::Builtin,
             // A veto outranks the keep-language list as it outranks every
             // other ranking; the parser refuses a keep rule that sets this.
             localized_content: false,
@@ -456,6 +504,8 @@ struct CompiledRule {
     desc: String,
     confidence: u8,
     provenance: RuleProvenance,
+    /// See [`RuleOrigin`].
+    origin: RuleOrigin,
     /// See [`Rule::localized_content`].
     localized_content: bool,
     /// The effective depth limit for this rule: the rule's own `max_depth`
@@ -464,9 +514,6 @@ struct CompiledRule {
     /// Lowercased extension whitelist, if the rule declares one
     /// (see [`Rule::extensions`]).
     extensions: Option<HashSet<String>>,
-    /// The one game this rule applies to, if it is scoped (see
-    /// [`Rule::app_id`]).
-    app_id: Option<String>,
 }
 
 /// A keep rule with its pattern compiled. Carries none of the deleting rule's
@@ -480,9 +527,11 @@ struct CompiledKeep {
     app_id: Option<String>,
 }
 
-/// Whether a rule scoped to `scope` applies while classifying a game whose
-/// vendor id is `app_id`. An unscoped rule (the shape of every built-in)
-/// applies to everything, which is what keeps this free for them.
+/// Whether a keep rule scoped to `scope` applies while classifying a game
+/// whose vendor id is `app_id`. An unscoped veto applies to everything.
+/// (Deleting rules answer the same question through
+/// [`RuleEngine::scoped`], which is a lookup rather than a scan - there are
+/// hundreds of them and only ever a handful of vetoes.)
 fn scope_applies(scope: &Option<String>, app_id: Option<&str>) -> bool {
     match scope {
         None => true,
@@ -492,7 +541,17 @@ fn scope_applies(scope: &Option<String>, app_id: Option<&str>) -> bool {
 
 #[derive(Debug, Default)]
 pub struct RuleEngine {
+    /// The rules that apply to every game. Walked for every file of every
+    /// game, which is what makes their number the scan's inner loop.
     rules: Vec<CompiledRule>,
+    /// The rules bound to one game, bucketed by that game's vendor id.
+    ///
+    /// A map rather than a tag inside `rules` for the same reason `keeps` is
+    /// a separate list: the reference pack is ~950 rules and a scan walks
+    /// 4.9 million files, so leaving them in the main list would cost five
+    /// billion "is this your game?" comparisons to answer "no" every time.
+    /// Here a game pays one hash lookup and then walks only its own handful.
+    scoped: HashMap<String, Vec<CompiledRule>>,
     /// Split out from `rules` rather than filtered out of it per file: on a
     /// default install this is empty, so honouring the veto costs one
     /// `is_empty` per file over a 4.9-million-file scan instead of a polarity
@@ -528,6 +587,7 @@ impl RuleEngine {
         }
 
         let mut rules = Vec::with_capacity(raw_rules.len());
+        let mut scoped: HashMap<String, Vec<CompiledRule>> = HashMap::new();
         let mut keeps = Vec::new();
         for (index, rule) in raw_rules.into_iter().enumerate() {
             if rule.pattern.len() > MAX_REGEX_BYTES {
@@ -591,12 +651,13 @@ impl RuleEngine {
                     || rule.max_depth.is_some()
                     || rule.extensions.is_some()
                     || rule.localized_content
+                    || rule.origin != RuleOrigin::Builtin
                 {
                     return Err(CoreError::Other(format!(
                         "rules.json: keep rule #{index} (pattern `{}`) sets category, confidence, \
-                         max_depth, extensions or localized_content; a veto ranks against nothing, \
-                         matches the whole relative path and already outranks the keep-language \
-                         list, so none of them would do anything",
+                         max_depth, extensions, localized_content or origin; a veto ranks against \
+                         nothing, matches the whole relative path and already outranks the \
+                         keep-language list, so none of them would do anything",
                         rule.pattern
                     )));
                 }
@@ -622,17 +683,31 @@ impl RuleEngine {
                 )));
             };
 
+            // A reference rule that names no game is not a lookup, it is a
+            // heuristic wearing a lookup's badge: it would outrank every
+            // built-in pattern in its category for every game in the library.
+            // Refused rather than quietly demoted - the pack author meant one
+            // of the two, and only they know which.
+            if rule.origin == RuleOrigin::Reference && rule.app_id.is_none() {
+                return Err(CoreError::Other(format!(
+                    "rules.json: rule #{index} (desc \"{desc}\", pattern `{}`) is a reference \
+                     rule with no app_id; a catalogue entry is about one named game",
+                    rule.pattern
+                )));
+            }
+
             let default_depth = if category.is_depth_limited() {
                 MAX_SHALLOW_DEPTH
             } else {
                 usize::MAX
             };
-            rules.push(CompiledRule {
+            let compiled = CompiledRule {
                 category,
                 regex,
                 desc,
                 confidence,
                 provenance: rule.provenance,
+                origin: rule.origin,
                 localized_content: rule.localized_content,
                 max_depth: rule.max_depth.unwrap_or(default_depth),
                 extensions: rule.extensions.map(|list| {
@@ -640,20 +715,31 @@ impl RuleEngine {
                         .map(|ext| ext.to_ascii_lowercase())
                         .collect()
                 }),
-                app_id: rule.app_id,
-            });
+            };
+            match rule.app_id {
+                Some(app_id) => scoped.entry(app_id).or_default().push(compiled),
+                None => rules.push(compiled),
+            }
         }
 
-        Ok(Self { rules, keeps })
+        Ok(Self {
+            rules,
+            scoped,
+            keeps,
+        })
     }
 
     /// Folds another engine's rules into this one, as the scan does with the
     /// personal exception pack on top of `rules.json`.
     ///
     /// Order matters for nothing but ties: precedence is decided by category
-    /// rank and confidence, and the veto is checked before either.
+    /// rank, origin and confidence, and the veto is checked before any of
+    /// them.
     pub fn absorb(&mut self, other: RuleEngine) {
         self.rules.extend(other.rules);
+        for (app_id, rules) in other.scoped {
+            self.scoped.entry(app_id).or_default().extend(rules);
+        }
         self.keeps.extend(other.keeps);
     }
 
@@ -684,7 +770,13 @@ impl RuleEngine {
     ///    also outranks the stage *after* this one, which no `Category` can
     ///    express, and that is why it is a [`Verdict`] rather than a rank.
     /// 2. Among the deleting rules that match, the one whose category has the
-    ///    highest precedence wins, confidence breaking ties within one rank.
+    ///    highest precedence wins ([`Category::priority_rank`]).
+    /// 3. Within one category, a rule that *looked the answer up* beats one
+    ///    that *guessed* it ([`RuleOrigin::rank`]), whatever the guess's
+    ///    confidence. A catalogue naming this game's intro videos one by one
+    ///    is not competing with the heuristic - it is what the heuristic is
+    ///    an approximation of.
+    /// 4. Confidence breaks the remaining ties.
     ///
     /// A rule scoped to a game (see [`Rule::app_id`]) takes part in neither
     /// step while any other game is being classified.
@@ -721,16 +813,18 @@ impl RuleEngine {
             .rsplit_once('.')
             .map(|(_, ext)| ext.to_ascii_lowercase());
 
-        let mut best: Option<Finding> = None;
+        // The winner and the key it won with: category rank, then origin
+        // rank, then confidence (negated so that, like the two ranks in front
+        // of it, smaller is better and one tuple comparison decides).
+        let mut best: Option<((u8, u8, i16), Finding)> = None;
 
-        for rule in &self.rules {
-            // Cheapest test first, and free for every unscoped rule (which is
-            // all of them until a recipe pack arrives): an `Option` tag check
-            // beside the extension check already here, in front of a regex
-            // match that costs orders of magnitude more.
-            if !scope_applies(&rule.app_id, app_id) {
-                continue;
-            }
+        // One hash lookup for the whole scoped pack, instead of asking every
+        // one of its rules whether it is about this game.
+        let scoped = app_id
+            .and_then(|id| self.scoped.get(id))
+            .map_or(&[][..], Vec::as_slice);
+
+        for rule in self.rules.iter().chain(scoped) {
             if let Some(allowed) = &rule.extensions {
                 let ext_listed = file_ext.as_deref().is_some_and(|ext| allowed.contains(ext));
                 if !ext_listed {
@@ -759,28 +853,27 @@ impl RuleEngine {
                 continue;
             }
 
-            let is_better = match &best {
-                Some(current) => {
-                    let current_rank = current.category.priority_rank();
-                    let rank = rule.category.priority_rank();
-                    rank < current_rank
-                        || (rank == current_rank && rule.confidence > current.confidence)
-                }
-                None => true,
-            };
-            if is_better {
-                best = Some(Finding {
-                    category: rule.category,
-                    rule_desc: rule.desc.clone(),
-                    confidence: rule.confidence,
-                    provenance: rule.provenance,
-                    localized_content: rule.localized_content,
-                });
+            let key = (
+                rule.category.priority_rank(),
+                rule.origin.rank(),
+                -(rule.confidence as i16),
+            );
+            if best.as_ref().is_none_or(|(best_key, _)| key < *best_key) {
+                best = Some((
+                    key,
+                    Finding {
+                        category: rule.category,
+                        rule_desc: rule.desc.clone(),
+                        confidence: rule.confidence,
+                        provenance: rule.provenance,
+                        localized_content: rule.localized_content,
+                    },
+                ));
             }
         }
 
         match best {
-            Some(finding) => Verdict::Flagged(finding),
+            Some((_, finding)) => Verdict::Flagged(finding),
             None => Verdict::Unmatched,
         }
     }
@@ -1610,4 +1703,63 @@ mod tests {
             .join("..")
             .join("rules.json")
     }
+
+    /// A heuristic that is *more* confident than the catalogue entry beside
+    /// it, so that a passing test can only mean origin decided the winner.
+    fn origin_pack() -> String {
+        pack(
+            r#"[
+            {"category": "intro", "pattern": "^logo\\.bik$", "desc": "Guessed: startup logo", "confidence": 99},
+            {"category": "intro", "pattern": "^(logo|weird_name)\\.bik$", "desc": "PCGamingWiki entry", "confidence": 70, "app_id": "480490", "origin": "reference"}
+        ]"#,
+        )
+    }
+
+    #[test]
+    fn reference_rule_outranks_a_more_confident_heuristic_in_its_own_game() {
+        let engine = RuleEngine::from_json(&origin_pack()).unwrap();
+
+        let finding = engine
+            .classify(r"Movies\logo.bik", Some("480490"))
+            .flagged()
+            .expect("both rules match, one of them has to win");
+
+        assert_eq!(finding.rule_desc, "PCGamingWiki entry");
+        assert_eq!(finding.confidence, 70);
+    }
+
+    #[test]
+    fn reference_rule_leaves_every_other_game_to_the_heuristic() {
+        let engine = RuleEngine::from_json(&origin_pack()).unwrap();
+
+        // The same file in a game the catalogue does not cover.
+        let finding = engine
+            .classify(r"Movies\logo.bik", Some("220"))
+            .flagged()
+            .expect("the heuristic still applies where the entry does not");
+        assert_eq!(finding.rule_desc, "Guessed: startup logo");
+
+        // And the name only the entry knows is not claimed there at all.
+        assert_eq!(
+            engine.classify(r"Movies\weird_name.bik", Some("220")),
+            Verdict::Unmatched
+        );
+        assert_eq!(
+            engine.classify(r"Movies\weird_name.bik", None),
+            Verdict::Unmatched
+        );
+    }
+
+    #[test]
+    fn reference_rule_without_an_app_id_is_refused() {
+        let json = pack(
+            r#"[
+            {"category": "intro", "pattern": "^logo\\.bik$", "desc": "Unbound entry", "confidence": 96, "origin": "reference"}
+        ]"#,
+        );
+
+        let err = RuleEngine::from_json(&json).expect_err("a lookup must name what it looked up");
+        assert!(err.to_string().contains("app_id"), "{err}");
+    }
+
 }
