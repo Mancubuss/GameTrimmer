@@ -26,7 +26,9 @@ use gametrimmer_core::providers::OrphanEvidence;
 use gametrimmer_core::rules::RuleEngine;
 use gametrimmer_core::scanner::{scan_dir_cancellable, FileEntry};
 use gametrimmer_core::sysinfo;
-use gametrimmer_core::worker::{classify_game, GameIdentity, PreparedGame};
+use gametrimmer_core::worker::{
+    classify_game, ClassifyPolicy, GameIdentity, ImportedRules, PreparedGame,
+};
 use rusqlite::Connection;
 
 use crate::i18n::{self, Lang, Verb};
@@ -991,7 +993,7 @@ fn run_one(ctx: &ClassifyContext<'_>, task: GameTask) {
             ctx.lang_detector,
             identity,
             entries,
-            ctx.enabled_categories,
+            &interactive_policy(ctx.enabled_categories),
             ctx.cancel,
         ),
         None => scan_and_prepare_game(
@@ -1498,6 +1500,18 @@ fn volume_failure_results(game_ids: &[i64], message: String) -> VolumeResults {
 /// been enumerated. It is checked once more right after the walk returns,
 /// before classification starts, so a game that finishes walking just as
 /// Stop is pressed doesn't still pay the cost of `classify_game`.
+/// The scan's half of the shared classification policy (see
+/// [`ClassifyPolicy`]): whatever the user switched off in settings, and an
+/// imported rule's match kept rather than refused - because a person is
+/// looking at the results and ticks every file by hand before anything is
+/// deleted. Unattended re-trim, with nobody watching, builds the other half.
+fn interactive_policy(enabled_categories: &[String]) -> ClassifyPolicy<'_> {
+    ClassifyPolicy {
+        enabled_categories,
+        imported_rules: ImportedRules::Reviewed,
+    }
+}
+
 fn scan_and_prepare_game(
     engine: &RuleEngine,
     lang_detector: &LangDetector,
@@ -1514,7 +1528,7 @@ fn scan_and_prepare_game(
         lang_detector,
         game,
         entries,
-        enabled_categories,
+        &interactive_policy(enabled_categories),
         cancel,
     )
 }
@@ -3194,7 +3208,7 @@ mod tests {
                 app_id: None,
             },
             entries,
-            &[],
+            &interactive_policy(&[]),
             &AtomicBool::new(false),
         )
         .expect("classify_game should succeed");
@@ -3343,7 +3357,7 @@ mod tests {
                 app_id: None,
             },
             entries,
-            &[],
+            &interactive_policy(&[]),
             &AtomicBool::new(false),
         )
         .expect("classify_game should succeed");

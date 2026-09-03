@@ -17,8 +17,8 @@ mod classify;
 
 pub use classify::{
     assign_group_dirs, category_enabled, category_ui_key, classify_game, display_category,
-    id_names_category, parse_source_key, source_key, CombinedFinding, DisplayCategory,
-    FindingSource, GameIdentity, PreparedFinding, PreparedGame,
+    id_names_category, parse_source_key, source_key, ClassifyPolicy, CombinedFinding,
+    DisplayCategory, FindingSource, GameIdentity, ImportedRules, PreparedFinding, PreparedGame,
 };
 
 use crate::models::Finding;

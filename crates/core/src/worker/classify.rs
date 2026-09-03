@@ -224,6 +224,45 @@ pub fn id_names_category(id: &str, category: DisplayCategory) -> bool {
     id == category_ui_key(category) || (category == DisplayCategory::DevLeftovers && id == "other")
 }
 
+/// What a caller of [`classify_game`] decides for itself.
+///
+/// The owner's rule, made a type: the classification rules are shared by
+/// every component, each component may modify them at its own level, but
+/// there is one source of truth. Everything that is *not* in here - the
+/// vetoes, their order, how a rule match and a localization match combine,
+/// the same-name intro sweep - is not negotiable per caller, which is
+/// exactly the part the second copy of this loop used to get wrong.
+pub struct ClassifyPolicy<'a> {
+    /// The persisted `enabled_categories` setting (see
+    /// [`crate::settings::Settings`]). A file whose category the user
+    /// switched off is treated as though nothing had matched it at all.
+    /// Empty means every category is enabled - see that field's own doc for
+    /// why an empty list is not "nothing".
+    ///
+    /// Unattended re-trim used to skip this check entirely, so a category
+    /// the user had switched off was still deleted after a game update,
+    /// with no dialog in the way. That is the failure this field exists to
+    /// make impossible to forget: the cycle reads it, so both callers do.
+    pub enabled_categories: &'a [String],
+    /// What happens when a rule from an imported (community) pack matches.
+    pub imported_rules: ImportedRules,
+}
+
+/// How a caller treats a match from an imported, untrusted rule pack.
+///
+/// The two answers differ by who is watching, not by what the rule said -
+/// which is why this is policy and not a second classification path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportedRules {
+    /// A person is looking at the results and ticks each file by hand
+    /// before anything is deleted. The finding is kept and shown.
+    Reviewed,
+    /// Nobody is watching. An imported pattern gets no reach past a human's
+    /// eyes, so the match is dropped and the run reports that it happened
+    /// ([`PreparedGame::imported_rules_refused`]).
+    Refused,
+}
+
 /// Which game is being classified: the row id its results are written under,
 /// the name progress and errors call it by, where it lives, and the vendor id
 /// a scoped rule is matched against.
@@ -268,7 +307,7 @@ pub fn classify_game(
     lang_detector: &LangDetector,
     game: GameIdentity<'_>,
     entries: Vec<FileEntry>,
-    enabled_categories: &[String],
+    policy: &ClassifyPolicy<'_>,
     cancel: &AtomicBool,
 ) -> CoreResult<PreparedGame> {
     // `analyze_game` needs sibling context (the language-family heuristic),
@@ -286,6 +325,7 @@ pub fn classify_game(
     let rules_started = Instant::now();
     let mut combined_by_index: Vec<(usize, CombinedFinding)> = Vec::new();
     let mut kept = 0usize;
+    let mut imported_rules_refused = false;
     // A personal keep rule outranks the same-name sweep below just as it
     // outranks every rule: a file the user vetoed by name must not come back
     // because another copy of that name was flagged elsewhere in the game.
@@ -328,6 +368,23 @@ pub fn classify_game(
             }
         }
 
+        // An imported rule reaching an unattended run is the one veto that
+        // depends on who is watching rather than on the file - see
+        // [`ImportedRules`]. It is checked here, after the vetoes a rule
+        // must yield to and before the file can become a finding, so a
+        // refused match is indistinguishable downstream from one that never
+        // happened. The index does not join `vetoed`: an imported match is
+        // no reason to protect a same-name copy elsewhere, and the sweep
+        // already refuses to take an imported finding as a source.
+        if policy.imported_rules == ImportedRules::Refused {
+            if let Verdict::Flagged(finding) = &verdict {
+                if finding.provenance == RuleProvenance::ImportedUntrusted {
+                    imported_rules_refused = true;
+                    continue;
+                }
+            }
+        }
+
         // A protected container (see `is_protected_container`) is never
         // offered for whole-file deletion - by a rule or by the
         // localization detector. GameTrimmer can only delete a file whole,
@@ -340,7 +397,7 @@ pub fn classify_game(
         let lang_finding = lang_findings.get(&index);
 
         if let Some(combined) = combine_finding(verdict.flagged(), lang_finding) {
-            if !category_enabled(enabled_categories, display_category(combined.source)) {
+            if !category_enabled(policy.enabled_categories, display_category(combined.source)) {
                 continue;
             }
 
@@ -410,6 +467,7 @@ pub fn classify_game(
         findings,
         kept,
         anti_cheat_protected: !anti_cheat_safe,
+        imported_rules_refused,
     })
 }
 
@@ -718,6 +776,15 @@ pub struct PreparedGame {
     pub kept: usize,
     /// Whether anti-cheat protection is active on this game.
     pub anti_cheat_protected: bool,
+    /// Whether at least one imported rule matched and was dropped because
+    /// the policy was [`ImportedRules::Refused`].
+    ///
+    /// Reported rather than acted on: refusing the match is the cycle's job,
+    /// deciding what that means for the run is the caller's. Unattended
+    /// re-trim turns it into a refusal of the whole game, because a pack
+    /// that claims one file of a game is a pack whose other claims nobody
+    /// has looked at either.
+    pub imported_rules_refused: bool,
 }
 
 #[cfg(test)]
@@ -725,6 +792,14 @@ mod tests {
     use super::*;
 
     use crate::langdetect::{LangEvidence, LangReason};
+
+    /// The interactive scan's policy: a person is looking at the results.
+    fn interactive(enabled: &[String]) -> ClassifyPolicy<'_> {
+        ClassifyPolicy {
+            enabled_categories: enabled,
+            imported_rules: ImportedRules::Reviewed,
+        }
+    }
 
     fn entry(rel_path: &str) -> FileEntry {
         FileEntry::logical_only(rel_path, 1, None)
@@ -945,7 +1020,7 @@ mod tests {
                 app_id: None,
             },
             entries.clone(),
-            &[], // empty = every category enabled
+            &interactive(&[]), // empty = every category enabled
             &never_cancel,
         )
         .expect("uncancelled classify_game should succeed");
@@ -965,7 +1040,7 @@ mod tests {
                 app_id: None,
             },
             entries,
-            &["redist".to_string()], // "docs" is not in the enabled list
+            &interactive(&["redist".to_string()]), // "docs" is not in the enabled list
             &never_cancel,
         )
         .expect("uncancelled classify_game should succeed");
@@ -993,7 +1068,7 @@ mod tests {
                 app_id: None,
             },
             entries,
-            &["docs".to_string()],
+            &interactive(&["docs".to_string()]),
             &AtomicBool::new(false),
         )
         .expect("uncancelled classify_game should succeed");
@@ -1026,7 +1101,7 @@ mod tests {
                 app_id: None,
             },
             entries,
-            &[],
+            &interactive(&[]),
             &cancel,
         );
 
@@ -1057,7 +1132,7 @@ mod tests {
                 app_id: None,
             },
             safe_entries,
-            &[],
+            &interactive(&[]),
             &never_cancel,
         )
         .expect("classify safe game");
@@ -1078,7 +1153,7 @@ mod tests {
                 app_id: None,
             },
             eac_entries,
-            &[],
+            &interactive(&[]),
             &never_cancel,
         )
         .expect("classify EAC game");

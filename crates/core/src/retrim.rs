@@ -4,8 +4,8 @@
 //! full library re-scan. Fails closed if the game executable is currently
 //! running, or if that cannot be determined at all - see [`RunningCheck`].
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use rusqlite::Connection;
 
@@ -196,7 +196,38 @@ pub fn is_game_running(_install_dir: &Path) -> RunningCheck {
     RunningCheck::NotRunning
 }
 
+/// What an unattended re-trim classifies with: the two engines, the user's
+/// category setting, and the flag that stops it.
+///
+/// Grouped rather than passed as four more parameters because they always
+/// travel together and are handed straight to the shared classification
+/// cycle - the same reason [`crate::worker::GameIdentity`] exists.
+///
+/// [`ClassifyPolicy::imported_rules`] is deliberately *not* in here.
+/// Unattended is unattended: an imported rule's match is refused because
+/// nobody is looking, and that is not a caller's to soften.
+///
+/// [`ClassifyPolicy::imported_rules`]: crate::worker::ClassifyPolicy::imported_rules
+pub struct RetrimContext<'a> {
+    pub rule_engine: &'a RuleEngine,
+    pub lang_detector: &'a LangDetector,
+    /// The user's persisted `enabled_categories`. Re-trim used to have no
+    /// notion of it, so a category switched off in the window was still
+    /// deleted here after a game update.
+    pub enabled_categories: &'a [String],
+    /// Polled inside the classification cycle's hot loops, so a Stop reaches
+    /// a 400 000-file game mid-classification rather than after it.
+    pub cancel: &'a AtomicBool,
+}
+
 /// Executes a targeted re-trim for a single game by its database ID.
+///
+/// The uncancellable, every-category-enabled convenience wrapper over
+/// [`retrim_game_with_new_build`] - the same shape
+/// [`crate::scanner::scan_dir`] and
+/// [`crate::langdetect::LangDetector::analyze_game`] have. A real unattended
+/// run builds a [`RetrimContext`] with the user's settings and a flag it can
+/// set; this one is for tests and for a caller with neither.
 pub fn retrim_game(
     conn: &mut Connection,
     game_id: i64,
@@ -208,19 +239,30 @@ pub fn retrim_game(
         conn,
         game_id,
         None,
-        rule_engine,
-        lang_detector,
+        &RetrimContext {
+            rule_engine,
+            lang_detector,
+            enabled_categories: &[],
+            cancel: &AtomicBool::new(false),
+        },
         delete_method,
     )
 }
 
 /// Executes a targeted re-trim for a single game, optionally updating its `build_id`.
+///
+/// `enabled_categories` is the user's own setting, passed straight to the
+/// shared classification cycle. Re-trim used to have no notion of it at all,
+/// which meant a category switched off in the window was still deleted here,
+/// unattended, after a game update.
+///
+/// `cancel` is polled inside the cycle's hot loops, so a Stop reaches a
+/// 400 000-file game in the middle of classification rather than after it.
 pub fn retrim_game_with_new_build(
     conn: &mut Connection,
     game_id: i64,
     new_build_id: Option<&str>,
-    rule_engine: &RuleEngine,
-    lang_detector: &LangDetector,
+    ctx: &RetrimContext<'_>,
     delete_method: DeleteMethod,
 ) -> Result<RetrimReport> {
     // 1. Fetch game record
@@ -258,147 +300,42 @@ pub fn retrim_game_with_new_build(
     let entries = crate::scanner::scan_dir(&install_path)?;
     let stats_before = crate::scanner::ScanStats::of(&entries);
 
-    // 4. Classify files through RuleEngine & LangDetector
-    let lang_findings: HashMap<usize, crate::langdetect::LangFinding> =
-        lang_detector.analyze_game(&entries).into_iter().collect();
+    // 4. Classify through the one classification cycle
+    // (`crate::worker::classify_game`) - the same eight steps, in the same
+    // order, as the interactive scan. This used to be a second copy of that
+    // loop, written out by hand here because the original lived a crate
+    // higher and could not be called; it had drifted on three of the eight
+    // steps, and nothing could catch that, because nothing calls re-trim yet.
+    //
+    // What is genuinely different between the two callers is the policy, and
+    // only the policy: nobody is watching this run, so an imported rule's
+    // match is refused rather than shown for review.
+    let prepared = crate::worker::classify_game(
+        ctx.rule_engine,
+        ctx.lang_detector,
+        crate::worker::GameIdentity {
+            id: game.id,
+            name: &game.name,
+            install_dir: &install_path,
+            app_id: game.app_id.as_deref(),
+        },
+        entries,
+        &crate::worker::ClassifyPolicy {
+            enabled_categories: ctx.enabled_categories,
+            imported_rules: crate::worker::ImportedRules::Refused,
+        },
+        ctx.cancel,
+    )?;
 
-    #[derive(Clone)]
-    struct Candidate<'a> {
-        entry: &'a crate::scanner::FileEntry,
-        /// Position of `entry` in `entries` - what the same-name intro sweep
-        /// below matches its pairs against.
-        index: usize,
-        category: &'static str,
-        rule_desc: Option<String>,
-        confidence: u8,
-        lang_tag: Option<String>,
-        provenance: crate::rules::RuleProvenance,
-    }
-
-    let mut candidates = Vec::new();
-    let mut imported_match = false;
-    // A personal keep rule outranks the same-name intro sweep below exactly
-    // as it outranks every rule - see `scanner::same_name_siblings`.
-    let mut vetoed: HashSet<usize> = HashSet::new();
-
-    for (index, entry) in entries.iter().enumerate() {
-        let verdict = rule_engine.classify(&entry.rel_path, game.app_id.as_deref());
-        match verdict {
-            crate::rules::Verdict::Kept => {
-                // Explicit keep veto
-                vetoed.insert(index);
-                continue;
-            }
-            crate::rules::Verdict::Flagged(finding)
-                if crate::worker::keep_language_vetoes_rule(
-                    lang_detector,
-                    &finding,
-                    &entry.rel_path,
-                ) =>
-            {
-                // Same veto, same predicate, same policy function as the
-                // interactive scan - see `worker::keep_language_vetoes_rule`.
-                // Unattended re-trim reaching a file the scan would have left
-                // alone is the exact shape of bug GT-206 exists to fix.
-                vetoed.insert(index);
-                continue;
-            }
-            crate::rules::Verdict::Flagged(finding) => {
-                if finding.provenance == crate::rules::RuleProvenance::ImportedUntrusted {
-                    // Re-trim runs automatically after a game update. Imported
-                    // community rules require an explicit per-finding human
-                    // review and must never cross this unattended boundary.
-                    imported_match = true;
-                    continue;
-                }
-                candidates.push(Candidate {
-                    entry,
-                    index,
-                    category: finding.category.as_str(),
-                    rule_desc: Some(finding.rule_desc),
-                    confidence: finding.confidence,
-                    lang_tag: None,
-                    provenance: finding.provenance,
-                });
-            }
-            crate::rules::Verdict::Unmatched => {
-                // The container veto, on the same side of the localization
-                // findings the interactive scan puts it
-                // (`app::worker::scan::classify_game`). The rule engine's own
-                // veto (`RuleEngine::classify`) never reaches this arm: a
-                // container leaves it as `Unmatched`, which is exactly the
-                // value that lets a localization finding through. The
-                // detector has no notion of containers and flags them
-                // readily - 247 of them in the hand-checked corpus, see
-                // `core/tests/corpus.rs` - so without this an unattended
-                // re-trim would delete whole multi-asset archives the manual
-                // scan refuses to even offer (GT-449).
-                if crate::worker::is_protected_container(&entry.rel_path) {
-                    continue;
-                }
-                if let Some(lang_finding) = lang_findings.get(&index) {
-                    candidates.push(Candidate {
-                        entry,
-                        index,
-                        category: "localization",
-                        rule_desc: Some(lang_finding.reason.to_string()),
-                        confidence: lang_finding.confidence,
-                        lang_tag: Some(lang_finding.lang_tag.clone()),
-                        provenance: crate::rules::RuleProvenance::Builtin,
-                    });
-                }
-            }
-        }
-    }
-
-    if imported_match {
+    if prepared.imported_rules_refused {
         return Err(CoreError::Other(
             "automatic re-trim blocked: an imported rule matched and requires explicit review"
                 .to_string(),
         ));
     }
 
-    // GT-206: the same-name intro sweep the interactive scan applies, run
-    // over this game's own file list so both paths reach the identical set of
-    // files. A game engine plays one copy of a startup video out of several
-    // search paths, and a stub written into a copy it never opens frees real
-    // bytes while the logo still plays.
-    {
-        let sources: Vec<usize> = candidates
-            .iter()
-            .filter(|candidate| candidate.category == "intro")
-            .map(|candidate| candidate.index)
-            .collect();
-        let mut skip: HashSet<usize> = candidates.iter().map(|candidate| candidate.index).collect();
-        skip.extend(vetoed.iter().copied());
-        let by_index: HashMap<usize, usize> = candidates
-            .iter()
-            .enumerate()
-            .map(|(position, candidate)| (candidate.index, position))
-            .collect();
-        let mut swept = Vec::new();
-        for (sibling, source) in crate::scanner::same_name_siblings(&entries, &sources, &skip) {
-            if crate::worker::is_protected_container(&entries[sibling].rel_path) {
-                continue;
-            }
-            let Some(&position) = by_index.get(&source) else {
-                continue;
-            };
-            // The source's category and confidence carry over, its
-            // description does not: the rule that matched the source does
-            // not match this path, so repeating it would persist a claim
-            // the file's own path disproves. See
-            // `scanner::SIBLING_FINDING_DESC`.
-            swept.push(Candidate {
-                entry: &entries[sibling],
-                index: sibling,
-                rule_desc: Some(crate::scanner::SIBLING_FINDING_DESC.to_string()),
-                ..candidates[position].clone()
-            });
-        }
-        candidates.extend(swept);
-        candidates.sort_by_key(|candidate| candidate.index);
-    }
+    let entries = prepared.entries;
+    let candidates = prepared.findings;
 
     // 4b. Apply the micro-stub contract (see `crate::stub`) to every "intro"
     // candidate before anything is deleted - identification has to happen
@@ -413,12 +350,14 @@ pub fn retrim_game_with_new_build(
     let mut skipped = Vec::new();
 
     for candidate in candidates {
-        if candidate.category != "intro" {
+        if crate::worker::display_category(candidate.source)
+            != crate::worker::DisplayCategory::Intro
+        {
             retained_candidates.push(candidate);
             candidate_stub_bytes.push(None);
             continue;
         }
-        let full_path = install_path.join(&candidate.entry.rel_path);
+        let full_path = install_path.join(&candidate.rel_path);
         match crate::stub::detect_stub_bytes(&full_path) {
             Some(bytes) => {
                 retained_candidates.push(candidate);
@@ -428,7 +367,7 @@ pub fn retrim_game_with_new_build(
                 skipped.push(format!(
                     "kept {}: its video container is not one this build has a micro-stub for; \
                      deleting it would leave the game with no file there at all",
-                    candidate.entry.rel_path
+                    candidate.rel_path
                 ));
             }
         }
@@ -504,15 +443,16 @@ pub fn retrim_game_with_new_build(
     let mut candidate_stubs: Vec<Option<Vec<u8>>> = Vec::new();
 
     for (candidate, stub) in candidates.into_iter().zip(candidate_stub_bytes) {
-        let snapshot = match crate::safety::capture_safety_snapshot(
-            &install_path,
-            &candidate.entry.rel_path,
-        ) {
-            Ok(s) => s,
-            Err(_) => {
-                continue;
-            }
+        // The snapshot the cycle already took while walking this game, not a
+        // second capture of the same file: `classify_game` captures through
+        // one `SnapshotCapture` per game, which is what shares the trusted
+        // root and the intermediate directories across a game's findings
+        // instead of re-proving them per file. A capture that failed is
+        // still the same "no evidence, no row" it always was.
+        let Ok(snapshot) = candidate.safety else {
+            continue;
         };
+        let entry = &entries[candidate.entry_index];
 
         conn.execute(
             "INSERT INTO files (scan_id, game_id, rel_path, size, size_on_disk, mtime)
@@ -520,23 +460,29 @@ pub fn retrim_game_with_new_build(
             rusqlite::params![
                 scan_id,
                 game.id,
-                &candidate.entry.rel_path,
-                candidate.entry.size as i64,
-                candidate.entry.size_on_disk as i64,
-                candidate.entry.mtime,
+                &candidate.rel_path,
+                candidate.size as i64,
+                candidate.size_on_disk as i64,
+                entry.mtime,
             ],
         )?;
         let file_id = conn.last_insert_rowid();
 
         conn.execute(
             "INSERT INTO findings (file_id, category, rule_id, confidence, lang_tag, group_dir, provenance)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 file_id,
-                candidate.category,
-                candidate.rule_desc,
+                // The granular key the rest of the app reads back
+                // (`worker::parse_source_key`). This used to write the word
+                // "localization" for every language finding - a string that
+                // is not one of the keys, so the loader skipped the row and
+                // the finding silently vanished on the next load.
+                crate::worker::source_key(candidate.source),
+                candidate.rule_id,
                 candidate.confidence,
                 candidate.lang_tag,
+                candidate.group_dir,
                 match candidate.provenance {
                     crate::rules::RuleProvenance::Builtin => "builtin",
                     crate::rules::RuleProvenance::ImportedUntrusted => "imported_untrusted",
@@ -564,8 +510,8 @@ pub fn retrim_game_with_new_build(
             ],
         )?;
 
-        candidate_sizes.push(candidate.entry.size);
-        candidate_sizes_on_disk.push(candidate.entry.size_on_disk);
+        candidate_sizes.push(candidate.size);
+        candidate_sizes_on_disk.push(candidate.size_on_disk);
         candidate_file_ids.push(file_id);
         candidate_stubs.push(stub);
     }
@@ -781,8 +727,12 @@ mod tests {
             &mut conn,
             10,
             Some("200"),
-            &rule_engine,
-            &lang_detector,
+            &RetrimContext {
+                rule_engine: &rule_engine,
+                lang_detector: &lang_detector,
+                enabled_categories: &[],
+                cancel: &AtomicBool::new(false),
+            },
             DeleteMethod::Permanent,
         )
         .expect("execute retrim");
@@ -981,7 +931,78 @@ mod tests {
                 row.get(0)
             })
             .expect("persisted localization finding");
-        assert_eq!(category, "localization");
+        // The granular key, which is what `worker::parse_source_key` reads
+        // back. This assertion used to demand the word "localization", and
+        // that is not one of the keys: every row re-trim wrote for a
+        // language finding was skipped by the loader, so the finding
+        // disappeared from the window on the next load and only the deleted
+        // bytes were left to show for it. The scan has always written the
+        // granular key here; sharing one cycle is what made re-trim agree.
+        assert_eq!(category, "loc_text");
+        assert_eq!(
+            crate::worker::parse_source_key(&category),
+            Some(crate::worker::FindingSource::Loc(
+                crate::langdetect::LangKind::Text
+            )),
+            "whatever re-trim writes has to survive the round trip the loader makes"
+        );
+    }
+
+    /// GT-448: a category the user switched off in the window is not
+    /// deleted here either.
+    ///
+    /// Unattended re-trim had no notion of `enabled_categories` at all - it
+    /// never read the setting, so a user who had unticked "Documentation"
+    /// still lost their documentation after a game update, with no dialog to
+    /// object to. Same class as GT-205 (the daemon ignoring
+    /// `excluded_libraries`), minus the confirmation step.
+    ///
+    /// The counterpart is the second half of the test: the identical file,
+    /// the identical rule, an empty list - and it goes. If both halves
+    /// start agreeing, the filter has stopped filtering, not started.
+    #[test]
+    fn a_category_the_user_switched_off_is_not_deleted_unattended() {
+        let docs_rule = format!(
+            r#"{{"version":{},"rules":[
+                {{"category":"docs_file","pattern":"manual","desc":"Manual","confidence":90}}
+            ]}}"#,
+            crate::rules::RULE_PACK_VERSION
+        );
+        let engine = RuleEngine::from_json(&docs_rule).expect("parse rules");
+
+        for (enabled, expect_deleted) in
+            [(vec!["redist".to_string()], 0usize), (Vec::new(), 1usize)]
+        {
+            let temp_dir = tempfile::tempdir().expect("create temp dir");
+            let game_dir = temp_dir.path().join("Documented Game");
+            let mut conn = setup_game(&temp_dir, &game_dir);
+            let target = game_dir.join("manual.pdf");
+            fs::write(&target, b"a manual").expect("write manual");
+
+            let report = retrim_game_with_new_build(
+                &mut conn,
+                10,
+                None,
+                &RetrimContext {
+                    rule_engine: &engine,
+                    lang_detector: &LangDetector::new(),
+                    enabled_categories: &enabled,
+                    cancel: &AtomicBool::new(false),
+                },
+                DeleteMethod::Permanent,
+            )
+            .expect("re-trim runs whether or not the category is enabled");
+
+            assert_eq!(
+                report.files_deleted, expect_deleted,
+                "enabled_categories = {enabled:?}"
+            );
+            assert_eq!(
+                target.exists(),
+                expect_deleted == 0,
+                "the file itself has to follow the setting, not just the count"
+            );
+        }
     }
 
     /// GT-449: a container the localization detector flags is still refused,
