@@ -688,4 +688,80 @@ mod tests {
              discarding the unwritten game"
         );
     }
+
+    /// GT-109 item 7, the cheapest signal available from this file: the real
+    /// scan pool's `sync_channel(2 * scan_threads())` (constructed in
+    /// `scan.rs`, out of this module's reach) is what actually gives the
+    /// scan a bounded peak memory footprint - but `run_writer` is the half
+    /// of that handshake this module owns, and nothing proved it keeps
+    /// draining a bounded channel instead of stalling once producers start
+    /// blocking on a full one.
+    ///
+    /// A channel capacity of 2 - far smaller than one `WRITE_BATCH_SIZE`
+    /// flush - forces the producer thread to block on `send` almost
+    /// immediately, so this only passes if `run_writer` is actually pulling
+    /// results out from under it the whole time rather than only after
+    /// everything has been queued.
+    #[test]
+    fn run_writer_keeps_up_with_a_channel_far_smaller_than_one_write_batch() {
+        let conn = db::open_in_memory().expect("open in-memory db");
+        let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
+        let game_id = seed_game(&conn, scan_id);
+
+        const TOTAL: usize = 3 * WRITE_BATCH_SIZE;
+        const CHANNEL_CAPACITY: usize = 2;
+
+        let (result_tx, result_rx) =
+            std::sync::mpsc::sync_channel::<GameOutcome>(CHANNEL_CAPACITY);
+        let producer = std::thread::spawn(move || {
+            for _ in 0..TOTAL {
+                // A blocking send: proof this producer is actually willing
+                // to be throttled by the bounded channel, exactly as a real
+                // scan-pool worker thread is.
+                result_tx
+                    .send(GameOutcome::Scanned(prepared_game_with_one_finding(
+                        game_id,
+                    )))
+                    .expect("run_writer must still be receiving");
+            }
+        });
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let mut conn = conn;
+            let (msg_tx, _msg_rx) = std::sync::mpsc::channel::<WorkerMsg>();
+            let notifier = crate::worker::Notifier::silent(msg_tx);
+            let completed = std::sync::atomic::AtomicUsize::new(0);
+            let cancel = AtomicBool::new(false);
+            let result = run_writer(
+                &mut conn, result_rx, &notifier, TOTAL, &completed, &cancel, scan_id,
+            );
+            let _ = done_tx.send(result.map(|findings| findings.len()));
+        });
+
+        // Bounded on the writer's outcome first, deliberately - not on
+        // `producer.join()`. If `run_writer` ever stopped draining early, the
+        // producer would be stuck forever on a `send` into a channel nobody
+        // is reading; joining it first would make *that* hang the test
+        // instead of failing it. Once the writer has genuinely finished
+        // (`run_writer` returns only after `result_rx.iter()` runs dry),
+        // the producer must already be done too - it is what dropped the
+        // sender that ended that iterator - so both joins below return
+        // immediately on the passing path.
+        let finding_count = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect(
+                "run_writer must drain a channel far smaller than one write batch \
+                 without deadlocking",
+            )
+            .expect("run_writer must succeed");
+        producer.join().expect("producer thread panicked");
+        writer.join().expect("writer thread panicked");
+
+        assert_eq!(
+            finding_count, TOTAL,
+            "every queued game's finding must make it through despite a channel \
+             smaller than one write batch"
+        );
+    }
 }
