@@ -40,7 +40,7 @@ winresource = "0.1.23"
 
 [dependencies]
 dunce = "1.0.5"
-eframe = { version = "0.35.0", default-features = false, features = [
+eframe = { version = "0.36.1", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "wgpu",
@@ -66,5 +66,5 @@ windows = { version = "0.62.2", features = [
 ] }
 
 [dev-dependencies]
-egui_kittest = "0.35.0"
+egui_kittest = "0.36.1"
 tempfile = "3.27.0"
