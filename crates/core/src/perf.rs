@@ -25,6 +25,12 @@ pub enum Stage {
     MftRead,
     /// Turning those bytes into FRN records (`record::parse_chunk`).
     MftParse,
+    /// Folding the accumulated FRN records into the final `FrnMap`
+    /// (`FrnAccumulator::finish`).
+    MftFinish,
+    /// Reconstructing full paths from FRNs and filtering them to each
+    /// game's root (`pathmap::scan_frn_map`).
+    PathMap,
     /// `langdetect::tokens::tokenize_path` over every file of a game.
     Tokenize,
     /// Dictionary lookups over the tokens.
@@ -50,9 +56,11 @@ pub enum Stage {
 
 /// Every stage, in report order. Kept beside `Stage` so adding a variant
 /// without listing it here fails the exhaustiveness check in `name`.
-const ALL: [Stage; 12] = [
+const ALL: [Stage; 14] = [
     Stage::MftRead,
     Stage::MftParse,
+    Stage::MftFinish,
+    Stage::PathMap,
     Stage::Tokenize,
     Stage::Occurrences,
     Stage::Family,
@@ -75,6 +83,8 @@ fn name(stage: Stage) -> &'static str {
     match stage {
         Stage::MftRead => "mft_read",
         Stage::MftParse => "mft_parse",
+        Stage::MftFinish => "mft_finish",
+        Stage::PathMap => "path_map",
         Stage::Tokenize => "tokenize",
         Stage::Occurrences => "occurrences",
         Stage::Family => "family",
@@ -98,6 +108,14 @@ static NANOS: [AtomicU64; ALL.len()] = [const { AtomicU64::new(0) }; ALL.len()];
 /// [`crate::sysinfo`].
 static MFT_BYTES: AtomicU64 = AtomicU64::new(0);
 
+/// Records seen and records actually in use, tallied during
+/// [`Stage::MftParse`] via [`add_mft_record`]. Paired with [`MFT_BYTES`],
+/// this answers what share of the `$MFT` bytes read are occupied records -
+/// the number that decides whether skipping free records via `$BITMAP` is
+/// worth doing.
+static MFT_RECORDS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static MFT_RECORDS_IN_USE: AtomicU64 = AtomicU64::new(0);
+
 /// Adds an already-measured span to `stage`.
 pub fn add(stage: Stage, elapsed: Duration) {
     NANOS[stage as usize].fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
@@ -106,6 +124,26 @@ pub fn add(stage: Stage, elapsed: Duration) {
 /// Records bytes read from a volume's `$MFT`.
 pub fn add_mft_bytes(bytes: u64) {
     MFT_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+/// Tallies one parsed MFT record for the occupancy count. Two relaxed
+/// atomic increments per record - negligible next to the hashmap work
+/// `FrnAccumulator::add` already does for the same record, which is why
+/// the caller reads `in_use` off it right before handing it to `add`.
+pub fn add_mft_record(in_use: bool) {
+    MFT_RECORDS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    if in_use {
+        MFT_RECORDS_IN_USE.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Returns `(in_use, total)` records tallied by [`add_mft_record`] so far
+/// this scan.
+pub fn mft_record_counts() -> (u64, u64) {
+    (
+        MFT_RECORDS_IN_USE.load(Ordering::Relaxed),
+        MFT_RECORDS_TOTAL.load(Ordering::Relaxed),
+    )
 }
 
 /// Runs `body`, charging its wall time to `stage`. Returns whatever `body`
@@ -124,6 +162,8 @@ pub fn reset() {
         counter.store(0, Ordering::Relaxed);
     }
     MFT_BYTES.store(0, Ordering::Relaxed);
+    MFT_RECORDS_TOTAL.store(0, Ordering::Relaxed);
+    MFT_RECORDS_IN_USE.store(0, Ordering::Relaxed);
 }
 
 /// Reads one stage's accumulated CPU time.

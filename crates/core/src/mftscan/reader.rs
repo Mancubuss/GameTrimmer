@@ -148,6 +148,9 @@ where
 
         perf::timed(perf::Stage::MftParse, || {
             for parsed in record::parse_chunk(&mut chunk_bytes, record_size, frn_offset) {
+                // Nearly-free tally off data `add` already has in hand -
+                // see `perf::add_mft_record`.
+                perf::add_mft_record(parsed.in_use);
                 acc.add(parsed);
             }
         });
@@ -163,7 +166,9 @@ where
         }
     }
 
-    Ok(acc.finish(FIRST_USER_RECORD))
+    Ok(perf::timed(perf::Stage::MftFinish, || {
+        acc.finish(FIRST_USER_RECORD)
+    }))
 }
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use gametrimmer_core::error::Result;
 use gametrimmer_core::providers::GameInstall;
 use gametrimmer_core::scanner::FileEntry;
-use gametrimmer_core::{mftscan, providers, scanner};
+use gametrimmer_core::{mftscan, perf, providers, scanner};
 
 struct Stats {
     files: u64,
@@ -111,6 +111,16 @@ fn main() {
 
     report("MFT scan", &mft_results, mft_elapsed, &games);
     println!();
+
+    // What share of the $MFT bytes just read are occupied records - the
+    // number that decides whether skipping free records via $BITMAP is
+    // worth doing. See `perf::add_mft_record`.
+    let (in_use, total) = perf::mft_record_counts();
+    if total > 0 {
+        let occupancy = in_use as f64 / total as f64 * 100.0;
+        println!("MFT record occupancy: {in_use} in use / {total} total ({occupancy:.1}%)");
+        println!();
+    }
 
     let speedup = walk_elapsed.as_secs_f64() / mft_elapsed.as_secs_f64().max(0.000_001);
     println!(
