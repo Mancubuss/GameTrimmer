@@ -280,7 +280,7 @@
     },
     {
       "category": "bonus",
-      "pattern": "^(bonus|artbook|soundtrack|extras)$",
+      "pattern": "^(bonus|artbook|soundtrack|(.+ )?extras)$",
       "desc": {
         "en": "Bonus material (artbook, soundtrack)",
         "uk": "Бонусні матеріали (артбук, саундтрек тощо)"

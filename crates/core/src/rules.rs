@@ -497,7 +497,7 @@ impl Verdict {
 }
 
 /// A rule with its pattern already compiled to a case-insensitive [`Regex`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CompiledRule {
     category: Category,
     regex: Regex,
@@ -557,6 +557,15 @@ pub struct RuleEngine {
     /// `is_empty` per file over a 4.9-million-file scan instead of a polarity
     /// branch inside the loop that runs for every rule of every file.
     keeps: Vec<CompiledKeep>,
+    /// The subset of `rules` that recognises a folder as bonus material by
+    /// name. Duplicated here rather than filtered out of `rules` per file:
+    /// there are two of them, and `classify` needs them *after* the ranking
+    /// loop, where the extension whitelist that keeps a program file out of
+    /// the bonus category has already excluded them from the loop itself.
+    ///
+    /// Built-in and unscoped only. A reference rule is about one named game's
+    /// files, not about a folder that swallows whatever is under it.
+    bonus_folders: Vec<CompiledRule>,
 }
 
 impl RuleEngine {
@@ -589,6 +598,7 @@ impl RuleEngine {
         let mut rules = Vec::with_capacity(raw_rules.len());
         let mut scoped: HashMap<String, Vec<CompiledRule>> = HashMap::new();
         let mut keeps = Vec::new();
+        let mut bonus_folders = Vec::new();
         for (index, rule) in raw_rules.into_iter().enumerate() {
             if rule.pattern.len() > MAX_REGEX_BYTES {
                 return Err(CoreError::Other(format!(
@@ -716,6 +726,12 @@ impl RuleEngine {
                         .collect()
                 }),
             };
+            if compiled.category == Category::Bonus
+                && compiled.origin == RuleOrigin::Builtin
+                && rule.app_id.is_none()
+            {
+                bonus_folders.push(compiled.clone());
+            }
             match rule.app_id {
                 Some(app_id) => scoped.entry(app_id).or_default().push(compiled),
                 None => rules.push(compiled),
@@ -726,6 +742,7 @@ impl RuleEngine {
             rules,
             scoped,
             keeps,
+            bonus_folders,
         })
     }
 
@@ -741,6 +758,7 @@ impl RuleEngine {
             self.scoped.entry(app_id).or_default().extend(rules);
         }
         self.keeps.extend(other.keeps);
+        self.bonus_folders.extend(other.bonus_folders);
     }
 
     /// Loads and builds the engine from a rules.json file, describing its
@@ -777,6 +795,11 @@ impl RuleEngine {
     ///    is not competing with the heuristic - it is what the heuristic is
     ///    an approximation of.
     /// 4. Confidence breaks the remaining ties.
+    /// 5. Finally, a winner that *guessed* is re-labelled `bonus` if its path
+    ///    runs through a folder recognised by name as bonus material - see
+    ///    [`Self::absorbed_by_bonus_folder`]. This step re-labels, it never
+    ///    flags, and it never touches a vetoed file or a reference rule's
+    ///    verdict.
     ///
     /// A rule scoped to a game (see [`Rule::app_id`]) takes part in neither
     /// step while any other game is being classified.
@@ -873,8 +896,69 @@ impl RuleEngine {
         }
 
         match best {
-            Some((_, finding)) => Verdict::Flagged(finding),
+            Some((key, finding)) => {
+                Verdict::Flagged(self.absorbed_by_bonus_folder(key, finding, folder_segments))
+            }
             None => Verdict::Unmatched,
+        }
+    }
+
+    /// Re-labels a finding whose path runs through a folder recognised by
+    /// name as bonus material.
+    ///
+    /// A `Blood and Wine extras` folder is one pile to the player - the
+    /// artbook, the comic, the soundtrack and the `Thumbs.db` left beside
+    /// them - and answering "development leftovers, documentation, bonus
+    /// material" for the three files in it is an answer nobody asked for.
+    /// The folder wins, and the per-file rule only supplies the fact that
+    /// there was something to classify at all.
+    ///
+    /// Three things this deliberately does not do:
+    ///
+    /// * It never *creates* a finding. A file no rule flagged (a `.dll` under
+    ///   `Extras`, which the bonus rule's extension whitelist excludes on
+    ///   purpose) stays unflagged, so mistaking a folder for a bonus folder
+    ///   costs a wrong label and never a wrongly deletable folder.
+    /// * It never overrules a reference rule ([`RuleOrigin::Reference`]),
+    ///   which knows this game by name, with a folder name that guesses.
+    /// * It leaves [`Category::Intro`] alone. Every other category here is a
+    ///   plain deletion, so moving a file between them changes a label; an
+    ///   intro is *replaced by a stub* instead (see the stub contract in
+    ///   `crate::retrim`), so re-labelling one would quietly swap a stub for
+    ///   an outright deletion. That is a change of mechanism, not of
+    ///   category, and this step only decides categories.
+    /// * It never runs on a vetoed file: [`Self::classify`] returns
+    ///   [`Verdict::Kept`] before any of this, and `localized_content` is
+    ///   carried over rather than taken from the bonus rule so that the
+    ///   language veto in [`crate::worker::keep_language_vetoes_rule`] still
+    ///   sees the file it was meant to see.
+    fn absorbed_by_bonus_folder(
+        &self,
+        key: (u8, u8, i16),
+        finding: Finding,
+        folder_segments: &[&str],
+    ) -> Finding {
+        let (_, origin_rank, _) = key;
+        if finding.category == Category::Bonus
+            || finding.category == Category::Intro
+            || origin_rank == RuleOrigin::Reference.rank()
+        {
+            return finding;
+        }
+        let Some(rule) = self.bonus_folders.iter().find(|rule| {
+            folder_segments.iter().enumerate().any(|(index, segment)| {
+                let depth = index + 1;
+                depth <= rule.max_depth && rule.regex.is_match(segment)
+            })
+        }) else {
+            return finding;
+        };
+        Finding {
+            category: Category::Bonus,
+            rule_desc: rule.desc.clone(),
+            confidence: rule.confidence,
+            provenance: rule.provenance,
+            localized_content: finding.localized_content,
         }
     }
 }
@@ -1091,6 +1175,90 @@ mod tests {
             None,
             "a program file is not bonus material even inside an extras folder"
         );
+    }
+
+    /// The Witcher 3's `Blood and Wine extras` is one pile of bonus material
+    /// to the player. Before the folder absorbed its contents, the same pile
+    /// came back as three answers: the `Thumbs.db` as development leftovers,
+    /// the comic as documentation, and only the artbook as bonus material.
+    #[test]
+    fn a_bonus_folder_absorbs_the_leftovers_and_comics_beside_its_artbook() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        for path in [
+            r"Blood and Wine extras\ARTBOOK\artbook.pdf",
+            r"Blood and Wine extras\COMICS\comic.cbr",
+            r"Blood and Wine extras\Thumbs.db",
+            r"Hearts of Stone extras\WALLPAPERS\Thumbs.db",
+        ] {
+            let finding = engine
+                .classify(path, None)
+                .flagged()
+                .unwrap_or_else(|| panic!("{path} should be classified"));
+            assert_eq!(finding.category, Category::Bonus, "{path}");
+        }
+    }
+
+    /// The price of the folder winning is paid in labels only. A file no rule
+    /// claimed stays unclaimed, so mistaking a folder for a bonus folder can
+    /// never turn its contents into deletion candidates wholesale.
+    #[test]
+    fn a_bonus_folder_does_not_flag_what_no_rule_claimed() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        assert_eq!(
+            engine
+                .classify(r"Blood and Wine extras\bin\plugin.dll", None)
+                .flagged(),
+            None
+        );
+    }
+
+    /// Absorption re-labels a finding; it must not disarm the veto that runs
+    /// after it. `localized_content` is what
+    /// `crate::worker::keep_language_vetoes_rule` reads to keep a file in a
+    /// language the user asked to keep, so it is carried over rather than
+    /// taken from the bonus rule.
+    #[test]
+    fn a_bonus_folder_keeps_the_language_veto_armed() {
+        let mut engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json loads");
+        engine.absorb(
+            RuleEngine::from_json(&pack(
+                r#"[{"category": "dev_leftovers", "pattern": "^voice_ru\\.db$", "desc": "Russian voice bank", "confidence": 90, "localized_content": true}]"#,
+            ))
+            .expect("localized pack compiles"),
+        );
+
+        let finding = engine
+            .classify(r"Blood and Wine extras\voice_ru.db", None)
+            .flagged()
+            .expect("the localized file should be classified");
+
+        assert_eq!(finding.category, Category::Bonus);
+        assert!(
+            finding.localized_content,
+            "the language veto reads this flag and must still see it"
+        );
+    }
+
+    /// A reference rule knows this game by name; a folder name guesses. The
+    /// guess does not get to overwrite the lookup.
+    #[test]
+    fn a_bonus_folder_does_not_overrule_a_reference_rule() {
+        let mut engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json loads");
+        engine.absorb(
+            RuleEngine::from_json(&pack(
+                r#"[{"category": "intro", "pattern": "^studio_logo\\.bik$", "desc": "PCGamingWiki entry", "confidence": 70, "app_id": "292030", "origin": "reference"}]"#,
+            ))
+            .expect("reference pack compiles"),
+        );
+
+        let finding = engine
+            .classify(r"Blood and Wine extras\studio_logo.bik", Some("292030"))
+            .flagged()
+            .expect("the catalogued intro should be classified");
+
+        assert_eq!(finding.category, Category::Intro);
     }
 
     #[test]
