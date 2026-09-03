@@ -1017,17 +1017,23 @@ mod tests {
     /// The counterpart is `ordinary_localization_category_remains_retrim_deletable`
     /// above: same tree, same language folder, an ordinary file - deleted.
     /// If that one starts failing too, the veto has grown past containers.
+    ///
+    /// The fixture is `SoundbanksNoMedia.pck` (Albion Online's real bank),
+    /// which the detector reads as Norwegian out of the English word "No" in
+    /// "NoMedia". It used to be `localization/french/voices.pck`, but GT-454
+    /// made a container under a language folder a *single-language* file -
+    /// Mafia III ships 744 of them - so that path is now legitimately
+    /// deletable and no longer tests the veto. What still does is the
+    /// boundary the container gate keeps and the detector does not: the
+    /// language has to be its own atom of the name, never a syllable inside
+    /// a longer word.
     #[test]
     fn a_localization_flagged_container_is_never_deleted_unattended() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let game_dir = temp_dir.path().join("Container Game");
         let mut conn = setup_game(&temp_dir, &game_dir);
-        let target = game_dir
-            .join("localization")
-            .join("french")
-            .join("voices.pck");
-        fs::create_dir_all(target.parent().expect("localization parent"))
-            .expect("create localization tree");
+        let target = game_dir.join("sound").join("SoundbanksNoMedia.pck");
+        fs::create_dir_all(target.parent().expect("sound parent")).expect("create sound tree");
         fs::write(&target, b"AKPK-shaped bytes, many assets inside").expect("write container");
         let rules = format!(
             r#"{{"version":{},"rules":[]}}"#,

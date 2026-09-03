@@ -364,6 +364,18 @@ impl LangData {
         &self.language_keys
     }
 
+    /// Every alias the pack defines, lowercase, in unspecified order.
+    ///
+    /// A single [`LangData::lookup`] answers "is this token a language"; this
+    /// answers "which spellings does the dictionary know", which is what a
+    /// caller needs when it has to build its own index over the table rather
+    /// than probe it token by token - see
+    /// [`crate::worker::is_external_single_language_file`], which used to
+    /// carry a hand-maintained second copy of these spellings.
+    pub fn aliases(&self) -> impl Iterator<Item = &str> {
+        self.alias_map.keys().map(String::as_str)
+    }
+
     /// Looks up a lowercase token/segment-piece in the dictionary.
     pub fn lookup(&self, text: &str) -> Option<(&'static str, Level)> {
         self.alias_map.get(text).copied()
