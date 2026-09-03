@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
@@ -279,15 +280,16 @@ fn collect_files(
     max_depth: usize,
     budget: &mut usize,
     out: &mut Vec<(PathBuf, SaveFileRole)>,
+    cancel: &AtomicBool,
 ) {
-    if depth > max_depth || *budget == 0 {
+    if depth > max_depth || *budget == 0 || cancel.load(Ordering::Relaxed) {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
-        if *budget == 0 {
+        if *budget == 0 || cancel.load(Ordering::Relaxed) {
             return;
         }
         let path = entry.path();
@@ -295,7 +297,7 @@ fn collect_files(
             continue;
         };
         if file_type.is_dir() {
-            collect_files(&path, depth + 1, max_depth, budget, out);
+            collect_files(&path, depth + 1, max_depth, budget, out, cancel);
         } else if file_type.is_file() {
             if let Some(role) = role_of(&path) {
                 *budget -= 1;
@@ -317,11 +319,15 @@ fn collect_files(
 /// says autosave or quicksave are sorted newest first, and everything past
 /// `retain_count` is described as excess. Same rule as before, applied
 /// wherever the files actually are.
-pub fn scan_save_locations(retain_count: usize) -> Vec<JanitorArtifact> {
-    save_location_roots()
-        .iter()
-        .flat_map(|root| scan_save_root(root, retain_count))
-        .collect()
+pub fn scan_save_locations(retain_count: usize, cancel: &AtomicBool) -> Vec<JanitorArtifact> {
+    let mut artifacts = Vec::new();
+    for root in save_location_roots() {
+        if cancel.load(Ordering::Relaxed) {
+            return artifacts;
+        }
+        artifacts.extend(scan_save_root(&root, retain_count, cancel));
+    }
+    artifacts
 }
 
 /// Folder names that are part of a game's own save layout rather than the name
@@ -439,10 +445,21 @@ fn group_dir_of(root: &SaveRoot, path: &Path, publishers: &mut HashMap<PathBuf, 
 /// [`scan_save_locations`] for one root, so the listing, the grouping and the
 /// retention rule can be tested against a directory rather than against
 /// whatever this machine happens to have in Documents.
-fn scan_save_root(root: &SaveRoot, retain_count: usize) -> Vec<JanitorArtifact> {
+fn scan_save_root(
+    root: &SaveRoot,
+    retain_count: usize,
+    cancel: &AtomicBool,
+) -> Vec<JanitorArtifact> {
     let mut budget = MAX_FILES_PER_ROOT;
     let mut files = Vec::new();
-    collect_files(&root.dir, 0, root.max_depth, &mut budget, &mut files);
+    collect_files(
+        &root.dir,
+        0,
+        root.max_depth,
+        &mut budget,
+        &mut files,
+        cancel,
+    );
 
     // Which groups hold a real save. `LocalLow` is shared with applications
     // that have no saves at all, and their settings files are indistinguishable
@@ -628,7 +645,8 @@ mod tests {
         std::fs::write(game.join("settings.ini"), b"x").expect("write settings");
         std::fs::write(game.join("readme.txt"), b"x").expect("write unrelated file");
 
-        let artifacts = scan_save_root(&test_root(temp.path(), false), 2);
+        let cancel = AtomicBool::new(false);
+        let artifacts = scan_save_root(&test_root(temp.path(), false), 2, &cancel);
         let named: Vec<&str> = artifacts
             .iter()
             .filter_map(|artifact| artifact.path.file_name().and_then(|name| name.to_str()))
@@ -680,7 +698,8 @@ mod tests {
             max_depth: MAX_SAVE_DEPTH,
             needs_save_evidence: true,
         };
-        let artifacts = scan_save_root(&root, 2);
+        let cancel = AtomicBool::new(false);
+        let artifacts = scan_save_root(&root, 2, &cancel);
 
         assert_eq!(artifacts.len(), 1);
         assert_eq!(
@@ -712,7 +731,8 @@ mod tests {
             max_depth: MAX_SAVE_DEPTH,
             needs_save_evidence: true,
         };
-        let listed: Vec<String> = scan_save_root(&root, 2)
+        let cancel = AtomicBool::new(false);
+        let listed: Vec<String> = scan_save_root(&root, 2, &cancel)
             .iter()
             .map(|artifact| artifact.path.file_name().unwrap().to_string_lossy().into())
             .collect();
@@ -748,7 +768,8 @@ mod tests {
         std::fs::create_dir_all(&campaign).expect("create campaign folder");
         std::fs::write(campaign.join("save0.sav"), b"x").expect("write save");
 
-        let groups: HashSet<String> = scan_save_root(&test_root(temp.path(), false), 2)
+        let cancel = AtomicBool::new(false);
+        let groups: HashSet<String> = scan_save_root(&test_root(temp.path(), false), 2, &cancel)
             .iter()
             .filter_map(|artifact| artifact.group_dir.clone())
             .collect();
@@ -764,6 +785,26 @@ mod tests {
             groups.contains("The Outer Worlds"),
             "one heading per campaign id is the flat list again: {groups:?}"
         );
+    }
+
+    #[test]
+    fn scan_save_root_returns_immediately_when_cancelled() {
+        let temp = tempdir().expect("tempdir");
+        let game = temp.path().join("Some Unlisted RPG");
+        std::fs::create_dir_all(&game).expect("create game folder");
+        std::fs::write(game.join("autosave1.sav"), b"x").expect("write autosave");
+
+        let cancel = AtomicBool::new(true);
+        let artifacts = scan_save_root(&test_root(temp.path(), false), 2, &cancel);
+
+        assert!(artifacts.is_empty());
+    }
+
+    #[test]
+    fn scan_save_locations_returns_immediately_when_cancelled() {
+        let cancel = AtomicBool::new(true);
+        let artifacts = scan_save_locations(2, &cancel);
+        assert!(artifacts.is_empty());
     }
 
     #[test]

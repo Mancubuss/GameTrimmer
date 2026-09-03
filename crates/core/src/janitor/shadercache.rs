@@ -13,6 +13,7 @@ use crate::janitor::JanitorArtifact;
 use crate::rules::Category;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 /// Reports every file in `dir_path` last modified more than `stale_days` ago
@@ -121,9 +122,12 @@ pub fn get_system_gpu_cache_dirs() -> Vec<(PathBuf, &'static str)> {
 }
 
 /// Scans standard system GPU shader cache directories for stale files.
-pub fn scan_system_shader_caches(stale_days: u32) -> Vec<JanitorArtifact> {
+pub fn scan_system_shader_caches(stale_days: u32, cancel: &AtomicBool) -> Vec<JanitorArtifact> {
     let mut artifacts = Vec::new();
     for (dir, desc) in get_system_gpu_cache_dirs() {
+        if cancel.load(Ordering::Relaxed) {
+            return artifacts;
+        }
         artifacts.extend(scan_stale_cache_files(&dir, stale_days, desc));
     }
     artifacts
@@ -134,6 +138,7 @@ pub fn scan_system_shader_caches(stale_days: u32) -> Vec<JanitorArtifact> {
 pub fn scan_steam_shader_cache(
     library_root: &Path,
     installed_app_ids: &HashSet<String>,
+    cancel: &AtomicBool,
 ) -> Vec<JanitorArtifact> {
     let mut artifacts = Vec::new();
     let shadercache_dir = library_root.join("steamapps").join("shadercache");
@@ -147,6 +152,9 @@ pub fn scan_steam_shader_cache(
     };
 
     for entry in entries.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            return artifacts;
+        }
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -216,10 +224,36 @@ mod tests {
         let mut installed = HashSet::new();
         installed.insert("111111".to_string());
 
-        let artifacts = scan_steam_shader_cache(temp.path(), &installed);
+        let cancel = AtomicBool::new(false);
+        let artifacts = scan_steam_shader_cache(temp.path(), &installed, &cancel);
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].size_bytes, 2048);
         assert_eq!(artifacts[0].app_id.as_deref(), Some("999999"));
+    }
+
+    #[test]
+    fn scan_steam_shader_cache_returns_immediately_when_cancelled() {
+        let temp = tempdir().unwrap();
+        let sc_dir = temp
+            .path()
+            .join("steamapps")
+            .join("shadercache")
+            .join("999999");
+        std::fs::create_dir_all(&sc_dir).unwrap();
+        std::fs::write(sc_dir.join("foz_pipelines.bin"), vec![0u8; 2048]).unwrap();
+
+        let installed = HashSet::new();
+        let cancel = AtomicBool::new(true);
+        let artifacts = scan_steam_shader_cache(temp.path(), &installed, &cancel);
+
+        assert!(artifacts.is_empty());
+    }
+
+    #[test]
+    fn scan_system_shader_caches_returns_immediately_when_cancelled() {
+        let cancel = AtomicBool::new(true);
+        let artifacts = scan_system_shader_caches(30, &cancel);
+        assert!(artifacts.is_empty());
     }
 
     #[test]

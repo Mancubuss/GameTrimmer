@@ -13,6 +13,7 @@
 use crate::janitor::JanitorArtifact;
 use crate::rules::Category;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Recursively computes directory size.
 fn dir_size(path: &Path) -> u64 {
@@ -160,10 +161,13 @@ fn cache_dirs_in(root: &Path, def: &WebCacheDef) -> Vec<PathBuf> {
 }
 
 /// Discovers and scans standard launcher CEF/Chromium web cache directories.
-pub fn scan_launcher_web_caches() -> Vec<JanitorArtifact> {
+pub fn scan_launcher_web_caches(cancel: &AtomicBool) -> Vec<JanitorArtifact> {
     let mut artifacts = Vec::new();
 
     for def in WEB_CACHES {
+        if cancel.load(Ordering::Relaxed) {
+            return artifacts;
+        }
         for dir in cache_dirs(def) {
             let size = dir_size(&dir);
             if size < def.min_bytes {
@@ -187,8 +191,11 @@ pub fn scan_launcher_web_caches() -> Vec<JanitorArtifact> {
 }
 
 /// Scans for mod manager downloaded archives (Vortex, MO2).
-pub fn scan_mod_manager_downloads() -> Vec<JanitorArtifact> {
+pub fn scan_mod_manager_downloads(cancel: &AtomicBool) -> Vec<JanitorArtifact> {
     let mut artifacts = Vec::new();
+    if cancel.load(Ordering::Relaxed) {
+        return artifacts;
+    }
 
     if let Ok(appdata) = std::env::var("APPDATA") {
         let vortex_dl = PathBuf::from(appdata).join("Vortex").join("downloads");
@@ -266,5 +273,19 @@ mod tests {
         let htmlcache = temp.path().join("Steam").join("htmlcache");
         std::fs::create_dir_all(&htmlcache).expect("create htmlcache");
         assert_eq!(cache_dirs_in(temp.path(), &STEAM), vec![htmlcache]);
+    }
+
+    #[test]
+    fn scan_launcher_web_caches_returns_immediately_when_cancelled() {
+        let cancel = AtomicBool::new(true);
+        let artifacts = scan_launcher_web_caches(&cancel);
+        assert!(artifacts.is_empty());
+    }
+
+    #[test]
+    fn scan_mod_manager_downloads_returns_immediately_when_cancelled() {
+        let cancel = AtomicBool::new(true);
+        let artifacts = scan_mod_manager_downloads(&cancel);
+        assert!(artifacts.is_empty());
     }
 }

@@ -9,6 +9,7 @@ use crate::janitor::JanitorArtifact;
 use crate::rules::Category;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Recursively computes directory size.
 fn dir_size(path: &Path) -> u64 {
@@ -100,14 +101,17 @@ fn candidate_exes_in(dir: &Path) -> HashSet<String> {
 /// `known_games` (lowercased exe file name -> display title, built by the
 /// caller from the discovered libraries); anything that does not match is
 /// dropped rather than offered.
-pub fn scan_windows_wer_crash_dumps(known_games: &HashMap<String, String>) -> Vec<JanitorArtifact> {
+pub fn scan_windows_wer_crash_dumps(
+    known_games: &HashMap<String, String>,
+    cancel: &AtomicBool,
+) -> Vec<JanitorArtifact> {
     if known_games.is_empty() {
         return Vec::new();
     }
     let Some(dir) = wer_crash_dumps_dir() else {
         return Vec::new();
     };
-    scan_wer_dir(&dir, known_games)
+    scan_wer_dir(&dir, known_games, cancel)
 }
 
 /// The directory walk behind [`scan_windows_wer_crash_dumps`], factored out
@@ -117,6 +121,7 @@ pub fn scan_windows_wer_crash_dumps(known_games: &HashMap<String, String>) -> Ve
 fn scan_wer_dir(
     crash_dumps_dir: &Path,
     known_games: &HashMap<String, String>,
+    cancel: &AtomicBool,
 ) -> Vec<JanitorArtifact> {
     let mut artifacts = Vec::new();
     if !crash_dumps_dir.is_dir() {
@@ -128,6 +133,9 @@ fn scan_wer_dir(
     };
 
     for entry in entries.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            return artifacts;
+        }
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -232,22 +240,31 @@ pub fn scan_game_engine_crashes(
 }
 
 /// Scans Unity logs under `%USERPROFILE%\AppData\LocalLow`.
-pub fn scan_unity_logs() -> Vec<JanitorArtifact> {
-    let mut artifacts = Vec::new();
+pub fn scan_unity_logs(cancel: &AtomicBool) -> Vec<JanitorArtifact> {
     let Ok(user_profile) = std::env::var("USERPROFILE") else {
-        return artifacts;
+        return Vec::new();
     };
-
     let locallow = PathBuf::from(user_profile).join("AppData").join("LocalLow");
+    scan_locallow_dir(&locallow, cancel)
+}
+
+/// The directory walk behind [`scan_unity_logs`], factored out so it is
+/// unit-testable against a tempdir instead of mutating the `USERPROFILE`
+/// process env (other tests run in parallel and would race a shared env var).
+fn scan_locallow_dir(locallow: &Path, cancel: &AtomicBool) -> Vec<JanitorArtifact> {
+    let mut artifacts = Vec::new();
     if !locallow.is_dir() {
         return artifacts;
     }
 
-    let Ok(company_entries) = std::fs::read_dir(&locallow) else {
+    let Ok(company_entries) = std::fs::read_dir(locallow) else {
         return artifacts;
     };
 
     for company in company_entries.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            return artifacts;
+        }
         let comp_path = company.path();
         if !comp_path.is_dir() {
             continue;
@@ -255,6 +272,9 @@ pub fn scan_unity_logs() -> Vec<JanitorArtifact> {
 
         if let Ok(game_entries) = std::fs::read_dir(&comp_path) {
             for game in game_entries.flatten() {
+                if cancel.load(Ordering::Relaxed) {
+                    return artifacts;
+                }
                 let game_path = game.path();
                 if !game_path.is_dir() {
                     continue;
@@ -327,7 +347,8 @@ mod tests {
         let mut known_games = HashMap::new();
         known_games.insert("portal2.exe".to_string(), "Portal 2".to_string());
 
-        let artifacts = scan_wer_dir(temp.path(), &known_games);
+        let cancel = AtomicBool::new(false);
+        let artifacts = scan_wer_dir(temp.path(), &known_games, &cancel);
 
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].game_title, Some("Portal 2".to_string()));
@@ -335,5 +356,32 @@ mod tests {
             artifacts[0].path.file_name().and_then(|n| n.to_str()),
             Some("portal2.exe.1111.dmp")
         );
+    }
+
+    #[test]
+    fn scan_wer_dir_returns_immediately_when_cancelled() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("portal2.exe.1111.dmp"), b"dump").expect("write dump");
+
+        let mut known_games = HashMap::new();
+        known_games.insert("portal2.exe".to_string(), "Portal 2".to_string());
+
+        let cancel = AtomicBool::new(true);
+        let artifacts = scan_wer_dir(temp.path(), &known_games, &cancel);
+
+        assert!(artifacts.is_empty());
+    }
+
+    #[test]
+    fn scan_locallow_dir_returns_immediately_when_cancelled() {
+        let temp = tempdir().expect("tempdir");
+        let game_dir = temp.path().join("Some Studio").join("Some Game");
+        std::fs::create_dir_all(&game_dir).expect("create game dir");
+        std::fs::write(game_dir.join("Player.log"), vec![0u8; 2 * 1024 * 1024]).expect("write log");
+
+        let cancel = AtomicBool::new(true);
+        let artifacts = scan_locallow_dir(temp.path(), &cancel);
+
+        assert!(artifacts.is_empty());
     }
 }

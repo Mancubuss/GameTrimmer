@@ -94,9 +94,12 @@ pub(super) fn collect_janitor(
         let wer_candidates = janitor::crashes::wer_crash_dump_candidate_exes();
         if !wer_candidates.is_empty() {
             let known_games = known_game_executables(libraries, &wer_candidates, cancel);
-            artifacts.extend(janitor::crashes::scan_windows_wer_crash_dumps(&known_games));
+            artifacts.extend(janitor::crashes::scan_windows_wer_crash_dumps(
+                &known_games,
+                cancel,
+            ));
         }
-        artifacts.extend(janitor::crashes::scan_unity_logs());
+        artifacts.extend(janitor::crashes::scan_unity_logs(cancel));
     }
     if cancel.load(Ordering::Relaxed) {
         return JanitorCollection::empty();
@@ -105,6 +108,7 @@ pub(super) fn collect_janitor(
     if category_enabled(enabled_categories, DisplayCategory::ShaderCache) {
         artifacts.extend(janitor::shadercache::scan_system_shader_caches(
             config.shader_stale_days,
+            cancel,
         ));
         let installed = installed_app_ids(libraries);
         for library in libraries {
@@ -119,6 +123,7 @@ pub(super) fn collect_janitor(
             artifacts.extend(janitor::shadercache::scan_steam_shader_cache(
                 &library.path,
                 &installed,
+                cancel,
             ));
         }
     }
@@ -127,8 +132,8 @@ pub(super) fn collect_janitor(
     }
 
     if category_enabled(enabled_categories, DisplayCategory::LauncherCache) {
-        artifacts.extend(janitor::launchers::scan_launcher_web_caches());
-        artifacts.extend(janitor::launchers::scan_mod_manager_downloads());
+        artifacts.extend(janitor::launchers::scan_launcher_web_caches(cancel));
+        artifacts.extend(janitor::launchers::scan_mod_manager_downloads(cancel));
     }
     if cancel.load(Ordering::Relaxed) {
         return JanitorCollection::empty();
@@ -137,7 +142,11 @@ pub(super) fn collect_janitor(
     if category_enabled(enabled_categories, DisplayCategory::Saves) {
         artifacts.extend(janitor::saves::scan_save_locations(
             config.save_retention_count,
+            cancel,
         ));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return JanitorCollection::empty();
     }
 
     prepare(artifacts, libraries, cancel)
