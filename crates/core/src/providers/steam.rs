@@ -762,6 +762,79 @@ mod tests {
         )
     }
 
+    /// Opens `path` (a directory) with no sharing at all, so that a
+    /// `FindFirstFileW` issued by another handle on the same process while
+    /// this one is alive - which is exactly what `std::fs::read_dir` does
+    /// internally - collides with it and fails. Dropping the returned
+    /// `File` closes the handle and releases the lock.
+    ///
+    /// A stand-in for the real causes of a `read_dir` failure on a directory
+    /// that genuinely exists (a DACL denial, a disconnected network share, a
+    /// removable drive pulled mid-read) - none of which a test can create
+    /// portably, unlike an exclusive open of a path this test itself owns.
+    #[cfg(windows)]
+    fn lock_directory_exclusively(path: &Path) -> std::fs::File {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::FromRawHandle;
+
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_SHARE_MODE,
+            OPEN_EXISTING,
+        };
+
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: `wide` is a NUL-terminated UTF-16 buffer alive for the
+        // duration of the call. `None` is accepted by Win32 as "use
+        // defaults" for the security-attributes and template-handle
+        // parameters. On success the returned handle is uniquely owned and
+        // moved into the `File` immediately below, which becomes solely
+        // responsible for closing it.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR::from_raw(wide.as_ptr()),
+                FILE_GENERIC_READ.0,
+                FILE_SHARE_MODE(0),
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                None,
+            )
+        }
+        .expect("open the test directory exclusively");
+        // SAFETY: ownership of the valid handle returned above is moved into
+        // `File`, which closes it exactly once on drop.
+        unsafe { std::fs::File::from_raw_handle(handle.0 as *mut _) }
+    }
+
+    /// GT-109 item 5 (Steam half): a `steamapps` directory that exists but
+    /// cannot be enumerated - as opposed to one that is provably absent -
+    /// must surface a visible diagnostic rather than reading as "empty
+    /// library". `discover_library`'s `read_dir` failure branch had never
+    /// been reached by a test before this.
+    #[cfg(windows)]
+    #[test]
+    fn an_unlistable_steamapps_dir_reports_a_visible_diagnostic() {
+        let root = tempfile::tempdir().unwrap();
+        let steamapps = root.path().join("steamapps");
+        std::fs::create_dir(&steamapps).unwrap();
+
+        let _lock = lock_directory_exclusively(&steamapps);
+
+        let (library, diagnostics) = discover_library(root.path());
+
+        assert!(
+            library.is_none(),
+            "an unlistable steamapps dir must not be reported as a valid, empty library"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.stage == "manifest-enumeration"),
+            "the read_dir failure must be visible, not silently dropped: {diagnostics:?}"
+        );
+    }
+
     #[test]
     fn malformed_manifest_degrades_library_and_never_authorizes_orphans() {
         let root = tempfile::tempdir().unwrap();
