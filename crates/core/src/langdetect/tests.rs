@@ -392,3 +392,60 @@ fn a_glued_locale_tag_that_spells_a_word_does_not_flag_on_its_own() {
         );
     }
 }
+
+/// GT-229: about 48 files across the library carry two plausible language
+/// tokens in one name, and two runs of the same binary labelled them
+/// differently. The set of flagged *paths* was always the same - only the
+/// label moved - but a file shown as French in one scan and German in the
+/// next is a file the user cannot trust, and the keep-list filter acts on
+/// exactly that label.
+///
+/// The cause was a tie: two family groups claim the same file with the same
+/// confidence, and whichever the hash map happened to visit first won. Hash
+/// map order in Rust is seeded per instance, so this reproduces by simply
+/// running the detector again.
+#[test]
+fn a_file_with_two_language_tokens_gets_the_same_label_every_run() {
+    let paths = [
+        // Two tokens, one name: a Qt translation whose locale tag can be
+        // read whole or as its prefix.
+        "PySide6\\translations\\qt_pt_BR.qm",
+        "PySide6\\translations\\qtmultimedia_pt_BR.qm",
+        "PySide6\\translations\\qt_help_pt_BR.qm",
+        "PySide6\\translations\\qt_de.qm",
+        "PySide6\\translations\\qt_fr.qm",
+        "PySide6\\translations\\qt_es.qm",
+        "PySide6\\translations\\qt_it.qm",
+        "PySide6\\translations\\qt_ja.qm",
+        "PySide6\\translations\\qt_ru.qm",
+        "PySide6\\translations\\qt_pl.qm",
+        // The classic double-token shape: a French font name carrying an
+        // explicit German localization pairing.
+        "Content\\Fonts\\fonts_fra_LOC_DEU.upk",
+        "Content\\Fonts\\fonts_ita_LOC_FRA.upk",
+        "Content\\Fonts\\fonts_spa_LOC_ITA.upk",
+        "Content\\Fonts\\fonts_deu_LOC_SPA.upk",
+        "Content\\Fonts\\fonts_rus_LOC_POL.upk",
+    ];
+
+    let first: Vec<(usize, String)> = {
+        let mut v: Vec<(usize, String)> = find_for(&paths)
+            .into_iter()
+            .map(|(idx, f)| (idx, f.lang_tag))
+            .collect();
+        v.sort();
+        v
+    };
+
+    for run in 1..200 {
+        let mut again: Vec<(usize, String)> = find_for(&paths)
+            .into_iter()
+            .map(|(idx, f)| (idx, f.lang_tag))
+            .collect();
+        again.sort();
+        assert_eq!(
+            again, first,
+            "run {run} disagreed with run 0 about which language these files are"
+        );
+    }
+}

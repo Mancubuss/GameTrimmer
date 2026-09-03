@@ -66,7 +66,10 @@ const MIN_SHAPE_FAMILY_SIZE_BARE_ONLY: usize = 4;
 const SHAPE_PLACEHOLDER: char = '\u{1}';
 
 /// One family-candidate occurrence: (file index, canonical language, trust level).
-type FamilyMember = (usize, &'static str, Level);
+/// (file index, canonical key, trust level, byte offset of the matched
+/// token within the file name) - the offset is not used to group, only to
+/// settle a tie between two groups claiming the same file (see [`upsert`]).
+type FamilyMember = (usize, &'static str, Level, usize);
 
 /// One mechanism-3 candidate: the file's remaining (non-language) atoms are
 /// kept so coincidental same-position matches can be filtered out. See
@@ -75,6 +78,9 @@ struct PositionMember {
     file_idx: usize,
     canonical: &'static str,
     level: Level,
+    /// Byte offset of the matched token within the file name - carried only
+    /// so [`upsert`] can settle a tie reproducibly.
+    token_start: usize,
     /// Every non-language atom of the name, as this variant splits it —
     /// extension atoms included, since a directory holding both `.txt` and
     /// `.dat` members says something real by which of the two a file uses.
@@ -101,6 +107,15 @@ pub struct FamilyHit {
     pub canonical: &'static str,
     pub confidence: u8,
     pub reason: LangReason,
+    /// Where the language token that produced this hit starts inside the file
+    /// name. Never part of the decision to flag - only of [`upsert`]'s
+    /// tie-break. Folder-based mechanisms have no such token and pass 0.
+    token_start: usize,
+    /// How many distinct languages the family that produced this hit covers.
+    /// Also tie-break only, and the last one: when two families agree on the
+    /// language they disagree only about which evidence to *show*, and the
+    /// wider family is the better thing to show.
+    family_size: usize,
 }
 
 fn family_confidence(level: Level) -> u8 {
@@ -111,9 +126,43 @@ fn family_confidence(level: Level) -> u8 {
     }
 }
 
+/// Records `hit` for `file_idx`, keeping the strongest claim when several
+/// families claim the same file.
+///
+/// The tie-break is the whole point (GT-229). Some 48 files in the library
+/// carry two plausible language tokens in one name -
+/// `fonts_fra_LOC_DEU.upk`, `qt_help_pt_BR.qm` - and two families claim them
+/// with identical confidence. "Whoever got here first" then meant "whichever
+/// bucket the hash map happened to visit first", which Rust seeds per map
+/// instance: the same binary over the same files labelled the same file
+/// French in one run and German in the next. The set of flagged *paths* was
+/// stable; only the label moved, and the label is what the keep-list filters
+/// on and what the user reads.
+///
+/// So the order is stated instead of stumbled into: higher confidence wins;
+/// then the token further along the name, because a language written as a
+/// suffix is the file's language and one written earlier is part of what the
+/// file is called (`fonts_fra_LOC_DEU` is the German cut of the `fonts_fra`
+/// asset); then the lexicographically smaller canonical key, which decides
+/// nothing in particular but decides it the same way every time; then the
+/// wider family, which is what settles the case where the two claims agree
+/// on the language and differ only in the evidence they would print
+/// ("family of 9 languages" against "family of 7").
 fn upsert(map: &mut HashMap<usize, FamilyHit>, file_idx: usize, hit: FamilyHit) {
     let replace = match map.get(&file_idx) {
-        Some(existing) => hit.confidence > existing.confidence,
+        Some(existing) => {
+            (
+                hit.confidence,
+                hit.token_start,
+                std::cmp::Reverse(hit.canonical),
+                hit.family_size,
+            ) > (
+                existing.confidence,
+                existing.token_start,
+                std::cmp::Reverse(existing.canonical),
+                existing.family_size,
+            )
+        }
         None => true,
     };
     if replace {
@@ -209,13 +258,13 @@ fn compute_file_shape_family(
             shape_groups
                 .entry((parent_dir.clone(), shape))
                 .or_default()
-                .push((i, occ.canonical, occ.level));
+                .push((i, occ.canonical, occ.level, occ.start));
         }
     }
 
     for ((parent_dir, _shape), members) in &shape_groups {
-        let distinct: HashSet<&'static str> = members.iter().map(|(_, c, _)| *c).collect();
-        let all_bare = members.iter().all(|(_, _, level)| *level == Level::C);
+        let distinct: HashSet<&'static str> = members.iter().map(|(_, c, _, _)| *c).collect();
+        let all_bare = members.iter().all(|(_, _, level, _)| *level == Level::C);
         let threshold = if all_bare {
             MIN_SHAPE_FAMILY_SIZE_BARE_ONLY
         } else {
@@ -224,7 +273,7 @@ fn compute_file_shape_family(
         if distinct.len() < threshold {
             continue;
         }
-        for (file_idx, canonical, level) in members.iter().copied() {
+        for (file_idx, canonical, level, token_start) in members.iter().copied() {
             if keep.contains(canonical) {
                 continue;
             }
@@ -239,6 +288,8 @@ fn compute_file_shape_family(
                     canonical,
                     confidence: family_confidence(level),
                     reason,
+                    token_start,
+                    family_size: distinct.len(),
                 },
             );
         }
@@ -348,6 +399,7 @@ fn compute_directory_occurrence_family(
                             file_idx: i,
                             canonical: occ.canonical,
                             level: occ.level,
+                            token_start: occ.start,
                             atoms: own_atoms.clone(),
                             naming_atoms: naming_atoms.clone(),
                         });
@@ -555,6 +607,8 @@ fn compute_directory_occurrence_family(
                     canonical: member.canonical,
                     confidence: family_confidence(member.level),
                     reason,
+                    token_start: member.token_start,
+                    family_size: distinct.len(),
                 },
             );
         }
@@ -640,6 +694,11 @@ fn compute_folder_family(
                         canonical,
                         confidence,
                         reason,
+                        // A folder family names no token inside the file
+                        // name, so it has no position to offer and loses a
+                        // tie to a family that does.
+                        token_start: 0,
+                        family_size: count,
                     },
                 );
             }
@@ -736,6 +795,11 @@ fn compute_prefixed_folder_family(
                         canonical,
                         confidence,
                         reason,
+                        // A folder family names no token inside the file
+                        // name, so it has no position to offer and loses a
+                        // tie to a family that does.
+                        token_start: 0,
+                        family_size: count,
                     },
                 );
             }
