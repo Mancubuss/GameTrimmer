@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
 
@@ -228,6 +228,14 @@ fn configure(conn: &Connection) -> Result<()> {
     // `MEMORY` is fine here: the database itself is already file-backed, so
     // this only affects short-lived scratch space, not durability.
     conn.pragma_update(None, "temp_store", "MEMORY")?;
+    // Wait for a lock instead of failing the instant one is held. The reason
+    // is `checkpoint_truncate`: `wal_checkpoint(TRUNCATE)` needs exclusive
+    // access, and the scan runs its final one right when the UI's connection
+    // is reading the database to draw the findings. Without a timeout that
+    // checkpoint gives up immediately and leaves a WAL of hundreds of MiB
+    // behind; the UI's reads are short, so a few seconds of patience is
+    // enough for it to take.
+    conn.busy_timeout(Duration::from_secs(5))?;
     Ok(())
 }
 
@@ -965,12 +973,18 @@ pub fn defer_wal_checkpoints(conn: &Connection) -> Result<()> {
 /// Folds the WAL back into the main database file and shrinks the WAL file
 /// itself to zero bytes. Cheap (no file rewrite) - safe to run unconditionally
 /// before deciding whether a full `compact` is worthwhile.
-pub fn checkpoint_truncate(conn: &Connection) -> Result<()> {
+///
+/// Returns whether SQLite reported itself *blocked*: `true` means another
+/// connection held the database and the WAL was left as it was. That is not
+/// an error - the database is fine, only unmerged - so callers that don't
+/// care may discard it, but a caller that expects a truncated WAL afterwards
+/// must not read `Ok(true)` as success.
+pub fn checkpoint_truncate(conn: &Connection) -> Result<bool> {
     // Like `journal_mode` in `configure()`, `wal_checkpoint` returns a row
     // (busy, log frames, checkpointed frames) - `execute`/`execute_batch`
     // would fail with "query returned unexpected row", so use `query_row`.
-    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-    Ok(())
+    let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    Ok(busy != 0)
 }
 
 /// Compacts the database: truncates the WAL and rebuilds the main file.
@@ -1883,6 +1897,47 @@ mod tests {
             .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
             .expect("read it back");
         assert_eq!(deferred, 0, "0 disables the automatic checkpoint");
+    }
+
+    /// A blocked `wal_checkpoint(TRUNCATE)` must not read as success: SQLite
+    /// answers with `busy = 1` and leaves the WAL alone, which is exactly the
+    /// case the scan's final checkpoint exists to avoid.
+    #[test]
+    fn a_held_read_makes_the_checkpoint_report_itself_busy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("gametrimmer.db");
+        let writer = open(&db_path).expect("open the writing connection");
+        writer
+            .execute(
+                "INSERT INTO files (game_id, rel_path, size, mtime) VALUES (NULL, 'a.txt', 1, NULL)",
+                [],
+            )
+            .expect("put something in the WAL");
+
+        // Shorter than `configure`'s five seconds only so the test doesn't
+        // sit through the whole wait it is deliberately provoking.
+        writer
+            .busy_timeout(Duration::from_millis(50))
+            .expect("shorten the wait");
+
+        let reader = open(&db_path).expect("open the reading connection");
+        reader
+            .execute_batch("BEGIN")
+            .expect("open a read transaction");
+        reader
+            .query_row("SELECT count(*) FROM files", [], |row| row.get::<_, i64>(0))
+            .expect("take the read lock");
+
+        assert!(
+            checkpoint_truncate(&writer).expect("checkpoint runs"),
+            "a reader holds the database - the checkpoint is blocked, not done"
+        );
+
+        reader.execute_batch("COMMIT").expect("let go of the read");
+        assert!(
+            !checkpoint_truncate(&writer).expect("checkpoint runs"),
+            "with the reader gone the checkpoint takes"
+        );
     }
 
     #[test]

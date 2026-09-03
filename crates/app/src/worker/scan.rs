@@ -843,17 +843,19 @@ fn run_scan(
     // otherwise-successful scan must not be reported as failed just because
     // its final housekeeping checkpoint didn't take.
     let wal_before = wal_bytes(db_path);
-    if let Err(err) = db::checkpoint_truncate(&conn) {
-        crate::logger::error(&format!(
+    match db::checkpoint_truncate(&conn) {
+        Ok(true) => crate::logger::error(&format!(
+            "The WAL checkpoint after the scan was blocked by another reader;              {} of journal stays unmerged",
+            format_bytes(wal_before)
+        )),
+        Ok(false) => {}
+        Err(err) => crate::logger::error(&format!(
             "Failed to checkpoint the WAL after the scan: {err}"
-        ));
+        )),
     }
     // Both sizes, because deferring the checkpoints is a trade and this is
     // the side of it that costs something: the WAL is allowed to grow for a
-    // whole scan instead of being folded back sixty-seven times. The second
-    // figure is the one to watch - `wal_checkpoint(TRUNCATE)` reports whether
-    // it was blocked in a row this helper discards, so a WAL that is still
-    // large here is the only signal that a reader held it off.
+    // whole scan instead of being folded back sixty-seven times.
     crate::logger::log(&format!(
         "WAL {} before the final checkpoint, {} after",
         format_bytes(wal_before),
