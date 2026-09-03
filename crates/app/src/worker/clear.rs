@@ -95,7 +95,10 @@ fn run_clear(db_path: &Path, notifier: &Notifier, lang: Lang) {
                 Some(i18n::clear_failed(lang, err))
             }
         },
-        Err(err) => Some(i18n::clear_failed(lang, err)),
+        Err(err) => {
+            crate::logger::error(&format!("Failed to clear database: {err}"));
+            Some(i18n::clear_failed(lang, err))
+        }
     };
     notifier.send(WorkerMsg::ClearDone { error });
 }

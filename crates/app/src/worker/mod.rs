@@ -419,9 +419,43 @@ mod tests {
     /// A source check rather than a behavioural one, because the thing to
     /// prevent is a *new call site* taking the shortcut, and no runtime
     /// assertion can see a site nobody ran.
+    ///
+    /// GT-394 widened it. The guard only ever looked for `WorkerMsg::Error`
+    /// and `WorkerMsg::Warning`, so a worker that carried its failure in a
+    /// completion variant instead - `CompactDone { error: Some(..) }`,
+    /// `ClearDone { error }` - walked straight past it, and both of those
+    /// were silent for exactly as long as the guard existed. Any message
+    /// carrying an `error` field is now held to the same rule, and because
+    /// such a send is spread over several lines the check reads the text
+    /// around each `WorkerMsg::` rather than one line at a time.
     #[test]
     fn no_worker_sends_a_report_without_logging_it() {
-        let worker_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker");
+        /// How much text after a `WorkerMsg::` still counts as part of that
+        /// send. Long enough to reach the fields of a multi-line struct
+        /// variant, short enough not to spill into the next statement.
+        const SEND_WINDOW: usize = 300;
+        /// How far above a send to look for its `logger::error`. Covers the
+        /// match arm that built the message, not the whole function.
+        const LOG_LOOKBACK: usize = 400;
+        /// How much of an `app.rs` match arm counts as that arm's handling.
+        const HANDLER_WINDOW: usize = 900;
+
+        /// Whether a `logger::error` sits in the text just before `offset`.
+        fn logged_before(source: &str, offset: usize, lookback: usize) -> bool {
+            let preceding = &source[..offset];
+            let start = preceding
+                .char_indices()
+                .rev()
+                .take(lookback)
+                .last()
+                .map_or(0, |(index, _)| index);
+            preceding[start..].contains("logger::error")
+        }
+
+        let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let worker_dir = crate_root.join("src/worker");
+        let app_source =
+            std::fs::read_to_string(crate_root.join("src/app.rs")).expect("read the app source");
         let mut offenders = Vec::new();
 
         let mut pending = vec![worker_dir.clone()];
@@ -442,6 +476,46 @@ mod tests {
                             || line.contains("send(WorkerMsg::Warning")
                         {
                             offenders.push(format!("{}:{}", path.display(), number + 1));
+                        }
+                    }
+                    for (offset, _) in source.match_indices("WorkerMsg::") {
+                        let message: String = source[offset..].chars().take(SEND_WINDOW).collect();
+                        // `error: Some(..)` and the `{ error }` shorthand are
+                        // the two shapes a failure travels in. `error: None`
+                        // is a success and is left alone.
+                        let carries_failure =
+                            message.contains("error: Some(") || message.contains("{ error }");
+                        if !carries_failure {
+                            continue;
+                        }
+                        if logged_before(&source, offset, LOG_LOOKBACK) {
+                            continue;
+                        }
+                        // A worker may leave the logging to the handler that
+                        // receives the message - `BundleDone` and the rules
+                        // import/export do exactly that - so a variant logged
+                        // in its `app.rs` arm is compliant too. What nothing
+                        // may do is go unlogged in both places.
+                        let variant: String = message
+                            .trim_start_matches("WorkerMsg::")
+                            .chars()
+                            .take_while(char::is_ascii_alphanumeric)
+                            .collect();
+                        let handled = app_source
+                            .match_indices(&format!("WorkerMsg::{variant}"))
+                            .any(|(arm, _)| {
+                                app_source[arm..]
+                                    .chars()
+                                    .take(HANDLER_WINDOW)
+                                    .collect::<String>()
+                                    .contains("logger::error")
+                            });
+                        if !handled {
+                            offenders.push(format!(
+                                "{}:{} ({variant})",
+                                path.display(),
+                                source[..offset].lines().count()
+                            ));
                         }
                     }
                 }

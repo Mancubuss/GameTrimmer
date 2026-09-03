@@ -66,6 +66,7 @@ fn run_compact(db_path: &Path, notifier: &Notifier, lang: Lang) {
     let skipped = match result {
         Ok(skipped) => skipped,
         Err(err) => {
+            crate::logger::error(&format!("Failed to compact database: {err}"));
             notifier.send(WorkerMsg::CompactDone {
                 error: Some(i18n::compact_failed(lang, err)),
                 skipped: false,
