@@ -1631,17 +1631,22 @@ mod tests {
         );
     }
 
-    /// The versioning decision, pinned: the two new fields are absent from a
-    /// pack that does not use them, so an unchanged `rules.json` is still the
-    /// v1 file every older build reads.
+    /// The versioning decision, pinned: the optional fields are absent from a
+    /// pack that does not use them, so such a pack is still the v1 file every
+    /// older build reads.
+    ///
+    /// Written against a pack of plain rules rather than `BUILTIN_RULES_JSON`,
+    /// which stopped being one: the shipped pack now carries per-game
+    /// reference rules and so names `app_id` and `origin` on purpose.
     #[test]
-    fn a_pack_that_uses_no_exception_field_serializes_exactly_as_before() {
-        let rules = parse_rule_list(BUILTIN_RULES_JSON).expect("builtin rules parse");
+    fn a_pack_that_uses_no_optional_field_serializes_exactly_as_before() {
+        let rules = parse_rule_list(&sample_json()).expect("plain rules parse");
 
         let json = serialize_rule_list(&rules).expect("rules serialize");
 
         assert!(!json.contains("polarity"), "{json:.200}");
         assert!(!json.contains("app_id"), "{json:.200}");
+        assert!(!json.contains("origin"), "{json:.200}");
         assert!(json.contains(&format!("\"version\": {RULE_PACK_VERSION}")));
     }
 
@@ -1695,6 +1700,97 @@ mod tests {
         );
         let engine = RuleEngine::from_json(&json).expect("syntactically valid imported rule");
         assert_eq!(engine.classify("voices.pck", None), Verdict::Unmatched);
+    }
+
+    #[test]
+    fn reference_pack_reaches_an_intro_video_no_heuristic_can_see() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        // PCGamingWiki names this file for Alice: Madness Returns, Steam
+        // appid 19680. No built-in pattern reaches it: the publisher rule
+        // wants the name to *be* `ea.bik`, and "intro_ea" is neither that nor
+        // anything with "logo" in it. 915 of the wiki's 1509 named files are
+        // out of reach this way.
+        let path = r"Alice2\Movies\intro_ea.bik";
+
+        let finding = engine
+            .classify(path, Some("19680"))
+            .flagged()
+            .expect("the catalogue names this file for this game");
+        assert_eq!(finding.category, Category::Intro);
+        assert_eq!(finding.confidence, REFERENCE_CONFIDENCE_IN_PACK);
+
+        // The counter-example that tells a working test from a vacuous one:
+        // the same file in any other game is nobody's business.
+        assert_eq!(engine.classify(path, Some("220")), Verdict::Unmatched);
+        assert_eq!(engine.classify(path, None), Verdict::Unmatched);
+    }
+
+    #[test]
+    fn reference_pack_takes_over_a_file_the_heuristic_was_already_guessing_at() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        // Prey (2017), Steam appid 480490. The studio-logo heuristic does
+        // reach this one (`arkane` + `logo`, 95) - so what the catalogue
+        // changes here is not whether the file is found but who answers for
+        // it, and the answer stops being a guess.
+        let path = r"GameSDK\Videos\ArkaneLogoAnim_Redux_1080p2997_ST-16LUFS.bk2";
+
+        let guessed = engine
+            .classify(path, Some("999999999"))
+            .flagged()
+            .expect("the studio-logo heuristic claims it in any game");
+        assert_eq!(guessed.confidence, 95);
+
+        let looked_up = engine
+            .classify(path, Some("480490"))
+            .flagged()
+            .expect("the catalogue names it for this game");
+        assert_eq!(looked_up.confidence, REFERENCE_CONFIDENCE_IN_PACK);
+        assert!(
+            looked_up.rule_desc.contains("PCGamingWiki"),
+            "{looked_up:?}"
+        );
+    }
+
+    /// The confidence `scripts/build_intro_reference_rules.py` stamps on every
+    /// rule it generates.
+    const REFERENCE_CONFIDENCE_IN_PACK: u8 = 96;
+
+    #[test]
+    fn a_game_outside_the_catalogue_is_classified_exactly_as_before() {
+        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+
+        // 999999999 is no game's appid, so only the heuristics can speak - and
+        // they must say precisely what they say for an unidentified game.
+        for path in [
+            r"Movies\ue4_logo.mp4",
+            r"Movies\nvidia.bik",
+            r"Movies\LegalScreens.bk2",
+            r"base\sound\music\track01.ogg",
+            r"Movies\credits.bk2",
+        ] {
+            assert_eq!(
+                engine.classify(path, Some("999999999")),
+                engine.classify(path, None),
+                "{path} must not change because a catalogue exists for other games"
+            );
+        }
+    }
+
+    #[test]
+    fn the_shipped_pack_stays_within_the_engine_limits() {
+        // The reference rules made rules.json two orders of magnitude bigger.
+        // Both limits are checked at load, and a pack that trips one is
+        // refused wholesale - so the failure to catch is this file growing
+        // past them, not a user's import being blamed for it.
+        let json = std::fs::read_to_string(default_rules_path()).unwrap();
+        assert!(
+            json.len() <= MAX_RULE_PACK_BYTES,
+            "rules.json is {} bytes, over the {MAX_RULE_PACK_BYTES} limit",
+            json.len()
+        );
+        assert!(parse_rule_list(&json).unwrap().len() <= MAX_RULES);
     }
 
     fn default_rules_path() -> std::path::PathBuf {
@@ -1761,5 +1857,4 @@ mod tests {
         let err = RuleEngine::from_json(&json).expect_err("a lookup must name what it looked up");
         assert!(err.to_string().contains("app_id"), "{err}");
     }
-
 }
