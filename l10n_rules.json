@@ -47,7 +47,8 @@
         "french(france)",
         "fr-fr",
         "fr-be",
-        "fr-ch"
+        "fr-ch",
+        "fr-ca"
       ],
       "level_b": [
         "fra",
@@ -102,7 +103,8 @@
         "es-419",
         "es-ar",
         "es-co",
-        "es-cl"
+        "es-cl",
+        "es-la"
       ],
       "level_b": [],
       "level_c": []

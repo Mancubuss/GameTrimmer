@@ -303,3 +303,92 @@ fn the_long_tail_codes_do_not_flag_on_their_own() {
         );
     }
 }
+
+/// GT-232: Middle-earth: Shadow of War ships eight presentation archives,
+/// one per language, and the three whose locale tag is written solid were
+/// the ones that went missing. `presentations_de` splits into a language
+/// atom; `presentations_ptbr` splits into one opaque atom that no pass could
+/// look inside.
+///
+/// `_en` is the control at the other end: English is keep-listed by default,
+/// so it is evidence for the family and never a finding itself.
+#[test]
+fn shadow_of_wars_solid_locale_tags_join_their_own_family() {
+    let paths = [
+        "presentations_de.arch06",
+        "presentations_en.arch06",
+        "presentations_eses.arch06",
+        "presentations_esla.arch06",
+        "presentations_fr.arch06",
+        "presentations_it.arch06",
+        "presentations_ja.arch06",
+        "presentations_ptbr.arch06",
+    ];
+    let findings = find_for(&paths);
+    let tag_at = |idx: usize| {
+        findings
+            .iter()
+            .find(|(hit, _)| *hit == idx)
+            .map(|(_, f)| f.lang_tag.as_str())
+    };
+
+    assert_eq!(tag_at(2), Some("es"), "presentations_eses");
+    assert_eq!(tag_at(3), Some("es-419"), "presentations_esla");
+    assert_eq!(tag_at(7), Some("pt-br"), "presentations_ptbr");
+    // The four that already worked must keep working.
+    assert_eq!(tag_at(0), Some("de"));
+    assert_eq!(tag_at(4), Some("fr"));
+    assert_eq!(tag_at(5), Some("it"));
+    assert_eq!(tag_at(6), Some("ja"));
+    assert_eq!(tag_at(1), None, "English is kept, not flagged");
+}
+
+/// The other solid spellings the same rule has to reach, each in a set big
+/// enough to confirm itself.
+#[test]
+fn every_curated_locale_tag_is_readable_without_its_separator() {
+    for (glued, expected) in [
+        ("esmx", "es-419"),
+        ("ptpt", "pt"),
+        ("zhcn", "zh-hans"),
+        ("zhtw", "zh-hant"),
+        ("frca", "fr"),
+        ("engb", "en"),
+        ("enus", "en"),
+    ] {
+        let paths: Vec<String> = ["de", "fr", "it", "ja", "ru", glued]
+            .iter()
+            .map(|tag| format!("voice_{tag}.bnk"))
+            .collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let findings = find_for(&refs);
+        let hit = findings.iter().find(|(idx, _)| *idx == 5).map(|(_, f)| f);
+        match expected {
+            // English is keep-listed: recognized, deliberately not flagged.
+            "en" => assert!(hit.is_none(), "voice_{glued}.bnk is English and kept"),
+            _ => assert_eq!(
+                hit.map(|f| f.lang_tag.as_str()),
+                Some(expected),
+                "voice_{glued}.bnk"
+            ),
+        }
+    }
+}
+
+/// The boundary of the solid-tag rule. A glued locale tag can spell an
+/// ordinary word - `fa-ir` is "fair", `he-il` is "heil" - so the rule emits
+/// family-gated evidence, never a self-sufficient one. Standing alone, these
+/// stay words.
+#[test]
+fn a_glued_locale_tag_that_spells_a_word_does_not_flag_on_its_own() {
+    for path in [
+        "audio\\fair.bnk",
+        "movies\\heil.bik",
+        "sound\\crowd_fair.wav",
+    ] {
+        assert!(
+            analyze_one(path).is_empty(),
+            "{path} must stay an ordinary word"
+        );
+    }
+}

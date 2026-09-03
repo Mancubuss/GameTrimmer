@@ -175,6 +175,64 @@ pub fn collect_occurrences(data: &LangData, segments: &[Segment]) -> Vec<Occurre
             }
         }
 
+        // Locale tags written solid: `presentations_ptbr.arch06`,
+        // `presentations_eses`, `presentations_esla`. The strong split leaves
+        // one opaque atom, so neither pass above can see the pair inside it -
+        // the weak-piece pass needs a `-`/`_` and the adjacency pass above
+        // needs two atoms to sit next to each other.
+        //
+        // Only a pair the dictionary already curates as a Level A alias is
+        // accepted, and only when the atom is not a word in its own right:
+        // `pt-br` is such a tag, `pt-xx` is not, so a four-letter word cannot
+        // wander in unless it happens to spell a real locale.
+        //
+        // But it is trusted one notch *lower* than the CamelCase form it
+        // mirrors, not equally. `deDE` carries a case boundary that says
+        // "these are two fields"; all-lowercase `ptbr` says nothing at all,
+        // and the glued spelling of a real tag can be an ordinary word -
+        // `fa-ir` is "fair", `he-il` is "heil". Level C hands the decision to
+        // the sibling family, which is what recognizes a per-language archive
+        // set anyway, and leaves a lone `fair.pak` alone.
+        for piece in &seg.atoms {
+            let nested = covered
+                .iter()
+                .any(|&(cs, ce)| piece.start >= cs && piece.end <= ce);
+            if nested
+                || !(4..=8).contains(&piece.text.len())
+                || !piece.text.chars().all(|c| c.is_ascii_alphabetic())
+                || data.lookup(&piece.text).is_some()
+            {
+                continue;
+            }
+            let Some(canonical) = (2..=piece.text.len() - 2).find_map(|split| {
+                let tag = format!("{}-{}", &piece.text[..split], &piece.text[split..]);
+                match data.lookup(&tag) {
+                    Some((canonical, Level::A)) => Some(canonical),
+                    _ => None,
+                }
+            }) else {
+                continue;
+            };
+            covered.push((piece.start, piece.end));
+            let key = (seg.index, piece.start, piece.end, canonical);
+            if seen.insert(key) {
+                out.push(Occurrence {
+                    canonical,
+                    level: Level::C,
+                    matched: piece.text.clone(),
+                    is_filename: seg.is_filename,
+                    seg_index: seg.index,
+                    start: piece.start,
+                    end: piece.end,
+                    whole_segment: piece.start == 0 && piece.end == seg.lower.len(),
+                    whole_stem: piece.start == 0 && piece.end == seg_stem_end,
+                    loc_adjacent: false,
+                    loc_adjacent_generic: false,
+                    asset_adjacent: false,
+                });
+            }
+        }
+
         for (atom_idx, piece) in seg.atoms.iter().enumerate() {
             let nested = covered
                 .iter()
