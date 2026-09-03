@@ -1,5 +1,6 @@
-//! What language Windows is set to, and how that maps onto the two this app
-//! speaks.
+//! What language Windows is set to, and how that maps onto the one this app
+//! speaks while localizations are frozen (Vikunja #443 tracks unfreezing
+//! them).
 //!
 //! # Why `GetUserPreferredUILanguages` and not the locale
 //!
@@ -59,7 +60,6 @@ pub fn match_preferred(tags: &[String]) -> Lang {
 fn primary_subtag_language(tag: &str) -> Option<Lang> {
     let primary = tag.split('-').next().unwrap_or_default().to_lowercase();
     match primary.as_str() {
-        "uk" => Some(Lang::Uk),
         "en" => Some(Lang::En),
         _ => None,
     }
@@ -129,26 +129,38 @@ mod tests {
         values.iter().map(|value| value.to_string()).collect()
     }
 
-    /// The plain case, both directions - and asserted for Ukrainian
-    /// specifically, since English is also the fallback and a test that only
-    /// checked English would pass with the matching removed entirely.
+    /// The primary-subtag matcher itself, tested directly rather than through
+    /// [`match_preferred`]: with English both the only supported language and
+    /// the fallback, `match_preferred`'s return value can no longer tell "this
+    /// tag matched" apart from "nothing matched, so it fell back" - only
+    /// [`primary_subtag_language`]'s `None`/`Some` distinguishes them.
     #[test]
     fn a_supported_language_is_recognised_with_or_without_a_region() {
-        assert_eq!(match_preferred(&tags(&["uk-UA"])), Lang::Uk);
-        assert_eq!(match_preferred(&tags(&["uk"])), Lang::Uk);
-        assert_eq!(match_preferred(&tags(&["uk-Latn-UA"])), Lang::Uk);
-        assert_eq!(match_preferred(&tags(&["en-GB"])), Lang::En);
+        assert_eq!(primary_subtag_language("en-GB"), Some(Lang::En));
+        assert_eq!(primary_subtag_language("en"), Some(Lang::En));
+    }
+
+    /// BCP-47 is case-insensitive; Windows' casing is not a contract.
+    #[test]
+    fn matching_ignores_case() {
+        assert_eq!(primary_subtag_language("EN-us"), Some(Lang::En));
+    }
+
+    /// A language whose tag merely *starts with* a supported one is a
+    /// different language: `enm` is not `en`, and a prefix match rather than
+    /// a subtag match would claim it. `uk` is simply unsupported while
+    /// localizations are frozen (Vikunja #443 tracks unfreezing them).
+    #[test]
+    fn a_longer_primary_subtag_is_not_a_match() {
+        assert_eq!(primary_subtag_language("enm"), None);
+        assert_eq!(primary_subtag_language("uk"), None);
     }
 
     /// The list is the user's own ranking, so the first *supported* entry
-    /// wins - not the first entry, and not the last supported one.
+    /// wins - the search must not stop at an earlier, unsupported one.
     #[test]
     fn the_first_supported_language_in_the_list_wins() {
-        assert_eq!(match_preferred(&tags(&["uk-UA", "en-US"])), Lang::Uk);
-        assert_eq!(match_preferred(&tags(&["en-US", "uk-UA"])), Lang::En);
-        // German is not spoken here; the ranking continues past it rather
-        // than giving up at the first miss.
-        assert_eq!(match_preferred(&tags(&["de-DE", "uk-UA"])), Lang::Uk);
+        assert_eq!(match_preferred(&tags(&["de-DE", "en-US"])), Lang::En);
     }
 
     /// Every way the answer can be nothing useful lands on English, which is
@@ -159,22 +171,7 @@ mod tests {
         assert_eq!(match_preferred(&tags(&["de-DE", "fr-FR"])), Lang::En);
         assert_eq!(match_preferred(&tags(&[""])), Lang::En);
         assert_eq!(match_preferred(&tags(&["-"])), Lang::En);
-    }
-
-    /// BCP-47 is case-insensitive; Windows' casing is not a contract.
-    #[test]
-    fn matching_ignores_case() {
-        assert_eq!(match_preferred(&tags(&["UK-ua"])), Lang::Uk);
-        assert_eq!(match_preferred(&tags(&["EN-US"])), Lang::En);
-    }
-
-    /// A language whose tag merely *starts with* a supported one is a
-    /// different language: `ukr` is not `uk`, and a prefix match rather than
-    /// a subtag match would claim it.
-    #[test]
-    fn a_longer_primary_subtag_is_not_a_match() {
-        assert_eq!(match_preferred(&tags(&["ukr-UA"])), Lang::En);
-        assert_eq!(match_preferred(&tags(&["enm"])), Lang::En);
+        assert_eq!(match_preferred(&tags(&["uk-UA"])), Lang::En);
     }
 
     /// The Win32 block layout: strings separated by NUL, the whole thing

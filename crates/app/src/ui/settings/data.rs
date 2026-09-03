@@ -458,15 +458,12 @@ mod tests {
     /// overstatement as the frame was.
     #[test]
     fn the_hint_prices_the_wipe_in_time_rather_than_in_loss() {
-        for lang in [i18n::Lang::En, i18n::Lang::Uk] {
-            let hint = i18n::strings(lang).clear_hint.to_lowercase();
-            for overstatement in ["permanent", "безповоротн"] {
-                assert!(
-                    !hint.contains(overstatement),
-                    "{lang:?} clear_hint still claims {overstatement:?}: {hint:?}",
-                );
-            }
-        }
+        let lang = i18n::Lang::En;
+        let hint = i18n::strings(lang).clear_hint.to_lowercase();
+        assert!(
+            !hint.contains("permanent"),
+            "{lang:?} clear_hint still claims permanence: {hint:?}",
+        );
     }
 
     /// Clicking never wipes anything on its own - the confirmation modal is

@@ -1,6 +1,8 @@
-//! English strings - the default UI language. Translated from the Ukrainian
-//! originals in [`super::uk`] (drafted with a local Ollama model, reviewed
-//! and finalized by hand for natural, concise UI tone).
+//! English strings - the default and, while localizations are frozen for
+//! development (Vikunja #443 tracks unfreezing them), the only UI language
+//! this app compiles in. Originally translated from the Ukrainian strings
+//! (drafted with a local Ollama model, reviewed and finalized by hand for
+//! natural, concise UI tone) that used to live beside this file.
 
 use super::Strings;
 

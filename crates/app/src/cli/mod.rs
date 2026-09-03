@@ -458,7 +458,7 @@ mod tests {
         let settings_path = dir.path().join("gametrimmer.ini");
         let conn = gametrimmer_core::db::open(&db_path).expect("open legacy database");
         let legacy = Settings {
-            app_language: LanguagePreference::Fixed(Lang::Uk),
+            app_language: LanguagePreference::Fixed(Lang::parse("uk").expect("parse uk")),
             theme: Theme::Dark,
             logging_enabled: false,
             ..Settings::default()

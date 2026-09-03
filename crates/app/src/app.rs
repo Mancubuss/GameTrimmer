@@ -2560,7 +2560,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         {
             let mut app = GameTrimmerApp::new_for_test(dir.path());
-            app.set_language(LanguagePreference::Fixed(Lang::Uk));
+            app.set_language(LanguagePreference::Fixed(
+                Lang::parse("uk").expect("parse uk"),
+            ));
             app.set_theme(Theme::Dark);
             app.set_delete_method(DeleteMethod::RecycleBin);
             // Persist an explicit opt-out without touching the process-global
@@ -2576,7 +2578,7 @@ mod tests {
 
         assert_eq!(
             reopened.settings.app_language,
-            LanguagePreference::Fixed(Lang::Uk)
+            LanguagePreference::Fixed(Lang::parse("uk").expect("parse uk"))
         );
         assert_eq!(reopened.settings.theme, Theme::Dark);
         assert_eq!(reopened.settings.delete_method, DeleteMethod::RecycleBin);

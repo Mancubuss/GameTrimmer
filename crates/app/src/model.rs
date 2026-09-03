@@ -3695,44 +3695,34 @@ mod tests {
     #[test]
     fn format_size_picks_appropriate_unit() {
         use crate::i18n::Lang;
-        assert_eq!(format_size(Lang::Uk, 512), "512 Б");
-        assert_eq!(format_size(Lang::Uk, 2048), "2.00 КБ");
-        assert_eq!(format_size(Lang::Uk, 5 * 1024 * 1024), "5.00 МБ");
-        assert_eq!(format_size(Lang::Uk, 3 * 1024 * 1024 * 1024), "3.00 ГБ");
         assert_eq!(format_size(Lang::En, 512), "512 B");
         assert_eq!(format_size(Lang::En, 2048), "2.00 KB");
+        assert_eq!(format_size(Lang::En, 5 * 1024 * 1024), "5.00 MB");
+        assert_eq!(format_size(Lang::En, 3 * 1024 * 1024 * 1024), "3.00 GB");
     }
 
     #[test]
     fn category_display_covers_every_category() {
         use crate::i18n::Lang;
         assert_eq!(
-            category_display(Lang::Uk, DisplayCategory::Redist),
-            "Дистрибутиви"
-        );
-        assert_eq!(
-            category_display(Lang::Uk, DisplayCategory::Docs),
-            "Документація і довідкові матеріали"
-        );
-        assert_eq!(
-            category_display(Lang::Uk, DisplayCategory::Bonus),
-            "Бонусні матеріали"
-        );
-        assert_eq!(
-            category_display(Lang::Uk, DisplayCategory::Loc),
-            "Файли локалізацій"
-        );
-        assert_eq!(
-            category_display(Lang::Uk, DisplayCategory::DevLeftovers),
-            "Залишки розробки"
-        );
-        assert_eq!(
-            category_display(Lang::Uk, DisplayCategory::Orphan),
-            "Осиротіле"
-        );
-        assert_eq!(
             category_display(Lang::En, DisplayCategory::Redist),
             "Redistributables"
+        );
+        assert_eq!(
+            category_display(Lang::En, DisplayCategory::Docs),
+            "Documentation and reference material"
+        );
+        assert_eq!(
+            category_display(Lang::En, DisplayCategory::Bonus),
+            "Bonus content"
+        );
+        assert_eq!(
+            category_display(Lang::En, DisplayCategory::Loc),
+            "Localization files"
+        );
+        assert_eq!(
+            category_display(Lang::En, DisplayCategory::DevLeftovers),
+            "Development leftovers"
         );
         assert_eq!(
             category_display(Lang::En, DisplayCategory::Orphan),

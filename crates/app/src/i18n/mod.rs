@@ -11,7 +11,6 @@ use std::sync::{OnceLock, RwLock};
 mod en;
 mod messages;
 mod system;
-mod uk;
 
 pub use gametrimmer_core::settings::Lang;
 pub use messages::*;
@@ -19,8 +18,6 @@ pub use system::detect as detect_system_language;
 
 #[allow(dead_code)]
 pub const EMBEDDED_LOCALE_EN: &str = include_str!("../../../../locales/en.json");
-#[allow(dead_code)]
-pub const EMBEDDED_LOCALE_UK: &str = include_str!("../../../../locales/uk.json");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocaleInfo {
@@ -66,7 +63,7 @@ fn scan_dir_locales(dir: &std::path::Path, map: &mut HashMap<String, LocaleInfo>
                 if let Ok(header) = serde_json::from_str::<LocaleHeader>(&content) {
                     if !header.id.is_empty() {
                         let id = header.id.to_lowercase();
-                        let is_builtin = id == "en" || id == "uk";
+                        let is_builtin = id == "en";
                         let name = if header.name.is_empty() {
                             id.clone()
                         } else {
@@ -96,22 +93,13 @@ fn scan_dir_locales(dir: &std::path::Path, map: &mut HashMap<String, LocaleInfo>
 pub fn available_locales() -> Vec<LocaleInfo> {
     let mut map = HashMap::new();
 
-    // Built-ins
+    // Built-in
     map.insert(
         "en".to_string(),
         LocaleInfo {
             id: "en".to_string(),
             name: "English".to_string(),
             native_name: "English".to_string(),
-            is_builtin: true,
-        },
-    );
-    map.insert(
-        "uk".to_string(),
-        LocaleInfo {
-            id: "uk".to_string(),
-            name: "Ukrainian".to_string(),
-            native_name: "Українська".to_string(),
             is_builtin: true,
         },
     );
@@ -133,8 +121,6 @@ pub fn available_locales() -> Vec<LocaleInfo> {
     list.sort_by(|a, b| match (a.id.as_str(), b.id.as_str()) {
         ("en", _) => std::cmp::Ordering::Less,
         (_, "en") => std::cmp::Ordering::Greater,
-        ("uk", _) => std::cmp::Ordering::Less,
-        (_, "uk") => std::cmp::Ordering::Greater,
         _ => a.id.cmp(&b.id),
     });
     list
@@ -160,12 +146,7 @@ fn load_external_strings(id: &str) -> Option<Strings> {
         if path_opt.exists() {
             if let Ok(content) = std::fs::read_to_string(&path_opt) {
                 if let Ok(header) = serde_json::from_str::<LocaleHeader>(&content) {
-                    let base = if id == "uk" {
-                        &uk::STRINGS
-                    } else {
-                        &en::STRINGS
-                    };
-                    return Some(base.apply_overrides(&header.strings));
+                    return Some(en::STRINGS.apply_overrides(&header.strings));
                 }
             }
         }
@@ -193,10 +174,7 @@ pub fn strings(lang: Lang) -> &'static Strings {
         return leaked;
     }
 
-    match lang {
-        Lang::Uk => &uk::STRINGS,
-        _ => &en::STRINGS,
-    }
+    &en::STRINGS
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1832,20 +1810,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_string_table_field_is_empty_in_either_language() {
-        for lang in [Lang::En, Lang::Uk] {
-            for (field, value) in strings(lang).all_fields() {
-                assert!(!value.is_empty(), "{lang:?}::{field} must not be empty");
-            }
+    fn no_string_table_field_is_empty() {
+        let lang = Lang::En;
+        for (field, value) in strings(lang).all_fields() {
+            assert!(!value.is_empty(), "{lang:?}::{field} must not be empty");
         }
     }
 
     #[test]
-    fn every_verb_has_a_label_in_both_languages() {
-        for lang in [Lang::En, Lang::Uk] {
-            for verb in [Verb::Analyze, Verb::Delete, Verb::Compact, Verb::Clear] {
-                assert!(!verb_label(lang, verb).is_empty());
-            }
+    fn every_verb_has_a_label() {
+        let lang = Lang::En;
+        for verb in [Verb::Analyze, Verb::Delete, Verb::Compact, Verb::Clear] {
+            assert!(!verb_label(lang, verb).is_empty());
         }
     }
 }

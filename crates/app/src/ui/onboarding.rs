@@ -271,38 +271,40 @@ mod tests {
     /// y=633, and now ends at y=347. The assertion is the weaker claim that
     /// everything the screen *asks for* is on it, which is what has to keep
     /// holding as the wording changes again.
-    /// Both languages, because the fold is a claim about rendered height and
-    /// the Ukrainian strings are the longer set - an English-only assertion
-    /// would pass on a layout that overflows for half the audience.
+    /// English only while localizations are frozen for development (Vikunja
+    /// #443 tracks unfreezing them) - it used to run both languages, because
+    /// the fold is a claim about rendered height and the Ukrainian strings
+    /// were the longer set, so an English-only assertion could pass on a
+    /// layout that overflowed for half the audience. Re-add the longer
+    /// language to this loop once localizations unfreeze.
     #[test]
     fn everything_the_first_run_asks_for_fits_in_the_window() {
-        for language in [Lang::En, Lang::Uk] {
-            let mut test = fresh_window();
-            test.app_mut()
-                .set_language(gametrimmer_core::settings::LanguagePreference::Fixed(
-                    language,
-                ));
-            test.run();
+        let language = Lang::En;
+        let mut test = fresh_window();
+        test.app_mut()
+            .set_language(gametrimmer_core::settings::LanguagePreference::Fixed(
+                language,
+            ));
+        test.run();
 
-            let s = i18n::strings(language);
-            let fold = crate::ui::harness::STANDARD_VIEWPORT.y;
+        let s = i18n::strings(language);
+        let fold = crate::ui::harness::STANDARD_VIEWPORT.y;
 
-            for label in [
-                s.onboarding_heading,
-                s.onboarding_step_scan,
-                s.onboarding_safety,
-                s.disclaimer_heading,
-                s.disclaimer_body,
-                s.disclaimer_accept_checkbox,
-                s.btn_scan_libraries,
-            ] {
-                let bottom = test.rect_of(label).max.y;
-                assert!(
-                    bottom <= fold,
-                    "in {language:?} the first-run screen pushes something it asks for past \
-                     the fold (ends at y={bottom}, window is {fold} tall): {label}",
-                );
-            }
+        for label in [
+            s.onboarding_heading,
+            s.onboarding_step_scan,
+            s.onboarding_safety,
+            s.disclaimer_heading,
+            s.disclaimer_body,
+            s.disclaimer_accept_checkbox,
+            s.btn_scan_libraries,
+        ] {
+            let bottom = test.rect_of(label).max.y;
+            assert!(
+                bottom <= fold,
+                "in {language:?} the first-run screen pushes something it asks for past \
+                 the fold (ends at y={bottom}, window is {fold} tall): {label}",
+            );
         }
     }
 

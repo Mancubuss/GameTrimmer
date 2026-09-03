@@ -52,25 +52,10 @@ impl WatchStrings {
         }
     }
 
-    pub fn ukrainian() -> Self {
-        Self {
-            tray_tooltip_active: "Фоновий монітор GameTrimmer (Активний)".to_string(),
-            tray_tooltip_paused: "Фоновий монітор GameTrimmer (Призупинено)".to_string(),
-            tray_menu_open: "Відкрити GameTrimmer".to_string(),
-            tray_menu_check_now: "Перевірити зараз".to_string(),
-            tray_menu_pause: "Призупинити моніторинг".to_string(),
-            tray_menu_resume: "Відновити моніторинг".to_string(),
-            tray_menu_exit: "Вийти".to_string(),
-            toast_updated_transition:
-                "{name} оновлено ({old} → {new}). Натисніть, щоб відкрити GameTrimmer.".to_string(),
-            toast_updated_build:
-                "{name} оновлено (білд {new}). Натисніть, щоб відкрити GameTrimmer.".to_string(),
-            toast_files_changed: "Файли гри {name} змінилися. Натисніть, щоб відкрити GameTrimmer."
-                .to_string(),
-            toast_daemon_title: "Фоновий монітор GameTrimmer".to_string(),
-        }
-    }
-
+    /// While localizations are frozen for development (Vikunja #443 tracks
+    /// unfreezing them), English is the only compiled-in table - anything
+    /// else comes from an external `locales/<lang>.json` merged over it
+    /// below.
     pub fn load(exe_dir: &Path) -> Self {
         let ini_path = exe_dir.join("gametrimmer.ini");
         let settings = gametrimmer_core::settings::load_file(&ini_path).unwrap_or_default();
@@ -78,10 +63,7 @@ impl WatchStrings {
         let system_lang = detect_system_lang();
         let lang = settings.app_language.resolve(system_lang);
 
-        let mut strings = match lang {
-            Lang::Uk => Self::ukrainian(),
-            _ => Self::english(),
-        };
+        let mut strings = Self::english();
 
         let lang_code = lang.as_str();
         let locale_file = exe_dir.join("locales").join(format!("{lang_code}.json"));
@@ -171,9 +153,6 @@ fn detect_system_lang() -> Lang {
         let s = String::from_utf16_lossy(&buffer);
         for tag in s.split('\0') {
             let primary = tag.split('-').next().unwrap_or_default().to_lowercase();
-            if primary == "uk" {
-                return Lang::Uk;
-            }
             if let Some(custom) = Lang::parse(&primary) {
                 return custom;
             }
@@ -190,8 +169,6 @@ mod tests {
     fn watch_strings_defaults() {
         let en = WatchStrings::english();
         assert_eq!(en.tray_menu_open, "Open GameTrimmer");
-        let uk = WatchStrings::ukrainian();
-        assert_eq!(uk.tray_menu_open, "Відкрити GameTrimmer");
     }
 
     #[test]

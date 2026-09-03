@@ -130,8 +130,8 @@ mod tests {
     #[test]
     fn a_rule_description_is_translated_back_for_the_window() {
         let descriptions = indexed(
-            &[("Common redist folder", "Спільна тека редистрибутивів")],
-            Lang::Uk,
+            &[("Common redist folder", "Common redistributables folder")],
+            Lang::En,
         );
 
         assert_eq!(
@@ -139,7 +139,7 @@ mod tests {
                 FindingSource::Rule(Category::RedistFolder),
                 "Common redist folder"
             ),
-            "Спільна тека редистрибутивів",
+            "Common redistributables folder",
         );
     }
 
@@ -147,25 +147,25 @@ mod tests {
     /// so they never depend on the stored text matching anything.
     #[test]
     fn an_orphan_reason_is_rebuilt_from_its_kind() {
-        let descriptions = indexed(&[], Lang::Uk);
+        let descriptions = indexed(&[], Lang::En);
 
         let shown = descriptions.display(
             FindingSource::Orphan(OrphanKind::ServiceFolder),
-            "Launcher download/cache scratch folder (aborted or partial downloads)",
+            "aborted or partial downloads",
         );
 
         assert_eq!(
             shown,
-            i18n::orphan_reason(Lang::Uk, OrphanKind::ServiceFolder)
+            i18n::orphan_reason(Lang::En, OrphanKind::ServiceFolder)
         );
-        assert!(shown.contains("Службова тека"), "{shown}");
+        assert!(shown.contains("Launcher download/cache"), "{shown}");
     }
 
-    /// The generated half stays as stored - there is no curated Ukrainian
-    /// text for it to be restored to.
+    /// The generated half stays as stored - there is no curated translation
+    /// for it to be restored to.
     #[test]
     fn a_localization_reason_stays_as_it_was_stored() {
-        let descriptions = indexed(&[("anything", "будь-що")], Lang::Uk);
+        let descriptions = indexed(&[("anything", "something else")], Lang::En);
         let stored = "token 'de' in an explicit loc pair";
 
         assert_eq!(
@@ -181,7 +181,7 @@ mod tests {
     /// that will not parse: the window shows English rather than nothing.
     #[test]
     fn an_unknown_description_falls_back_to_what_was_stored() {
-        let descriptions = indexed(&[], Lang::Uk);
+        let descriptions = indexed(&[], Lang::En);
 
         assert_eq!(
             descriptions.display(FindingSource::Rule(Category::Bonus), "Retired rule"),
@@ -199,29 +199,31 @@ mod tests {
 
     /// The bug this design exists to prevent, and the one the first
     /// implementation shipped: descriptions were resolved once and written
-    /// back over `FindingRow::rule_desc`, which destroyed the English key.
-    /// Switching the interface afterwards left the previous language's text
-    /// on screen with no way back - an English window showing a Ukrainian
-    /// reason.
+    /// back over `FindingRow::rule_desc`, which destroyed the English key -
+    /// switching the interface language afterwards left the first answer on
+    /// screen with no way back.
     ///
     /// Resolving from the stored text every time is what makes the switch
-    /// work, so the property to hold is that resolving is *repeatable*: the
-    /// same stored row answers in whatever language is asked.
+    /// work, so the property to hold is that resolving is *repeatable* and
+    /// *derived*: an orphan reason is rebuilt from `kind`, not read back from
+    /// `stored`, and asking twice must not inherit a stale first answer.
     #[test]
     fn the_same_stored_row_answers_in_whichever_language_asks() {
-        let stored = "Launcher download/cache scratch folder (aborted or partial downloads)";
+        let stored = "this exact text must not survive the round trip";
         let source = FindingSource::Orphan(OrphanKind::ServiceFolder);
 
-        let ukrainian = indexed(&[], Lang::Uk).display(source, stored);
-        let english = indexed(&[], Lang::En).display(source, stored);
+        let first = indexed(&[], Lang::En).display(source, stored);
+        let second = indexed(&[], Lang::En).display(source, stored);
 
-        assert!(ukrainian
-            .chars()
-            .any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch)));
-        assert_eq!(english, stored, "an English window shows what is stored");
-        // And asking again after the switch must not inherit the first
-        // answer - the stored row is the only input either call reads.
-        assert_eq!(indexed(&[], Lang::Uk).display(source, stored), ukrainian);
+        assert_eq!(
+            first,
+            i18n::orphan_reason(Lang::En, OrphanKind::ServiceFolder),
+            "the reason must be rebuilt from the kind, not read back from `stored`",
+        );
+        assert_eq!(
+            first, second,
+            "the same stored row must answer consistently"
+        );
     }
 
     /// GT-129's actual guarantee. Fixing the three known sites is worth

@@ -246,32 +246,34 @@ mod tests {
     }
 
     /// This row already carries a summary, a category filter and a search
-    /// field, and GT-35 adds a fourth control to it. Both window widths and
-    /// both languages, for the reason the bottom bar is measured the same way:
-    /// the Ukrainian strings are the longer set, and a control pushed past the
-    /// right edge is exactly the bug the six-card strip was rebuilt to avoid.
+    /// field, and GT-35 adds a fourth control to it. Both window widths, for
+    /// the reason the bottom bar is measured the same way: a control pushed
+    /// past the right edge is exactly the bug the six-card strip was rebuilt
+    /// to avoid. English only while localizations are frozen for development
+    /// (Vikunja #443 tracks unfreezing them) - it used to also run Ukrainian,
+    /// the longer string set; re-add it to this loop once localizations
+    /// unfreeze.
     #[test]
     fn the_summary_row_holds_every_control_at_both_widths() {
+        let language = Lang::En;
         for (name, size) in [("standard", STANDARD_VIEWPORT), ("narrow", NARROW_VIEWPORT)] {
-            for language in [Lang::En, Lang::Uk] {
-                for axis in GROUP_AXIS_ORDER {
-                    let mut test = UiTest::with_size(show, size);
-                    test.app_mut()
-                        .set_language(LanguagePreference::Fixed(language));
-                    test.seed_findings();
-                    test.app_mut().set_tree_axis(axis);
-                    test.run();
+            for axis in GROUP_AXIS_ORDER {
+                let mut test = UiTest::with_size(show, size);
+                test.app_mut()
+                    .set_language(LanguagePreference::Fixed(language));
+                test.seed_findings();
+                test.app_mut().set_tree_axis(axis);
+                test.run();
 
-                    let s = i18n::strings(language);
-                    for label in [s.plan_filter_label, s.plan_group_label] {
-                        let rect = test.rect_of(label);
-                        assert!(
-                            rect.min.x >= 0.0 && rect.max.x <= size.x,
-                            "{name} window, {language:?}, {axis:?}: {label:?} sits at \
-                             {rect:?} and is clipped by the {}pt viewport",
-                            size.x,
-                        );
-                    }
+                let s = i18n::strings(language);
+                for label in [s.plan_filter_label, s.plan_group_label] {
+                    let rect = test.rect_of(label);
+                    assert!(
+                        rect.min.x >= 0.0 && rect.max.x <= size.x,
+                        "{name} window, {language:?}, {axis:?}: {label:?} sits at \
+                         {rect:?} and is clipped by the {}pt viewport",
+                        size.x,
+                    );
                 }
             }
         }

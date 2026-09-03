@@ -51,19 +51,19 @@ impl DeleteMethod {
 
 /// UI language for all user-facing text.
 ///
-/// `En` is the default: the audience for a Windows disk-cleanup tool skews
-/// international, and English avoids surprising a user whose Windows locale
-/// isn't Ukrainian. `Uk` stays fully supported - the strings started life in
-/// Ukrainian, and it is still the primary maintainer's own language.
+/// `En` is the default and, while localizations are frozen for development
+/// (Vikunja #443 tracks unfreezing them), the only variant this app compiles
+/// in - see `crates/app/src/i18n`. `uk` and every other language still parse
+/// as [`Lang::Custom`] and resolve through the external locale mechanism, so
+/// a `gametrimmer.ini` written before the freeze keeps loading.
 ///
-/// Custom community languages (e.g. `pl`, `de`, `fr`) are supported via [`Lang::Custom`].
+/// Custom community languages (e.g. `pl`, `de`, `fr`, and `uk` itself) are
+/// supported via [`Lang::Custom`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Lang {
     /// English UI text.
     #[default]
     En,
-    /// Ukrainian UI text.
-    Uk,
     /// Custom community language code (up to 8 ASCII bytes).
     Custom([u8; 8]),
 }
@@ -73,7 +73,6 @@ impl Lang {
     pub fn as_str(&self) -> &str {
         match self {
             Lang::En => "en",
-            Lang::Uk => "uk",
             Lang::Custom(bytes) => {
                 let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
                 std::str::from_utf8(&bytes[..len]).unwrap_or("en")
@@ -89,7 +88,6 @@ impl Lang {
         }
         match trimmed.to_lowercase().as_str() {
             "en" => Some(Lang::En),
-            "uk" => Some(Lang::Uk),
             other
                 if other
                     .chars()
@@ -956,7 +954,7 @@ mod tests {
         for preference in [
             LanguagePreference::System,
             LanguagePreference::Fixed(Lang::En),
-            LanguagePreference::Fixed(Lang::Uk),
+            LanguagePreference::Fixed(Lang::parse("uk").expect("parse uk")),
         ] {
             let settings = Settings {
                 app_language: preference,
@@ -974,7 +972,8 @@ mod tests {
     /// picked English a Ukrainian interface because Windows says so.
     #[test]
     fn a_language_stored_by_an_older_version_stays_an_explicit_choice() {
-        for (stored, expected) in [("en", Lang::En), ("uk", Lang::Uk)] {
+        let uk = Lang::parse("uk").expect("parse uk");
+        for (stored, expected) in [("en", Lang::En), ("uk", uk)] {
             let conn = crate::db::open_in_memory().expect("open in-memory db");
             write_value(&conn, APP_LANGUAGE_KEY, stored).expect("write legacy value");
 
@@ -984,11 +983,7 @@ mod tests {
             // The other language as the "system" answer, so a preference that
             // yielded to the OS would be visible rather than coincidentally
             // equal.
-            let other = if expected == Lang::En {
-                Lang::Uk
-            } else {
-                Lang::En
-            };
+            let other = if expected == Lang::En { uk } else { Lang::En };
             assert_eq!(loaded.app_language.resolve(other), expected);
         }
     }
@@ -997,9 +992,10 @@ mod tests {
     /// reported, a fixed choice never does.
     #[test]
     fn only_the_system_preference_yields_to_the_operating_system() {
-        for system in [Lang::En, Lang::Uk] {
+        let uk = Lang::parse("uk").expect("parse uk");
+        for system in [Lang::En, uk] {
             assert_eq!(LanguagePreference::System.resolve(system), system);
-            for fixed in [Lang::En, Lang::Uk] {
+            for fixed in [Lang::En, uk] {
                 assert_eq!(LanguagePreference::Fixed(fixed).resolve(system), fixed);
             }
         }
@@ -1049,9 +1045,7 @@ mod tests {
 
     #[test]
     fn lang_round_trips_through_as_str_parse() {
-        for lang in [Lang::En, Lang::Uk] {
-            assert_eq!(Lang::parse(lang.as_str()), Some(lang));
-        }
+        assert_eq!(Lang::parse(Lang::En.as_str()), Some(Lang::En));
         let custom = Lang::parse("pl").expect("parse custom pl");
         assert_eq!(custom.as_str(), "pl");
         assert_eq!(Lang::parse("invalid language with spaces"), None);
@@ -1635,7 +1629,7 @@ mod tests {
         for app_language in [
             LanguagePreference::System,
             LanguagePreference::Fixed(Lang::En),
-            LanguagePreference::Fixed(Lang::Uk),
+            LanguagePreference::Fixed(Lang::parse("uk").expect("parse uk")),
         ] {
             cases.push(Settings {
                 app_language,
@@ -1763,7 +1757,7 @@ mod tests {
         let conn = crate::db::open_in_memory().expect("open legacy database");
         let legacy = Settings {
             delete_method: DeleteMethod::RecycleBin,
-            app_language: LanguagePreference::Fixed(Lang::Uk),
+            app_language: LanguagePreference::Fixed(Lang::parse("uk").expect("parse uk")),
             theme: Theme::Dark,
             logging_enabled: true,
             has_scanned: true,

@@ -2073,22 +2073,17 @@ fn apply_keep_request(app: &mut GameTrimmerApp, index: usize) {
         return;
     };
     let rel_path = item.row.rel_path.clone();
-    // Written in both languages at once, because the pack outlives the
-    // interface language it was written under - the same reason rule packs
-    // carry a per-language `desc` at all. The game's name is in there so the
-    // file can be read and pruned by hand later, which is the only way to
-    // undo an exception for now.
+    // Written per-language, because the pack outlives the interface language
+    // it was written under - the same reason rule packs carry a per-language
+    // `desc` at all. The game's name is in there so the file can be read and
+    // pruned by hand later, which is the only way to undo an exception for
+    // now. English is the only entry while localizations are frozen for
+    // development (Vikunja #443 tracks unfreezing them).
     let desc = gametrimmer_core::localized::LocalizedText::PerLanguage(
-        [
-            (
-                "en".to_string(),
-                i18n::exception_desc(Lang::En, &item.row.game_name, &rel_path),
-            ),
-            (
-                "uk".to_string(),
-                i18n::exception_desc(Lang::Uk, &item.row.game_name, &rel_path),
-            ),
-        ]
+        [(
+            "en".to_string(),
+            i18n::exception_desc(Lang::En, &item.row.game_name, &rel_path),
+        )]
         .into_iter()
         .collect(),
     );

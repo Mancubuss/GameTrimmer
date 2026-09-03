@@ -66,13 +66,6 @@ pub fn walkdir_reason_label(
         (Lang::En | Lang::Custom(_), R::MftEmptyOnNonEmptyDisk) => {
             "the MFT returned nothing for a non-empty folder"
         }
-        (Lang::Uk, R::NotElevated) => "запущено не від імені адміністратора",
-        (Lang::Uk, R::NoVolumeLetter) => "не на локальному диску з літерою",
-        (Lang::Uk, R::VolumeUnavailable) => "не вдалося відкрити том",
-        (Lang::Uk, R::SsdVolume) => "SSD, де обхід тек швидший",
-        (Lang::Uk, R::CanonicalMismatch) => "з'єднання, символьне посилання або subst-диск",
-        (Lang::Uk, R::MftFailed) => "читання MFT не вдалося",
-        (Lang::Uk, R::MftEmptyOnNonEmptyDisk) => "MFT нічого не повернув для непорожньої теки",
     }
 }
 
@@ -80,9 +73,6 @@ pub fn walkdir_breakdown(lang: Lang, walked: usize, total: usize, parts: &str) -
     match lang {
         Lang::En | Lang::Custom(_) => format!(
             "Last scan: {walked} of {total} roots walked instead of read from the MFT - {parts}."
-        ),
-        Lang::Uk => format!(
-            "Останнє сканування: {walked} з {total} коренів обійдено теками замість MFT — {parts}."
         ),
     }
 }
@@ -103,12 +93,6 @@ pub fn already_running_body(lang: Lang, raised: bool) -> String {
         (Lang::En | Lang::Custom(_), false) => "GameTrimmer is already running from this folder. \
             Switch to its window - it may be minimized or on another desktop."
             .to_string(),
-        (Lang::Uk, true) => "GameTrimmer уже запущено з цієї теки. \
-            Його вікно виведено на передній план."
-            .to_string(),
-        (Lang::Uk, false) => "GameTrimmer уже запущено з цієї теки. \
-            Перейдіть до його вікна - можливо, воно згорнуте або на іншому робочому столі."
-            .to_string(),
     }
 }
 
@@ -126,7 +110,6 @@ pub fn exception_desc(
 ) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Kept by hand: {rel_path} in {game_name}"),
-        Lang::Uk => format!("Збережено вручну: {rel_path} у грі {game_name}"),
     }
 }
 
@@ -138,9 +121,6 @@ pub fn risk_level_bare_label(lang: Lang, risk: RiskLevel) -> &'static str {
         (Lang::En | Lang::Custom(_), RiskLevel::None) => "none",
         (Lang::En | Lang::Custom(_), RiskLevel::Low) => "low",
         (Lang::En | Lang::Custom(_), RiskLevel::Medium) => "medium",
-        (Lang::Uk, RiskLevel::None) => "нульовий",
-        (Lang::Uk, RiskLevel::Low) => "низький",
-        (Lang::Uk, RiskLevel::Medium) => "середній",
     }
 }
 
@@ -150,9 +130,6 @@ pub fn plan_risk_label(lang: Lang, risk: RiskLevel) -> &'static str {
         (Lang::En | Lang::Custom(_), RiskLevel::None) => "Risk: none",
         (Lang::En | Lang::Custom(_), RiskLevel::Low) => "Risk: low",
         (Lang::En | Lang::Custom(_), RiskLevel::Medium) => "Risk: medium",
-        (Lang::Uk, RiskLevel::None) => "Ризик: нульовий",
-        (Lang::Uk, RiskLevel::Low) => "Ризик: низький",
-        (Lang::Uk, RiskLevel::Medium) => "Ризик: середній",
     }
 }
 
@@ -165,7 +142,6 @@ pub fn plan_totals_summary(lang: Lang, finding_count: usize, game_count: usize) 
         Lang::En | Lang::Custom(_) => {
             format!("Found {finding_count} item(s) in {game_count} game(s)")
         }
-        Lang::Uk => format!("Знайдено {finding_count} об’єктів у {game_count} іграх"),
     }
 }
 
@@ -184,9 +160,6 @@ pub fn format_scan_summary(
         Lang::En | Lang::Custom(_) => format!(
             "Scanned {total} game(s) (MFT: {mft}, walkdir: {walkdir}) in {elapsed_secs:.1} sec."
         ),
-        Lang::Uk => format!(
-            "Проскановано {total} ігор (MFT: {mft}, обхід тек: {walkdir}) за {elapsed_secs:.1} с."
-        ),
     }
 }
 
@@ -196,17 +169,12 @@ pub fn db_open_error_long(lang: Lang, err: impl std::fmt::Display) -> String {
             "Failed to open the database: {err}. Move the program to a folder with write \
              access (not Program Files without administrator rights)."
         ),
-        Lang::Uk => format!(
-            "Помилка відкриття бази даних: {err}. Перемістіть програму в теку з \
-             правами на запис (не Program Files без прав адміністратора)."
-        ),
     }
 }
 
 pub fn db_open_error_short(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to open the database: {err}"),
-        Lang::Uk => format!("Помилка відкриття бази даних: {err}"),
     }
 }
 
@@ -217,14 +185,12 @@ pub fn add_library_failed(
 ) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to add folder {path}: {err}"),
-        Lang::Uk => format!("Не вдалося додати теку {path}: {err}"),
     }
 }
 
 pub fn remove_library_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to remove library: {err}"),
-        Lang::Uk => format!("Не вдалося прибрати бібліотеку: {err}"),
     }
 }
 
@@ -233,14 +199,12 @@ pub fn libraries_found(lang: Lang, libraries: usize, games: usize) -> String {
         Lang::En | Lang::Custom(_) => {
             format!("Found {libraries} librar(y/ies), {games} game(s). Scanning files...")
         }
-        Lang::Uk => format!("Знайдено бібліотек: {libraries}, ігор: {games}. Сканування файлів..."),
     }
 }
 
 pub fn scan_done_status(lang: Lang, scan_summary: &str, count: usize) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("{scan_summary} Found {count} file(s) to review."),
-        Lang::Uk => format!("{scan_summary} Знайдено {count} файл(ів) для перевірки."),
     }
 }
 
@@ -249,56 +213,48 @@ pub fn remove_done_status(lang: Lang, succeeded: usize, failed: usize) -> String
         Lang::En | Lang::Custom(_) => {
             format!("Deletion completed: {succeeded} succeeded, {failed} failed.")
         }
-        Lang::Uk => format!("Видалення завершено: успішно {succeeded}, помилок {failed}."),
     }
 }
 
 pub fn error_prefixed(lang: Lang, msg: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Error: {msg}"),
-        Lang::Uk => format!("Помилка: {msg}"),
     }
 }
 
 pub fn export_save_failed(lang: Lang, error: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to save the export: {error}"),
-        Lang::Uk => format!("Не вдалося зберегти експорт: {error}"),
     }
 }
 
 pub fn exported_to(lang: Lang, path: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Exported to: {path}"),
-        Lang::Uk => format!("Експортовано: {path}"),
     }
 }
 
 pub fn rules_export_failed(lang: Lang, error: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to export rules: {error}"),
-        Lang::Uk => format!("Не вдалося експортувати правила: {error}"),
     }
 }
 
 pub fn rules_exported_to(lang: Lang, path: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Rules exported to {path}"),
-        Lang::Uk => format!("Правила експортовано до {path}"),
     }
 }
 
 pub fn rules_import_failed(lang: Lang, error: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to import rules: {error}"),
-        Lang::Uk => format!("Не вдалося імпортувати правила: {error}"),
     }
 }
 
 pub fn settings_save_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to save settings: {err}"),
-        Lang::Uk => format!("Не вдалося зберегти налаштування: {err}"),
     }
 }
 
@@ -309,16 +265,12 @@ pub fn rules_json_load_failed(lang: Lang, err: impl std::fmt::Display) -> String
         Lang::En | Lang::Custom(_) => {
             format!("Failed to load rules.json: {err} - using the built-in category rules.")
         }
-        Lang::Uk => format!(
-            "Помилка завантаження rules.json: {err} - використовую вбудовані правила категорій."
-        ),
     }
 }
 
 pub fn builtin_rules_corrupted(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Built-in rules are corrupted: {err}"),
-        Lang::Uk => format!("Вбудовані правила пошкоджено: {err}"),
     }
 }
 
@@ -333,10 +285,6 @@ pub fn personal_rules_load_failed(lang: Lang, err: impl std::fmt::Display) -> St
             "Failed to load personal_rules.json: {err} - scanning without your personal \
              exceptions, so files you kept may be proposed again."
         ),
-        Lang::Uk => format!(
-            "Помилка завантаження personal_rules.json: {err} - сканую без ваших особистих \
-             винятків, тож збережені файли можуть запропонуватися знову."
-        ),
     }
 }
 
@@ -347,7 +295,6 @@ pub fn kept_by_exceptions(lang: Lang, kept: usize) -> String {
         Lang::En | Lang::Custom(_) => {
             format!("Your exceptions kept {kept} file(s) out of the results.")
         }
-        Lang::Uk => format!("Ваші винятки лишили поза результатами файлів: {kept}."),
     }
 }
 
@@ -360,9 +307,6 @@ pub fn exception_kept(lang: Lang, rel_path: impl std::fmt::Display) -> String {
                 "Never touching {rel_path} in this game again - it is off the list from now on."
             )
         }
-        Lang::Uk => {
-            format!("Більше не чіпаю {rel_path} у цій грі - відтепер цей файл поза списком.")
-        }
     }
 }
 
@@ -371,7 +315,6 @@ pub fn exception_kept(lang: Lang, rel_path: impl std::fmt::Display) -> String {
 pub fn exception_already_kept(lang: Lang, rel_path: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("{rel_path} was already on your never-touch list."),
-        Lang::Uk => format!("{rel_path} уже був у вашому списку недоторканних."),
     }
 }
 
@@ -380,9 +323,6 @@ pub fn l10n_rules_load_failed(lang: Lang, err: impl std::fmt::Display) -> String
         Lang::En | Lang::Custom(_) => {
             format!("Failed to load l10n_rules.json: {err} - using the built-in language rules.")
         }
-        Lang::Uk => format!(
-            "Помилка завантаження l10n_rules.json: {err} - використовую вбудовані мовні правила."
-        ),
     }
 }
 
@@ -398,35 +338,30 @@ pub fn provider_message(
 ) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Provider \"{name}\": {detail}"),
-        Lang::Uk => format!("Провайдер \"{name}\": {detail}"),
     }
 }
 
 pub fn manual_libraries_read_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to read manual libraries: {err}"),
-        Lang::Uk => format!("Помилка читання ручних бібліотек: {err}"),
     }
 }
 
 pub fn no_libraries_found(lang: Lang) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => "No libraries found.".to_string(),
-        Lang::Uk => "Бібліотек не знайдено.".to_string(),
     }
 }
 
 pub fn libraries_write_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to write libraries to the database: {err}"),
-        Lang::Uk => format!("Помилка запису бібліотек у базу даних: {err}"),
     }
 }
 
 pub fn write_thread_crashed(lang: Lang) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => "The scan results writer thread crashed.".to_string(),
-        Lang::Uk => "Потік запису результатів сканування завершився аварійно.".to_string(),
     }
 }
 
@@ -434,9 +369,6 @@ pub fn scan_incomplete(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!(
             "The scan was not activated because it was incomplete: {err}. The previous snapshot was preserved."
-        ),
-        Lang::Uk => format!(
-            "Сканування не активовано, бо воно було неповним: {err}. Попередній знімок збережено."
         ),
     }
 }
@@ -458,18 +390,6 @@ pub fn orphan_reason(lang: Lang, kind: gametrimmer_core::orphans::OrphanKind) ->
             "Cached file no installed app still references (e.g. an old Steam depot manifest)"
                 .to_string()
         }
-        (Lang::Uk, OrphanKind::UnmanagedFolder) => {
-            "Тека в бібліотеці без відповідного маніфесту лаунчера (осиротіла інсталяція)"
-                .to_string()
-        }
-        (Lang::Uk, OrphanKind::ServiceFolder) => {
-            "Службова тека завантажень лаунчера (незавершені або часткові завантаження)".to_string()
-        }
-        (Lang::Uk, OrphanKind::UnreferencedFile) => {
-            "Кешований файл, на який жоден встановлений застосунок більше не посилається \
-             (наприклад, застарілий маніфест депо Steam)"
-                .to_string()
-        }
     }
 }
 
@@ -479,14 +399,12 @@ pub fn orphan_reason(lang: Lang, kind: gametrimmer_core::orphans::OrphanKind) ->
 pub fn orphans_persist_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to record orphaned residue: {err}"),
-        Lang::Uk => format!("Не вдалося зберегти осиротілі рештки: {err}"),
     }
 }
 
 pub fn reading_mft_detail(lang: Lang, volume: char, percent: u64) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Reading file table {volume}: — {percent}%"),
-        Lang::Uk => format!("Читання файлової таблиці {volume}: — {percent}%"),
     }
 }
 
@@ -496,9 +414,6 @@ pub fn manual_library_unavailable(lang: Lang, path: impl std::fmt::Display) -> S
     match lang {
         Lang::En | Lang::Custom(_) => {
             format!("Manual library \"{path}\" is unavailable (disk disconnected or folder moved).")
-        }
-        Lang::Uk => {
-            format!("Ручна бібліотека \"{path}\" недоступна (диск від'єднано або теку переміщено).")
         }
     }
 }
@@ -573,14 +488,12 @@ pub fn deletion_blocked(lang: Lang, reason: &str) -> String {
     let reason = deletion_block_reason(lang, reason);
     match lang {
         Lang::En | Lang::Custom(_) => format!("Deletion blocked: {reason}"),
-        Lang::Uk => format!("Видалення заблоковано: {reason}"),
     }
 }
 
 pub fn delete_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Deletion failed: {err}"),
-        Lang::Uk => format!("Помилка видалення: {err}"),
     }
 }
 
@@ -589,7 +502,6 @@ pub fn db_update_after_delete_failed(lang: Lang, err: impl std::fmt::Display) ->
         Lang::En | Lang::Custom(_) => {
             format!("Failed to update the database after deletion: {err}")
         }
-        Lang::Uk => format!("Не вдалося оновити базу даних після видалення: {err}"),
     }
 }
 
@@ -598,9 +510,6 @@ pub fn pending_delete_reconciled(lang: Lang, count: usize) -> String {
         Lang::En | Lang::Custom(_) => {
             format!("Reconciled {count} interrupted deletion intent(s); no deletion was retried.")
         }
-        Lang::Uk => format!(
-            "Узгоджено {count} перерваних намірів видалення; повторне видалення не запускалося."
-        ),
     }
 }
 
@@ -612,10 +521,6 @@ pub fn save_backup_zip_failed(lang: Lang, err: impl std::fmt::Display) -> String
         Lang::En | Lang::Custom(_) => format!(
             "Zero-Data-Loss Shield: Failed to create save backup ZIP archive ({err}). \
              Deletion aborted to protect save files."
-        ),
-        Lang::Uk => format!(
-            "Захист нульової втрати даних: не вдалося створити ZIP-архів резервної копії \
-             збережень ({err}). Видалення скасовано, щоб захистити файли збережень."
         ),
     }
 }
@@ -630,11 +535,6 @@ pub fn intro_stub_unsupported_skip(lang: Lang, path: impl std::fmt::Display) -> 
             "Skipped deleting intro file {path} - its video container is not one this \
              build has a micro-stub for, and deleting it would leave the game with no \
              file there at all"
-        ),
-        Lang::Uk => format!(
-            "Пропущено видалення інтро-файлу {path} - для цього відеоконтейнера в цій \
-             збірці немає мікрозаглушки, і видалення залишило б гру взагалі без файлу \
-             за цим шляхом"
         ),
     }
 }
@@ -652,10 +552,6 @@ pub fn intro_stub_write_failed(
             "Failed to write the micro-stub for intro file {path} after deleting it; \
              the game may fail to start until this is fixed: {err}"
         ),
-        Lang::Uk => format!(
-            "Не вдалося записати мікрозаглушку для інтро-файлу {path} після його \
-             видалення; гра може не запуститися, поки це не буде виправлено: {err}"
-        ),
     }
 }
 
@@ -666,21 +562,18 @@ pub fn intro_stub_write_failed(
 pub fn bundle_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to write the diagnostic bundle: {err}"),
-        Lang::Uk => format!("Не вдалося записати діагностичний пакет: {err}"),
     }
 }
 
 pub fn bundle_saved_to(lang: Lang, path: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Diagnostic bundle saved to {path}"),
-        Lang::Uk => format!("Діагностичний пакет збережено у {path}"),
     }
 }
 
 pub fn compact_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to compact the database: {err}"),
-        Lang::Uk => format!("Не вдалося стиснути базу даних: {err}"),
     }
 }
 
@@ -689,7 +582,6 @@ pub fn compact_failed(lang: Lang, err: impl std::fmt::Display) -> String {
 pub fn clear_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to clear the database: {err}"),
-        Lang::Uk => format!("Не вдалося очистити базу даних: {err}"),
     }
 }
 
@@ -706,9 +598,6 @@ pub fn clear_rebuilt_after_corruption(lang: Lang) -> String {
              settings were kept)."
                 .to_string()
         }
-        Lang::Uk => "Базу було пошкоджено, її перебудовано (зареєстровані бібліотеки й \
-             налаштування збережено)."
-            .to_string(),
     }
 }
 
@@ -717,14 +606,12 @@ pub fn clear_rebuilt_after_corruption(lang: Lang) -> String {
 pub fn loaded_saved_results(lang: Lang) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => "Showing saved results from a previous scan.".to_string(),
-        Lang::Uk => "Показано збережені результати попереднього сканування.".to_string(),
     }
 }
 
 pub fn load_previous_results_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to load previous scan results: {err}"),
-        Lang::Uk => format!("Помилка завантаження результатів попереднього сканування: {err}"),
     }
 }
 
@@ -733,7 +620,6 @@ pub fn load_previous_results_failed(lang: Lang, err: impl std::fmt::Display) -> 
 pub fn prepare_rules_file_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("failed to prepare the rules file: {err}"),
-        Lang::Uk => format!("не вдалося підготувати файл правил: {err}"),
     }
 }
 
@@ -744,28 +630,24 @@ pub fn read_file_failed(
 ) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("failed to read {path}: {err}"),
-        Lang::Uk => format!("не вдалося прочитати {path}: {err}"),
     }
 }
 
 pub fn read_picked_file_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("failed to read the file: {err}"),
-        Lang::Uk => format!("не вдалося прочитати файл: {err}"),
     }
 }
 
 pub fn prepare_rules_json_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("failed to prepare rules.json: {err}"),
-        Lang::Uk => format!("не вдалося підготувати rules.json: {err}"),
     }
 }
 
 pub fn prepare_l10n_rules_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("failed to prepare l10n_rules.json: {err}"),
-        Lang::Uk => format!("не вдалося підготувати l10n_rules.json: {err}"),
     }
 }
 
@@ -777,7 +659,6 @@ pub fn backup_failed(
 ) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("failed to create a backup copy {path}: {err}"),
-        Lang::Uk => format!("не вдалося створити резервну копію {path}: {err}"),
     }
 }
 
@@ -788,7 +669,6 @@ pub fn write_failed(
 ) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("failed to write {path}: {err}"),
-        Lang::Uk => format!("не вдалося записати {path}: {err}"),
     }
 }
 
@@ -797,10 +677,6 @@ pub fn rules_restored(lang: Lang, path: impl std::fmt::Display) -> String {
         Lang::En | Lang::Custom(_) => format!(
             "Built-in rules restored ({path}); the previous file was kept as *.bak. \
              Changes take effect from the next scan."
-        ),
-        Lang::Uk => format!(
-            "Вбудовані правила відновлено ({path}); попередній файл збережено як *.bak. \
-             Зміни діятимуть з наступного сканування."
         ),
     }
 }
@@ -820,17 +696,12 @@ pub fn rules_restored_without_backup(
             "Built-in rules restored ({path}), but the previous file could NOT be kept \
              as *.bak: {error}. Changes take effect from the next scan."
         ),
-        Lang::Uk => format!(
-            "Вбудовані правила відновлено ({path}), але попередній файл НЕ вдалося \
-             зберегти як *.bak: {error}. Зміни діятимуть з наступного сканування."
-        ),
     }
 }
 
 pub fn summary_categories_part(lang: Lang, added: usize, updated: usize) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("categories - {added} new, {updated} updated"),
-        Lang::Uk => format!("категорії — нових {added}, оновлено {updated}"),
     }
 }
 
@@ -839,7 +710,6 @@ pub fn summary_lang_part(lang: Lang, added: usize, updated: usize) -> String {
         Lang::En | Lang::Custom(_) => {
             format!("localization - {added} new language(s), {updated} new word(s)")
         }
-        Lang::Uk => format!("локалізація — нових мов {added}, нових слів {updated}"),
     }
 }
 
@@ -847,9 +717,6 @@ pub fn summary_final(lang: Lang, parts: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => {
             format!("Rules imported: {parts}. Changes take effect from the next scan.")
-        }
-        Lang::Uk => {
-            format!("Правила імпортовано: {parts}. Зміни діятимуть з наступного сканування.")
         }
     }
 }
@@ -862,24 +729,18 @@ pub fn confirm_permanent_question(lang: Lang, count: usize, size: &str) -> Strin
             "Permanently delete {count} file(s) ({size})? This cannot be undone \
              (the game can be reinstalled from the store)."
         ),
-        Lang::Uk => format!(
-            "Безповоротно видалити {count} файл(ів) ({size})? Відновлення буде \
-             неможливе (гру можна перевстановити з магазину)."
-        ),
     }
 }
 
 pub fn confirm_recycle_question(lang: Lang, count: usize, size: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Move {count} file(s) ({size}) to the Recycle Bin?"),
-        Lang::Uk => format!("Перемістити {count} файл(ів) ({size}) у Кошик?"),
     }
 }
 
 pub fn success_line_permanent(lang: Lang, succeeded: usize) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Successfully deleted: {succeeded}"),
-        Lang::Uk => format!("Успішно видалено: {succeeded}"),
     }
 }
 
@@ -888,10 +749,6 @@ pub fn success_line_recycle(lang: Lang, succeeded: usize) -> String {
         Lang::En | Lang::Custom(_) => format!(
             "Moved to the Recycle Bin: {succeeded} \
              (disk space frees up after you empty it)"
-        ),
-        Lang::Uk => format!(
-            "Переміщено в Кошик: {succeeded} \
-             (місце на диску звільниться після його очищення)"
         ),
     }
 }
@@ -906,9 +763,6 @@ pub fn success_line_nuked(lang: Lang, nuked: usize) -> String {
             "Permanently deleted (too large for the Recycle Bin, cannot be \
              recovered): {nuked}"
         ),
-        Lang::Uk => {
-            format!("Видалено безповоротно (завеликі для Кошика, відновити не можна): {nuked}")
-        }
     }
 }
 
@@ -921,8 +775,6 @@ pub fn freed_summary_line(lang: Lang, freed: &str, expected: &str, show_expected
     match (lang, show_expected) {
         (Lang::En | Lang::Custom(_), true) => format!("Freed {freed} of the expected {expected}"),
         (Lang::En | Lang::Custom(_), false) => format!("Freed {freed}"),
-        (Lang::Uk, true) => format!("Звільнено {freed} з очікуваних {expected}"),
-        (Lang::Uk, false) => format!("Звільнено {freed}"),
     }
 }
 
@@ -932,7 +784,6 @@ pub fn freed_summary_line(lang: Lang, freed: &str, expected: &str, show_expected
 pub fn recycle_pending_size_line(lang: Lang, size: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Will free after emptying the Recycle Bin: {size}"),
-        Lang::Uk => format!("Звільниться після очищення Кошика: {size}"),
     }
 }
 
@@ -942,7 +793,6 @@ pub fn recycle_pending_size_line(lang: Lang, size: &str) -> String {
 pub fn freed_now_size_line(lang: Lang, size: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Freed immediately: {size}"),
-        Lang::Uk => format!("Звільнено відразу: {size}"),
     }
 }
 
@@ -956,24 +806,18 @@ pub fn recycle_bin_list_failed(lang: Lang, err: impl std::fmt::Display) -> Strin
             "Could not read the Recycle Bin to confirm which files are \
              recoverable: {err}"
         ),
-        Lang::Uk => format!(
-            "Не вдалося прочитати Кошик, щоб підтвердити, які файли можна \
-             відновити: {err}"
-        ),
     }
 }
 
 pub fn errors_count_line(lang: Lang, failed_count: usize) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Errors: {failed_count}"),
-        Lang::Uk => format!("Помилок: {failed_count}"),
     }
 }
 
 pub fn more_errors_line(lang: Lang, remaining: usize) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("... and {remaining} more error(s)"),
-        Lang::Uk => format!("... і ще {remaining} помилка(ок)"),
     }
 }
 
@@ -1000,25 +844,12 @@ pub fn selection_hint(lang: Lang) -> String {
              \u{2192}/\u{2190} - expand/collapse, Space - select."
                 .to_string()
         }
-        Lang::Uk => "Файли, щодо яких застосунок недостатньо впевнений, позначені \u{26a0} і \
-             ніколи не обираються за вас після сканування — гляньте на них перед \
-             видаленням.\n\n\
-             У грі під захистом античиту сам рядок гри позначений \
-             \u{1f6e1}\u{fe0f} Захищено античитом: її файли видаляються як завжди, захист \
-             лише блокує неконтрольоване повторне обрізання цієї гри.\n\n\
-             Прапорці на рядках дерева вибирають цілий диск, гру, категорію чи теку. \
-             Права кнопка миші на диску, грі або категорії відкриває дії масового вибору \
-             (зокрема категорію на всьому диску).\n\n\
-             Клавіатура: \u{2191}\u{2193} — курсор, PgUp/PgDn — сторінка, \
-             \u{2192}/\u{2190} — розгорнути/згорнути, Space — вибрати."
-            .to_string(),
     }
 }
 
 pub fn selected_summary(lang: Lang, count: usize, size: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Selected {count} file(s), will free up {size}"),
-        Lang::Uk => format!("Вибрано {count} файл(ів), буде звільнено {size}"),
     }
 }
 
@@ -1031,7 +862,6 @@ pub fn occupancy_summary(lang: Lang, total: &str, pct: f64) -> String {
         Lang::En | Lang::Custom(_) => {
             format!("Games occupy {total} \u{b7} selection frees {pct:.1}%")
         }
-        Lang::Uk => format!("Ігри займають {total} \u{b7} вибране звільнить {pct:.1}%"),
     }
 }
 
@@ -1050,7 +880,6 @@ pub fn scan_timing_summary(lang: Lang, scan: &str, analyze: &str, total: &str) -
         Lang::En | Lang::Custom(_) => {
             format!("Scan {scan} within analysis {analyze} \u{b7} Total {total}")
         }
-        Lang::Uk => format!("Сканування {scan} у межах аналізу {analyze} \u{b7} Разом {total}"),
     }
 }
 
@@ -1061,7 +890,6 @@ pub fn scan_timing_summary(lang: Lang, scan: &str, analyze: &str, total: &str) -
 pub fn disk_label(lang: Lang, disk: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Disk {disk}"),
-        Lang::Uk => format!("Диск {disk}"),
     }
 }
 
@@ -1092,7 +920,6 @@ pub fn launcher_label(lang: Lang, vendor: &str) -> String {
         "manual" => {
             return match lang {
                 Lang::En | Lang::Custom(_) => "Added by hand".to_string(),
-                Lang::Uk => "Додані вручну".to_string(),
             }
         }
         other => return other.to_string(),
@@ -1126,7 +953,6 @@ pub fn top_group_label(lang: Lang, key: &crate::model::TopKey) -> String {
 pub fn quote_marks(lang: Lang) -> (&'static str, &'static str) {
     match lang {
         Lang::En | Lang::Custom(_) => ("\u{201c}", "\u{201d}"),
-        Lang::Uk => ("\u{ab}", "\u{bb}"),
     }
 }
 
@@ -1146,33 +972,20 @@ pub fn select_all_in_group(lang: Lang, key: &crate::model::TopKey) -> String {
     use crate::model::TopKey;
     match (lang, key) {
         (Lang::En | Lang::Custom(_), TopKey::Disk(disk)) => format!("Select all on disk {disk}"),
-        (Lang::Uk, TopKey::Disk(disk)) => format!("Вибрати все на диску {disk}"),
         (Lang::En | Lang::Custom(_), TopKey::Launcher(vendor)) => {
             format!("Select all in {}", launcher_label(lang, vendor))
         }
-        (Lang::Uk, TopKey::Launcher(vendor)) => {
-            format!("Вибрати все в {}", launcher_label(lang, vendor))
-        }
         (Lang::En | Lang::Custom(_), TopKey::Library(root)) => {
             format!("Select all in library {}", root.to_string_lossy())
-        }
-        (Lang::Uk, TopKey::Library(root)) => {
-            format!("Вибрати все в бібліотеці {}", root.to_string_lossy())
         }
         (Lang::En | Lang::Custom(_), TopKey::Category(category)) => format!(
             "Select every {}",
             quoted(lang, crate::model::category_display(lang, *category))
         ),
-        (Lang::Uk, TopKey::Category(category)) => format!(
-            "Вибрати всі {}",
-            quoted(lang, crate::model::category_display(lang, *category))
-        ),
         (Lang::En | Lang::Custom(_), TopKey::Flat) => "Select everything".to_string(),
-        (Lang::Uk, TopKey::Flat) => "Вибрати все".to_string(),
         (Lang::En | Lang::Custom(_), TopKey::Unattributed(_)) => {
             "Select all unattributed".to_string()
         }
-        (Lang::Uk, TopKey::Unattributed(_)) => "Вибрати все без прив'язки".to_string(),
     }
 }
 
@@ -1181,33 +994,20 @@ pub fn deselect_all_in_group(lang: Lang, key: &crate::model::TopKey) -> String {
     use crate::model::TopKey;
     match (lang, key) {
         (Lang::En | Lang::Custom(_), TopKey::Disk(disk)) => format!("Deselect all on disk {disk}"),
-        (Lang::Uk, TopKey::Disk(disk)) => format!("Зняти вибір на диску {disk}"),
         (Lang::En | Lang::Custom(_), TopKey::Launcher(vendor)) => {
             format!("Deselect all in {}", launcher_label(lang, vendor))
         }
-        (Lang::Uk, TopKey::Launcher(vendor)) => {
-            format!("Зняти вибір у {}", launcher_label(lang, vendor))
-        }
         (Lang::En | Lang::Custom(_), TopKey::Library(root)) => {
             format!("Deselect all in library {}", root.to_string_lossy())
-        }
-        (Lang::Uk, TopKey::Library(root)) => {
-            format!("Зняти вибір у бібліотеці {}", root.to_string_lossy())
         }
         (Lang::En | Lang::Custom(_), TopKey::Category(category)) => format!(
             "Deselect every {}",
             quoted(lang, crate::model::category_display(lang, *category))
         ),
-        (Lang::Uk, TopKey::Category(category)) => format!(
-            "Зняти вибір з усіх {}",
-            quoted(lang, crate::model::category_display(lang, *category))
-        ),
         (Lang::En | Lang::Custom(_), TopKey::Flat) => "Deselect everything".to_string(),
-        (Lang::Uk, TopKey::Flat) => "Зняти вибір з усього".to_string(),
         (Lang::En | Lang::Custom(_), TopKey::Unattributed(_)) => {
             "Deselect all unattributed".to_string()
         }
-        (Lang::Uk, TopKey::Unattributed(_)) => "Зняти вибір без прив'язки".to_string(),
     }
 }
 
@@ -1221,18 +1021,11 @@ fn whole_group_scope(lang: Lang, key: &crate::model::TopKey) -> String {
     use crate::model::TopKey;
     match (lang, key) {
         (Lang::En | Lang::Custom(_), TopKey::Disk(disk)) => format!("on the whole disk {disk}"),
-        (Lang::Uk, TopKey::Disk(disk)) => format!("на всьому диску {disk}"),
         (Lang::En | Lang::Custom(_), TopKey::Launcher(vendor)) => {
             format!("across all of {}", launcher_label(lang, vendor))
         }
-        (Lang::Uk, TopKey::Launcher(vendor)) => {
-            format!("в усьому {}", launcher_label(lang, vendor))
-        }
         (Lang::En | Lang::Custom(_), TopKey::Library(root)) => {
             format!("in the whole library {}", root.to_string_lossy())
-        }
-        (Lang::Uk, TopKey::Library(root)) => {
-            format!("в усій бібліотеці {}", root.to_string_lossy())
         }
         // The category and flat axes fold the category row away, so these two
         // never reach a call site - answered anyway rather than left to a
@@ -1240,25 +1033,21 @@ fn whole_group_scope(lang: Lang, key: &crate::model::TopKey) -> String {
         (Lang::En | Lang::Custom(_), TopKey::Category(_) | TopKey::Flat) => {
             "everywhere".to_string()
         }
-        (Lang::Uk, TopKey::Category(_) | TopKey::Flat) => "усюди".to_string(),
         (Lang::En | Lang::Custom(_), TopKey::Unattributed(_)) => {
             "across everything unattributed".to_string()
         }
-        (Lang::Uk, TopKey::Unattributed(_)) => "серед усього без прив'язки".to_string(),
     }
 }
 
 pub fn select_all_in_game(lang: Lang, name: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Select all in {}", quoted(lang, name)),
-        Lang::Uk => format!("Вибрати все у {}", quoted(lang, name)),
     }
 }
 
 pub fn deselect_all_in_game(lang: Lang, name: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Deselect all in {}", quoted(lang, name)),
-        Lang::Uk => format!("Зняти вибір у {}", quoted(lang, name)),
     }
 }
 
@@ -1268,7 +1057,6 @@ pub fn select_category_in_group(lang: Lang, label: &str, key: &crate::model::Top
     let scope = whole_group_scope(lang, key);
     match lang {
         Lang::En | Lang::Custom(_) => format!("Select {} {scope}", quoted(lang, label)),
-        Lang::Uk => format!("Вибрати {} {scope}", quoted(lang, label)),
     }
 }
 
@@ -1277,7 +1065,6 @@ pub fn deselect_category_in_group(lang: Lang, label: &str, key: &crate::model::T
     let scope = whole_group_scope(lang, key);
     match lang {
         Lang::En | Lang::Custom(_) => format!("Deselect {} {scope}", quoted(lang, label)),
-        Lang::Uk => format!("Зняти вибір {} {scope}", quoted(lang, label)),
     }
 }
 
@@ -1306,11 +1093,6 @@ pub fn select_category_in_game(lang: Lang, category: &str, game: &str) -> String
             quoted(lang, category),
             quoted(lang, game)
         ),
-        Lang::Uk => format!(
-            "Вибрати {} у {}",
-            quoted(lang, category),
-            quoted(lang, game)
-        ),
     }
 }
 
@@ -1319,11 +1101,6 @@ pub fn deselect_category_in_game(lang: Lang, category: &str, game: &str) -> Stri
     match lang {
         Lang::En | Lang::Custom(_) => format!(
             "Deselect {} in {}",
-            quoted(lang, category),
-            quoted(lang, game)
-        ),
-        Lang::Uk => format!(
-            "Зняти вибір {} у {}",
             quoted(lang, category),
             quoted(lang, game)
         ),
@@ -1352,7 +1129,6 @@ pub fn hover_reason(lang: Lang, path: &str, rule_desc: &str, confidence: u8) -> 
         Lang::En | Lang::Custom(_) => {
             format!("{path}\nReason: {rule_desc} (confidence {confidence}%)")
         }
-        Lang::Uk => format!("{path}\nПричина: {rule_desc} (упевненість {confidence}%)"),
     }
 }
 
@@ -1410,7 +1186,6 @@ pub fn lang_reason(lang: Lang, reason: &LangReason) -> String {
 pub fn hover_lang_suffix(lang: Lang, lang_tag: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("\nLanguage: {lang_tag}"),
-        Lang::Uk => format!("\nМова: {lang_tag}"),
     }
 }
 
@@ -1421,7 +1196,6 @@ pub fn hover_lang_suffix(lang: Lang, lang_tag: &str) -> String {
 pub fn hover_logical_size_suffix(lang: Lang, logical: &str) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("\nLogical size: {logical}"),
-        Lang::Uk => format!("\nЛогічний розмір: {logical}"),
     }
 }
 
@@ -1488,24 +1262,17 @@ pub fn lang_display_name(code: &str) -> String {
 pub fn csv_header(lang: Lang) -> &'static str {
     match lang {
         Lang::En | Lang::Custom(_) => "Disk;Category;Game;Group folder;Path;Size (bytes);Size;Confidence;Source;Rule/reason;Language;Selected",
-        Lang::Uk => "Диск;Категорія;Гра;Тека групи;Шлях;Розмір (байт);Розмір;Впевненість;Джерело;Правило/причина;Мова;Вибрано",
     }
 }
 
 // -- 2-phase scanning --
 
-pub fn scan_phase_1_label(lang: Lang, current: usize, total: usize) -> String {
-    match lang {
-        Lang::Uk => format!("1. Сканування дисків та бібліотек ({current} / {total} ігор)"),
-        _ => format!("1. Disks & libraries discovery ({current} / {total} games)"),
-    }
+pub fn scan_phase_1_label(_lang: Lang, current: usize, total: usize) -> String {
+    format!("1. Disks & libraries discovery ({current} / {total} games)")
 }
 
-pub fn scan_phase_2_label(lang: Lang, current: usize, total: usize) -> String {
-    match lang {
-        Lang::Uk => format!("2. Аналіз звичайних файлів ({current} / {total} файлів)"),
-        _ => format!("2. Regular file analysis ({current} / {total} files)"),
-    }
+pub fn scan_phase_2_label(_lang: Lang, current: usize, total: usize) -> String {
+    format!("2. Regular file analysis ({current} / {total} files)")
 }
 
 #[cfg(test)]
@@ -1515,7 +1282,9 @@ mod tests {
     /// A translation may reword a reason; it may not delete the evidence in
     /// it. The reparse-point block is permanent and fail-closed, so the only
     /// thing the user can act on is *which* nested link caused it - and the
-    /// Ukrainian string is what the tree's tooltip shows.
+    /// non-English string (hardcoded here, not routed through the frozen
+    /// `Strings` table - see `deletion_block_reason`) is what the tree's
+    /// tooltip shows for any language but English, `uk` included.
     #[test]
     fn the_reparse_point_translation_keeps_the_offending_path() {
         let reason = gametrimmer_core::safety::DeleteBlockReason::ReparsePoint(
@@ -1524,7 +1293,7 @@ mod tests {
         .to_string();
 
         let english = deletion_block_reason(Lang::En, &reason);
-        let ukrainian = deletion_block_reason(Lang::Uk, &reason);
+        let ukrainian = deletion_block_reason(Lang::parse("uk").expect("parse uk"), &reason);
 
         assert!(english.contains(r"D:\Games\Some Game\mods\link"));
         assert!(

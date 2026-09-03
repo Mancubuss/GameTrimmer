@@ -368,27 +368,16 @@ pub fn apply_prepared_import(lang: Lang, prepared: PreparedRuleImport) -> Result
 /// shown when someone imports a rule pack. The owner's call was that the
 /// comparison was interesting but not worth the storage; importing now asks
 /// for a rescan instead.
-fn format_preview(lang: Lang, summary: &str) -> String {
-    match lang {
-        Lang::Uk => format!(
-            "Попередній перегляд імпорту
-
-{summary}
-
-Щоб побачити, що це змінює у вашій бібліотеці, запустіть сканування після імпорту.
-
-Продовжити?"
-        ),
-        Lang::En | Lang::Custom(_) => format!(
-            "Import preview
+fn format_preview(_lang: Lang, summary: &str) -> String {
+    format!(
+        "Import preview
 
 {summary}
 
 Run a scan after importing to see what this changes in your library.
 
 Continue?"
-        ),
-    }
+    )
 }
 
 fn validate_pack_text(kind: PackKind, text: &str) -> Result<(), String> {
@@ -469,18 +458,18 @@ mod tests {
     #[test]
     fn summary_mentions_only_the_imported_kinds() {
         let rules_only = build_summary(
-            Lang::Uk,
+            Lang::En,
             Some(MergeStats {
                 added: 2,
                 updated: 1,
             }),
             None,
         );
-        assert!(rules_only.contains("категорії — нових 2, оновлено 1"));
-        assert!(!rules_only.contains("локалізація"));
+        assert!(rules_only.contains("categories - 2 new, 1 updated"));
+        assert!(!rules_only.contains("localization"));
 
         let both = build_summary(
-            Lang::Uk,
+            Lang::En,
             Some(MergeStats {
                 added: 1,
                 updated: 0,
@@ -490,8 +479,8 @@ mod tests {
                 updated: 12,
             }),
         );
-        assert!(both.contains("категорії"));
-        assert!(both.contains("локалізація — нових мов 1, нових слів 12"));
+        assert!(both.contains("categories"));
+        assert!(both.contains("localization - 1 new language(s), 12 new word(s)"));
     }
 
     #[test]

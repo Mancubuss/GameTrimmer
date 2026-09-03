@@ -88,7 +88,6 @@ try {
     Copy-Item $watchExePath (Join-Path $stageDir "gametrimmer-watch.exe") -Force
     Copy-Item "$repoRoot\rules.json" (Join-Path $stageDir "rules.json") -Force
     Copy-Item "$repoRoot\l10n_rules.json" (Join-Path $stageDir "l10n_rules.json") -Force
-    Copy-Item "$repoRoot\locales" (Join-Path $stageDir "locales") -Recurse -Force
     Copy-Item "$repoRoot\README.md" (Join-Path $stageDir "README.md") -Force
     Copy-Item "$repoRoot\README.uk.md" (Join-Path $stageDir "README.uk.md") -Force
     Copy-Item "$repoRoot\LICENSE" (Join-Path $stageDir "LICENSE") -Force
@@ -123,7 +122,6 @@ try {
         Copy-Item $watchExePath (Join-Path $zipTempDir "gametrimmer-watch.exe")
         Copy-Item "$repoRoot\rules.json" (Join-Path $zipTempDir "rules.json")
         Copy-Item "$repoRoot\l10n_rules.json" (Join-Path $zipTempDir "l10n_rules.json")
-        Copy-Item "$repoRoot\locales" (Join-Path $zipTempDir "locales") -Recurse
         Copy-Item "$repoRoot\README.md" (Join-Path $zipTempDir "README.md")
         Copy-Item "$repoRoot\README.uk.md" (Join-Path $zipTempDir "README.uk.md")
         Copy-Item "$repoRoot\LICENSE" (Join-Path $zipTempDir "LICENSE")

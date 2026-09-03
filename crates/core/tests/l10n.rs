@@ -201,7 +201,11 @@ fn custom_language_tag_parsing() {
     use gametrimmer_core::settings::{Lang, LanguagePreference};
 
     assert_eq!(Lang::parse("en"), Some(Lang::En));
-    assert_eq!(Lang::parse("uk"), Some(Lang::Uk));
+    // `uk` is not a built-in variant while localizations are frozen for
+    // development (Vikunja #443 tracks unfreezing them); it parses like any
+    // other community language tag, through `Lang::Custom`.
+    let uk = Lang::parse("uk").expect("parse uk");
+    assert_eq!(uk.as_str(), "uk");
 
     let pl = Lang::parse("pl").expect("parse pl");
     assert_eq!(pl.as_str(), "pl");

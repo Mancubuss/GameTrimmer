@@ -2120,28 +2120,38 @@ mod tests {
     /// GT-127. The whole point of routing reports through `Reported`: the
     /// log gets English whatever the interface language is, and the window
     /// gets the user's own. Before this, one rendering served both, so a
-    /// Ukrainian install produced a log nobody could grep against the
+    /// non-English install produced a log nobody could grep against the
     /// source.
     ///
-    /// GT-115's log half lives here now, for the same reason - this is the
-    /// last place the message exists in both languages.
+    /// GT-115's log half lives here now, for the same reason.
+    ///
+    /// Localizations are frozen for development (Vikunja #443 tracks
+    /// unfreezing them), so no real `i18n` message currently renders
+    /// differently for a non-English `Lang` - a synthetic closure stands in
+    /// for one here, so the routing itself (not a particular translation)
+    /// stays covered.
     #[test]
     fn a_fatal_error_is_logged_in_english_and_shown_in_the_users_language() {
         let (tx, rx) = std::sync::mpsc::channel();
         let notifier = Notifier::new(tx, egui::Context::default());
+        let interface_lang = Lang::Custom(*b"xx\0\0\0\0\0\0");
 
         let contents = crate::logger::captured_for_test(|_dir| {
-            notifier.report_error(i18n::Reported::new(Lang::Uk, |l| {
-                i18n::libraries_write_failed(l, "gt_probe_disk_full")
+            notifier.report_error(i18n::Reported::new(interface_lang, |l| {
+                if l == Lang::En {
+                    "english rendering: gt_probe_disk_full".to_string()
+                } else {
+                    "interface rendering: gt_probe_disk_full".to_string()
+                }
             }));
         });
 
         assert!(
-            contents.contains("[ERROR]") && contents.contains("Failed to write libraries"),
+            contents.contains("[ERROR]") && contents.contains("english rendering"),
             "the log takes the English rendering, marked as a failure: {contents}",
         );
         assert!(
-            !contents.contains("Помилка запису"),
+            !contents.contains("interface rendering"),
             "the interface language must not reach the log: {contents}",
         );
 
@@ -2149,7 +2159,7 @@ mod tests {
             panic!("report_error must send an Error message");
         };
         assert!(
-            msg.contains("Помилка запису"),
+            msg.contains("interface rendering"),
             "the window keeps the user's language: {msg}",
         );
         // Both halves name the underlying cause - the split is the wording,

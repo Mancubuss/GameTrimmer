@@ -99,18 +99,4 @@ mod tests {
         assert_eq!(title, "GameTrimmer • Epic Games");
         assert!(body.contains("Fortnite was updated (build v29.40)"));
     }
-
-    #[test]
-    fn format_game_updated_toast_ukrainian() {
-        let strings = WatchStrings::ukrainian();
-        let (title, body) = format_game_updated_toast(
-            &strings,
-            "Cyberpunk 2077",
-            "steam",
-            Some("100"),
-            Some("200"),
-        );
-        assert_eq!(title, "GameTrimmer • Steam");
-        assert!(body.contains("Cyberpunk 2077 оновлено (100 → 200)"));
-    }
 }

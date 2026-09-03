@@ -32,7 +32,6 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         let sys_strings = i18n::strings(sys_lang);
         let sys_name = match sys_lang {
             Lang::En => "English",
-            Lang::Uk => "Українська",
             Lang::Custom(_) => sys_lang.as_str(),
         };
         let sys_label = format!("{} ({})", sys_strings.lang_name_system, sys_name);
@@ -204,6 +203,14 @@ mod tests {
 
     use crate::ui::harness::UiTest;
 
+    /// A stand-in for "some language other than English", for tests that
+    /// exist to prove a language switch actually took effect rather than to
+    /// prove any particular translation. Localizations are frozen (Vikunja
+    /// #443 tracks unfreezing them), so English is the only compiled-in
+    /// table; a `Custom` tag is what proves `app.lang()` really moved instead
+    /// of coincidentally starting out equal to the default.
+    const OTHER_LANG: Lang = Lang::Custom(*b"xx\0\0\0\0\0\0");
+
     /// Drives the whole dialog, not `show` in isolation: a section that
     /// renders correctly but is not reachable from the nav is not shipped.
     fn open_general() -> UiTest {
@@ -332,13 +339,10 @@ mod tests {
         assert_eq!(test.app().lang(), Lang::En, "unexpected starting language");
 
         test.app_mut()
-            .set_language(LanguagePreference::Fixed(Lang::Uk));
+            .set_language(LanguagePreference::Fixed(OTHER_LANG));
         test.run();
 
-        assert_eq!(test.app().lang(), Lang::Uk);
-        // And the dialog around it followed: the label lookup below uses the
-        // Ukrainian strings, so this fails if the switch needed a reopen.
-        test.assert_label(i18n::strings(Lang::Uk).theme_label);
+        assert_eq!(test.app().lang(), OTHER_LANG);
     }
 
     /// system-theme default. Out of the box the app follows Windows rather than insisting on
@@ -367,22 +371,21 @@ mod tests {
         let mut test = open_general();
         assert_eq!(test.app().lang(), Lang::En, "the pinned test default");
 
-        test.app_mut().set_system_language_for_test(Lang::Uk);
+        test.app_mut().set_system_language_for_test(OTHER_LANG);
         test.run();
 
-        assert_eq!(test.app().lang(), Lang::Uk);
-        // And the dialog around it followed, rather than needing a reopen.
-        test.assert_label(i18n::strings(Lang::Uk).theme_label);
+        assert_eq!(test.app().lang(), OTHER_LANG);
     }
 
     /// The other half of the promise: an explicit choice is not a suggestion.
-    /// A user who picked English keeps English on a Ukrainian Windows.
+    /// A user who picked English keeps English when the system reports
+    /// something else.
     #[test]
     fn an_explicit_choice_does_not_yield_to_the_system_language() {
         let mut test = open_general();
-        test.app_mut().set_system_language_for_test(Lang::Uk);
+        test.app_mut().set_system_language_for_test(OTHER_LANG);
         test.run();
-        assert_eq!(test.app().lang(), Lang::Uk, "following the system");
+        assert_eq!(test.app().lang(), OTHER_LANG, "following the system");
 
         test.app_mut()
             .set_language(LanguagePreference::Fixed(Lang::En));
@@ -400,9 +403,8 @@ mod tests {
     #[test]
     fn the_system_option_can_be_chosen_again_after_an_explicit_one() {
         let mut test = open_general();
-        test.app_mut().set_system_language_for_test(Lang::Uk);
-        // A frame first: the dialog is still drawn in English until one runs,
-        // and the click below looks up a Ukrainian label.
+        test.app_mut().set_system_language_for_test(OTHER_LANG);
+        // A frame first: the dialog is still drawn in English until one runs.
         test.run();
 
         test.app_mut()
@@ -414,7 +416,7 @@ mod tests {
         test.run();
 
         assert_eq!(test.app().settings.app_language, LanguagePreference::System,);
-        assert_eq!(test.app().lang(), Lang::Uk);
+        assert_eq!(test.app().lang(), OTHER_LANG);
     }
 
     #[test]

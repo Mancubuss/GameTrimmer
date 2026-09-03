@@ -205,7 +205,7 @@ mod tests {
         let items = vec![finding("Game A", "file.txt", None, 10, true)];
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
+        let csv = export_csv(Lang::En, &descriptions(), &items, &tree);
 
         assert!(csv.starts_with('\u{FEFF}'));
     }
@@ -215,10 +215,10 @@ mod tests {
         let items: Vec<FindingItem> = Vec::new();
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
+        let csv = export_csv(Lang::En, &descriptions(), &items, &tree);
         let header_line = csv.trim_start_matches('\u{FEFF}').lines().next().unwrap();
 
-        assert_eq!(header_line, i18n::csv_header(Lang::Uk));
+        assert_eq!(header_line, i18n::csv_header(Lang::En));
     }
 
     #[test]
@@ -227,7 +227,7 @@ mod tests {
         let items = vec![finding("Game A", "file.txt", None, 10, true)];
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
+        let csv = export_csv(Lang::En, &descriptions(), &items, &tree);
 
         assert!(
             csv.contains("\"test; rule\""),
@@ -244,7 +244,7 @@ mod tests {
         items[1].removed = true;
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
+        let csv = export_csv(Lang::En, &descriptions(), &items, &tree);
         let data_row_count = csv.lines().count() - 1; // minus the header
 
         assert_eq!(
@@ -265,14 +265,14 @@ mod tests {
         let items = vec![docs_finding, bonus_finding];
         let tree = build_tree(&items, GroupAxis::Disk);
 
-        let csv = export_csv(Lang::Uk, &descriptions(), &items, &tree);
+        let csv = export_csv(Lang::En, &descriptions(), &items, &tree);
 
         for line in csv.lines().skip(1) {
             if line.is_empty() {
                 continue;
             }
             assert!(
-                line.contains("Документація і довідкові матеріали"),
+                line.contains("Documentation and reference material"),
                 "every member row must carry the folder node's category: {line}"
             );
         }
