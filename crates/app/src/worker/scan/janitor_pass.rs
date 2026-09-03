@@ -26,7 +26,7 @@
 //! alongside the orphan rows: one writer, because each call replaces the whole
 //! set of `NULL`-game rows.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gametrimmer_core::janitor::{self, JanitorArtifact, JanitorConfig};
 
@@ -84,7 +84,18 @@ pub(super) fn collect_janitor(
     let mut artifacts: Vec<JanitorArtifact> = Vec::new();
 
     if category_enabled(enabled_categories, DisplayCategory::Crashes) {
-        artifacts.extend(janitor::crashes::scan_windows_wer_crash_dumps());
+        // The WER folder catches every dump on the machine, not just games'
+        // (GT-230), so a dump is only offered once it is attributed to a
+        // known game executable. Building that attribution means walking
+        // every game's install directory, which is only worth doing when the
+        // WER folder actually has candidate dumps waiting - checking that
+        // first costs one `read_dir` instead of a full library walk on every
+        // scan of a library that has never crashed a game.
+        let wer_candidates = janitor::crashes::wer_crash_dump_candidate_exes();
+        if !wer_candidates.is_empty() {
+            let known_games = known_game_executables(libraries, &wer_candidates, cancel);
+            artifacts.extend(janitor::crashes::scan_windows_wer_crash_dumps(&known_games));
+        }
         artifacts.extend(janitor::crashes::scan_unity_logs());
     }
     if cancel.load(Ordering::Relaxed) {
@@ -140,6 +151,92 @@ fn installed_app_ids(libraries: &[DiscoveredLibrary]) -> HashSet<String> {
         .flat_map(|library| library.games.iter())
         .filter_map(|game| game.app_id.clone())
         .collect()
+}
+
+/// How deep under a game's install directory to look for its executables
+/// when attributing a WER crash dump (GT-230). `Binaries\Win64\game.exe`
+/// sits three segments below the install root, and that is the ceiling: a
+/// game that buries its executable deeper is not matched, and an unmatched
+/// dump is dropped rather than offered, which is the safe direction.
+const MAX_EXE_SEARCH_DEPTH: usize = 3;
+
+/// Builds the `lowercased exe name -> game title` index the WER crash pass
+/// needs to attribute a dump to a game.
+///
+/// Only resolves the executables named in `candidates`: walking every game's
+/// install directory is not free on a library of thousands of games, so this
+/// stops as soon as every candidate has been found (or cancellation fires).
+fn known_game_executables(
+    libraries: &[DiscoveredLibrary],
+    candidates: &HashSet<String>,
+    cancel: &AtomicBool,
+) -> HashMap<String, String> {
+    let mut index = HashMap::new();
+    for library in libraries {
+        for game in &library.games {
+            if cancel.load(Ordering::Relaxed) || index.len() >= candidates.len() {
+                return index;
+            }
+            collect_exe_names(
+                &game.install_dir,
+                0,
+                &game.name,
+                candidates,
+                &mut index,
+                cancel,
+            );
+        }
+    }
+    index
+}
+
+/// Recursive, depth-bounded, cancellable walk collecting `*.exe` base names
+/// under `dir` that appear in `candidates`, keyed lowercased with `game_title`
+/// as the value.
+fn collect_exe_names(
+    dir: &Path,
+    depth: usize,
+    game_title: &str,
+    candidates: &HashSet<String>,
+    index: &mut HashMap<String, String>,
+    cancel: &AtomicBool,
+) {
+    if depth > MAX_EXE_SEARCH_DEPTH
+        || index.len() >= candidates.len()
+        || cancel.load(Ordering::Relaxed)
+    {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if index.len() >= candidates.len() || cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_exe_names(&path, depth + 1, game_title, candidates, index, cancel);
+        } else if file_type.is_file() {
+            let is_exe = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+            if !is_exe {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            if candidates.contains(&lower) {
+                index.entry(lower).or_insert_with(|| game_title.to_string());
+            }
+        }
+    }
 }
 
 /// Measures each artifact and turns it into a persistable finding.
@@ -229,6 +326,7 @@ fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gametrimmer_core::providers::GameInstall;
     use gametrimmer_core::rules::Category;
     use tempfile::tempdir;
 
@@ -309,5 +407,61 @@ mod tests {
             collection.findings[0].confidence < crate::model::AUTO_SELECT_CONFIDENCE_THRESHOLD,
             "a save is never pre-ticked by confidence alone"
         );
+    }
+
+    #[test]
+    fn known_game_executables_finds_an_exe_within_the_bounded_depth() {
+        let temp = tempdir().expect("tempdir");
+        let install_dir = temp.path().join("Portal 2");
+        let bin_dir = install_dir.join("bin").join("win64");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        std::fs::write(bin_dir.join("portal2.exe"), b"exe").expect("write exe");
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: temp.path().to_path_buf(),
+            games: vec![GameInstall {
+                name: "Portal 2".to_string(),
+                install_dir,
+                app_id: Some("620".to_string()),
+            }],
+            orphan_evidence: OrphanEvidence::Authoritative,
+        };
+
+        let mut candidates = HashSet::new();
+        candidates.insert("portal2.exe".to_string());
+        let cancel = AtomicBool::new(false);
+
+        let index = known_game_executables(&[library], &candidates, &cancel);
+
+        assert_eq!(index.get("portal2.exe"), Some(&"Portal 2".to_string()));
+    }
+
+    #[test]
+    fn known_game_executables_ignores_an_exe_that_is_not_a_candidate() {
+        let temp = tempdir().expect("tempdir");
+        let install_dir = temp.path().join("Some Game");
+        std::fs::create_dir_all(&install_dir).expect("create install dir");
+        std::fs::write(install_dir.join("somegame.exe"), b"exe").expect("write exe");
+
+        let library = DiscoveredLibrary {
+            vendor: "steam",
+            path: temp.path().to_path_buf(),
+            games: vec![GameInstall {
+                name: "Some Game".to_string(),
+                install_dir,
+                app_id: None,
+            }],
+            orphan_evidence: OrphanEvidence::Authoritative,
+        };
+
+        // Candidate set names an unrelated executable, so nothing resolves.
+        let mut candidates = HashSet::new();
+        candidates.insert("link.exe".to_string());
+        let cancel = AtomicBool::new(false);
+
+        let index = known_game_executables(&[library], &candidates, &cancel);
+
+        assert!(index.is_empty());
     }
 }
