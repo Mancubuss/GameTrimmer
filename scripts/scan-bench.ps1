@@ -14,11 +14,21 @@
 #   1  a regression: the run got slower on the same workload
 #   2  the run could not be made or measured (nothing was recorded)
 #
-# It deliberately does NOT touch the database: an empty database and a
-# populated one are different workloads, not a knob to turn, and clearing the
-# owner's real database would also drop the manually added libraries that make
-# the workload what it is. The state is read out of the log and recorded, and
-# entries are only ever compared against entries with the same state.
+# Every run starts from an empty database, because two runs of the same binary
+# over a populated one measured 148.8s and 57.6s - the generation being
+# superseded and the WAL it grows are the loudest thing in the numbers, and
+# they drown the code being measured. The cost of that: what superseding a
+# generation costs is no longer measured at all, so a regression living there
+# is one this script cannot see.
+#
+# The database is moved aside, not deleted. Manually added libraries live
+# only in `game_libraries` - nowhere in the settings file - so deleting would
+# destroy them for good the first day one exists. The previous database is
+# always one rename away, at gametrimmer.prev.db.
+#
+# Runs are still only compared against runs with the same database state, so
+# the populated entries already in the test log simply stop being compared
+# against rather than having to be pruned.
 
 #Requires -Version 7
 
@@ -50,12 +60,19 @@ $ErrorActionPreference = 'Stop'
 $TotalRegressionPct = 10
 # Per-stage growth worth naming in the verdict even when the total held.
 $StageRegressionPct = 25
+# How far the game and finding counts may drift before two runs stop being the
+# same workload. Exact equality was the rule until a run that got 679% slower
+# was waved through as "different workload" over 19 findings out of 718197.
+$WorkloadTolerancePct = 2
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $DistDir = Join-Path $RepoRoot 'dist'
 $BenchExe = Join-Path $DistDir 'gametrimmer-bench.exe'
 $LogFile = Join-Path $DistDir 'gametrimmer.log'
 $IniFile = Join-Path $DistDir 'gametrimmer.ini'
+$DbFile = Join-Path $DistDir 'gametrimmer.db'
+$PrevDbFile = Join-Path $DistDir 'gametrimmer.prev.db'
+$LogArchiveDir = Join-Path $DistDir 'bench-logs'
 $TestLog = Join-Path $RepoRoot 'docs/internal/scan-test-log.md'
 
 function Fail([string]$Message) {
@@ -80,6 +97,16 @@ function ConvertTo-Seconds([string]$Text) {
         's' { return $value }
     }
     return $null
+}
+
+# Whether two counts describe the same workload. Counts drift a little
+# between runs on their own - a cache file appears, a download finishes - and
+# demanding they match to the unit is what let a real regression through.
+function Test-WithinTolerance([object]$Before, [object]$After) {
+    if ($null -eq $Before -or $null -eq $After) { return $false }
+    if ([double]$Before -eq 0) { return ([double]$After -eq 0) }
+    $drift = [Math]::Abs([double]$After - [double]$Before) / [double]$Before * 100
+    return ($drift -le $WorkloadTolerancePct)
 }
 
 function Format-Seconds([object]$Seconds) {
@@ -150,12 +177,33 @@ if (-not (Test-Path $BenchExe)) {
 # --------------------------------------------------------------------- run
 
 if (-not $LogOnly) {
+# Start from an empty database - see the note at the top of this file. The
+# single-instance check above has already established nothing is holding it.
+if (Test-Path $DbFile) {
+    Say 'Відсуваю базу вбік (прогін іде на порожній)...'
+    Move-Item $DbFile $PrevDbFile -Force
+}
+foreach ($sidecar in "$DbFile-wal", "$DbFile-shm") {
+    Remove-Item $sidecar -Force -ErrorAction SilentlyContinue
+}
+
 $reportPath = Join-Path ([IO.Path]::GetTempPath()) "gametrimmer-bench-$([Guid]::NewGuid().ToString('N')).txt"
 $runStart = Get-Date
 Say "Ганяю скан ($BenchExe --scan)..."
 $process = Start-Process -FilePath $BenchExe -ArgumentList '--scan', '--report', $reportPath -Wait -PassThru
 $wallClock = (Get-Date) - $runStart
 Remove-Item $reportPath -ErrorAction SilentlyContinue
+
+# Keep this run's log. The application writes one log and keeps a single
+# previous session in it, so without a copy every run erases the evidence of
+# the one before - and the run worth reading back is usually the odd one,
+# noticed a run or two later. Archived before the parse rather than after, so
+# a log the parser chokes on is still there to be looked at.
+New-Item -ItemType Directory -Force -Path $LogArchiveDir | Out-Null
+if (Test-Path $LogFile) {
+    $stamp = $runStart.ToString('yyyyMMdd-HHmmss')
+    Copy-Item $LogFile (Join-Path $LogArchiveDir "gametrimmer-$stamp.log") -Force
+}
 
 if ($process.ExitCode -ne 0) {
     Fail "скан завершився з кодом $($process.ExitCode) - нічого не записано."
@@ -291,7 +339,8 @@ if (Test-Path $TestLog) {
 $verdict = 'перший запис для цих умов - порівнювати нема з чим'
 $regression = $false
 if ($previous) {
-    $sameWorkload = ($previous.games -eq $games) -and ($previous.findings -eq $findings)
+    $sameWorkload = (Test-WithinTolerance $previous.games $games) -and
+                    (Test-WithinTolerance $previous.findings $findings)
     $deltaPct = if ($previous.total -gt 0) { ($total - $previous.total) / $previous.total * 100 } else { 0 }
     $movement = '{0} -> {1} ({2:+0.0;-0.0;0}%)' -f (Format-Seconds $previous.total), (Format-Seconds $total), $deltaPct
 
@@ -308,7 +357,13 @@ if ($previous) {
     }
 
     if (-not $sameWorkload) {
-        $verdict = "інше навантаження (було ігор $($previous.games), знахідок $($previous.findings)), total $movement - не регресія"
+        # Not "no regression" - "nothing to compare against". The two read
+        # very differently to whoever sees the line, and only the second one
+        # is true: the total is simply not evidence here. The per-stage
+        # growth still is, because a stage is charged the same work either
+        # way, so it is reported instead of being computed and thrown away.
+        $verdict = "порівняти нема з чим: інше навантаження (було ігор $($previous.games), знахідок $($previous.findings)), total $movement"
+        if ($slowStages) { $verdict += '; подорожчали стадії: ' + ($slowStages -join ', ') }
     }
     elseif ($deltaPct -ge $TotalRegressionPct) {
         $regression = $true
