@@ -2780,6 +2780,28 @@ mod tests {
         );
     }
 
+    /// Second of the three GT-109 exclusion points: re-applying a profile
+    /// (picking it from the main screen after findings already exist) must
+    /// never bulk-select an `imported_untrusted` row, even on `Aggressive` -
+    /// the profile most likely to hide a missing exclusion, since it selects
+    /// almost everything by category or confidence floor. `bulk_selectable()`
+    /// is the second half of the `&&` in `set_selection_profile`; this fails
+    /// if that clause is ever dropped.
+    #[test]
+    fn set_selection_profile_never_selects_an_imported_untrusted_row() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut app = app_with_one_selected_finding(dir.path(), 1);
+        app.findings[0].row.imported_untrusted = true;
+        app.findings[0].selected = false;
+
+        app.set_selection_profile(SelectionProfile::Aggressive);
+
+        assert!(
+            !app.findings[0].selected,
+            "an imported_untrusted row was auto-selected by re-applying Aggressive",
+        );
+    }
+
     /// But a hand-edited checkbox says nothing about the next scan, so it
     /// must not drag the default to `Custom` with it.
     #[test]
@@ -2886,5 +2908,56 @@ mod tests {
         let settings = Settings::default();
 
         assert!(!watch_relevant_settings_changed(&settings, &settings));
+    }
+
+    /// Third of the three GT-109 exclusion points: a fresh scan's own
+    /// `WorkerMsg::Done` handler must not bulk-select an `imported_untrusted`
+    /// row either, even under `Aggressive` (see
+    /// `set_selection_profile_never_selects_an_imported_untrusted_row` for why
+    /// that profile is the one worth testing). Drives the message through
+    /// `apply_message` exactly as `drain_messages` would from a real worker.
+    #[test]
+    fn worker_msg_done_never_selects_an_imported_untrusted_row() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut app = GameTrimmerApp::new_for_test(dir.path());
+        app.accept_disclaimer();
+        app.settings = Settings {
+            default_selection_profile: SelectionProfile::Aggressive,
+            ..app.settings.clone()
+        };
+
+        let row = model::FindingRow {
+            file_id: 1,
+            game_id: 1,
+            game_name: "Test Game".to_string(),
+            app_id: None,
+            install_dir: PathBuf::from("C:\\Games\\Test"),
+            rel_path: "data/loc.pak".to_string(),
+            size: 1024,
+            size_on_disk: 1024,
+            source: model::FindingSource::Loc(gametrimmer_core::langdetect::LangKind::Text),
+            rule_desc: "test rule".to_string(),
+            confidence: 90,
+            lang_tag: Some("de".to_string()),
+            group_dir: None,
+            deletion_block_reason: None,
+            imported_untrusted: true,
+            library: None,
+            anti_cheat_protected: false,
+        };
+
+        app.apply_message(WorkerMsg::Done {
+            findings: vec![row],
+            scan_summary: String::new(),
+            occupancy: model::Occupancy::default(),
+            timing: None,
+            routing_breakdown: String::new(),
+        });
+
+        assert_eq!(app.findings.len(), 1);
+        assert!(
+            !app.findings[0].selected,
+            "an imported_untrusted row from a fresh scan was auto-selected by Aggressive",
+        );
     }
 }

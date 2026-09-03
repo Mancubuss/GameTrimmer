@@ -214,19 +214,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     };
 
     // Apply the selection profile exactly like the GUI does on a fresh scan.
-    let items: Vec<FindingItem> = findings
-        .into_iter()
-        .map(|row| {
-            let selected =
-                model::profile_auto_selects(profile, row.display_category(), row.confidence)
-                    && row.bulk_selectable();
-            FindingItem {
-                row,
-                selected,
-                removed: false,
-            }
-        })
-        .collect();
+    let items: Vec<FindingItem> = apply_selection_profile(findings, profile);
 
     let cards = model::plan_cards(&items);
     let total_findings = items.len();
@@ -318,6 +306,32 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     }
 
     data.exit_code()
+}
+
+/// Turns freshly scanned rows into selectable items, auto-checking exactly
+/// what the GUI would pre-check on a fresh scan (see `WorkerMsg::Done` and
+/// `GameTrimmerApp::set_selection_profile`): the profile's category/confidence
+/// rule *and* `bulk_selectable()`. That second clause is not redundant - it is
+/// what keeps an `imported_untrusted` row (safety evidence an older database
+/// supplied, never re-checked by this scan) unchecked no matter how permissive
+/// the profile is; only an explicit, one-at-a-time tick may select it.
+fn apply_selection_profile(
+    findings: Vec<FindingRow>,
+    profile: settings::SelectionProfile,
+) -> Vec<FindingItem> {
+    findings
+        .into_iter()
+        .map(|row| {
+            let selected =
+                model::profile_auto_selects(profile, row.display_category(), row.confidence)
+                    && row.bulk_selectable();
+            FindingItem {
+                row,
+                selected,
+                removed: false,
+            }
+        })
+        .collect()
 }
 
 /// Opens the database (creating/migrating the schema on first use, same as the
@@ -496,6 +510,68 @@ mod tests {
             load_settings(&db_path, &settings_path).expect("reload CLI settings"),
             legacy,
             "an existing ini must win over later legacy-database changes"
+        );
+    }
+
+    /// A localization row every profile would otherwise auto-select, but
+    /// `imported_untrusted` still leaves unchecked - see
+    /// `apply_selection_profile`'s doc comment.
+    fn imported_untrusted_loc_row() -> FindingRow {
+        FindingRow {
+            file_id: 1,
+            game_id: 1,
+            game_name: "Test Game".to_string(),
+            app_id: None,
+            install_dir: std::path::PathBuf::from("C:\\Games\\Test"),
+            rel_path: "data/loc.pak".to_string(),
+            size: 1024,
+            size_on_disk: 1024,
+            source: model::FindingSource::Loc(gametrimmer_core::langdetect::LangKind::Text),
+            rule_desc: "test rule".to_string(),
+            confidence: 90,
+            lang_tag: Some("de".to_string()),
+            group_dir: None,
+            deletion_block_reason: None,
+            imported_untrusted: true,
+            library: None,
+            anti_cheat_protected: false,
+        }
+    }
+
+    /// The third of the three exclusion points (GT-109 item 1): a headless
+    /// scan's own selection pass must never bulk-select an `imported_untrusted`
+    /// row, no matter how permissive `--profile` is. `Aggressive` selects
+    /// nearly everything by category or confidence floor - it is the profile
+    /// most likely to hide a missing exclusion.
+    #[test]
+    fn headless_selection_never_auto_selects_an_imported_untrusted_row() {
+        let items = apply_selection_profile(
+            vec![imported_untrusted_loc_row()],
+            settings::SelectionProfile::Aggressive,
+        );
+
+        assert_eq!(items.len(), 1);
+        assert!(
+            !items[0].selected,
+            "an imported_untrusted row was auto-selected by --profile aggressive",
+        );
+    }
+
+    /// The same row, freshly scanned rather than imported, is exactly what
+    /// `Aggressive` is meant to pick up - proof the row above fails because of
+    /// `imported_untrusted`, not because the fixture is unselectable by
+    /// construction.
+    #[test]
+    fn headless_selection_does_auto_select_the_same_row_once_trusted() {
+        let mut row = imported_untrusted_loc_row();
+        row.imported_untrusted = false;
+
+        let items =
+            apply_selection_profile(vec![row], settings::SelectionProfile::Aggressive);
+
+        assert!(
+            items[0].selected,
+            "a trusted, freshly scanned Loc row should be auto-selected by --profile aggressive",
         );
     }
 }
