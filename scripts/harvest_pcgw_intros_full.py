@@ -113,6 +113,15 @@ CODE_TAG_RE = re.compile(r"<code>(.*?)</code>", re.IGNORECASE | re.DOTALL)
 LAUNCH_ARG_RE = re.compile(r"(?<![\w-])([-+/][a-z][\w-]{2,30})\b", re.IGNORECASE)
 REFCHECK_DATE_RE = re.compile(r"\{\{Refcheck[^}]*?date\s*=\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", re.IGNORECASE)
 ENGINE_RE = re.compile(r"\{\{\s*Infobox game/row/engine\s*\|\s*([^|}]+)", re.IGNORECASE)
+# The infobox lines that carry the store ids. These are the only thing on a
+# wiki page that names a game the same way a launcher does, and without them a
+# harvested file list can only be matched back to a library by its title -
+# which is ambiguous exactly where it matters ("Prey" is two different games).
+# `steam appid side` is deliberately not read: its ids are DLC, season passes
+# and regional SKUs that share the base game's install folder, so binding a
+# rule to one would claim a game the wiki never described.
+STEAM_APPID_RE = re.compile(r"(?im)^\s*\|\s*steam\s*appid\s*=\s*([0-9]+)")
+GOG_ID_RE = re.compile(r"(?im)^\s*\|\s*gogcom\s*id\s*=\s*([0-9]+)")
 
 
 def request(params):
@@ -319,8 +328,13 @@ def extract(title, wikitext):
     )
     path_like = dedup([value for value in files + folders if "/" in value or "\\" in value])
 
+    steam_appid = STEAM_APPID_RE.search(wikitext)
+    gog_id = GOG_ID_RE.search(wikitext)
+
     return {
         "title": title,
+        "steam_appid": steam_appid.group(1) if steam_appid else None,
+        "gog_id": gog_id.group(1) if gog_id else None,
         "url": "https://www.pcgamingwiki.com/wiki/"
         + urllib.parse.quote(title.replace(" ", "_"), safe="_():,'!-"),
         "methods": sorted(set(methods)),
@@ -353,6 +367,10 @@ def write_report(titles, pages, missing, records, no_section):
         f"- Pages with an intro-skip section: **{len(records)}**",
         f"- Pages fetched but without such a section: **{len(no_section)}**",
         f"- Titles the API had no page for: **{len(missing)}**",
+        f"- Pages naming a Steam appid: **{sum(1 for r in records if r['steam_appid'])}**",
+        f"- Pages naming a GOG id: **{sum(1 for r in records if r['gog_id'])}**",
+        f"- Pages with a named video file *and* a store id: "
+        f"**{sum(1 for r in records if r['video_files'] and (r['steam_appid'] or r['gog_id']))}**",
         "",
         "## Fix methods (a page may document several)",
         "",
