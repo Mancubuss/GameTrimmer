@@ -431,9 +431,8 @@ pub fn classify_game(
         assign_group_dirs(&entries, &flagged)
     });
 
-    // One cache per game: every finding here shares the same trusted root and
-    // most of the same intermediate directories, which is exactly the
-    // redundancy `SnapshotCapture` exists to remove.
+    // One capture per game: every finding here shares the same trusted root,
+    // and the root is the one directory identity a snapshot keeps.
     let safety_started = Instant::now();
     let mut capture = SnapshotCapture::new();
     let findings: Vec<PreparedFinding> = combined_by_index

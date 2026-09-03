@@ -450,9 +450,10 @@ fn identity(path: &Path) -> std::result::Result<FileIdentity, DeleteBlockReason>
 /// fields that agreed, so a junction is refused here exactly as
 /// [`identity`] refuses it.
 ///
-/// Applies to the finding's own leaf only. The trusted root and every
-/// directory above it are still opened, and so is the leaf when no record
-/// stated it - a walkdir-scanned game, or a record missing a field.
+/// Applies to the finding's own leaf only. The trusted root is still opened,
+/// and so is the leaf when no record stated it - a walkdir-scanned game, or a
+/// record missing a field. The directories between them are not opened at all;
+/// see [`SnapshotCapture`].
 fn stated_identity(
     path: &Path,
     stated: &MftIdentity,
@@ -537,24 +538,35 @@ pub(crate) fn tree_fingerprint(root: &Path) -> std::result::Result<String, Delet
     Ok(format!("{hash:016x}"))
 }
 
-/// Captures snapshots for many findings that share directories, remembering
-/// the directories it has already proven.
+/// Captures snapshots for many findings under the same trusted roots,
+/// remembering the roots it has already read.
 ///
-/// Every finding needs the chain from its trusted root down to it proven free
-/// of reparse points, and a scan produces thousands of findings under the same
-/// few directories. Proving each chain from scratch reopens the same folders
-/// once per finding: measured on a real library that is ~159 us per finding
-/// against ~28 us for a single identity read, so five sixths of the cost is
-/// re-proving what this scan already proved.
+/// The root is the one directory identity a snapshot actually keeps, and the
+/// one a deletion later compares against (`RootChanged` in
+/// [`validate_delete_plan`]). Every finding of a game shares it, so it is read
+/// once per root rather than once per finding.
 ///
-/// The cache is scoped to one capture pass and covers *directories only* - the
-/// target is always read fresh. It is not a weakening of the safety contract:
-/// a snapshot has always been a point-in-time record, and the checks that
-/// actually gate a deletion re-walk the whole chain, uncached, at delete time
-/// (see [`validate_delete_plan`]).
+/// **The chain between the root and the target is deliberately not walked
+/// here.** It used to be, to refuse a reparse point before the finding was
+/// ever shown, and the identities it read were then thrown away. Two facts
+/// retired it. It decided nothing: every deletion re-walks the whole chain
+/// live and uncached in [`validate_delete_plan`], which is what actually
+/// refuses a junction, and a snapshot has always been a point-in-time record
+/// rather than a promise about the future. And it was the single most
+/// expensive thing the scan did on spinning media: 24 542 directory opens on
+/// the measured library, 2 236 us each when the volume's metadata had fallen
+/// out of the Windows cache against 46 us when it had not - a stage that
+/// wandered between 10 s and 281 s on unchanged code, purely on cache
+/// temperature, and loud enough to drown a real regression in the bench
+/// (GT-453).
+///
+/// What is lost is *when* a junction is caught, not *whether*: a finding whose
+/// chain grew a reparse point is now shown and then refused at delete time,
+/// where it was previously never shown. Nothing reaches deletion that did not
+/// before.
 #[derive(Default)]
 pub struct SnapshotCapture {
-    proven_directories: HashMap<PathBuf, FileIdentity>,
+    proven_roots: HashMap<PathBuf, FileIdentity>,
 }
 
 impl SnapshotCapture {
@@ -581,26 +593,24 @@ impl SnapshotCapture {
         // Same distinction as `validate_chain`: a root that is not there says
         // nothing about the target, so it must not read as absence.
         let root_identity = self
-            .proven_directory(trusted_root)
+            .proven_root(trusted_root)
             .map_err(|reason| match reason {
                 DeleteBlockReason::Missing => DeleteBlockReason::RootMissing,
                 other => other,
             })?;
 
+        // Builds the target path and refuses anything that is not a plain
+        // component. No directory between the root and the target is opened -
+        // see the type's documentation for why that check moved entirely to
+        // delete time.
         let mut current = trusted_root.to_path_buf();
-        let mut components = rel_path.components().peekable();
-        while let Some(component) = components.next() {
+        for component in rel_path.components() {
             let Component::Normal(component) = component else {
                 return Err(DeleteBlockReason::InvalidRelativePath(
                     "non-normal component".into(),
                 ));
             };
             current.push(component);
-            // Everything above the target is a directory this scan may see
-            // again; the target itself is never cached.
-            if components.peek().is_some() {
-                self.proven_directory(&current)?;
-            }
         }
 
         let target = current;
@@ -627,15 +637,12 @@ impl SnapshotCapture {
         })
     }
 
-    fn proven_directory(
-        &mut self,
-        path: &Path,
-    ) -> std::result::Result<FileIdentity, DeleteBlockReason> {
-        if let Some(known) = self.proven_directories.get(path) {
+    fn proven_root(&mut self, path: &Path) -> std::result::Result<FileIdentity, DeleteBlockReason> {
+        if let Some(known) = self.proven_roots.get(path) {
             return Ok(known.clone());
         }
         let identity = identity(path)?;
-        self.proven_directories
+        self.proven_roots
             .insert(path.to_path_buf(), identity.clone());
         Ok(identity)
     }
@@ -1378,11 +1385,13 @@ mod tests {
         }
     }
 
-    /// Caching directories must not let a reparse point in the chain slip
-    /// past - the cache only ever stores chains that were already proven
-    /// clean, so a junction has to fail on the first capture and stay failing.
+    /// The guarantee that survived [`SnapshotCapture`] giving up the chain
+    /// walk, stated as one test: a junction between the root and the target
+    /// is now *captured* - the finding gets shown - and is still refused the
+    /// moment a deletion is attempted. The scan no longer decides this; the
+    /// delete-time walk does, and it is the only one that ever gated it.
     #[test]
-    fn snapshot_capture_still_blocks_a_junction_in_the_chain() {
+    fn a_junction_captured_at_scan_time_is_still_refused_at_delete_time() {
         let temp = tempfile::tempdir().unwrap();
         let outside = temp.path().join("outside");
         let root = temp.path().join("root");
@@ -1390,26 +1399,41 @@ mod tests {
         fs::create_dir(&outside).unwrap();
         fs::create_dir(&root).unwrap();
         fs::write(outside.join("target.bin"), b"data").unwrap();
-        fs::write(outside.join("second.bin"), b"data").unwrap();
         create_junction(&junction, &outside);
 
         let mut capture = SnapshotCapture::new();
-        for relative in [r"linked\target.bin", r"linked\second.bin"] {
-            let result = capture.capture(&root, relative, None);
-            assert!(
-                matches!(result, Err(DeleteBlockReason::ReparsePoint(_))),
-                "a cached chain must not launder a junction: {result:?}"
-            );
-        }
+        let snapshot = capture
+            .capture(&root, r"linked\target.bin", None)
+            .expect("the chain is no longer walked at capture time");
+
+        let plan = DeletePlan {
+            file_id: 1,
+            scan_id: 1,
+            action: "delete".to_string(),
+            snapshot,
+        };
+        let refused = validate_delete_plan(&plan);
+        assert!(
+            matches!(refused, Err(DeleteBlockReason::ReparsePoint(_))),
+            "a junction in the chain must still block the deletion: {refused:?}"
+        );
+        // Mapped to `()` only because a held handle is deliberately not
+        // `Debug`; the reason is what this asserts on.
+        let held = open_verified_for_delete(&plan).map(|_| ());
+        assert!(
+            matches!(held, Err(DeleteBlockReason::ReparsePoint(_))),
+            "and must block the path that actually removes the file: {held:?}"
+        );
 
         fs::remove_dir(&junction).unwrap();
     }
 
-    /// A record that states the leaf replaces the open on the leaf, and on
-    /// nothing else: the chain above it is still walked and still proven.
+    /// A record that states the leaf replaces the open on the leaf. The root
+    /// is the one identity still read live, because it is the one a deletion
+    /// later compares against.
     #[cfg(windows)]
     #[test]
-    fn a_stated_leaf_is_taken_from_the_record_and_the_chain_is_still_walked() {
+    fn a_stated_leaf_is_taken_from_the_record_and_the_root_is_still_read_live() {
         let temp = tempfile::tempdir().unwrap();
         let nested = temp.path().join("Data");
         fs::create_dir_all(&nested).unwrap();
