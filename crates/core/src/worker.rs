@@ -1,12 +1,21 @@
-//! 2-Phase Scanning and Analysis Pipeline.
+//! Classification policy every removal path has to obey.
 //!
-//! Orchestrates:
-//! - Phase 1: Disk & Library discovery / file indexing
-//! - Phase 2: Regex rules & whole-file localization detections
+//! Orchestrates nothing - the scan job (`app::worker::scan`) and the
+//! unattended re-trim ([`crate::retrim`]) drive their own loops. What lives
+//! here is the part those loops must not each decide for themselves: which
+//! files are containers no whole-file delete may touch
+//! ([`is_protected_container`]), when the user's keep-language list overrules
+//! a rule ([`keep_language_vetoes_rule`]), and the progress vocabulary they
+//! report in.
+//!
+//! The module used to call itself a "2-Phase Scanning and Analysis Pipeline",
+//! which described the deep archive inspector that was removed rather than
+//! anything it does: it named a pipeline it never had and left the guards
+//! reading like leftovers of a deleted feature.
 
 use crate::models::Finding;
 
-/// Progress reported across the 2-phase scanning architecture.
+/// Progress a scan reports as it walks a library.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkerProgress {
     /// Phase 1: Discovering and indexing filesystem entries.
@@ -26,27 +35,31 @@ pub enum WorkerProgress {
     OverallProgress { fraction: f32, message: String },
 }
 
-/// Extensions a monolithic-archive deep inspector used to claim, to the
-/// exclusion of every other path in the application. That inspector is gone:
-/// it never shipped a working mutation, and every `trim()` returned
-/// `Unsupported`. The extensions themselves are still worth refusing
-/// whole-file deletion for, though: a `.pak`/`.pck`/`.bnk`/... is a
-/// multi-asset container, and a rule or import that matched one by name could
-/// otherwise delete an entire 40 GB archive because a keyword happened to
-/// match its path.
+/// Extensions of files GameTrimmer refuses to delete whole, because deleting
+/// one throws away assets the user never asked to lose: a `.pak`/`.pck`/
+/// `.bnk`/... holds many assets in one file, and a rule - especially an
+/// imported one - that matched it by a keyword in its path would otherwise
+/// take an entire 40 GB archive with it.
+///
+/// Named for what it protects, not for what once read it. The list was
+/// originally the input list of a deep archive inspector that could open a
+/// container and remove single streams from it; that inspector is gone (it
+/// never shipped a working mutation - every `trim()` returned `Unsupported`),
+/// and while it existed these files were "candidates" for that trimmer. They
+/// are candidates for nothing now. They are simply off limits.
 ///
 /// One list, read by the classifier's veto ([`RuleEngine::classify`]) and by
 /// the delete preflight ([`crate::ops`]). It used to be written out twice, in
 /// two crates, with no constant between them.
 ///
 /// [`RuleEngine::classify`]: crate::rules::RuleEngine::classify
-pub const CANDIDATE_ARCHIVE_EXTENSIONS: &[&str] =
+pub const PROTECTED_CONTAINER_EXTENSIONS: &[&str] =
     &["pck", "bnk", "pak", "asar", "bundle", "unity3d", "assets"];
 
 /// Whether `ext` (without its dot, any case) belongs to the protected
-/// archive list. See [`CANDIDATE_ARCHIVE_EXTENSIONS`].
-pub fn is_candidate_archive_extension(ext: &str) -> bool {
-    CANDIDATE_ARCHIVE_EXTENSIONS
+/// container list. See [`PROTECTED_CONTAINER_EXTENSIONS`].
+pub fn is_protected_container_extension(ext: &str) -> bool {
+    PROTECTED_CONTAINER_EXTENSIONS
         .iter()
         .any(|known| ext.eq_ignore_ascii_case(known))
 }
@@ -104,9 +117,9 @@ pub fn keep_language_vetoes_rule(
     finding.localized_content && detector.carries_kept_language(rel_path)
 }
 
-/// Identifies whether a file is a monolithic archive candidate that must
-/// never be offered as a whole-file deletion. See
-/// [`CANDIDATE_ARCHIVE_EXTENSIONS`].
+/// Identifies whether a file is a multi-asset container that must never be
+/// offered as a whole-file deletion. See
+/// [`PROTECTED_CONTAINER_EXTENSIONS`].
 ///
 /// The extension is tested first, and it decides almost every call: seven
 /// extensions against a `.exe`, a `.uasset` or a texture is a handful of byte
@@ -118,12 +131,12 @@ pub fn keep_language_vetoes_rule(
 /// (1637 games, 874 k findings) with the old order: 646 s of worker CPU in the
 /// rules stage and 223 s of single-threaded row building in the writer, on a
 /// scan that took 281 s wall.
-pub fn is_candidate_archive_path(rel_path: &str) -> bool {
+pub fn is_protected_container(rel_path: &str) -> bool {
     let filename = rel_path.rsplit(['\\', '/']).next().unwrap_or(rel_path);
     let Some((_, ext)) = filename.rsplit_once('.') else {
         return false;
     };
-    if !is_candidate_archive_extension(ext) {
+    if !is_protected_container_extension(ext) {
         return false;
     }
 
@@ -195,9 +208,9 @@ fn ends_with_separated_tag(stem: &str, tag: &str) -> bool {
 
 /// Determines if a file path points to a standalone external single-language
 /// file: a whole-file localization the rest of the app already deletes
-/// safely, as opposed to a monolithic container whose internal streams a
-/// whole-file delete could not separate. Kept as the exception to
-/// [`is_candidate_archive_path`]'s protection, not for an in-place trimmer -
+/// safely, as opposed to a container whose internal streams a whole-file
+/// delete could not separate. Kept as the exception to
+/// [`is_protected_container`]'s protection, not for an in-place trimmer -
 /// GameTrimmer no longer has one.
 ///
 /// Matches paths such as:
@@ -319,27 +332,27 @@ mod tests {
 
     #[test]
     fn test_candidate_archive_path_detection() {
-        assert!(is_candidate_archive_path("Data/Audio/Voices.pck"));
-        assert!(is_candidate_archive_path(
+        assert!(is_protected_container("Data/Audio/Voices.pck"));
+        assert!(is_protected_container(
             "Content/Paks/pakchunk0-WindowsNoEditor.pak"
         ));
-        assert!(is_candidate_archive_path("resources/app.asar"));
-        assert!(is_candidate_archive_path("re_chunk_000.pak"));
+        assert!(is_protected_container("resources/app.asar"));
+        assert!(is_protected_container("re_chunk_000.pak"));
 
         // Standalone external single-language files must NOT be treated as monolithic archives
-        assert!(!is_candidate_archive_path("locales/es.pak"));
-        assert!(!is_candidate_archive_path("Audio/sounds_fre.pck"));
-        assert!(!is_candidate_archive_path("sound_rus.pck"));
+        assert!(!is_protected_container("locales/es.pak"));
+        assert!(!is_protected_container("Audio/sounds_fre.pck"));
+        assert!(!is_protected_container("sound_rus.pck"));
 
         // Non-archives
-        assert!(!is_candidate_archive_path("bin/game.exe"));
-        assert!(!is_candidate_archive_path("readme.txt"));
+        assert!(!is_protected_container("bin/game.exe"));
+        assert!(!is_protected_container("readme.txt"));
 
         // Bink 1 and Bink 2 are videos, not archives of separable language
         // streams - both belong to the intro rules, not the archive
         // extension list. See GT-204.
-        assert!(!is_candidate_archive_path("movies/intro.bik"));
-        assert!(!is_candidate_archive_path("movies/intro.bk2"));
+        assert!(!is_protected_container("movies/intro.bik"));
+        assert!(!is_protected_container("movies/intro.bk2"));
     }
 
     #[test]

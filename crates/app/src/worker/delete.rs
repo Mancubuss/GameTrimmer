@@ -993,7 +993,7 @@ mod tests {
                     blocked
                         .error
                         .as_deref()
-                        .is_some_and(|err| err.contains("monolithic archive candidate")),
+                        .is_some_and(|err| err.contains("multi-asset container")),
                     "the user has to be told which file was skipped and why"
                 );
                 assert_eq!(

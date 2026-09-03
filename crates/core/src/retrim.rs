@@ -25,8 +25,8 @@ pub struct RetrimReport {
     /// not be written after one succeeded.
     pub errors: Vec<String>,
     /// Files the run left alone, each with the reason - an anti-cheat
-    /// protected game, a container that is trimmed in place rather than
-    /// deleted whole, an intro this build has no micro-stub for.
+    /// protected game, a multi-asset container no whole-file delete may
+    /// touch, an intro this build has no micro-stub for.
     ///
     /// Separate from `errors` because a caller cannot act on "one file was
     /// left alone, exactly as designed" the way it acts on "one file failed",
@@ -364,7 +364,7 @@ pub fn retrim_game_with_new_build(
             .collect();
         let mut swept = Vec::new();
         for (sibling, source) in crate::scanner::same_name_siblings(&entries, &sources, &skip) {
-            if crate::worker::is_candidate_archive_path(&entries[sibling].rel_path) {
+            if crate::worker::is_protected_container(&entries[sibling].rel_path) {
                 continue;
             }
             let Some(&position) = by_index.get(&source) else {

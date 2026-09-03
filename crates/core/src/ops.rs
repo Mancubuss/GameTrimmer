@@ -252,9 +252,10 @@ pub fn reconcile_pending_operations(conn: &mut Connection) -> Result<Vec<Reconci
 }
 
 /// One file the preflight left out of the batch without failing it: a
-/// monolithic archive candidate, which has to be trimmed in place rather than
-/// removed whole. Every other refusal is a safety error and still aborts the
-/// whole call - see [`prepare_delete_plans_with_skips`].
+/// multi-asset container, which GameTrimmer can only remove whole or not at
+/// all, and removing whole would take assets the user never selected. Every
+/// other refusal is a safety error and still aborts the whole call - see
+/// [`prepare_delete_plans_with_skips`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteSkip {
     pub file_id: i64,
@@ -279,7 +280,7 @@ pub enum DeleteAttendance {
 }
 
 /// Builds immutable delete plans only from the active, non-legacy generation.
-/// Monolithic archive candidates are dropped from the batch; every other
+/// Protected containers are dropped from the batch; every other
 /// refusal fails the whole call. Callers that need to tell the user which
 /// files were dropped use [`prepare_delete_plans_with_skips`] instead.
 pub fn prepare_delete_plans(
@@ -425,11 +426,20 @@ fn prepare_delete_plans_for_action(
                 DeleteBlockReason::MissingSafetyEvidence
             )));
         };
-        if crate::worker::is_candidate_archive_path(&rel_path) {
+        if crate::worker::is_protected_container(&rel_path) {
             skips.push(DeleteSkip {
                 file_id: *file_id,
                 path: Path::new(&trusted_root).join(&rel_path),
-                reason: "a monolithic archive candidate is trimmed in place, not deleted whole"
+                // What this says has to stay true: it is shown to the
+                // user, verbatim, in the summary a finished delete batch
+                // puts up (`app::worker::delete` turns every skip into a
+                // `RemoveOutcome`). It used to promise the file was
+                // "trimmed in place, not deleted whole" - a capability the
+                // in-place archive trimmer took with it when it was
+                // removed. Nothing trims anything now; the file is simply
+                // left alone.
+                reason: "a multi-asset container is never deleted whole, and \
+                         GameTrimmer cannot remove only the parts inside it"
                     .to_string(),
             });
             continue;
@@ -1458,7 +1468,7 @@ mod tests {
     }
 
     #[test]
-    /// A `findings.category = 'monolithic_archive'` row is residue from a
+    /// A legacy `findings.category = 'monolithic_archive'` row is residue from a
     /// build that had an in-place archive trimmer; that feature is gone and
     /// no code writes this category any more, but an old database can still
     /// carry the row. It must never turn into a whole-file delete plan - the
@@ -1488,10 +1498,10 @@ mod tests {
         .unwrap();
         assert!(
             plans.is_empty(),
-            "a monolithic archive candidate must never get a delete plan"
+            "a protected container must never get a delete plan"
         );
         assert_eq!(skips.len(), 1);
-        assert!(skips[0].reason.contains("monolithic archive candidate"));
+        assert!(skips[0].reason.contains("multi-asset container"));
         assert!(temp.path().join("archive.pck").is_file());
     }
 
@@ -1520,7 +1530,7 @@ mod tests {
         .unwrap();
         assert!(plans.is_empty(), "a container must never get a delete plan");
         assert_eq!(skips.len(), 1);
-        assert!(skips[0].reason.contains("monolithic archive candidate"));
+        assert!(skips[0].reason.contains("multi-asset container"));
         assert!(temp.path().join("voices.pck").is_file());
     }
 
@@ -1528,16 +1538,16 @@ mod tests {
     /// A misleading name is classification's problem, not the preflight's.
     /// The preflight never reads a file's bytes to decide whether it may be
     /// deleted whole - only its path, against
-    /// [`crate::worker::is_candidate_archive_path`].
+    /// [`crate::worker::is_protected_container`].
     fn a_misleading_name_reaches_a_plan_because_the_preflight_stopped_reading() {
         let temp = tempfile::tempdir().unwrap();
         let bytes = b"AKPK-shaped bytes do not matter to the preflight".to_vec();
         std::fs::write(temp.path().join("sounds_fra.pck"), &bytes).unwrap();
         std::fs::write(temp.path().join("manual.txt"), &bytes).unwrap();
-        // Neither name is a monolithic archive candidate, so the name check
+        // Neither name is a protected container, so the name check
         // that remains has no opinion about either.
-        assert!(!crate::worker::is_candidate_archive_path("sounds_fra.pck"));
-        assert!(!crate::worker::is_candidate_archive_path("manual.txt"));
+        assert!(!crate::worker::is_protected_container("sounds_fra.pck"));
+        assert!(!crate::worker::is_protected_container("manual.txt"));
 
         let mut conn = crate::db::open_in_memory().unwrap();
         let scan_id = crate::db::begin_scan(&conn, "complete").unwrap();
@@ -1584,9 +1594,9 @@ mod tests {
         std::fs::write(temp.path().join("intro.bik"), crate::stub::BIK1_STUB).unwrap();
         std::fs::write(temp.path().join("logo.bk2"), crate::stub::BINK2_STUB).unwrap();
         let container = b"AKPK-shaped bytes do not matter to the preflight".to_vec();
-        // Same bytes, two names. `voices.pck` is a monolithic archive
-        // candidate by name alone; `manual.txt` is not, and nothing but its
-        // contents could say otherwise.
+        // Same bytes, two names. `voices.pck` is a protected container by
+        // name alone; `manual.txt` is not, and nothing but its contents
+        // could say otherwise.
         std::fs::write(temp.path().join("voices.pck"), &container).unwrap();
         std::fs::write(temp.path().join("manual.txt"), &container).unwrap();
 
@@ -1626,7 +1636,7 @@ mod tests {
         .unwrap();
         assert!(plans.is_empty());
         assert_eq!(skips.len(), 1);
-        assert!(skips[0].reason.contains("monolithic archive candidate"));
+        assert!(skips[0].reason.contains("multi-asset container"));
 
         // The same container under a name the preflight has no opinion about
         // reaches a delete plan: the preflight never reads a file's bytes,
@@ -1657,7 +1667,7 @@ mod tests {
         let mut kpka = b"KPKA".to_vec();
         kpka.extend_from_slice(&[0u8; 60]);
         // Held back by its name, not its bytes - `re_chunk_000.pak` is a
-        // monolithic archive candidate before anything is read.
+        // protected container before anything is read.
         std::fs::write(temp.path().join("re_chunk_000.pak"), &kpka).unwrap();
 
         let mut conn = crate::db::open_in_memory().unwrap();
@@ -1686,7 +1696,7 @@ mod tests {
         assert_eq!(skips[0].file_id, container);
         assert_eq!(skips[0].path, temp.path().join("re_chunk_000.pak"));
         assert!(
-            skips[0].reason.contains("monolithic archive candidate"),
+            skips[0].reason.contains("multi-asset container"),
             "the skip has to say why, not just name a file id"
         );
     }

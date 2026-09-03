@@ -698,13 +698,13 @@ impl RuleEngine {
             }
         }
 
-        // A monolithic archive candidate is never a whole-file deletion
-        // target - GameTrimmer has no way to remove just the parts of a
-        // container that are safe to lose. An ordinary or imported rule may
+        // A protected container is never a whole-file deletion target -
+        // GameTrimmer has no way to remove just the parts of a container
+        // that are safe to lose. An ordinary or imported rule may
         // use any display category it wants; letting it claim `voices.pck`
         // as `docs_file` would otherwise smuggle the container into the
         // whole-file delete path.
-        if crate::worker::is_candidate_archive_path(rel_path) {
+        if crate::worker::is_protected_container(rel_path) {
             return Verdict::Unmatched;
         }
 
@@ -952,8 +952,8 @@ mod tests {
         let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
 
         // Support/help folders are reference material, but an archive-shaped
-        // file is a protected monolithic archive candidate (see
-        // `crate::worker::is_candidate_archive_path`) and must not become a
+        // file is a protected container (see
+        // `crate::worker::is_protected_container`) and must not become a
         // whole-file rule finding merely because of its parent folder.
         assert_eq!(
             engine.classify(r"Support\ru\voices.pak", None),

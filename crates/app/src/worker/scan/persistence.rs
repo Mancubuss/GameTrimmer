@@ -374,11 +374,22 @@ pub(super) fn persist_prepared_game(
     // files"), which the totals alone never showed.
     let stats = ScanStats::of(&prepared.entries);
 
-    // Only the flagged files and unflagged candidate archive files get a row in `files`.
+    // Only the flagged files get a row in `files`.
     // The findings are in strictly ascending `entry_index` order, one per
     // entry, because `classify_game` builds them by walking `entries` once -
     // so handing their files over in that order makes `file_ids[i]` the id of
     // `prepared.findings[i]`'s file.
+    //
+    // Unflagged protected containers used to get a row here too, left over
+    // from the in-place archive trimmer that read them. Nothing has read them
+    // since it was removed: every other consumer reaches this table through
+    // `JOIN files f ON f.id = fi.file_id` (see `store_files_no_tx`), and an
+    // unflagged container has no finding to join through - by construction,
+    // because the classifier vetoes it before one can exist. They were
+    // written on every scan, deleted by the next, and read by nobody. The
+    // delete preflight's own container block is by path
+    // (`worker::is_protected_container` on the row it already has), so it
+    // never depended on these rows either.
     debug_assert!(
         prepared
             .findings
@@ -386,27 +397,14 @@ pub(super) fn persist_prepared_game(
             .all(|pair| pair[0].entry_index < pair[1].entry_index),
         "findings must be in strictly ascending entry order for positional file ids"
     );
-    let flagged_indices: HashSet<usize> = prepared.findings.iter().map(|f| f.entry_index).collect();
 
-    let candidate_archives: Vec<&FileEntry> = prepared
-        .entries
-        .iter()
-        .enumerate()
-        .filter(|(idx, entry)| {
-            !flagged_indices.contains(idx)
-                && gametrimmer_core::worker::is_candidate_archive_path(&entry.rel_path)
-        })
-        .map(|(_, entry)| entry)
-        .collect();
-
-    let all_entries = prepared
+    let flagged_entries = prepared
         .findings
         .iter()
-        .map(|finding| &prepared.entries[finding.entry_index])
-        .chain(candidate_archives);
+        .map(|finding| &prepared.entries[finding.entry_index]);
 
     let sql_started = std::time::Instant::now();
-    let file_ids = store_files_no_tx(conn, scan_id, prepared.game_id, all_entries)?;
+    let file_ids = store_files_no_tx(conn, scan_id, prepared.game_id, flagged_entries)?;
     conn.execute(
         "UPDATE games SET files = ?2, bytes = ?3, bytes_on_disk = ?4 WHERE id = ?1",
         params![

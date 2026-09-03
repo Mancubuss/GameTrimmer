@@ -1708,13 +1708,13 @@ fn classify_game(
             }
         }
 
-        // A monolithic archive candidate (see `is_candidate_archive_path`) is
-        // never offered for whole-file deletion - by a rule or by the
-        // localization detector. GameTrimmer has no way to trim just the
-        // parts of a container that are safe to remove, so the file is
-        // skipped entirely rather than shown as a finding it cannot safely
-        // act on.
-        if gametrimmer_core::worker::is_candidate_archive_path(&entry.rel_path) {
+        // A protected container (see `is_protected_container`) is never
+        // offered for whole-file deletion - by a rule or by the
+        // localization detector. GameTrimmer can only delete a file whole,
+        // and a container holds assets the user never selected, so the file
+        // is skipped entirely rather than shown as a finding it cannot
+        // safely act on.
+        if gametrimmer_core::worker::is_protected_container(&entry.rel_path) {
             continue;
         }
         let lang_finding = lang_findings.get(&index);
@@ -1990,8 +1990,8 @@ struct CombinedFinding {
 ///   finding for one file would double-count its bytes.
 /// - an imported rule's match: an untrusted pack gets no reach past the
 ///   pattern it actually wrote, and `retrim` refuses those unattended anyway.
-/// - an archive candidate: those belong to the deep inspector's explicit
-///   contract, never to a whole-file delete.
+/// - a protected container: a whole-file delete would take everything
+///   packed inside it, so it is never offered as one.
 fn add_same_name_intro_siblings(
     entries: &[FileEntry],
     combined: &mut Vec<(usize, CombinedFinding)>,
@@ -2022,7 +2022,7 @@ fn add_same_name_intro_siblings(
         .map(|(position, (index, _))| (*index, position))
         .collect();
     for (sibling, source) in pairs {
-        if gametrimmer_core::worker::is_candidate_archive_path(&entries[sibling].rel_path) {
+        if gametrimmer_core::worker::is_protected_container(&entries[sibling].rel_path) {
             continue;
         }
         let Some(&position) = by_index.get(&source) else {
@@ -3917,6 +3917,11 @@ mod tests {
         write_file(&install_dir.path().join("manual.pdf"), b"flagged");
         write_file(&install_dir.path().join("game.exe"), b"not flagged at all");
         write_file(&install_dir.path().join("data.bin"), b"nor this one");
+        // A protected container gets no row either. It used to get one - the
+        // in-place archive trimmer read those rows, and kept getting them
+        // written for two releases after it was removed, with nothing left
+        // that could join to them.
+        write_file(&install_dir.path().join("voices.pck"), b"a container");
 
         let library = DiscoveredLibrary {
             vendor: "steam",
@@ -3954,7 +3959,7 @@ mod tests {
         assert_eq!(
             stored,
             vec!["manual.pdf".to_string()],
-            "the unflagged files must not get a row"
+            "the unflagged files, protected containers included, must not get a row"
         );
 
         let (files, bytes): (i64, i64) = conn
@@ -3964,10 +3969,13 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("read game totals");
-        assert_eq!(files, 3, "the game's totals must count every file it has");
+        assert_eq!(files, 4, "the game's totals must count every file it has");
         assert_eq!(
             bytes,
-            (b"flagged".len() + b"not flagged at all".len() + b"nor this one".len()) as i64,
+            (b"flagged".len()
+                + b"not flagged at all".len()
+                + b"nor this one".len()
+                + b"a container".len()) as i64,
             "occupancy must not shrink to just the flagged bytes"
         );
     }
