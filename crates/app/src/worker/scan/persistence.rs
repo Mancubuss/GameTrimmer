@@ -590,3 +590,102 @@ pub(super) fn persist_prepared_game(
     perf::add(perf::Stage::PersistSql, sql);
     Ok(rows)
 }
+
+#[cfg(test)]
+mod tests {
+    use gametrimmer_core::scanner::FileEntry;
+    use gametrimmer_core::worker::PreparedFinding;
+
+    use crate::model::FindingSource;
+
+    use super::*;
+
+    /// Seeds a real `game_libraries`/`games` row pair and returns the game's
+    /// id - `persist_prepared_game` looks the game back up (its vendor/path
+    /// JOIN) to build the finding's `LibraryOrigin`, so a `PreparedGame`
+    /// naming a `game_id` with no backing row fails before ever reaching the
+    /// commit this test is actually about.
+    fn seed_game(conn: &Connection, scan_id: i64) -> i64 {
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('test', 'D:\\Library')",
+            [],
+        )
+        .expect("seed library");
+        let library_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO games (scan_id, library_id, name, install_dir)
+             VALUES (?1, ?2, 'Test Game', 'D:\\Library\\Test Game')",
+            params![scan_id, library_id],
+        )
+        .expect("seed game");
+        conn.last_insert_rowid()
+    }
+
+    /// A game with exactly one flagged file, so `flush_batch` actually has a
+    /// `FindingRow` in hand to (not) publish - a `PreparedGame` with empty
+    /// `findings` would make the "findings must not be published" assertion
+    /// trivially true no matter what `flush_batch` does with the ordering.
+    fn prepared_game_with_one_finding(game_id: i64) -> PreparedGame {
+        PreparedGame {
+            game_id,
+            name: "Test Game".to_string(),
+            app_id: None,
+            install_dir: PathBuf::from("D:\\Library\\Test Game"),
+            entries: vec![FileEntry::logical_only("loc.pak", 1024, None)],
+            findings: vec![PreparedFinding {
+                entry_index: 0,
+                rel_path: "loc.pak".to_string(),
+                size: 1024,
+                size_on_disk: 1024,
+                source: FindingSource::Loc(gametrimmer_core::langdetect::LangKind::Text),
+                rule_id: "test rule".to_string(),
+                confidence: 90,
+                provenance: RuleProvenance::Builtin,
+                lang_tag: Some("de".to_string()),
+                group_dir: None,
+                // A capture failure, not a real snapshot - cheapest path
+                // through `persist_prepared_game`'s safety branch, and this
+                // test has no opinion on `deletion_block_reason`.
+                safety: Err("no snapshot needed for this test".to_string()),
+            }],
+            kept: 0,
+            anti_cheat_protected: false,
+            imported_rules_refused: false,
+        }
+    }
+
+    /// GT-109 item 4: `flush_batch`'s doc comment promises "UI rows are
+    /// published only after the commit succeeds" - but nothing exercised the
+    /// failure half of that sentence. A `commit_hook` that always asks SQLite
+    /// to roll back stands in for a real commit failure (disk full, a locked
+    /// WAL file, ...) without needing to manufacture one.
+    #[test]
+    fn a_failed_commit_never_publishes_that_batchs_findings() {
+        let mut conn = db::open_in_memory().expect("open in-memory db");
+        let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
+        let game_id = seed_game(&conn, scan_id);
+        conn.commit_hook(Some(|| true))
+            .expect("register a commit hook that forces a rollback");
+
+        let mut batch = vec![prepared_game_with_one_finding(game_id)];
+        let mut findings: Vec<FindingRow> = Vec::new();
+
+        let result = flush_batch(&mut conn, &mut batch, &mut findings, scan_id);
+
+        assert!(
+            result.is_err(),
+            "a commit forced into rollback must surface as an error, not succeed silently"
+        );
+        assert!(
+            findings.is_empty(),
+            "findings must never be published for a batch whose commit never actually happened"
+        );
+        assert_eq!(
+            batch.len(),
+            1,
+            "the batch is only cleared after a successful commit (same line as the findings \
+             append below it) - a failed commit must leave it as-is rather than silently \
+             discarding the unwritten game"
+        );
+    }
+}
