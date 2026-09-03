@@ -5,55 +5,18 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use gametrimmer_core::langdetect::LangKind;
+/// The classification vocabulary now lives beside the cycle that produces
+/// it (`gametrimmer_core::worker`), so unattended re-trim can speak it too.
+/// Re-exported under the names the interface has always used: these are the
+/// types every tree row, filter and settings toggle is written against, and
+/// moving a definition is no reason to rewrite three hundred call sites.
+pub use gametrimmer_core::worker::{
+    category_enabled, category_ui_key, display_category, id_names_category, parse_source_key,
+    source_key, DisplayCategory, FindingSource,
+};
+
 use gametrimmer_core::orphans::OrphanKind;
-use gametrimmer_core::rules::Category;
 use gametrimmer_core::settings::SelectionProfile;
-
-/// Granular source of a finding: a rules-engine category (redist, docs,
-/// bonus, ...), a localization-detector kind (audio, text, video, font,
-/// unknown), or an orphaned-residue kind (orphan-residue safety: a folder inside a launcher's
-/// managed area with no live game behind it, or the launcher's own
-/// download/cache scratch folder). All variants wrap public `core` types
-/// unchanged. Kept on every row so the persistence key and the file's original
-/// rule/detector/orphan provenance survive the coarser [`DisplayCategory`]
-/// grouping used by the tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FindingSource {
-    Rule(Category),
-    Loc(LangKind),
-    /// Orphaned launcher residue (see `gametrimmer_core::orphans`). Has no
-    /// game behind it by definition, so its rows carry the synthetic
-    /// [`ORPHAN_GAME_ID`] and are grouped into a per-disk pseudo-game branch
-    /// rather than nested under a real game.
-    Orphan(OrphanKind),
-}
-
-/// Top-level category shown in the tree, merged from the granular
-/// rule/localization sources in [`FindingSource`] (see [`display_category`]
-/// for the mapping).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DisplayCategory {
-    Redist,
-    Intro,
-    Docs,
-    Bonus,
-    Loc,
-    /// Build and OS residue a shipped game has no use for: PDB symbol files,
-    /// `Thumbs.db`, `desktop.ini`, test executables. It used to be called
-    /// `Other`, which was never true - [`Category::DevLeftovers`] was the
-    /// only source that ever landed here, so "other" named a bucket with
-    /// exactly one thing in it and hid what that thing was.
-    DevLeftovers,
-    /// Orphaned launcher residue (orphan-residue safety) - shown under the per-disk pseudo-game
-    /// branch ([`ORPHAN_GAME_ID`]), never mixed into a real game's categories.
-    Orphan,
-    Workshop,
-    ShaderCache,
-    Crashes,
-    Saves,
-    LauncherCache,
-}
 
 /// Which game library a finding came from: the launcher that owns the library
 /// and the library's root directory.
@@ -222,23 +185,26 @@ pub enum SafetyBadge {
     BackupShield,
 }
 
-impl DisplayCategory {
-    #[allow(dead_code)]
-    pub fn safety_badge(self) -> SafetyBadge {
-        match self {
-            DisplayCategory::Redist
-            | DisplayCategory::Docs
-            | DisplayCategory::Crashes
-            | DisplayCategory::ShaderCache
-            | DisplayCategory::LauncherCache => SafetyBadge::Safe,
-            DisplayCategory::Intro
-            | DisplayCategory::Bonus
-            | DisplayCategory::Loc
-            | DisplayCategory::DevLeftovers
-            | DisplayCategory::Orphan
-            | DisplayCategory::Workshop => SafetyBadge::Review,
-            DisplayCategory::Saves => SafetyBadge::BackupShield,
-        }
+/// The badge the tree shows beside a category header.
+///
+/// A free function rather than an inherent method: [`DisplayCategory`] is
+/// defined in `core` now, next to the cycle that produces it, and how
+/// alarming a category looks is a decision of the window, not of the engine.
+#[allow(dead_code)]
+pub fn safety_badge(category: DisplayCategory) -> SafetyBadge {
+    match category {
+        DisplayCategory::Redist
+        | DisplayCategory::Docs
+        | DisplayCategory::Crashes
+        | DisplayCategory::ShaderCache
+        | DisplayCategory::LauncherCache => SafetyBadge::Safe,
+        DisplayCategory::Intro
+        | DisplayCategory::Bonus
+        | DisplayCategory::Loc
+        | DisplayCategory::DevLeftovers
+        | DisplayCategory::Orphan
+        | DisplayCategory::Workshop => SafetyBadge::Review,
+        DisplayCategory::Saves => SafetyBadge::BackupShield,
     }
 }
 
@@ -422,31 +388,6 @@ pub fn rootless_split(
     (install_dir, name, None)
 }
 
-/// Maps a granular finding source onto its top-level display category.
-pub fn display_category(source: FindingSource) -> DisplayCategory {
-    match source {
-        FindingSource::Rule(Category::RedistFolder) | FindingSource::Rule(Category::RedistFile) => {
-            DisplayCategory::Redist
-        }
-        FindingSource::Rule(Category::DocsFolder) | FindingSource::Rule(Category::DocsFile) => {
-            DisplayCategory::Docs
-        }
-        FindingSource::Rule(Category::Bonus) => DisplayCategory::Bonus,
-        FindingSource::Rule(Category::DevLeftovers) => DisplayCategory::DevLeftovers,
-        FindingSource::Rule(Category::Intro) => DisplayCategory::Intro,
-        FindingSource::Rule(Category::WorkshopOrphan) => DisplayCategory::Workshop,
-        FindingSource::Rule(Category::DownloadingStaging) => DisplayCategory::Orphan,
-        FindingSource::Rule(Category::ShaderCache) => DisplayCategory::ShaderCache,
-        FindingSource::Rule(Category::CrashDump)
-        | FindingSource::Rule(Category::DiagnosticLogs) => DisplayCategory::Crashes,
-        FindingSource::Rule(Category::SaveBloat) => DisplayCategory::Saves,
-        FindingSource::Rule(Category::LauncherWebCache)
-        | FindingSource::Rule(Category::ModManagerDownloads) => DisplayCategory::LauncherCache,
-        FindingSource::Loc(_) => DisplayCategory::Loc,
-        FindingSource::Orphan(_) => DisplayCategory::Orphan,
-    }
-}
-
 /// Human-readable, localized label for a category header.
 pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &'static str {
     let s = crate::i18n::strings(lang);
@@ -464,128 +405,6 @@ pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &
         DisplayCategory::Saves => s.category_saves,
         DisplayCategory::LauncherCache => s.category_launcher_cache,
     }
-}
-
-/// Stable string key used when persisting a finding's granular source into
-/// `findings.category`. Mirrors the `category` values used in `rules.json`
-/// for rule findings, and the `loc_*` scheme used for localization findings.
-/// Unaffected by the 5-way display grouping: the DB always keeps the
-/// granular value.
-pub fn source_key(source: FindingSource) -> &'static str {
-    match source {
-        FindingSource::Rule(Category::RedistFolder) => "redist_folder",
-        FindingSource::Rule(Category::RedistFile) => "redist_file",
-        FindingSource::Rule(Category::DocsFolder) => "docs_folder",
-        FindingSource::Rule(Category::DocsFile) => "docs_file",
-        FindingSource::Rule(Category::Bonus) => "bonus",
-        FindingSource::Rule(Category::DevLeftovers) => "dev_leftovers",
-        FindingSource::Rule(Category::Intro) => "intro",
-        FindingSource::Rule(Category::WorkshopOrphan) => "workshop_orphan",
-        FindingSource::Rule(Category::DownloadingStaging) => "downloading_staging",
-        FindingSource::Rule(Category::ShaderCache) => "shader_cache",
-        FindingSource::Rule(Category::CrashDump) => "crash_dump",
-        FindingSource::Rule(Category::DiagnosticLogs) => "diagnostic_logs",
-        FindingSource::Rule(Category::SaveBloat) => "save_bloat",
-        FindingSource::Rule(Category::LauncherWebCache) => "launcher_web_cache",
-        FindingSource::Rule(Category::ModManagerDownloads) => "mod_manager_downloads",
-        FindingSource::Loc(LangKind::Audio) => "loc_audio",
-        FindingSource::Loc(LangKind::Text) => "loc_text",
-        FindingSource::Loc(LangKind::Video) => "loc_video",
-        FindingSource::Loc(LangKind::Font) => "loc_font",
-        FindingSource::Loc(LangKind::Graphic) => "loc_graphic",
-        FindingSource::Loc(LangKind::Unknown) => "loc_unknown",
-        FindingSource::Orphan(OrphanKind::UnmanagedFolder) => "orphan_folder",
-        FindingSource::Orphan(OrphanKind::ServiceFolder) => "orphan_service",
-        FindingSource::Orphan(OrphanKind::UnreferencedFile) => "orphan_unreferenced_file",
-    }
-}
-
-/// Inverse of [`source_key`]: reparses a `findings.category` value read back
-/// from the database into its granular [`FindingSource`]. Returns `None` for
-/// any string that isn't one of the keys `source_key` produces - e.g. a
-/// category written by a future version of the app, or by `rules.json`
-/// changes that predate a saved scan.
-///
-/// That includes `"monolithic_archive"`: an in-place archive trimmer used to
-/// write it, and no code writes it any more, but a database from that build
-/// can still carry rows with it - and no `Category` variant backs it any
-/// more either. Callers (see `worker::load`) must skip such rows rather than
-/// fail the whole load, since the row is otherwise perfectly readable, and
-/// this is what makes them skip: they never resolve to a [`FindingSource`] in
-/// the first place.
-pub fn parse_source_key(key: &str) -> Option<FindingSource> {
-    match key {
-        "redist_folder" => Some(FindingSource::Rule(Category::RedistFolder)),
-        "redist_file" => Some(FindingSource::Rule(Category::RedistFile)),
-        "docs_folder" => Some(FindingSource::Rule(Category::DocsFolder)),
-        "docs_file" => Some(FindingSource::Rule(Category::DocsFile)),
-        "bonus" => Some(FindingSource::Rule(Category::Bonus)),
-        "dev_leftovers" => Some(FindingSource::Rule(Category::DevLeftovers)),
-        "intro" => Some(FindingSource::Rule(Category::Intro)),
-        "workshop_orphan" => Some(FindingSource::Rule(Category::WorkshopOrphan)),
-        "downloading_staging" => Some(FindingSource::Rule(Category::DownloadingStaging)),
-        "shader_cache" => Some(FindingSource::Rule(Category::ShaderCache)),
-        "crash_dump" => Some(FindingSource::Rule(Category::CrashDump)),
-        "diagnostic_logs" => Some(FindingSource::Rule(Category::DiagnosticLogs)),
-        "save_bloat" => Some(FindingSource::Rule(Category::SaveBloat)),
-        "launcher_web_cache" => Some(FindingSource::Rule(Category::LauncherWebCache)),
-        "mod_manager_downloads" => Some(FindingSource::Rule(Category::ModManagerDownloads)),
-        "loc_audio" => Some(FindingSource::Loc(LangKind::Audio)),
-        "loc_text" => Some(FindingSource::Loc(LangKind::Text)),
-        "loc_video" => Some(FindingSource::Loc(LangKind::Video)),
-        "loc_font" => Some(FindingSource::Loc(LangKind::Font)),
-        "loc_graphic" => Some(FindingSource::Loc(LangKind::Graphic)),
-        "loc_unknown" => Some(FindingSource::Loc(LangKind::Unknown)),
-        "orphan_folder" => Some(FindingSource::Orphan(OrphanKind::UnmanagedFolder)),
-        "orphan_service" => Some(FindingSource::Orphan(OrphanKind::ServiceFolder)),
-        "orphan_unreferenced_file" => Some(FindingSource::Orphan(OrphanKind::UnreferencedFile)),
-        _ => None,
-    }
-}
-
-/// Stable short key for a display category, used for egui persistent ids
-/// (collapsing header open/closed state) instead of the Ukrainian label.
-pub fn category_ui_key(category: DisplayCategory) -> &'static str {
-    match category {
-        DisplayCategory::Redist => "redist",
-        DisplayCategory::Intro => "intro",
-        DisplayCategory::Docs => "docs",
-        DisplayCategory::Bonus => "bonus",
-        DisplayCategory::Loc => "loc",
-        DisplayCategory::DevLeftovers => "dev_leftovers",
-        DisplayCategory::Orphan => "orphan",
-        DisplayCategory::Workshop => "workshop",
-        DisplayCategory::ShaderCache => "shader_cache",
-        DisplayCategory::Crashes => "crashes",
-        DisplayCategory::Saves => "saves",
-        DisplayCategory::LauncherCache => "launcher_cache",
-    }
-}
-
-/// Whether `category` should be kept by the scan, given the persisted
-/// `enabled_categories` setting (see `gametrimmer_core::settings::Settings`).
-/// An empty `enabled_categories` list means every category is enabled - see
-/// that field's doc comment for why an empty list isn't "nothing enabled".
-///
-/// Matched through [`id_names_category`], so a list written under an older
-/// key still selects the right categories.
-pub fn category_enabled(enabled_categories: &[String], category: DisplayCategory) -> bool {
-    enabled_categories.is_empty()
-        || enabled_categories
-            .iter()
-            .any(|id| id_names_category(id, category))
-}
-
-/// Whether a stored `enabled_categories` id refers to `category` - by its
-/// current [`category_ui_key`], or by the key it used to be stored under.
-///
-/// [`DisplayCategory::DevLeftovers`] is the one with a past: it was called
-/// "other" until it got its own name. A settings file written back then
-/// still says "other", and a rename that quietly dropped that id from the
-/// list would turn every PDB and Thumbs.db invisible for exactly the users
-/// who had gone to the trouble of picking their categories by hand.
-pub fn id_names_category(id: &str, category: DisplayCategory) -> bool {
-    id == category_ui_key(category) || (category == DisplayCategory::DevLeftovers && id == "other")
 }
 
 /// Default selection policy: auto-select only high-confidence
@@ -1827,6 +1646,9 @@ pub fn format_size(lang: crate::i18n::Lang, bytes: u64) -> String {
 mod tests {
     use super::*;
 
+    use gametrimmer_core::langdetect::LangKind;
+    use gametrimmer_core::rules::Category;
+
     fn item(
         game_id: i64,
         game_name: &str,
@@ -1939,61 +1761,6 @@ mod tests {
     }
 
     #[test]
-    fn display_category_maps_every_source_to_its_top_level_category() {
-        assert_eq!(
-            display_category(FindingSource::Rule(Category::RedistFolder)),
-            DisplayCategory::Redist
-        );
-        assert_eq!(
-            display_category(FindingSource::Rule(Category::RedistFile)),
-            DisplayCategory::Redist
-        );
-        assert_eq!(
-            display_category(FindingSource::Rule(Category::DocsFolder)),
-            DisplayCategory::Docs
-        );
-        assert_eq!(
-            display_category(FindingSource::Rule(Category::DocsFile)),
-            DisplayCategory::Docs
-        );
-        assert_eq!(
-            display_category(FindingSource::Rule(Category::Bonus)),
-            DisplayCategory::Bonus
-        );
-        assert_eq!(
-            display_category(FindingSource::Rule(Category::DevLeftovers)),
-            DisplayCategory::DevLeftovers
-        );
-        assert_eq!(
-            display_category(FindingSource::Rule(Category::Intro)),
-            DisplayCategory::Intro
-        );
-        for kind in [
-            LangKind::Audio,
-            LangKind::Text,
-            LangKind::Video,
-            LangKind::Font,
-            LangKind::Graphic,
-            LangKind::Unknown,
-        ] {
-            assert_eq!(
-                display_category(FindingSource::Loc(kind)),
-                DisplayCategory::Loc
-            );
-        }
-        for kind in [
-            OrphanKind::UnmanagedFolder,
-            OrphanKind::ServiceFolder,
-            OrphanKind::UnreferencedFile,
-        ] {
-            assert_eq!(
-                display_category(FindingSource::Orphan(kind)),
-                DisplayCategory::Orphan
-            );
-        }
-    }
-
-    #[test]
     fn bulk_selectable_excludes_blocked_and_untrusted_rows() {
         let plain = item(1, "Game", FindingSource::Rule(Category::Bonus), 90, 10);
         assert!(plain.row.bulk_selectable());
@@ -2047,90 +1814,6 @@ mod tests {
             "a whole-file delete in a protected game is ordinary - anti-cheat cannot notice \
              an uninstalled language pack any differently than the user doing it by hand"
         );
-    }
-
-    #[test]
-    fn source_key_preserves_the_original_granular_persistence_strings() {
-        assert_eq!(
-            source_key(FindingSource::Rule(Category::RedistFolder)),
-            "redist_folder"
-        );
-        assert_eq!(
-            source_key(FindingSource::Rule(Category::RedistFile)),
-            "redist_file"
-        );
-        assert_eq!(
-            source_key(FindingSource::Rule(Category::DocsFolder)),
-            "docs_folder"
-        );
-        assert_eq!(
-            source_key(FindingSource::Rule(Category::DocsFile)),
-            "docs_file"
-        );
-        assert_eq!(source_key(FindingSource::Rule(Category::Bonus)), "bonus");
-        assert_eq!(
-            source_key(FindingSource::Rule(Category::DevLeftovers)),
-            "dev_leftovers"
-        );
-        assert_eq!(source_key(FindingSource::Rule(Category::Intro)), "intro");
-        assert_eq!(source_key(FindingSource::Loc(LangKind::Audio)), "loc_audio");
-        assert_eq!(source_key(FindingSource::Loc(LangKind::Text)), "loc_text");
-        assert_eq!(source_key(FindingSource::Loc(LangKind::Video)), "loc_video");
-        assert_eq!(source_key(FindingSource::Loc(LangKind::Font)), "loc_font");
-        assert_eq!(
-            source_key(FindingSource::Loc(LangKind::Unknown)),
-            "loc_unknown"
-        );
-        assert_eq!(
-            source_key(FindingSource::Orphan(OrphanKind::UnmanagedFolder)),
-            "orphan_folder"
-        );
-        assert_eq!(
-            source_key(FindingSource::Orphan(OrphanKind::ServiceFolder)),
-            "orphan_service"
-        );
-    }
-
-    #[test]
-    fn parse_source_key_round_trips_every_finding_source_variant() {
-        let all_sources = [
-            FindingSource::Rule(Category::RedistFolder),
-            FindingSource::Rule(Category::RedistFile),
-            FindingSource::Rule(Category::DocsFolder),
-            FindingSource::Rule(Category::DocsFile),
-            FindingSource::Rule(Category::Bonus),
-            FindingSource::Rule(Category::DevLeftovers),
-            FindingSource::Rule(Category::Intro),
-            FindingSource::Loc(LangKind::Audio),
-            FindingSource::Loc(LangKind::Text),
-            FindingSource::Loc(LangKind::Video),
-            FindingSource::Loc(LangKind::Font),
-            FindingSource::Loc(LangKind::Unknown),
-            FindingSource::Orphan(OrphanKind::UnmanagedFolder),
-            FindingSource::Orphan(OrphanKind::ServiceFolder),
-        ];
-
-        for source in all_sources {
-            assert_eq!(
-                parse_source_key(source_key(source)),
-                Some(source),
-                "round-trip through source_key/parse_source_key must recover {source:?}"
-            );
-        }
-
-        assert_eq!(
-            parse_source_key("not_a_real_category"),
-            None,
-            "an unrecognized category string must parse to None, not panic"
-        );
-        // "monolithic_archive" is not a synthetic unknown string: it is what
-        // the removed in-place archive trimmer wrote, and a database from
-        // that build can still carry rows with it. No `Category` variant
-        // backs it any more, so it must parse to `None` just like any other
-        // unrecognized category - which is what makes `worker::load` skip
-        // such a row instead of showing it as an ordinary (and unsafe)
-        // whole-file delete.
-        assert_eq!(parse_source_key("monolithic_archive"), None);
     }
 
     #[test]
@@ -3735,32 +3418,6 @@ mod tests {
         for category in CATEGORY_ORDER {
             assert!(category_enabled(&[], category));
         }
-    }
-
-    /// Dev leftovers were shown under "Other" until they got a name of their
-    /// own, and a settings file written back then still lists the category by
-    /// its old key. The one thing a rename must not do is switch a category
-    /// off behind the back of a user who had explicitly switched it on: the
-    /// finding simply stops appearing, which reads as broken detection rather
-    /// than as a setting.
-    #[test]
-    fn a_settings_list_written_under_the_old_key_still_enables_dev_leftovers() {
-        let legacy = vec!["redist".to_string(), "other".to_string()];
-
-        assert!(category_enabled(&legacy, DisplayCategory::DevLeftovers));
-        assert!(category_enabled(&legacy, DisplayCategory::Redist));
-        assert!(!category_enabled(&legacy, DisplayCategory::Docs));
-    }
-
-    #[test]
-    fn category_enabled_checks_membership_by_ui_key_when_list_is_non_empty() {
-        let enabled = vec!["redist".to_string(), "docs".to_string()];
-        assert!(category_enabled(&enabled, DisplayCategory::Redist));
-        assert!(category_enabled(&enabled, DisplayCategory::Docs));
-        assert!(!category_enabled(&enabled, DisplayCategory::Bonus));
-        assert!(!category_enabled(&enabled, DisplayCategory::Loc));
-        assert!(!category_enabled(&enabled, DisplayCategory::DevLeftovers));
-        assert!(!category_enabled(&enabled, DisplayCategory::Orphan));
     }
 
     /// The scan worker dedups a file with both a rules-engine finding and a

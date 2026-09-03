@@ -1142,6 +1142,14 @@ pub fn hover_reason(lang: Lang, path: &str, rule_desc: &str, confidence: u8) -> 
 /// English is the engine's own `Display`, so the two can never drift apart -
 /// adding a variant there is a compile error here, not a silently untranslated
 /// string.
+/// Unused since the classification cycle moved into `core`, where the
+/// interface language does not reach: its one caller rendered every stored
+/// reason with `Lang::En`, which is `LangReason`'s own `Display`. Kept
+/// rather than deleted because the Ukrainian wording below is translation
+/// work, and GT-391 (the localization thaw) is where it is decided whether
+/// a stored reason is ever shown in another language - see
+/// `worker::descriptions`, which translates on the way to the screen.
+#[allow(dead_code)]
 pub fn lang_reason(lang: Lang, reason: &LangReason) -> String {
     if lang == Lang::En {
         return reason.to_string();

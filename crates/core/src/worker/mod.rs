@@ -13,6 +13,14 @@
 //! anything it does: it named a pipeline it never had and left the guards
 //! reading like leftovers of a deleted feature.
 
+mod classify;
+
+pub use classify::{
+    assign_group_dirs, category_enabled, category_ui_key, classify_game, display_category,
+    id_names_category, parse_source_key, source_key, CombinedFinding, DisplayCategory,
+    FindingSource, GameIdentity, PreparedFinding, PreparedGame,
+};
+
 use crate::models::Finding;
 
 /// Progress a scan reports as it walks a library.
@@ -380,7 +388,7 @@ mod tests {
 
     #[test]
     fn secondary_analysis_and_persistence_api_stays_removed() {
-        let source = include_str!("worker.rs");
+        let source = include_str!("mod.rs");
         let analyze_export = ["pub fn ", "analyze("].concat();
         let persist_export = ["pub fn ", "persist_game_findings("].concat();
 

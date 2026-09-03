@@ -9,7 +9,6 @@ mod janitor_pass;
 mod orphan_analysis;
 mod persistence;
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,18 +19,18 @@ use std::time::Instant;
 
 use gametrimmer_core::db;
 use gametrimmer_core::error::{CoreError, Result as CoreResult};
-use gametrimmer_core::langdetect::{LangData, LangDetector, LangFinding};
+use gametrimmer_core::langdetect::{LangData, LangDetector};
 use gametrimmer_core::mftscan;
 use gametrimmer_core::perf;
 use gametrimmer_core::providers::OrphanEvidence;
-use gametrimmer_core::rules::{Finding, RuleEngine, RuleProvenance, Verdict};
-use gametrimmer_core::safety::{SafetySnapshot, SnapshotCapture};
+use gametrimmer_core::rules::RuleEngine;
 use gametrimmer_core::scanner::{scan_dir_cancellable, FileEntry};
 use gametrimmer_core::sysinfo;
+use gametrimmer_core::worker::{classify_game, GameIdentity, PreparedGame};
 use rusqlite::Connection;
 
 use crate::i18n::{self, Lang, Verb};
-use crate::model::{category_enabled, display_category, DisplayCategory, FindingSource};
+use crate::model::{category_enabled, DisplayCategory};
 #[cfg(test)]
 use crate::model::{FindingRow, ORPHAN_GAME_ID};
 
@@ -127,14 +126,6 @@ fn previous_generation(conn: &Connection) -> String {
 /// results in memory and delay their visibility to the UI's "Done" message
 /// by up to one batch - 16-32 is the sweet spot named in the benchmark.
 const WRITE_BATCH_SIZE: usize = 24;
-
-/// How many files pass between `cancel` polls inside [`classify_game`]'s
-/// rule-engine loop. Mirrors `gametrimmer_core::scanner::CANCEL_POLL_INTERVAL`
-/// (which is `pub(crate)` to the core crate and so not reachable here): the
-/// core localization pass already polls at that cadence internally, and this
-/// keeps the app-side rule pass equally responsive without an atomic load per
-/// file in the common, never-cancelled case.
-const CLASSIFY_CANCEL_POLL_INTERVAL: usize = 1024;
 
 /// The settings-derived knobs a scan runs under, captured once at spawn
 /// time: a scan keeps the options it started with even if the user changes
@@ -1496,71 +1487,6 @@ fn volume_failure_results(game_ids: &[i64], message: String) -> VolumeResults {
         .collect()
 }
 
-/// One file's finding, already resolved (rule engine vs. localization
-/// detector) but not yet persisted - the `files.id` it will reference does
-/// not exist until `store_files_no_tx` has run, so the finding carries
-/// `entry_index` (below) and the writer resolves the id from that. Carrying
-/// `size` here (rather than re-deriving it from `entries` at persist time by
-/// `rel_path`) avoids an O(files x findings) rescan per game.
-struct PreparedFinding {
-    /// Index of this finding's file into [`PreparedGame::entries`].
-    ///
-    /// `store_files_no_tx` returns the inserted `files.id`s in entry order,
-    /// so this is all the writer needs to attach the finding to its row -
-    /// where it used to select every row of the game back out and match on
-    /// `rel_path`. `classify_game` has the index in hand anyway (it is what
-    /// `combined_by_index` is keyed by) and simply threw it away before.
-    entry_index: usize,
-    /// The path itself, still carried alongside the index: the UI row, the
-    /// safety evidence written when a snapshot could not be captured, and
-    /// the orphan/finding comparisons all want it, and at one clone per
-    /// *finding* (720 k) rather than per file it is not the cost that
-    /// mattered.
-    rel_path: String,
-    size: u64,
-    size_on_disk: u64,
-    source: FindingSource,
-    rule_id: String,
-    confidence: u8,
-    provenance: RuleProvenance,
-    lang_tag: Option<String>,
-    /// Folder-grouping key for the UI tree; see [`assign_group_dirs`].
-    /// Persisted to `findings.group_dir` by `persist_prepared_game` so a
-    /// later startup load can read it straight back instead of recomputing
-    /// it from the whole file list (the dominant cost of the old load path).
-    group_dir: Option<String>,
-    /// Scan-time deletion evidence, or the reason it could not be captured.
-    ///
-    /// Captured here, on the scan pool, rather than in the writer: it costs a
-    /// handful of file opens per finding, and doing it inside the writer's
-    /// transaction made one thread pay for every finding in the scan while
-    /// holding the database lock. The writer only inserts what it is handed.
-    safety: std::result::Result<SafetySnapshot, String>,
-}
-
-/// The result of scanning and classifying one game: no DB state, so it can
-/// be produced on any thread and handed off to the single writer thread.
-struct PreparedGame {
-    game_id: i64,
-    name: String,
-    /// The game's vendor id, carried through classification (a rule may be
-    /// scoped to it) and on into the UI row, where "never touch this" needs
-    /// it to bind the exception it writes. See [`persistence::ScannedGame`].
-    app_id: Option<String>,
-    install_dir: PathBuf,
-    entries: Vec<FileEntry>,
-    findings: Vec<PreparedFinding>,
-    /// How many of this game's files a personal exception vetoed.
-    ///
-    /// Counted here, where the verdict is seen, and summed for the whole run
-    /// so the status line can say so: a user who keeps a file and rescans has
-    /// to be able to tell "it is gone because you kept it" from "detection
-    /// missed it".
-    kept: usize,
-    /// Whether anti-cheat protection is active on this game.
-    anti_cheat_protected: bool,
-}
-
 /// Scans one game's install directory with a regular directory walk, then
 /// classifies the result via [`classify_game`]. This is the `walkdir` path;
 /// games the MFT pass already has entries for skip straight to
@@ -1591,323 +1517,6 @@ fn scan_and_prepare_game(
         enabled_categories,
         cancel,
     )
-}
-
-/// Which game is being classified: the row id its results are written under,
-/// the name progress and errors call it by, where it lives, and the vendor id
-/// a scoped rule is matched against.
-///
-/// Grouped rather than passed as four more parameters because the four always
-/// travel together and the two `&str`s next to each other are exactly the pair
-/// a caller can silently swap.
-#[derive(Debug, Clone, Copy)]
-struct GameIdentity<'a> {
-    id: i64,
-    name: &'a str,
-    install_dir: &'a Path,
-    /// `None` for a folder-scan or manual game; no scoped rule matches one.
-    app_id: Option<&'a str>,
-}
-
-/// Classifies an already-obtained file list - from either `scan_dir`
-/// (walkdir) or the MFT index pass - through both the rule engine and the
-/// localization detector. The hot passes are CPU-only; only findings from an
-/// imported rule or with an archive-like extension receive a bounded content
-/// probe before safety evidence is captured. This work runs in parallel
-/// across scan workers; only [`persist_prepared_game`] needs a `Connection`.
-///
-/// `cancel` is polled inside both hot passes (the localization
-/// `analyze_game_cancellable` and the per-file rule-engine loop); once it is
-/// observed set this returns `Err(CoreError::Other("cancelled"))` promptly
-/// instead of classifying the whole (possibly enormous) file list, so a Stop
-/// during a big game's analysis is honored rather than swallowed. When
-/// `cancel` is never set the result is exactly the non-cancellable one.
-///
-/// `enabled_categories` (the persisted `enabled_categories` setting - see
-/// `gametrimmer_core::settings`) is applied right here, before a finding
-/// even enters `combined_by_index`: a file whose category is disabled is
-/// treated exactly as if no rule/localization cue had matched it at all.
-/// This is the single choke point for the category filter - doing it this
-/// early (rather than at persistence or display) means a disabled
-/// category's files never affect folder-collapsing (`assign_group_dirs`)
-/// either, and the database ends up holding exactly what the setting says
-/// should be scanned, not a superset filtered later.
-fn classify_game(
-    engine: &RuleEngine,
-    lang_detector: &LangDetector,
-    game: GameIdentity<'_>,
-    entries: Vec<FileEntry>,
-    enabled_categories: &[String],
-    cancel: &AtomicBool,
-) -> CoreResult<PreparedGame> {
-    // `analyze_game` needs sibling context (the language-family heuristic),
-    // so it runs once over all of this game's files rather than per-file.
-    // The cancellable variant polls `cancel` inside its own hot loops, so a
-    // Stop request lands promptly even mid-analysis of a huge game.
-    let lang_findings: HashMap<usize, LangFinding> = lang_detector
-        .analyze_game_cancellable(&entries, cancel)?
-        .into_iter()
-        .collect();
-
-    // First pass: combine each entry's rule/localization findings, keeping
-    // the entry's index into `entries` so `assign_group_dirs` (which needs
-    // the full file list, not just the flagged ones) can be run afterwards.
-    let rules_started = Instant::now();
-    let mut combined_by_index: Vec<(usize, CombinedFinding)> = Vec::new();
-    let mut kept = 0usize;
-    // A personal keep rule outranks the same-name sweep below just as it
-    // outranks every rule: a file the user vetoed by name must not come back
-    // because another copy of that name was flagged elsewhere in the game.
-    let mut vetoed: HashSet<usize> = HashSet::new();
-    for (index, entry) in entries.iter().enumerate() {
-        // The rule-engine pass is per-file regex work; on a game with
-        // hundreds of thousands of files it is long enough to be worth
-        // interrupting too (the same cadence the core cancel path uses).
-        if index % CLASSIFY_CANCEL_POLL_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
-            return Err(CoreError::Other("cancelled".to_string()));
-        }
-        let verdict = engine.classify(&entry.rel_path, game.app_id);
-        // A personal exception stops the file here, before the localization
-        // detector gets a look at it. Skipping this branch and letting the
-        // veto fall through as "no rule matched" would hand a kept
-        // `loc_de.pak` straight back as a localization finding - and a
-        // localization finding is exactly what most exceptions are written
-        // against.
-        if verdict == Verdict::Kept {
-            kept += 1;
-            vetoed.insert(index);
-            continue;
-        }
-
-        // The keep-language list is the other veto a rule must yield to,
-        // and the one it used to step over: it lives inside the localization
-        // detector, so it protected this file from that stage and from
-        // nothing else. It applies to a rule that says it matches *content*
-        // in the player's language, not to the startup screens that make up
-        // the rest of the intro category - see
-        // `worker::keep_language_vetoes_rule`. Dropping the verdict leaves
-        // the file with no finding at all (the detector already declined it,
-        // by the same predicate), so it stays on disk. It also joins
-        // `vetoed`, because a copy of it elsewhere in the game must not be
-        // swept back in by name.
-        if let Verdict::Flagged(finding) = &verdict {
-            if gametrimmer_core::worker::keep_language_vetoes_rule(
-                lang_detector,
-                finding,
-                &entry.rel_path,
-            ) {
-                vetoed.insert(index);
-                continue;
-            }
-        }
-
-        // A protected container (see `is_protected_container`) is never
-        // offered for whole-file deletion - by a rule or by the
-        // localization detector. GameTrimmer can only delete a file whole,
-        // and a container holds assets the user never selected, so the file
-        // is skipped entirely rather than shown as a finding it cannot
-        // safely act on.
-        if gametrimmer_core::worker::is_protected_container(&entry.rel_path) {
-            continue;
-        }
-        let lang_finding = lang_findings.get(&index);
-
-        if let Some(combined) = combine_finding(verdict.flagged(), lang_finding) {
-            if !category_enabled(enabled_categories, display_category(combined.source)) {
-                continue;
-            }
-
-            combined_by_index.push((index, combined));
-        }
-    }
-
-    // GT-206: a game engine plays *one* copy of a startup video out of
-    // several search paths, and it is not necessarily the copy a path-shaped
-    // rule reached. Every other file of this game carrying an already-flagged
-    // intro's exact file name becomes an intro finding too - see
-    // `same_name_siblings` for why this is done here, while classifying,
-    // rather than by widening a delete batch later.
-    add_same_name_intro_siblings(&entries, &mut combined_by_index, &vetoed);
-
-    perf::add(perf::Stage::Rules, rules_started.elapsed());
-
-    let flagged: HashSet<usize> = combined_by_index.iter().map(|(index, _)| *index).collect();
-    let group_dirs = perf::timed(perf::Stage::Grouping, || {
-        assign_group_dirs(&entries, &flagged)
-    });
-
-    // One cache per game: every finding here shares the same trusted root and
-    // most of the same intermediate directories, which is exactly the
-    // redundancy `SnapshotCapture` exists to remove.
-    let safety_started = Instant::now();
-    let mut capture = SnapshotCapture::new();
-    let findings: Vec<PreparedFinding> = combined_by_index
-        .into_iter()
-        .map(|(index, combined)| {
-            let entry = &entries[index];
-            let safety = capture
-                .capture(
-                    game.install_dir,
-                    &entry.rel_path,
-                    entry.mft_identity.as_ref(),
-                )
-                .map_err(|reason| reason.to_string());
-            PreparedFinding {
-                entry_index: index,
-                rel_path: entry.rel_path.clone(),
-                size: entry.size,
-                size_on_disk: entry.size_on_disk,
-                source: combined.source,
-                rule_id: combined.rule_id,
-                confidence: combined.confidence,
-                provenance: combined.provenance,
-                lang_tag: combined.lang_tag,
-                group_dir: group_dirs.get(&index).cloned(),
-                safety,
-            }
-        })
-        .collect();
-
-    let anti_cheat_safe =
-        gametrimmer_core::anti_cheat::AntiCheatShield::is_safe_from_relative_paths(
-            entries.iter().map(|e| &e.rel_path),
-        );
-
-    perf::add(perf::Stage::Safety, safety_started.elapsed());
-
-    Ok(PreparedGame {
-        game_id: game.id,
-        name: game.name.to_string(),
-        app_id: game.app_id.map(str::to_string),
-        install_dir: game.install_dir.to_path_buf(),
-        entries,
-        findings,
-        kept,
-        anti_cheat_protected: !anti_cheat_safe,
-    })
-}
-
-/// Assigns each flagged file (identified by its index into `entries`) the
-/// `\`-separated path of its shallowest fully-flagged ancestor directory,
-/// for UI-only tree grouping (see `model::build_tree`).
-///
-/// Rationale: a folder where *every* file is flagged as non-essential can be
-/// shown - and deleted - as one unit instead of scattering its files across
-/// whichever categories happen to match each of them individually. The
-/// *shallowest* such ancestor is chosen deliberately: it is the largest unit
-/// that is still wholly non-essential, so collapsing to it merges the most
-/// files while remaining exactly as safe to remove as any single flagged
-/// descendant. A directory must contain at least 2 files to be collapsible -
-/// a single-file "folder" gains nothing from collapsing, since the file's
-/// own row already represents it - and the (implicit) game root is never a
-/// candidate, since there is no bounding folder above it to collapse into.
-///
-/// The directory chains are *borrowed* from each entry's `rel_path` wherever
-/// possible (see [`dir_prefixes`]): every ancestor path is a prefix of the
-/// file's own path, so counting them needs no allocation at all. Only the
-/// handful of paths that survive as group keys are turned into `String`s, at
-/// the end. Building them the other way - an owned `String` per directory
-/// level per file - meant roughly 25 million allocations, and 25 million
-/// owned-string hashes, per scan of a large library.
-pub(crate) fn assign_group_dirs(
-    entries: &[FileEntry],
-    flagged: &HashSet<usize>,
-) -> HashMap<usize, String> {
-    // Directory path -> (total files under it, flagged files under it).
-    let mut dir_stats: HashMap<Cow<'_, str>, (u32, u32)> = HashMap::new();
-
-    for (index, entry) in entries.iter().enumerate() {
-        let is_flagged = flagged.contains(&index);
-        for dir in dir_prefixes(&entry.rel_path) {
-            let stats = dir_stats.entry(dir).or_insert((0, 0));
-            stats.0 += 1;
-            if is_flagged {
-                stats.1 += 1;
-            }
-        }
-    }
-
-    // The chains are recomputed here rather than kept from the loop above:
-    // only the flagged files (a small fraction of a game's tree) need one,
-    // and holding a chain per file was the other half of the old memory
-    // cost.
-    let mut group_dirs = HashMap::new();
-    for &index in flagged {
-        let Some(entry) = entries.get(index) else {
-            continue;
-        };
-        // The chain is shallowest-first, so the first collapsible entry
-        // found is the shallowest collapsible ancestor.
-        let collapsible = dir_prefixes(&entry.rel_path).into_iter().find(|dir| {
-            let (total, flagged_count) = dir_stats.get(dir).copied().unwrap_or((0, 0));
-            total >= 2 && total == flagged_count
-        });
-        if let Some(dir) = collapsible {
-            group_dirs.insert(index, dir.into_owned());
-        }
-    }
-
-    group_dirs
-}
-
-/// The `\`-separated ancestor directory paths of `rel_path`, shallowest
-/// first, excluding the (implicit, empty) game root and the file name
-/// itself. E.g. `"a\b\c\file.txt"` -> `["a", "a\\b", "a\\b\\c"]`; a file
-/// directly under the game root (no directory segments) yields an empty
-/// list.
-///
-/// Borrowed where it can be, owned where it must be. Both producers of
-/// `rel_path` - `scan_dir_cancellable`, which joins components with `\`, and
-/// the MFT path (`mftscan::pathmap::scan_frn_map`), which does the same -
-/// hand over paths that are already exactly `\`-separated with no empty
-/// segments. For those, every ancestor is literally `&rel_path[..end]` at a
-/// separator, so the whole chain costs nothing but the `Vec`.
-///
-/// A path that is *not* in that shape (a `/` separator, a leading or doubled
-/// separator, a trailing one) has to be normalised, and a normalised prefix
-/// is no longer a substring of the input - so those keep the original owned
-/// build. This is a deliberate fallback rather than a simplification:
-/// silently treating `a/b/c.txt` as one flat segment would change which
-/// folders collapse in the UI tree, which is a behaviour change, not an
-/// optimisation.
-fn dir_prefixes(rel_path: &str) -> Vec<Cow<'_, str>> {
-    if is_canonically_separated(rel_path) {
-        return rel_path
-            .match_indices('\\')
-            .map(|(end, _)| Cow::Borrowed(&rel_path[..end]))
-            .collect();
-    }
-
-    let segments: Vec<&str> = rel_path
-        .split(['\\', '/'])
-        .filter(|segment| !segment.is_empty())
-        .collect();
-    if segments.len() <= 1 {
-        return Vec::new();
-    }
-
-    let mut prefixes = Vec::with_capacity(segments.len() - 1);
-    let mut acc = String::new();
-    for segment in &segments[..segments.len() - 1] {
-        if !acc.is_empty() {
-            acc.push('\\');
-        }
-        acc.push_str(segment);
-        prefixes.push(Cow::Owned(acc.clone()));
-    }
-    prefixes
-}
-
-/// Whether `rel_path` is already in the shape [`dir_prefixes`] can slice
-/// prefixes out of: `\` separators only, and no empty segment (no leading,
-/// doubled, or trailing separator). Under those conditions splitting on `\`
-/// and rejoining with `\` is the identity, so a prefix ending at any
-/// separator is exactly the normalised ancestor path.
-fn is_canonically_separated(rel_path: &str) -> bool {
-    !rel_path.contains('/')
-        && !rel_path.starts_with('\\')
-        && !rel_path.ends_with('\\')
-        && !rel_path.contains("\\\\")
 }
 
 /// Scans, classifies, and persists one game in its own single-game
@@ -1955,130 +1564,13 @@ fn scan_and_classify_game(
     Ok(findings)
 }
 
-/// One file's finding after reconciling the rule engine and the localization
-/// detector, ready to persist and display.
-#[derive(Clone)]
-struct CombinedFinding {
-    source: FindingSource,
-    rule_id: String,
-    confidence: u8,
-    provenance: RuleProvenance,
-    lang_tag: Option<String>,
-}
-
-/// Extends `combined` with every unclassified file of this game that carries
-/// the exact file name of one of its intro findings, copying that finding's
-/// description, confidence and provenance.
-///
-/// Why intros only: a stub written into the copy the engine never opens is
-/// the one failure the user cannot see without launching the game - the app
-/// reports the bytes freed and the logo still plays. Every other category
-/// deletes the file outright, where a missed second copy is merely space not
-/// reclaimed. See [`gametrimmer_core::scanner::same_name_siblings`].
-///
-/// Three exclusions, each of them a rule that already outranks a rules-engine
-/// match and must keep outranking this:
-/// - `vetoed`: a personal keep rule refuses any classification of that file.
-/// - already in `combined`: the file has a verdict of its own; a second
-///   finding for one file would double-count its bytes.
-/// - an imported rule's match: an untrusted pack gets no reach past the
-///   pattern it actually wrote, and `retrim` refuses those unattended anyway.
-/// - a protected container: a whole-file delete would take everything
-///   packed inside it, so it is never offered as one.
-fn add_same_name_intro_siblings(
-    entries: &[FileEntry],
-    combined: &mut Vec<(usize, CombinedFinding)>,
-    vetoed: &HashSet<usize>,
-) {
-    let sources: Vec<usize> = combined
-        .iter()
-        .filter(|(_, finding)| {
-            finding.source == FindingSource::Rule(gametrimmer_core::rules::Category::Intro)
-                && finding.provenance != RuleProvenance::ImportedUntrusted
-        })
-        .map(|(index, _)| *index)
-        .collect();
-    if sources.is_empty() {
-        return;
-    }
-
-    let mut skip: HashSet<usize> = combined.iter().map(|(index, _)| *index).collect();
-    skip.extend(vetoed.iter().copied());
-
-    let pairs = gametrimmer_core::scanner::same_name_siblings(entries, &sources, &skip);
-    if pairs.is_empty() {
-        return;
-    }
-    let by_index: HashMap<usize, usize> = combined
-        .iter()
-        .enumerate()
-        .map(|(position, (index, _))| (*index, position))
-        .collect();
-    for (sibling, source) in pairs {
-        if gametrimmer_core::worker::is_protected_container(&entries[sibling].rel_path) {
-            continue;
-        }
-        let Some(&position) = by_index.get(&source) else {
-            continue;
-        };
-        // Not a clone of the source's attribution: the rule that matched
-        // the source provably does not match this path (it is what the
-        // depth budget excluded), so persisting its description would put a
-        // pattern in `findings.rule_id` that a user auditing "why is this
-        // flagged" can disprove. The confidence *is* the source's, and
-        // capped there: the sweep's claim is derived from that verdict and
-        // cannot outrank it, while lowering it would drop the copy below
-        // `AUTO_SELECT_CONFIDENCE_THRESHOLD` and leave it unticked - which
-        // is the GT-206 bug again, the logo still playing out of the copy
-        // nobody stubbed.
-        let mut swept = combined[position].1.clone();
-        swept.rule_id = gametrimmer_core::scanner::SIBLING_FINDING_DESC.to_string();
-        combined.push((sibling, swept));
-    }
-    // Findings are read back positionally by the UI tree; keeping them in
-    // file order stops a swept copy from surfacing detached from its group.
-    combined.sort_by_key(|(index, _)| *index);
-}
-
-/// Merges a rules-engine finding with a localization finding for the same
-/// file. Categories are checked in a fixed precedence order (redist → dev
-/// leftovers → bonus → docs → localization; see `Category::priority_rank`),
-/// so a rule finding always beats a localization cue regardless of
-/// confidence: a localized readme (`ReadMe_DE.rtf`) is documentation, and a
-/// per-language file inside `Support\` is support material (also the docs
-/// category) - the language split inside such folders does not change what
-/// the folder is. Localization applies only to files no rule claimed.
-///
-/// `ui_lang` is what the reason is written in. It is resolved here, at scan
-/// time, rather than when the row is drawn, because `rule_id` is persisted as
-/// text: the same choice the orphan pass already makes. The cost is that
-/// switching the interface language leaves already-scanned findings describing
-/// themselves in the previous one until the next scan.
-fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<CombinedFinding> {
-    match (rule, lang) {
-        (Some(r), _) => Some(CombinedFinding {
-            source: FindingSource::Rule(r.category),
-            rule_id: r.rule_desc,
-            confidence: r.confidence,
-            provenance: r.provenance,
-            lang_tag: None,
-        }),
-        (None, Some(l)) => Some(CombinedFinding {
-            source: FindingSource::Loc(l.kind),
-            rule_id: i18n::lang_reason(Lang::En, &l.reason),
-            confidence: l.confidence,
-            provenance: RuleProvenance::Builtin,
-            lang_tag: Some(l.lang_tag.clone()),
-        }),
-        (None, None) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use std::sync::mpsc::Receiver;
+
+    use gametrimmer_core::worker::FindingSource;
 
     use gametrimmer_core::orphans::OrphanKind;
     use gametrimmer_core::providers::DiscoveredLibrary;
@@ -2168,56 +1660,10 @@ mod tests {
         assert!(msg.contains("gt_probe_disk_full"), "{msg}");
     }
     use gametrimmer_core::db;
-    use gametrimmer_core::langdetect::{LangDetector, LangEvidence, LangKind, LangReason};
+    use gametrimmer_core::langdetect::{LangDetector, LangKind};
     use gametrimmer_core::providers::GameInstall;
     use gametrimmer_core::rules::{Category, RuleEngine};
     use std::fs;
-
-    fn lang_finding_de() -> LangFinding {
-        LangFinding {
-            lang_tag: "de".to_string(),
-            kind: LangKind::Text,
-            confidence: 90,
-            reason: LangReason::new(LangEvidence::Family {
-                languages: 3,
-                dir: Some("Docs".to_string()),
-            }),
-        }
-    }
-
-    #[test]
-    fn combine_finding_prefers_any_rule_category_over_localization() {
-        // The localization cue is MORE confident (90 vs 85), but category
-        // precedence is fixed: a localized readme is documentation first.
-        let rule = Finding {
-            category: Category::DocsFile,
-            rule_desc: "Файл документації (PDF/RTF)".to_string(),
-            confidence: 85,
-            provenance: RuleProvenance::Builtin,
-            localized_content: false,
-        };
-
-        let combined = combine_finding(Some(rule), Some(&lang_finding_de()))
-            .expect("a rule match must produce a finding");
-
-        assert!(matches!(
-            combined.source,
-            FindingSource::Rule(Category::DocsFile)
-        ));
-        assert_eq!(combined.lang_tag, None);
-    }
-
-    #[test]
-    fn combine_finding_uses_localization_only_when_no_rule_matches() {
-        let combined = combine_finding(None, Some(&lang_finding_de()))
-            .expect("a localization finding alone must survive");
-
-        assert!(matches!(
-            combined.source,
-            FindingSource::Loc(LangKind::Text)
-        ));
-        assert_eq!(combined.lang_tag.as_deref(), Some("de"));
-    }
 
     /// A rule that matches every file name, so `scan_and_classify_game`
     /// always inserts a `findings` row per file - needed to exercise the
@@ -2266,45 +1712,6 @@ mod tests {
 
         match result {
             Ok(_) => panic!("a pre-cancelled scan must return Err"),
-            Err(err) => assert!(
-                err.to_string().contains("cancelled"),
-                "error message should mention cancellation, got: {err}"
-            ),
-        }
-    }
-
-    /// `classify_game` itself must honor a pre-set cancel flag - this is the
-    /// MFT branch's guarantee (it skips the walk and calls `classify_game`
-    /// directly), and the reason the "Analysis" phase of a huge game (ARK) can
-    /// now be stopped. With the flag already set, the first `collect_cancellable`
-    /// checkpoint inside `analyze_game_cancellable` fires before any real work.
-    #[test]
-    fn classify_game_returns_cancelled_when_flag_pre_set() {
-        let engine = match_all_engine();
-        let lang_detector = LangDetector::new();
-
-        let entries = vec![
-            FileEntry::logical_only("a.txt", 1, None),
-            FileEntry::logical_only("b\\c.txt", 1, None),
-        ];
-        let cancel = AtomicBool::new(true);
-
-        let result = classify_game(
-            &engine,
-            &lang_detector,
-            GameIdentity {
-                id: 1,
-                name: "Test Game",
-                install_dir: Path::new("C:/Games/Test"),
-                app_id: None,
-            },
-            entries,
-            &[],
-            &cancel,
-        );
-
-        match result {
-            Ok(_) => panic!("a pre-cancelled classify_game must return Err"),
             Err(err) => assert!(
                 err.to_string().contains("cancelled"),
                 "error message should mention cancellation, got: {err}"
@@ -3235,83 +2642,6 @@ mod tests {
         );
     }
 
-    /// `classify_game`'s `enabled_categories` filter is the single choke
-    /// point for the "scanned artifact categories" setting - a disabled
-    /// category's files must never reach `combined_by_index` at all, so
-    /// they neither show up in the returned findings nor influence
-    /// `assign_group_dirs` folder-collapsing.
-    #[test]
-    fn classify_game_drops_findings_whose_category_is_disabled() {
-        let engine = match_all_engine(); // every file classifies as docs_file
-        let lang_detector = LangDetector::new();
-        let entries = vec![entry("readme.txt"), entry("manual.pdf")];
-
-        let never_cancel = AtomicBool::new(false);
-        let prepared_all_enabled = classify_game(
-            &engine,
-            &lang_detector,
-            GameIdentity {
-                id: 1,
-                name: "Test Game",
-                install_dir: Path::new("C:/Games/Test"),
-                app_id: None,
-            },
-            entries.clone(),
-            &[], // empty = every category enabled
-            &never_cancel,
-        )
-        .expect("uncancelled classify_game should succeed");
-        assert_eq!(
-            prepared_all_enabled.findings.len(),
-            2,
-            "with no categories disabled, both files should be classified"
-        );
-
-        let prepared_docs_disabled = classify_game(
-            &engine,
-            &lang_detector,
-            GameIdentity {
-                id: 1,
-                name: "Test Game",
-                install_dir: Path::new("C:/Games/Test"),
-                app_id: None,
-            },
-            entries,
-            &["redist".to_string()], // "docs" is not in the enabled list
-            &never_cancel,
-        )
-        .expect("uncancelled classify_game should succeed");
-        assert!(
-            prepared_docs_disabled.findings.is_empty(),
-            "disabling \"docs\" must drop every docs_file finding, not just filter it later"
-        );
-    }
-
-    /// Sibling case: when the finding's category *is* in the enabled list,
-    /// it must still come through unaffected.
-    #[test]
-    fn classify_game_keeps_findings_whose_category_is_enabled() {
-        let engine = match_all_engine();
-        let lang_detector = LangDetector::new();
-        let entries = vec![entry("readme.txt")];
-
-        let prepared = classify_game(
-            &engine,
-            &lang_detector,
-            GameIdentity {
-                id: 1,
-                name: "Test Game",
-                install_dir: Path::new("C:/Games/Test"),
-                app_id: None,
-            },
-            entries,
-            &["docs".to_string()],
-            &AtomicBool::new(false),
-        )
-        .expect("uncancelled classify_game should succeed");
-        assert_eq!(prepared.findings.len(), 1);
-    }
-
     /// The `ntfs` crate has been observed to panic (rather than return
     /// `Err`) on certain real-world volume layouts. `scan_volume_catching_panics`
     /// is the safety net around every per-volume MFT scan call - this
@@ -4037,144 +3367,6 @@ mod tests {
 
     fn is_cyrillic(ch: char) -> bool {
         ('\u{0400}'..='\u{04FF}').contains(&ch)
-    }
-
-    #[test]
-    fn dir_prefixes_lists_ancestors_shallowest_first_excluding_root_and_file_name() {
-        assert_eq!(
-            dir_prefixes(r"a\b\c\file.txt"),
-            vec!["a".to_string(), r"a\b".to_string(), r"a\b\c".to_string()]
-        );
-    }
-
-    #[test]
-    fn dir_prefixes_is_empty_for_a_file_directly_under_the_game_root() {
-        assert!(dir_prefixes("readme.txt").is_empty());
-    }
-
-    /// The chains are sliced straight out of `rel_path` when it is already
-    /// `\`-separated, which no path either scan producer emits can violate -
-    /// but a `/`, a doubled separator or a leading one would make a borrowed
-    /// prefix mean something different from the normalised ancestor. Those
-    /// take the owned path, and must still normalise exactly as before.
-    #[test]
-    fn dir_prefixes_normalizes_separators_it_cannot_slice_through() {
-        assert_eq!(
-            dir_prefixes("a/b/c/file.txt"),
-            vec!["a".to_string(), r"a\b".to_string(), r"a\b\c".to_string()],
-            "forward slashes must normalize to the same chain as backslashes"
-        );
-        assert_eq!(
-            dir_prefixes(r"a\\b\file.txt"),
-            vec!["a".to_string(), r"a\b".to_string()],
-            "a doubled separator is one separator, not an empty directory"
-        );
-        assert_eq!(
-            dir_prefixes(r"\a\file.txt"),
-            vec!["a".to_string()],
-            "a leading separator does not create a nameless root directory"
-        );
-    }
-
-    /// The grouping itself must not care which separator wrote the path:
-    /// two files in the same folder, spelled differently, still collapse
-    /// into one group.
-    #[test]
-    fn assign_group_dirs_groups_across_mixed_separators() {
-        let entries = vec![entry("junk/a.txt"), entry(r"junk\b.txt")];
-        let flagged: HashSet<usize> = [0, 1].into_iter().collect();
-
-        let groups = assign_group_dirs(&entries, &flagged);
-
-        assert_eq!(groups.get(&0), Some(&"junk".to_string()));
-        assert_eq!(groups.get(&1), Some(&"junk".to_string()));
-    }
-
-    #[test]
-    fn assign_group_dirs_collapses_a_folder_where_every_file_is_flagged() {
-        let entries = vec![entry(r"junk\a.txt"), entry(r"junk\b.txt")];
-        let flagged: HashSet<usize> = [0, 1].into_iter().collect();
-
-        let groups = assign_group_dirs(&entries, &flagged);
-
-        assert_eq!(groups.get(&0), Some(&"junk".to_string()));
-        assert_eq!(groups.get(&1), Some(&"junk".to_string()));
-    }
-
-    #[test]
-    fn assign_group_dirs_does_not_collapse_a_folder_with_an_unflagged_file() {
-        let entries = vec![
-            entry(r"mixed\a.txt"),
-            entry(r"mixed\b.txt"), // not flagged below
-        ];
-        let flagged: HashSet<usize> = [0].into_iter().collect();
-
-        let groups = assign_group_dirs(&entries, &flagged);
-
-        assert_eq!(
-            groups.get(&0),
-            None,
-            "the folder has an unflagged member, so it must not collapse"
-        );
-    }
-
-    #[test]
-    fn assign_group_dirs_does_not_collapse_a_single_file_folder() {
-        let entries = vec![entry(r"lonely\only.txt")];
-        let flagged: HashSet<usize> = [0].into_iter().collect();
-
-        let groups = assign_group_dirs(&entries, &flagged);
-
-        assert_eq!(
-            groups.get(&0),
-            None,
-            "a folder with only one file gains nothing from collapsing"
-        );
-    }
-
-    #[test]
-    fn assign_group_dirs_picks_the_shallowest_collapsible_ancestor() {
-        // Both "top" and "top\\nested" are fully flagged and have >= 2
-        // files; "top" is shallower and must win.
-        let entries = vec![
-            entry(r"top\nested\a.txt"),
-            entry(r"top\nested\b.txt"),
-            entry(r"top\c.txt"),
-        ];
-        let flagged: HashSet<usize> = [0, 1, 2].into_iter().collect();
-
-        let groups = assign_group_dirs(&entries, &flagged);
-
-        assert_eq!(groups.get(&0), Some(&"top".to_string()));
-        assert_eq!(groups.get(&1), Some(&"top".to_string()));
-        assert_eq!(groups.get(&2), Some(&"top".to_string()));
-    }
-
-    #[test]
-    fn assign_group_dirs_never_collapses_the_game_root() {
-        // Two flagged files directly at the root: there is no directory
-        // string representing the root itself for them to collapse into.
-        let entries = vec![entry("a.txt"), entry("b.txt")];
-        let flagged: HashSet<usize> = [0, 1].into_iter().collect();
-
-        let groups = assign_group_dirs(&entries, &flagged);
-
-        assert!(groups.is_empty(), "root-level files are always orphans");
-    }
-
-    #[test]
-    fn assign_group_dirs_leaves_unflagged_files_out_of_the_result() {
-        let entries = vec![entry(r"junk\a.txt"), entry(r"junk\b.txt")];
-        let flagged: HashSet<usize> = [0].into_iter().collect();
-
-        let groups = assign_group_dirs(&entries, &flagged);
-
-        assert_eq!(
-            groups.len(),
-            0,
-            "\"junk\" has only 1 of 2 files flagged, so it can't collapse, \
-             and the one flagged file has no other collapsible ancestor"
-        );
     }
 
     // -- orphan-residue safety: orphaned residue pass --
@@ -4993,52 +4185,6 @@ mod tests {
             )
             .expect("count game files");
         assert_eq!(game_files, 1, "a real game's files must not be wiped");
-    }
-
-    #[test]
-    fn test_classify_game_detects_anti_cheat_from_relative_paths_in_memory() {
-        let engine = match_all_engine();
-        let lang_detector = LangDetector::new();
-        let never_cancel = AtomicBool::new(false);
-
-        // Safe game entries
-        let safe_entries = vec![entry("bin/Game.exe"), entry("Data/Audio/Voices.pck")];
-        let prepared_safe = classify_game(
-            &engine,
-            &lang_detector,
-            GameIdentity {
-                id: 1,
-                name: "Safe Game",
-                install_dir: Path::new("C:/Games/Safe"),
-                app_id: None,
-            },
-            safe_entries,
-            &[],
-            &never_cancel,
-        )
-        .expect("classify safe game");
-        assert!(!prepared_safe.anti_cheat_protected);
-
-        // EAC game entries (in memory only, non-existent disk path)
-        let eac_entries = vec![
-            entry("bin/Game.exe"),
-            entry("EasyAntiCheat/easyanticheat_x64.dll"),
-        ];
-        let prepared_eac = classify_game(
-            &engine,
-            &lang_detector,
-            GameIdentity {
-                id: 2,
-                name: "EAC Game",
-                install_dir: Path::new("C:/Games/NonExistentEAC"),
-                app_id: None,
-            },
-            eac_entries,
-            &[],
-            &never_cancel,
-        )
-        .expect("classify EAC game");
-        assert!(prepared_eac.anti_cheat_protected);
     }
 
     /// The blocker this whole column exists for: an Easy Anti-Cheat game's
