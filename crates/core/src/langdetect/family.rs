@@ -377,6 +377,7 @@ pub fn compute_family(
         &mut result,
     )?;
     compute_directory_occurrence_family(
+        data,
         seg_lists,
         occ_lists,
         keep,
@@ -438,7 +439,7 @@ fn compute_file_shape_family(
         if distinct.len() < threshold {
             continue;
         }
-        if !slot_is_mostly_languages(seg_lists, by_dir.get(parent_dir), shape, members) {
+        if !slot_is_mostly_languages(data, seg_lists, by_dir.get(parent_dir), shape, members) {
             continue;
         }
         claim_unnamed_slot_fillers(
@@ -637,7 +638,72 @@ fn is_marker_word(data: &LangData, word: &str) -> bool {
     .any(|set| set.contains(word))
 }
 
+/// Whether the values standing in one slot of a filename family name
+/// *countries* rather than languages (GT-460).
+///
+/// Every other guard in this file asks about shape, and shape cannot answer
+/// this one. War Thunder's `content\base\res\ships\` holds 640 ship models
+/// named for the navy that sailed them: `usa` 105, `uk` 105, `ussr` 101,
+/// `jap` 95, `ger` 91, `it` 70, `fr` 69. Five of those seven read as
+/// languages, so the slot is "mostly languages" by every measure the engine
+/// has; the members support each other on `battleship` and `class` the way a
+/// per-language set supports itself on a shared stem; the label counts are as
+/// even as Forza's radio DJ. Nothing separates it from a translation except
+/// the meaning of the words, and the words that carry the meaning are `usa`
+/// and `ussr`: no language is called either.
+///
+/// So the dictionary carries them, the way it already carries the
+/// industry's own vocabulary, and one of them anywhere in the slot settles
+/// what the slot is about. The owner's ruling of 2026-09-04 is the rule this
+/// implements: a nation is content, not localization - `ger_cruiser_prinz_eugen`
+/// is a German ship, not a German translation, and neither is
+/// `fr_battleship_bretagne` beside it.
+///
+/// Deliberately narrow, twice over.
+///
+/// The list itself is short: `ger`, `jap`, `it` and `fr` are *not* nation
+/// words, because they name languages too and it is only their company that
+/// says which is meant here. Ghost Recon Breakpoint's `soundspc_bra.pck` is
+/// Brazilian Portuguese and Darktide's `chs`/`cht` are Chinese - a wider
+/// list would take those with it.
+///
+/// And *one* country name does not convict a slot on its own, because one
+/// country name is also how some studios spell a language. Anno 1701 keeps
+/// `selectlanguage_cze / fra / ger / hun / ita / pol / spa / usa.ini`, where
+/// `usa` is American English: seven languages and one country name, and the
+/// country name is plainly the eighth language.
+///
+/// Two things convict instead, either one of them enough:
+///
+/// - **Two country names together.** One country among languages is a
+///   language written as a country; two countries are a roster of countries.
+///   `usa` and `ussr` stand side by side in every ship folder War Thunder
+///   ships, and in no language list anywhere.
+/// - **A country name among strangers** - an occupant the dictionary cannot
+///   read as a language at all. War Thunder's `jap`; its infantry heads'
+///   `iraq`, `nigerian`, `man`. A complete language list with one country
+///   name in it is still a language list; the same country name beside a
+///   word that is no language at all is not.
+fn slot_names_a_nation(
+    data: &LangData,
+    occupants: &HashSet<&str>,
+    recognized: &HashSet<&str>,
+) -> bool {
+    let nations = occupants
+        .iter()
+        .filter(|value| data.names_a_nation(value))
+        .count();
+    if nations == 0 {
+        return false;
+    }
+    nations >= 2
+        || occupants
+            .iter()
+            .any(|value| !recognized.contains(value) && !data.names_a_nation(value))
+}
+
 fn slot_is_mostly_languages(
+    data: &LangData,
     seg_lists: &[Vec<Segment>],
     dir_files: Option<&Vec<usize>>,
     shape: &str,
@@ -669,7 +735,7 @@ fn slot_is_mostly_languages(
             recognized.insert(value);
         }
     }
-    recognized.len() * 2 > occupants.len()
+    !slot_names_a_nation(data, &occupants, &recognized) && recognized.len() * 2 > occupants.len()
 }
 
 /// The atom standing in one positional slot of `file`, or `None` when the
@@ -739,6 +805,7 @@ fn atom_width(seg_lists: &[Vec<Segment>], file: usize, variant: u8) -> Option<us
 /// beside twenty-eight `patch_<n>_<language>.pack`, and judging the bare pair
 /// against the whole folder lost 0.91 GB of genuine language packs.
 fn position_slot_is_mostly_languages(
+    data: &LangData,
     seg_lists: &[Vec<Segment>],
     dir_files: Option<&Vec<usize>>,
     slot: (u8, bool, usize),
@@ -770,7 +837,7 @@ fn position_slot_is_mostly_languages(
             recognized.insert(value);
         }
     }
-    recognized.len() * 2 > occupants.len()
+    !slot_names_a_nation(data, &occupants, &recognized) && recognized.len() * 2 > occupants.len()
 }
 
 /// Mechanism 3: files in the same directory whose filename carries a
@@ -802,6 +869,7 @@ fn position_slot_is_mostly_languages(
 /// same-position occurrences among >= `MIN_FAMILY_SIZE` distinct languages
 /// rejects all of these while still confirming the genuine cases above.
 fn compute_directory_occurrence_family(
+    data: &LangData,
     seg_lists: &[Vec<Segment>],
     occ_lists: &[Vec<Occurrence>],
     keep: &HashSet<String>,
@@ -1111,6 +1179,7 @@ fn compute_directory_occurrence_family(
             continue;
         }
         if !position_slot_is_mostly_languages(
+            data,
             seg_lists,
             by_dir.get(parent_dir),
             (*_variant, *_from_start, *_idx),

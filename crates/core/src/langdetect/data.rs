@@ -110,6 +110,14 @@ pub struct LangPack {
     pub version: u32,
     pub languages: Vec<LangPackEntry>,
     pub industry_words: Vec<String>,
+    /// Words that name a *country* and never a language. A slot of a
+    /// filename family that holds one of these is a nation slot, whatever
+    /// else stands in it — see `family::slot_names_a_nation`.
+    ///
+    /// Defaulted so an overlay pack written against an older build still
+    /// parses; `deny_unknown_fields` cuts the other way.
+    #[serde(default)]
+    pub nation_words: Vec<String>,
     pub keep_default: Vec<String>,
     pub markers: MarkerTables,
 }
@@ -173,6 +181,7 @@ impl LangPack {
             version: LANG_PACK_VERSION,
             languages,
             industry_words: union(base.industry_words, incoming.industry_words),
+            nation_words: union(base.nation_words, incoming.nation_words),
             keep_default: union(base.keep_default, incoming.keep_default),
             markers: MarkerTables {
                 negative: union(base.markers.negative, incoming.markers.negative),
@@ -219,6 +228,7 @@ impl LangPack {
             .map(|entry| entry.level_a.len() + entry.level_b.len() + entry.level_c.len())
             .sum::<usize>()
             + self.industry_words.len()
+            + self.nation_words.len()
             + self.keep_default.len()
             + [
                 &self.markers.negative,
@@ -271,6 +281,7 @@ pub struct LangData {
     /// UI listing order (see [`LangData::language_keys`]).
     language_keys: Vec<&'static str>,
     industry_words: HashSet<String>,
+    nation_words: HashSet<String>,
     keep_default: Vec<String>,
     pub negative: HashSet<String>,
     pub overridable_negative: HashSet<String>,
@@ -329,6 +340,7 @@ impl LangData {
             alias_map,
             language_keys,
             industry_words: to_set(&pack.industry_words),
+            nation_words: to_set(&pack.nation_words),
             keep_default: pack.keep_default.iter().map(|s| s.to_lowercase()).collect(),
             negative: to_set(&pack.markers.negative),
             overridable_negative: to_set(&pack.markers.overridable_negative),
@@ -407,6 +419,12 @@ impl LangData {
     /// True if a matched Level A alias is localization-industry vocabulary
     /// (region-qualified forms, Steam folder names) rather than a plain
     /// natural-language word — see the 2026-07-16 recalibration.
+    /// True if the word names a country rather than a language. See
+    /// [`LangPack::nation_words`].
+    pub fn names_a_nation(&self, word: &str) -> bool {
+        self.nation_words.contains(word)
+    }
+
     pub fn is_industry_alias(&self, matched: &str) -> bool {
         matched.contains('(') || matched.contains('-') || self.industry_words.contains(matched)
     }
@@ -548,6 +566,7 @@ mod tests {
                 },
             ],
             industry_words: vec!["schinese".to_string()],
+            nation_words: vec!["gbr".to_string()],
             keep_default: vec![],
             markers: MarkerTables {
                 negative: vec!["province_names".to_string(), "gfx".to_string()],

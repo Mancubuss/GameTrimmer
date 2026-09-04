@@ -784,6 +784,10 @@
     "chinesesimplified",
     "chinesetraditional"
   ],
+  "nation_words": [
+    "usa",
+    "ussr"
+  ],
   "keep_default": [
     "uk",
     "en"

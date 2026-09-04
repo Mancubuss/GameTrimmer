@@ -1484,6 +1484,91 @@ fn an_even_set_of_languages_survives_being_judged_as_a_set() {
 
 // --- GT-460: a code that means something other than a language ----------
 
+/// War Thunder names its ship models for the navy that sailed them.
+/// `content\base\res\ships\` holds 640 of them - `usa` 105, `uk` 105, `ussr`
+/// 101, `jap` 95, `ger` 91, `it` 70, `fr` 69 - and five of those seven read
+/// as languages. Every guard the engine has says yes: the slot is mostly
+/// languages, the members support each other on `battleship` and `class` the
+/// way a translated set supports itself on a shared stem, and the label
+/// counts are as even as any genuine set in the library. 367 findings and
+/// 3.75 GB of ship models, the largest false cluster in the library by size.
+///
+/// Nothing about the *shape* of this folder separates it from a translation.
+/// What separates it is that no language is called `usa` or `ussr` - a
+/// nation is content, not localization.
+#[test]
+fn ships_named_for_the_navy_that_sailed_them_are_not_translations() {
+    // Real names off the disk, and all of the same width: a name built
+    // differently is not an occupant of the same slot, so the fixture has to
+    // keep the nations side by side the way the folder does.
+    let refs = [
+        r"content\base\res\ships\fr_battleship_dunkerque.grp",
+        r"content\base\res\ships\fr_battleship_strasbourg.grp",
+        r"content\base\res\ships\fr_cruiser_emile.grp",
+        r"content\base\res\ships\ger_battleship_bismarck.grp",
+        r"content\base\res\ships\ger_battleship_scharnhorst.grp",
+        r"content\base\res\ships\ger_cruiser_nurnberg.grp",
+        r"content\base\res\ships\it_battleship_cavour.grp",
+        r"content\base\res\ships\it_cruiser_trento.grp",
+        r"content\base\res\ships\jap_aircraftcarrier_shokaku.grp",
+        r"content\base\res\ships\jap_battleship_yamato.grp",
+        r"content\base\res\ships\uk_battleship_hood.grp",
+        r"content\base\res\ships\uk_cruiser_belfast.grp",
+        r"content\base\res\ships\usa_admirable_class.grp",
+        r"content\base\res\ships\usa_aircraftcarrier_enterprise.grp",
+        r"content\base\res\ships\ussr_battleship_marat.grp",
+        r"content\base\res\ships\ussr_cruiser_kirov.grp",
+        // The one name that does twin across the nations, and so proved a
+        // "family" existed here in the first place.
+        r"content\base\res\ships\fr_pships_weaponry.grp",
+        r"content\base\res\ships\ger_pships_weaponry.grp",
+        r"content\base\res\ships\it_pships_weaponry.grp",
+        r"content\base\res\ships\usa_pships_weaponry.grp",
+        r"content\base\res\ships\ussr_pships_weaponry.grp",
+    ];
+
+    let found = find_for(&refs);
+
+    assert!(
+        found.is_empty(),
+        "a navy is not a language, got {:?}",
+        found
+            .iter()
+            .map(|(i, f)| (refs[*i], &f.lang_tag))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The counter-example, and the reason a country name alone may not convict a
+/// slot: Anno 1701 spells American English `usa`. Seven languages and one
+/// country name, and the country name is plainly the eighth language - unlike
+/// War Thunder's roster, where `jap` stands beside `usa` and the dictionary
+/// can read neither as a language.
+#[test]
+fn a_country_name_among_languages_is_still_a_language() {
+    let refs = [
+        r"data\loca\selectlanguage_cze.ini",
+        r"data\loca\selectlanguage_fra.ini",
+        r"data\loca\selectlanguage_ger.ini",
+        r"data\loca\selectlanguage_hun.ini",
+        r"data\loca\selectlanguage_ita.ini",
+        r"data\loca\selectlanguage_pol.ini",
+        r"data\loca\selectlanguage_spa.ini",
+        r"data\loca\selectlanguage_usa.ini",
+    ];
+
+    let found = find_for(&refs);
+
+    assert!(
+        found.len() >= 7,
+        "a full language list with `usa` in it is a language list, got {:?}",
+        found
+            .iter()
+            .map(|(i, f)| (refs[*i], &f.lang_tag))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Underrail keeps its text in `data\locale\`, and the word *locale* on the
 /// path is what makes every file under it a language file. It is not a
 /// translation tree: it is the game's own text database, one folder per

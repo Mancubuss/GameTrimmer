@@ -215,6 +215,7 @@ The whole file is one JSON object:
 | `version` | integer | yes | See [Version semantics](#version-semantics). |
 | `languages` | array of `LangPackEntry` | yes | |
 | `industry_words` | array of strings | yes | Level-A aliases that are localization-industry vocabulary (region-qualified forms, Steam folder names) rather than plain natural-language words. |
+| `nation_words` | array of strings | no | Words that name a *country* and never a language (`usa`, `ussr`). A filename family whose varying slot holds two of them — or one of them beside a word that is no language at all — names nations, not languages, and is not a localization. Omit the key entirely and no such word is known. |
 | `keep_default` | array of strings | yes | The default "keep these languages" list shown in settings. |
 | `markers` | `MarkerTables` object | yes | |
 
@@ -272,6 +273,7 @@ omitted entirely.
     }
   ],
   "industry_words": [],
+  "nation_words": [],
   "keep_default": ["en"],
   "markers": {
     "negative": [],
