@@ -18,6 +18,7 @@ pub mod orphans;
 pub mod packs;
 pub mod perf;
 pub mod providers;
+pub mod reference;
 pub mod retrim;
 pub mod rules;
 pub mod safety;

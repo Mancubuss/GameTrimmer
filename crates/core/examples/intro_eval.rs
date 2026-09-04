@@ -31,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gametrimmer_core::langdetect::LangDetector;
+use gametrimmer_core::reference::GameReference;
 use gametrimmer_core::rules::{Category, RuleEngine};
 use gametrimmer_core::scanner::{same_name_siblings, FileEntry};
 
@@ -94,8 +95,12 @@ fn main() {
         None | Some("corpus") => read_corpus(),
         Some(path) => read_library(path),
     };
-    let engine =
-        RuleEngine::load(&repo_root().join("rules.json")).expect("repo rules.json should load");
+    // The catalogue is half the intro answer and lives outside rules.json
+    // (see core::reference), so an eval without it measures the heuristics
+    // alone and silently reports worse coverage than the app has.
+    let engine = RuleEngine::load(&repo_root().join("rules.json"))
+        .expect("repo rules.json should load")
+        .with_reference(GameReference::builtin().expect("built-in catalogue should parse"));
     let detector = match std::env::args().nth(2) {
         Some(keep) => LangDetector::with_keep_list(
             &keep

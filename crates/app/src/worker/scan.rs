@@ -215,11 +215,19 @@ fn run_scan(
     // binary. `rules.json` next to the executable is an optional overlay -
     // absent on every normal install, and folded on top of the built-ins
     // when someone puts one there (see `docs/rules-packs.md`).
-    let mut engine = match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON) {
+    //
+    // The per-game catalogue rides along with them: it is shipped data too
+    // (`core::reference`), just kept as a table instead of as ~950 more
+    // patterns. Both are validated by core tests, so either error here is
+    // unreachable short of a broken build - and both are reported as the
+    // built-in rules being corrupt, because from where the user stands that
+    // is what they are.
+    let mut engine = match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON)
+        .and_then(|engine| {
+            Ok(engine.with_reference(gametrimmer_core::reference::GameReference::builtin()?))
+        }) {
         Ok(engine) => engine,
         Err(err) => {
-            // The embedded defaults are validated by core tests, so this is
-            // unreachable short of a broken build.
             notifier.report_error(i18n::Reported::new(lang, |l| {
                 i18n::builtin_rules_corrupted(l, &err)
             }));

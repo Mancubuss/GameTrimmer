@@ -45,6 +45,7 @@ use gametrimmer_core::db;
 use gametrimmer_core::langdetect::{LangDetector, LangFinding, LangKind};
 use gametrimmer_core::providers::steam::SteamProvider;
 use gametrimmer_core::providers::LibraryProvider;
+use gametrimmer_core::reference::GameReference;
 use gametrimmer_core::rules::{Category, Finding, RuleEngine};
 use gametrimmer_core::scanner::{
     scan_dir, scan_games_bounded, store_files, store_files_no_tx, FileEntry,
@@ -214,7 +215,11 @@ fn main() {
     );
 
     let rules_path = repo_rules_path();
-    let engine = match RuleEngine::load(&rules_path) {
+    // Plus the per-game catalogue, which is shipped data the scan always
+    // carries but does not read from rules.json - see core::reference.
+    let engine = match RuleEngine::load(&rules_path)
+        .and_then(|engine| Ok(engine.with_reference(GameReference::builtin()?)))
+    {
         Ok(engine) => engine,
         Err(err) => {
             eprintln!("Не вдалося завантажити {}: {err}", rules_path.display());

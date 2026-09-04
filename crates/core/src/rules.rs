@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
 use crate::localized::{LocalizedText, DEFAULT_LANG};
+use crate::reference::{GameReference, REFERENCE_CONFIDENCE, REFERENCE_MAX_DEPTH};
 
 /// Redist and bonus rules only apply when the match occurs within this many
 /// path segments from the game root (redist installers and bonus-material
@@ -35,10 +36,15 @@ pub const MAX_RULE_DEPTH: usize = 32;
 pub const MAX_EXTENSIONS: usize = 32;
 pub const MAX_EXTENSION_BYTES: usize = 16;
 
-/// The repo's rules.json embedded at build time - the seed for the external
-/// file the app materializes next to the executable on first use, so users
-/// always have the full effective rule set on disk to audit and edit. The
-/// scanner never reads this constant directly once the file exists.
+/// The repo's rules.json embedded at build time - the rules every scan
+/// actually runs on. A `rules.json` next to the executable is an *optional
+/// overlay* folded on top of these, absent on a normal install; the app no
+/// longer materializes one, because a copy on disk is a copy that goes stale
+/// silently against a newer binary. See `docs/rules-packs.md`.
+///
+/// This is the hand-written pack only - 51 rules. The per-game catalogue that
+/// used to live here as 935 literal-alternation regexes is a table now; see
+/// [`crate::reference`].
 pub const BUILTIN_RULES_JSON: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../rules.json"));
 
@@ -566,6 +572,13 @@ pub struct RuleEngine {
     /// Built-in and unscoped only. A reference rule is about one named game's
     /// files, not about a folder that swallows whatever is under it.
     bonus_folders: Vec<CompiledRule>,
+    /// What an external catalogue names for one game, as a table rather than
+    /// as ~950 more compiled patterns - see [`crate::reference`].
+    ///
+    /// Empty unless a caller attaches one ([`Self::with_reference`]). A rule
+    /// pack is validated by compiling it, and validation has no business
+    /// consulting the shipped catalogue; the scan attaches it explicitly.
+    reference: GameReference,
 }
 
 impl RuleEngine {
@@ -743,7 +756,21 @@ impl RuleEngine {
             scoped,
             keeps,
             bonus_folders,
+            reference: GameReference::default(),
         })
+    }
+
+    /// Attaches the per-game catalogue this engine consults - see
+    /// [`crate::reference`].
+    ///
+    /// Separate from [`Self::from_json_in`] because the catalogue is not a
+    /// rule pack and is not parsed from the same file: every caller that
+    /// merely *validates* a pack (an import, a personal exception being
+    /// added) leaves it empty, and only the scan attaches the shipped one.
+    #[must_use]
+    pub fn with_reference(mut self, reference: GameReference) -> Self {
+        self.reference = reference;
+        self
     }
 
     /// Folds another engine's rules into this one, as the scan does with the
@@ -752,6 +779,9 @@ impl RuleEngine {
     /// Order matters for nothing but ties: precedence is decided by category
     /// rank, origin and confidence, and the veto is checked before any of
     /// them.
+    ///
+    /// The catalogue is not folded: it is shipped data attached once by the
+    /// scan, not something an absorbed pack can carry.
     pub fn absorb(&mut self, other: RuleEngine) {
         self.rules.extend(other.rules);
         for (app_id, rules) in other.scoped {
@@ -840,6 +870,40 @@ impl RuleEngine {
         // rank, then confidence (negated so that, like the two ranks in front
         // of it, smaller is better and one tuple comparison decides).
         let mut best: Option<((u8, u8, i16), Finding)> = None;
+
+        // The catalogue enters the ranking as one more candidate rather than
+        // short-circuiting it, so precedence keeps meaning exactly what
+        // `RuleOrigin::rank` says: an entry beats a *heuristic* in its own
+        // category, and still loses to a higher-ranked category (a redist
+        // installer that happens to share a name is a redist installer). This
+        // is a lookup, so a file in a game nobody catalogued pays one hash
+        // miss for it.
+        let file_depth = folder_segments.len() + 1;
+        if let Some(desc) = app_id
+            .filter(|_| file_depth <= REFERENCE_MAX_DEPTH)
+            .and_then(|id| self.reference.intro_desc_for(id, file_name))
+        {
+            best = Some((
+                (
+                    Category::Intro.priority_rank(),
+                    RuleOrigin::Reference.rank(),
+                    -(REFERENCE_CONFIDENCE as i16),
+                ),
+                Finding {
+                    category: Category::Intro,
+                    rule_desc: desc.to_string(),
+                    confidence: REFERENCE_CONFIDENCE,
+                    // Ours and trusted, exactly as the reference rules it
+                    // replaces were - `provenance` marks a pack that came
+                    // from outside, which this did not.
+                    provenance: RuleProvenance::Builtin,
+                    // A startup screen, not content in the player's language.
+                    // Same assertion every reference rule made by omitting
+                    // the field; see `Rule::localized_content`.
+                    localized_content: false,
+                },
+            ));
+        }
 
         // One hash lookup for the whole scoped pack, instead of asking every
         // one of its rules whether it is about this game.
@@ -1007,7 +1071,7 @@ mod tests {
 
     #[test]
     fn classify_matches_docs_folder_and_file() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         let finding = engine
             .classify("manual\\game_manual.pdf", None)
@@ -1030,7 +1094,7 @@ mod tests {
         // themselves are named after the language and carry no extension
         // (`TermsOfService\de`), so only a folder rule with no extension
         // filter can see them.
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         for path in [
             "Siren\\Content\\Data\\TermsOfService\\de",
@@ -1046,7 +1110,7 @@ mod tests {
 
     #[test]
     fn classify_returns_none_for_unremarkable_game_content() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         let finding = engine
             .classify("base\\sound\\music\\track01.ogg", None)
@@ -1057,7 +1121,7 @@ mod tests {
 
     #[test]
     fn classify_ignores_redist_pattern_match_beyond_max_depth() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // "installations" contains the substring "install" but sits four
         // segments deep, well past MAX_REDIST_DEPTH, and is real game content.
@@ -1095,7 +1159,7 @@ mod tests {
 
     #[test]
     fn repo_rules_classify_nested_vc_redist_as_redist_not_docs() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // Real-world layout (Assassin's Creed Mirage): the redist installer
         // lives 3 folders deep under "Support", which alone matches a
@@ -1111,7 +1175,7 @@ mod tests {
 
     #[test]
     fn classify_prefers_higher_priority_category_over_higher_confidence() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // The docs rule for *.pdf (85) is more confident than the bonus
         // folder rule (80), but an artbook inside an extras folder is bonus
@@ -1126,7 +1190,7 @@ mod tests {
 
     #[test]
     fn classify_puts_support_folder_content_into_docs_not_bonus() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // Support/help folders are reference material, but an archive-shaped
         // file is a protected container (see
@@ -1146,7 +1210,7 @@ mod tests {
 
     #[test]
     fn classify_ignores_bonus_folder_deep_inside_program_trees() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // Real-world layout (XCOM 2 launcher): `Extras` here is a Qt QML
         // module three segments deep, not a bonus-content folder. The
@@ -1162,7 +1226,7 @@ mod tests {
 
     #[test]
     fn classify_bonus_folder_requires_media_or_document_content() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         let media = engine
             .classify(r"Extras\track01.mp3", None)
@@ -1183,7 +1247,7 @@ mod tests {
     /// the comic as documentation, and only the artbook as bonus material.
     #[test]
     fn a_bonus_folder_absorbs_the_leftovers_and_comics_beside_its_artbook() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         for path in [
             r"Blood and Wine extras\ARTBOOK\artbook.pdf",
@@ -1204,7 +1268,7 @@ mod tests {
     /// never turn its contents into deletion candidates wholesale.
     #[test]
     fn a_bonus_folder_does_not_flag_what_no_rule_claimed() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         assert_eq!(
             engine
@@ -1263,7 +1327,7 @@ mod tests {
 
     #[test]
     fn classify_identifies_intro_and_logo_files_and_folders() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // Logos folder with video
         let logo_finding = engine
@@ -1315,7 +1379,7 @@ mod tests {
 
     #[test]
     fn intro_category_outranks_bonus_video_rules() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // An intro logo video inside Extras folder: Intro category has priority rank 1 vs Bonus rank 3
         let finding = engine
@@ -1333,7 +1397,7 @@ mod tests {
     /// `Category::is_depth_limited`) must keep it out of a tree this deep.
     #[test]
     fn classify_ignores_intro_looking_file_buried_deep_in_the_tree() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         assert_eq!(
             engine
@@ -1354,7 +1418,7 @@ mod tests {
     /// directory names and could never match a real file.
     #[test]
     fn classify_matches_a_real_crash_dump_and_diagnostic_log_file() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         let dump = engine
             .classify(r"Saved\Crashes\report.dmp", None)
@@ -1376,7 +1440,7 @@ mod tests {
     /// branch is additive, not a replacement.
     #[test]
     fn classify_still_matches_a_crash_dump_folder_by_name() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         let finding = engine
             .classify(r"Saved\Crashes\dummy.txt", None)
@@ -1392,7 +1456,7 @@ mod tests {
     /// would have silenced both without anything noticing.
     #[test]
     fn classify_still_matches_the_folder_layouts_games_actually_ship() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         let crashes = engine
             .classify(r"MyGame\Saved\Crashes\dummy.txt", None)
@@ -1422,7 +1486,7 @@ mod tests {
     /// settled by trying a stub in a real game, not by a test.
     #[test]
     fn bink_1_and_bink_2_are_both_intro_videos() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // Bink 2's header-derived stub was verified live in a real game
         // (Scars Above, variant B) - see GT-204 - so it now reaches the
@@ -1451,7 +1515,7 @@ mod tests {
     /// (see `janitor::crashes`) - was a confidence-95 finding.
     #[test]
     fn classify_ignores_a_crash_dump_folder_buried_deep_in_the_tree() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         assert_eq!(
             engine
@@ -1872,7 +1936,7 @@ mod tests {
 
     #[test]
     fn reference_pack_reaches_an_intro_video_no_heuristic_can_see() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // PCGamingWiki names this file for Alice: Madness Returns, Steam
         // appid 19680. No built-in pattern reaches it: the publisher rule
@@ -1886,7 +1950,7 @@ mod tests {
             .flagged()
             .expect("the catalogue names this file for this game");
         assert_eq!(finding.category, Category::Intro);
-        assert_eq!(finding.confidence, REFERENCE_CONFIDENCE_IN_PACK);
+        assert_eq!(finding.confidence, REFERENCE_CONFIDENCE);
 
         // The counter-example that tells a working test from a vacuous one:
         // the same file in any other game is nobody's business.
@@ -1896,7 +1960,7 @@ mod tests {
 
     #[test]
     fn reference_pack_takes_over_a_file_the_heuristic_was_already_guessing_at() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // Prey (2017), Steam appid 480490. The studio-logo heuristic does
         // reach this one (`arkane` + `logo`, 95) - so what the catalogue
@@ -1914,20 +1978,16 @@ mod tests {
             .classify(path, Some("480490"))
             .flagged()
             .expect("the catalogue names it for this game");
-        assert_eq!(looked_up.confidence, REFERENCE_CONFIDENCE_IN_PACK);
+        assert_eq!(looked_up.confidence, REFERENCE_CONFIDENCE);
         assert!(
             looked_up.rule_desc.contains("PCGamingWiki"),
             "{looked_up:?}"
         );
     }
 
-    /// The confidence `scripts/build_intro_reference_rules.py` stamps on every
-    /// rule it generates.
-    const REFERENCE_CONFIDENCE_IN_PACK: u8 = 96;
-
     #[test]
     fn a_game_outside_the_catalogue_is_classified_exactly_as_before() {
-        let engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json should load");
+        let engine = shipped_engine();
 
         // 999999999 is no game's appid, so only the heuristics can speak - and
         // they must say precisely what they say for an unidentified game.
@@ -1946,19 +2006,158 @@ mod tests {
         }
     }
 
+    /// The move out of `rules.json` had one hard requirement: **no file may
+    /// change its verdict**. Two named games cannot show that - a wrong
+    /// lowercase, a lost depth limit or a dropped entry would sail past them -
+    /// so this rebuilds the *old* shape from the catalogue, rule for rule as
+    /// `build_intro_reference_rules.py` used to emit it, and compares the two
+    /// engines over every name the catalogue holds.
+    ///
+    /// Counter-examples ride along in the same loop, because agreement on
+    /// matches alone would also be reported by two engines that flag
+    /// everything: each name is asked again in a game the catalogue does not
+    /// know, and once with no game at all.
+    #[test]
+    fn every_catalogued_file_gets_the_verdict_the_old_rule_shape_gave_it() {
+        use crate::reference::REFERENCE_MAX_DEPTH;
+
+        let catalogue: serde_json::Value =
+            serde_json::from_str(crate::reference::BUILTIN_GAME_REFERENCE_JSON).unwrap();
+        let entries = catalogue["games"].as_array().unwrap();
+
+        // The old shape: one deleting rule per game, pattern `^(a|b|...)$`.
+        let as_rules: Vec<serde_json::Value> = entries
+            .iter()
+            .filter(|entry| !entry["intro_files"].as_array().unwrap().is_empty())
+            .map(|entry| {
+                let names: Vec<String> = entry["intro_files"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|name| regex::escape(name.as_str().unwrap()))
+                    .collect();
+                serde_json::json!({
+                    "category": "intro",
+                    "pattern": format!("^({})$", names.join("|")),
+                    "desc": crate::reference::intro_desc(entry["title"].as_str().unwrap(), "en"),
+                    "confidence": REFERENCE_CONFIDENCE,
+                    "app_id": entry["app_id"],
+                    "origin": "reference",
+                    "max_depth": REFERENCE_MAX_DEPTH,
+                })
+            })
+            .collect();
+
+        let hand_written = std::fs::read_to_string(default_rules_path()).unwrap();
+        let mut old_pack: serde_json::Value = serde_json::from_str(&hand_written).unwrap();
+        old_pack["rules"]
+            .as_array_mut()
+            .unwrap()
+            .extend(as_rules.clone());
+        // The old pattern list is what used to blow past MAX_REGEX_BYTES and
+        // force the generator to split a game across several rules; the limit
+        // is irrelevant to the table, so this reconstruction is exempted from
+        // it by chunking nothing and raising nothing - any game whose rebuilt
+        // pattern is too long is simply skipped, and reported.
+        let over_limit: Vec<&serde_json::Value> = as_rules
+            .iter()
+            .filter(|rule| rule["pattern"].as_str().unwrap().len() > MAX_REGEX_BYTES)
+            .collect();
+        old_pack["rules"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|rule| rule["pattern"].as_str().map(str::len).unwrap_or(0) <= MAX_REGEX_BYTES);
+
+        let old = RuleEngine::from_json(&old_pack.to_string()).expect("the old shape compiles");
+        let new = shipped_engine();
+
+        let mut compared = 0usize;
+        for entry in entries {
+            let app_id = entry["app_id"].as_str().unwrap();
+            if over_limit
+                .iter()
+                .any(|rule| rule["app_id"].as_str() == Some(app_id))
+            {
+                continue;
+            }
+            for name in entry["intro_files"].as_array().unwrap() {
+                let name = name.as_str().unwrap();
+                // The harvest lowercases every name it stores, and the files
+                // on disk are `ArkaneLogoAnim_Redux...bk2`. Asking only in
+                // the catalogue's own spelling would compare two engines on
+                // the one case that cannot tell a folding matcher from a
+                // byte-for-byte one - which is exactly what this test did
+                // until a deliberately case-sensitive matcher passed it.
+                for name in [name.to_string(), name.to_uppercase(), title_case(name)] {
+                    for prefix in ["", r"Movies\", r"Game\Content\Movies\Startup\"] {
+                        let path = format!("{prefix}{name}");
+                        assert_eq!(
+                            old.classify(&path, Some(app_id)),
+                            new.classify(&path, Some(app_id)),
+                            "{path} in {app_id} changed verdict",
+                        );
+                        // The counter-examples: neither engine may claim this
+                        // file for a game that is not this one.
+                        assert_eq!(
+                            old.classify(&path, Some("999999999")),
+                            new.classify(&path, Some("999999999")),
+                            "{path} in an uncatalogued game changed verdict",
+                        );
+                        assert_eq!(
+                            old.classify(&path, None),
+                            new.classify(&path, None),
+                            "{path} with no game changed verdict",
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            compared > 9_000,
+            "only {compared} paths compared - the catalogue did not load",
+        );
+        assert!(
+            over_limit.len() < 20,
+            "{} games could not be expressed as one old-shape rule; too many to \
+             call this comparison complete",
+            over_limit.len(),
+        );
+    }
+
     #[test]
     fn the_shipped_pack_stays_within_the_engine_limits() {
-        // The reference rules made rules.json two orders of magnitude bigger.
         // Both limits are checked at load, and a pack that trips one is
         // refused wholesale - so the failure to catch is this file growing
         // past them, not a user's import being blamed for it.
         let json = std::fs::read_to_string(default_rules_path()).unwrap();
+        let rules = parse_rule_list(&json).unwrap();
         assert!(
             json.len() <= MAX_RULE_PACK_BYTES,
             "rules.json is {} bytes, over the {MAX_RULE_PACK_BYTES} limit",
             json.len()
         );
-        assert!(parse_rule_list(&json).unwrap().len() <= MAX_RULES);
+        assert!(rules.len() <= MAX_RULES);
+
+        // And the headroom the catalogue's move out of this file bought, which
+        // is what the move was *for*: the budget is there for community
+        // recipes, not for a generator to refill. Carrying the catalogue as
+        // rules put this file at 407 KB / 986 rules - a fifth of the space and
+        // half the count gone, on data nobody edits by hand. A regenerated
+        // pack that writes entries back in here trips this long before it
+        // trips the limits above.
+        assert!(
+            json.len() <= MAX_RULE_PACK_BYTES / 10 && rules.len() <= MAX_RULES / 10,
+            "rules.json is back to {} bytes / {} rules - the per-game catalogue \
+             belongs in game_reference.json, not here",
+            json.len(),
+            rules.len(),
+        );
+        assert!(
+            rules.iter().all(|rule| rule.origin == RuleOrigin::Builtin),
+            "a reference-origin rule is back in rules.json; the catalogue is a table now",
+        );
     }
 
     fn default_rules_path() -> std::path::PathBuf {
@@ -1966,6 +2165,26 @@ mod tests {
             .join("..")
             .join("..")
             .join("rules.json")
+    }
+
+    /// The engine a scan actually runs on: the shipped rules *plus* the
+    /// shipped catalogue. Both halves are needed to reproduce a real verdict -
+    /// building from `rules.json` alone measures the heuristics on their own,
+    /// which is a question no user ever asks.
+    fn shipped_engine() -> RuleEngine {
+        RuleEngine::load(&default_rules_path())
+            .expect("repo rules.json should load")
+            .with_reference(GameReference::builtin().expect("the built-in catalogue parses"))
+    }
+
+    /// `intro_ea.bik` -> `Intro_ea.bik`: a third spelling, so the comparison
+    /// covers a mixed case as well as the two uniform ones.
+    fn title_case(name: &str) -> String {
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().chain(chars).collect(),
+            None => String::new(),
+        }
     }
 
     /// A heuristic that is *more* confident than the catalogue entry beside

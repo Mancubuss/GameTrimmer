@@ -75,6 +75,23 @@ impl Descriptions {
         let overlay = super::overlay_pack_path(gametrimmer_core::packs::PackKind::CategoryRules)
             .and_then(|path| std::fs::read_to_string(path).ok());
         let mut rules = HashMap::new();
+
+        // The catalogue's descriptions are generated from the game's title
+        // rather than stored (see `core::reference::intro_desc`), so both
+        // sides of the mapping are rebuilt from the title here. This is what
+        // storing 649 titles buys instead of 935 pairs of sentences: the same
+        // translation, from a twentieth of the text.
+        if let Ok(reference) = gametrimmer_core::reference::GameReference::builtin() {
+            rules.extend(reference.titles().map(|title| {
+                (
+                    gametrimmer_core::reference::intro_desc(
+                        title,
+                        gametrimmer_core::localized::DEFAULT_LANG,
+                    ),
+                    gametrimmer_core::reference::intro_desc(title, lang.as_str()),
+                )
+            }));
+        }
         for text in
             std::iter::once(gametrimmer_core::rules::BUILTIN_RULES_JSON).chain(overlay.as_deref())
         {

@@ -1,0 +1,7998 @@
+{
+  "version": 1,
+  "games": [
+    {
+      "app_id": "10080",
+      "title": "007: Quantum of Solace",
+      "intro_files": [
+        "atvi_treyarch.bik",
+        "beenox.bik",
+        "mgm.bik"
+      ]
+    },
+    {
+      "app_id": "1901367087",
+      "title": "A Plague Tale: Innocence",
+      "intro_files": [
+        "logo.bik",
+        "logo_asobo.bik",
+        "logo_focus.bik",
+        "logo_splash.bik"
+      ]
+    },
+    {
+      "app_id": "752590",
+      "title": "A Plague Tale: Innocence",
+      "intro_files": [
+        "logo.bik",
+        "logo_asobo.bik",
+        "logo_focus.bik",
+        "logo_splash.bik"
+      ]
+    },
+    {
+      "app_id": "319540",
+      "title": "A Year of Rain",
+      "intro_files": [
+        "daedalic_intro_13thseason_originals.mp4",
+        "ue4_startup_moving_logo_4k_60.mp4"
+      ]
+    },
+    {
+      "app_id": "427410",
+      "title": "Abiotic Factor",
+      "intro_files": [
+        "abf_splashscreens.bk2"
+      ]
+    },
+    {
+      "app_id": "728240",
+      "title": "Adventure Time: Pirates of the Enchiridion",
+      "intro_files": [
+        "climax_logo_2016_v2_1080p_30fps.mp4",
+        "cn games logo - 2208x1242.mp4",
+        "outright games logo 2018 - 1080p 30fps.mp4"
+      ]
+    },
+    {
+      "app_id": "1426762679",
+      "title": "Agarest: Generations of War Zero",
+      "intro_files": [
+        "1601000001.wmv",
+        "1601000002.wmv",
+        "1601000003.wmv",
+        "1601000005.wmv",
+        "1601000015.wmv"
+      ]
+    },
+    {
+      "app_id": "260130",
+      "title": "Agarest: Generations of War Zero",
+      "intro_files": [
+        "1601000001.wmv",
+        "1601000002.wmv",
+        "1601000003.wmv",
+        "1601000005.wmv",
+        "1601000015.wmv"
+      ]
+    },
+    {
+      "app_id": "1669000",
+      "title": "Age of Wonders 4",
+      "intro_files": [
+        "introvideo.webm"
+      ]
+    },
+    {
+      "app_id": "1915432764",
+      "title": "Age of Wonders 4",
+      "intro_files": [
+        "introvideo.webm"
+      ]
+    },
+    {
+      "app_id": "108710",
+      "title": "Alan Wake",
+      "intro_files": [
+        "startup_mgs.bik",
+        "startup_remedy.bik"
+      ]
+    },
+    {
+      "app_id": "1207659037",
+      "title": "Alan Wake",
+      "intro_files": [
+        "startup_mgs.bik",
+        "startup_remedy.bik"
+      ]
+    },
+    {
+      "app_id": "1207659038",
+      "title": "Alan Wake's American Nightmare",
+      "intro_files": [
+        "startup_remedy.bik"
+      ]
+    },
+    {
+      "app_id": "202750",
+      "title": "Alan Wake's American Nightmare",
+      "intro_files": [
+        "startup_remedy.bik"
+      ]
+    },
+    {
+      "app_id": "1562762120",
+      "title": "Alaskan Road Truckers",
+      "intro_files": [
+        "fmod.mp4",
+        "greenmangaming.mp4",
+        "mg.mp4",
+        "rs.mp4",
+        "ue.mp4"
+      ]
+    },
+    {
+      "app_id": "849100",
+      "title": "Alaskan Road Truckers",
+      "intro_files": [
+        "fmod.mp4",
+        "greenmangaming.mp4",
+        "mg.mp4",
+        "rs.mp4",
+        "ue.mp4"
+      ]
+    },
+    {
+      "app_id": "19680",
+      "title": "Alice: Madness Returns",
+      "intro_files": [
+        "intro_ea.bik",
+        "intro_sh.bik",
+        "techlogo_short.bik"
+      ]
+    },
+    {
+      "app_id": "217920",
+      "title": "Alien Rage - Unlimited",
+      "intro_files": [
+        "ar_ci.bik",
+        "ar_ci_unreal.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1744178250",
+      "title": "Alien: Isolation",
+      "intro_files": [
+        "amd_ident.usm",
+        "ca_feral_ident.webm",
+        "ca_ident.usm",
+        "fox_ident.usm",
+        "fox_ident.webm",
+        "loading_ident.webm"
+      ]
+    },
+    {
+      "app_id": "214490",
+      "title": "Alien: Isolation",
+      "intro_files": [
+        "amd_ident.usm",
+        "ca_feral_ident.webm",
+        "ca_ident.usm",
+        "fox_ident.usm",
+        "fox_ident.webm",
+        "loading_ident.webm"
+      ]
+    },
+    {
+      "app_id": "10680",
+      "title": "Aliens vs. Predator (2010)",
+      "intro_files": [
+        "fox.bik",
+        "rebellion.bik",
+        "sega.bik"
+      ]
+    },
+    {
+      "app_id": "1150440",
+      "title": "Aliens: Dark Descent",
+      "intro_files": [
+        "alien_darkdescent_bumper_intro.bk2"
+      ]
+    },
+    {
+      "app_id": "275060",
+      "title": "Alone in the Dark: Illumination",
+      "intro_files": [
+        "loadingscreen.mp4",
+        "startup.mp4"
+      ]
+    },
+    {
+      "app_id": "1360785671",
+      "title": "Alpha Protocol",
+      "intro_files": [
+        "slate_ap.sfd",
+        "slate_obsidian.sfd",
+        "slate_sega.sfd"
+      ]
+    },
+    {
+      "app_id": "34010",
+      "title": "Alpha Protocol",
+      "intro_files": [
+        "slate_ap.sfd",
+        "slate_obsidian.sfd",
+        "slate_sega.sfd"
+      ]
+    },
+    {
+      "app_id": "115210",
+      "title": "American Conquest",
+      "intro_files": [
+        "cdv.avi"
+      ]
+    },
+    {
+      "app_id": "1207662803",
+      "title": "American Conquest",
+      "intro_files": [
+        "cdv.avi"
+      ]
+    },
+    {
+      "app_id": "115220",
+      "title": "American Conquest: Fight Back",
+      "intro_files": [
+        "cdv.avi"
+      ]
+    },
+    {
+      "app_id": "1207662813",
+      "title": "American Conquest: Fight Back",
+      "intro_files": [
+        "cdv.avi"
+      ]
+    },
+    {
+      "app_id": "1482578564",
+      "title": "Ancestors: The Humankind Odyssey",
+      "intro_files": [
+        "pregamemovie_withaudio.bik"
+      ]
+    },
+    {
+      "app_id": "536270",
+      "title": "Ancestors: The Humankind Odyssey",
+      "intro_files": [
+        "pregamemovie_withaudio.bik"
+      ]
+    },
+    {
+      "app_id": "1438074791",
+      "title": "Anno 1503",
+      "intro_files": [
+        "1000.bik",
+        "1001.bik"
+      ]
+    },
+    {
+      "app_id": "1438168222",
+      "title": "Anno 1602: Creation of a New World",
+      "intro_files": [
+        "8.smk"
+      ]
+    },
+    {
+      "app_id": "1172470",
+      "title": "Apex Legends",
+      "intro_files": [
+        "respawn.bik"
+      ]
+    },
+    {
+      "app_id": "1515640",
+      "title": "Arcadegeddon",
+      "intro_files": [
+        "intel_pc.mp4",
+        "intel_pc.webm",
+        "startup.mp4",
+        "startup.webm"
+      ]
+    },
+    {
+      "app_id": "1282519889",
+      "title": "Arcania: Fall of Setarrif",
+      "intro_files": [
+        "jwd_logo.wmv",
+        "nvidia.wmv",
+        "sb_logo.wmv"
+      ]
+    },
+    {
+      "app_id": "65610",
+      "title": "Arcania: Fall of Setarrif",
+      "intro_files": [
+        "jwd_logo.wmv",
+        "nvidia.wmv",
+        "sb_logo.wmv"
+      ]
+    },
+    {
+      "app_id": "1244052225",
+      "title": "Arcania: Gothic 4",
+      "intro_files": [
+        "jwd_logo.wmv",
+        "nvidia.wmv",
+        "sb_logo.wmv"
+      ]
+    },
+    {
+      "app_id": "39690",
+      "title": "Arcania: Gothic 4",
+      "intro_files": [
+        "jwd_logo.wmv",
+        "nvidia.wmv",
+        "sb_logo.wmv"
+      ]
+    },
+    {
+      "app_id": "1117352613",
+      "title": "Ashen",
+      "intro_files": [
+        "launch_loading_in.mp4",
+        "launch_loading_in_short.mp4",
+        "launch_loading_loop.mp4",
+        "launch_loading_out.mp4"
+      ]
+    },
+    {
+      "app_id": "649950",
+      "title": "Ashen",
+      "intro_files": [
+        "launch_loading_in.mp4",
+        "launch_loading_in_short.mp4",
+        "launch_loading_loop.mp4",
+        "launch_loading_out.mp4"
+      ]
+    },
+    {
+      "app_id": "1207659023",
+      "title": "Assassin's Creed",
+      "intro_files": [
+        "demointro.bik",
+        "ubi_logo.bik",
+        "ubisoft_presents.bik",
+        "warning_disclaimer.bik"
+      ]
+    },
+    {
+      "app_id": "15100",
+      "title": "Assassin's Creed",
+      "intro_files": [
+        "demointro.bik",
+        "ubi_logo.bik",
+        "ubisoft_presents.bik",
+        "warning_disclaimer.bik"
+      ]
+    },
+    {
+      "app_id": "911400",
+      "title": "Assassin's Creed III Remastered",
+      "intro_files": [
+        "epilepsy_warning.bik",
+        "ps3_autosave_hdd.bik",
+        "ps3_healthwarning.bik",
+        "ubi_logo.bik",
+        "warning_disclaimer.bik",
+        "xbox_autosave.bik"
+      ]
+    },
+    {
+      "app_id": "242050",
+      "title": "Assassin's Creed IV: Black Flag",
+      "intro_files": [
+        "abstergo_logo.bik",
+        "ac4bf_logo.bik",
+        "twimtbp.bik",
+        "ubi_logo.bik",
+        "warning_disclaimer.bik"
+      ]
+    },
+    {
+      "app_id": "3035570",
+      "title": "Assassin's Creed Mirage",
+      "intro_files": [
+        "ac15th_logo.webm",
+        "anvil_logo.webm",
+        "epilepsy.webm",
+        "intel_logo.webm",
+        "pc_warningsaving.webm",
+        "ubisoftlogo.webm",
+        "warning_disclaimer.webm"
+      ]
+    },
+    {
+      "app_id": "812140",
+      "title": "Assassin's Creed Odyssey",
+      "intro_files": [
+        "amd.bk2",
+        "epilepsy.bk2",
+        "pc_warningsaving.bk2",
+        "ubisoftlogo.bk2",
+        "warning_disclaimer.bk2"
+      ]
+    },
+    {
+      "app_id": "582160",
+      "title": "Assassin's Creed Origins",
+      "intro_files": [
+        "epilepsy.bk2",
+        "pc_warningsaving.bk2",
+        "ubisoftlogo.bk2",
+        "warning_disclaimer.bk2"
+      ]
+    },
+    {
+      "app_id": "311560",
+      "title": "Assassin's Creed Rogue",
+      "intro_files": [
+        "abstergo_logo.bik",
+        "acr_logo.bik",
+        "ubi_logo.bik",
+        "warning_disclaimer.bik"
+      ]
+    },
+    {
+      "app_id": "3159330",
+      "title": "Assassin's Creed Shadows",
+      "intro_files": [
+        "anvil_logo.webm",
+        "epilepsy.webm",
+        "hub_bootflow_franchiseintro.webm",
+        "intel_logo.webm",
+        "ubisoftlogo.webm",
+        "warning_disclaimer.webm",
+        "warningsaving.webm"
+      ]
+    },
+    {
+      "app_id": "368500",
+      "title": "Assassin's Creed Syndicate",
+      "intro_files": [
+        "epilepsy.bk2",
+        "pc_twimtbp.bk2",
+        "pc_warningsaving.bk2",
+        "ubisoftlogo.bk2",
+        "warning_disclaimer.bk2"
+      ]
+    },
+    {
+      "app_id": "289650",
+      "title": "Assassin's Creed Unity",
+      "intro_files": [
+        "pc_twimtbp.bk2",
+        "pc_warningsaving.bk2",
+        "ubisoftlogo.bk2",
+        "warning_disclaimer.bk2"
+      ]
+    },
+    {
+      "app_id": "2208920",
+      "title": "Assassin's Creed Valhalla",
+      "intro_files": [
+        "anvil_logo.webm",
+        "epilepsy.webm",
+        "pc_amd_ryzen.webm",
+        "pc_warningsaving.webm",
+        "ubisoftlogo.webm",
+        "warning_disclaimer.webm"
+      ]
+    },
+    {
+      "app_id": "3751950",
+      "title": "Assassin's Creed: Black Flag Resynced",
+      "intro_files": [
+        "anvil_logo.webm",
+        "epilepsy.webm",
+        "hub_bootflow_abstergointro.webm",
+        "hub_bootflow_franchiseintro.webm",
+        "hub_bootflow_intro.webm",
+        "hub_bootflow_intro_lowres.webm",
+        "ubisoftlogo.webm",
+        "warning_disclaimer.webm",
+        "warningsaving.webm"
+      ]
+    },
+    {
+      "app_id": "48190",
+      "title": "Assassin's Creed: Brotherhood",
+      "intro_files": [
+        "ubi_logo.bik",
+        "warning_disclaimer.bik"
+      ]
+    },
+    {
+      "app_id": "277590",
+      "title": "Assassin's Creed: Freedom Cry",
+      "intro_files": [
+        "abstergo_logo.bik",
+        "ac4bf_logo.bik",
+        "twimtbp.bik",
+        "ubi_logo.bik",
+        "warning_disclaimer.bik"
+      ]
+    },
+    {
+      "app_id": "260210",
+      "title": "Assassin's Creed: Liberation HD",
+      "intro_files": [
+        "aclhd_loadingbgr.bik",
+        "intro_eng.bik",
+        "ubi_logo.bik",
+        "warning_disclaimer.bik"
+      ]
+    },
+    {
+      "app_id": "201870",
+      "title": "Assassin's Creed: Revelations",
+      "intro_files": [
+        "ubi_logo.bik",
+        "warning_disclaimer.bik"
+      ]
+    },
+    {
+      "app_id": "1125601806",
+      "title": "Asterigos: Curse of the Stars",
+      "intro_files": [
+        "acme_logo.mp4",
+        "middleware_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1731070",
+      "title": "Asterigos: Curse of the Stars",
+      "intro_files": [
+        "acme_logo.mp4",
+        "middleware_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1261520",
+      "title": "Asterix & Obelix XXL: Romastered",
+      "intro_files": [
+        "fmod.ogv",
+        "intro_934x694_30fps_q5.ogv",
+        "microids.ogv",
+        "oengine.ogv",
+        "osome.ogv"
+      ]
+    },
+    {
+      "app_id": "1651633788",
+      "title": "Asterix & Obelix XXL: Romastered",
+      "intro_files": [
+        "fmod.ogv",
+        "intro_934x694_30fps_q5.ogv",
+        "microids.ogv",
+        "oengine.ogv",
+        "osome.ogv"
+      ]
+    },
+    {
+      "app_id": "361420",
+      "title": "Astroneer",
+      "intro_files": [
+        "legal1080p.mp4",
+        "seslogo4k.mp4"
+      ]
+    },
+    {
+      "app_id": "801800",
+      "title": "Atomfall",
+      "intro_files": [
+        "rebellion.webm"
+      ]
+    },
+    {
+      "app_id": "668580",
+      "title": "Atomic Heart",
+      "intro_files": [
+        "launch_fhd_60fps_pc_steam.mp4",
+        "launchvideo_windows_4k_60fps.mp4",
+        "launchvideo_windows_low_30fps.mp4"
+      ]
+    },
+    {
+      "app_id": "1112159766",
+      "title": "BPM: Bullets per Minute",
+      "intro_files": [
+        "aweident.mp4"
+      ]
+    },
+    {
+      "app_id": "1286350",
+      "title": "BPM: Bullets per Minute",
+      "intro_files": [
+        "aweident.mp4"
+      ]
+    },
+    {
+      "app_id": "1086940",
+      "title": "Baldur's Gate 3",
+      "intro_files": [
+        "splash_logo_larian.bk2"
+      ]
+    },
+    {
+      "app_id": "1456460669",
+      "title": "Baldur's Gate 3",
+      "intro_files": [
+        "splash_logo_larian.bk2"
+      ]
+    },
+    {
+      "app_id": "1493640",
+      "title": "Banishers: Ghosts of New Eden",
+      "intro_files": [
+        "movie_ui_logo_dontnod.bk2",
+        "movie_ui_logo_dontnod_banisher.bk2",
+        "movie_ui_logo_focus.bk2",
+        "movie_ui_logo_focus_dontnod.bk2"
+      ]
+    },
+    {
+      "app_id": "1929810705",
+      "title": "Banishers: Ghosts of New Eden",
+      "intro_files": [
+        "movie_ui_logo_dontnod.bk2",
+        "movie_ui_logo_dontnod_banisher.bk2",
+        "movie_ui_logo_focus.bk2",
+        "movie_ui_logo_focus_dontnod.bk2"
+      ]
+    },
+    {
+      "app_id": "1482504285",
+      "title": "Batman: Arkham Asylum",
+      "intro_files": [
+        "baa_logo_run_v5_h264.bik",
+        "legal.bik",
+        "legalus.bik",
+        "nvidia.bik",
+        "utlogo.bik"
+      ]
+    },
+    {
+      "app_id": "35010",
+      "title": "Batman: Arkham Asylum",
+      "intro_files": [
+        "baa_logo_run_v5_h264.bik",
+        "legal.bik",
+        "legalus.bik",
+        "nvidia.bik",
+        "utlogo.bik"
+      ]
+    },
+    {
+      "app_id": "394230",
+      "title": "Battleborn",
+      "intro_files": [
+        "2k_logo.bk2",
+        "gearbox_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "1471253378",
+      "title": "Battlefleet Gothic: Armada 2",
+      "intro_files": [
+        "splashscreen.wmv"
+      ]
+    },
+    {
+      "app_id": "573100",
+      "title": "Battlefleet Gothic: Armada 2",
+      "intro_files": [
+        "splashscreen.wmv"
+      ]
+    },
+    {
+      "app_id": "460790",
+      "title": "Bayonetta",
+      "intro_files": [
+        "b_us_0000.sfd",
+        "platinumgames.sfd",
+        "syukyaku_a.sfd"
+      ]
+    },
+    {
+      "app_id": "1986644574",
+      "title": "Beyond: Two Souls",
+      "intro_files": [
+        "iw_logo_beyond_asia.bik",
+        "iw_logo_beyond_euro.bik",
+        "iw_logo_beyond_us.bik",
+        "iw_videologo_iw.bik"
+      ]
+    },
+    {
+      "app_id": "960990",
+      "title": "Beyond: Two Souls",
+      "intro_files": [
+        "iw_logo_beyond_asia.bik",
+        "iw_logo_beyond_euro.bik",
+        "iw_logo_beyond_us.bik",
+        "iw_videologo_iw.bik"
+      ]
+    },
+    {
+      "app_id": "1959845271",
+      "title": "Biing! 2: Sonne, Strand und Heiße Nächte",
+      "intro_files": [
+        "intro.avi"
+      ]
+    },
+    {
+      "app_id": "550650",
+      "title": "Black Squad",
+      "intro_files": [
+        "blacksquad_sidntitle_intro.bk2",
+        "blacksquad_sidntitle_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "27330",
+      "title": "Blacklight: Tango Down",
+      "intro_files": [
+        "logoslegalpcxbox.bik",
+        "startup_esrb.bik",
+        "startup_intro.bik",
+        "startup_utech.bik"
+      ]
+    },
+    {
+      "app_id": "1678420",
+      "title": "Blade Runner: Enhanced Edition",
+      "intro_files": [
+        "kex.ogv",
+        "nightdive.ogv"
+      ]
+    },
+    {
+      "app_id": "1898192656",
+      "title": "Blade Runner: Enhanced Edition",
+      "intro_files": [
+        "kex.ogv",
+        "nightdive.ogv"
+      ]
+    },
+    {
+      "app_id": "1092660",
+      "title": "Blair Witch",
+      "intro_files": [
+        "loadingscreen.mp4",
+        "totemloop.mp4"
+      ]
+    },
+    {
+      "app_id": "1823654232",
+      "title": "Blair Witch",
+      "intro_files": [
+        "loadingscreen.mp4",
+        "totemloop.mp4"
+      ]
+    },
+    {
+      "app_id": "1010750",
+      "title": "Blood: Fresh Supply",
+      "intro_files": [
+        "atari.ogv",
+        "gti.ogv",
+        "kex.ogv",
+        "monolith.ogv",
+        "nightdive.ogv"
+      ]
+    },
+    {
+      "app_id": "1374469660",
+      "title": "Blood: Fresh Supply",
+      "intro_files": [
+        "atari.ogv",
+        "gti.ogv",
+        "kex.ogv",
+        "monolith.ogv",
+        "nightdive.ogv"
+      ]
+    },
+    {
+      "app_id": "1133514031",
+      "title": "Bloodstained: Ritual of the Night",
+      "intro_files": [
+        "bloodstained shard intro new black bg.mp4",
+        "bs_shard_intro_ident_v3.mp4"
+      ]
+    },
+    {
+      "app_id": "692850",
+      "title": "Bloodstained: Ritual of the Night",
+      "intro_files": [
+        "bloodstained shard intro new black bg.mp4",
+        "bs_shard_intro_ident_v3.mp4"
+      ]
+    },
+    {
+      "app_id": "42640",
+      "title": "Blur",
+      "intro_files": [
+        "atvi.bik",
+        "bizarresplash.bik"
+      ]
+    },
+    {
+      "app_id": "397540",
+      "title": "Borderlands 3",
+      "intro_files": [
+        "2klogo.mp4",
+        "amdlogo.mp4",
+        "gbxlogo.mp4",
+        "marcus_intro.mp4"
+      ]
+    },
+    {
+      "app_id": "1285190",
+      "title": "Borderlands 4",
+      "intro_files": [
+        "2klogo.bk2",
+        "gbxlogo.bk2"
+      ]
+    },
+    {
+      "app_id": "1787707874",
+      "title": "Bound by Flame",
+      "intro_files": [
+        "creating an empty text file then renaming its extension to .ogv",
+        "or deleting .ogv",
+        "the .zip file contains two empty .ogv"
+      ]
+    },
+    {
+      "app_id": "243930",
+      "title": "Bound by Flame",
+      "intro_files": [
+        "creating an empty text file then renaming its extension to .ogv",
+        "or deleting .ogv",
+        "the .zip file contains two empty .ogv"
+      ]
+    },
+    {
+      "app_id": "879850",
+      "title": "Box: The Game",
+      "intro_files": [
+        "intro.mp4"
+      ]
+    },
+    {
+      "app_id": "346330",
+      "title": "BrainBread 2",
+      "intro_files": [
+        "bootup.bik",
+        "brainbread2_intro.bik",
+        "powered.bik"
+      ]
+    },
+    {
+      "app_id": "2104548474",
+      "title": "Breathedge",
+      "intro_files": [
+        "ue4_startup_moving88.mp4"
+      ]
+    },
+    {
+      "app_id": "738520",
+      "title": "Breathedge",
+      "intro_files": [
+        "ue4_startup_moving88.mp4"
+      ]
+    },
+    {
+      "app_id": "1178830",
+      "title": "Bright Memory: Infinite",
+      "intro_files": [
+        "logo_fyqd_studio.mp4"
+      ]
+    },
+    {
+      "app_id": "1787213019",
+      "title": "Bright Memory: Infinite",
+      "intro_files": [
+        "logo_fyqd_studio.mp4"
+      ]
+    },
+    {
+      "app_id": "1207658708",
+      "title": "Broken Sword 3: The Sleeping Dragon",
+      "intro_files": [
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "33610",
+      "title": "Broken Sword 3: The Sleeping Dragon",
+      "intro_files": [
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "1207658900",
+      "title": "Broken Sword: Shadow of the Templars: Director's Cut",
+      "intro_files": [
+        "revlogo.ogv"
+      ]
+    },
+    {
+      "app_id": "57640",
+      "title": "Broken Sword: Shadow of the Templars: Director's Cut",
+      "intro_files": [
+        "revlogo.ogv"
+      ]
+    },
+    {
+      "app_id": "1239584357",
+      "title": "Brothers in Arms: Earned in Blood",
+      "intro_files": [
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "19800",
+      "title": "Brothers in Arms: Earned in Blood",
+      "intro_files": [
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "15390",
+      "title": "Brothers in Arms: Hell's Highway",
+      "intro_files": [
+        "gearbox_logo.bik",
+        "ubisoft_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1796017250",
+      "title": "Brothers in Arms: Hell's Highway",
+      "intro_files": [
+        "gearbox_logo.bik",
+        "ubisoft_logo.bik"
+      ]
+    },
+    {
+      "app_id": "15190",
+      "title": "Brothers in Arms: Road to Hill 30",
+      "intro_files": [
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "1993805983",
+      "title": "Brothers in Arms: Road to Hill 30",
+      "intro_files": [
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "1207659253",
+      "title": "Brütal Legend",
+      "intro_files": [
+        "df_logo.bik",
+        "pref.bik"
+      ]
+    },
+    {
+      "app_id": "225260",
+      "title": "Brütal Legend",
+      "intro_files": [
+        "df_logo.bik",
+        "pref.bik"
+      ]
+    },
+    {
+      "app_id": "99810",
+      "title": "Bulletstorm",
+      "intro_files": [
+        "loadingmoviestartup.bik"
+      ]
+    },
+    {
+      "app_id": "12200",
+      "title": "Bully: Scholarship Edition",
+      "intro_files": [
+        "attractmode.wmv",
+        "rockstar.wmv"
+      ]
+    },
+    {
+      "app_id": "515180",
+      "title": "Bus Simulator 18",
+      "intro_files": [
+        "bs18logosequence720p.mp4",
+        "startuplogosequence.mp4"
+      ]
+    },
+    {
+      "app_id": "283410",
+      "title": "CT Special Forces: Fire for Effect",
+      "intro_files": [
+        "asobo.avi",
+        "hip.avi",
+        "logo.avi"
+      ]
+    },
+    {
+      "app_id": "218860",
+      "title": "Cabela's Dangerous Hunts 2013",
+      "intro_files": [
+        "av.bik",
+        "cldr.bik"
+      ]
+    },
+    {
+      "app_id": "1207658835",
+      "title": "Caesar III",
+      "intro_files": [
+        "credits.smk",
+        "intro.smk",
+        "logo.smk"
+      ]
+    },
+    {
+      "app_id": "517790",
+      "title": "Caesar III",
+      "intro_files": [
+        "credits.smk",
+        "intro.smk",
+        "logo.smk"
+      ]
+    },
+    {
+      "app_id": "1460037487",
+      "title": "Caesar IV",
+      "intro_files": [
+        "splash.bik",
+        "splash1.bik",
+        "splash2.bik",
+        "splash3.bik"
+      ]
+    },
+    {
+      "app_id": "517810",
+      "title": "Caesar IV",
+      "intro_files": [
+        "splash.bik",
+        "splash1.bik",
+        "splash2.bik",
+        "splash3.bik"
+      ]
+    },
+    {
+      "app_id": "1522289470",
+      "title": "Call of Cthulhu",
+      "intro_files": [
+        "splash-logos.mp4",
+        "splash-logos_ps4jap.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "399810",
+      "title": "Call of Cthulhu",
+      "intro_files": [
+        "splash-logos.mp4",
+        "splash-logos_ps4jap.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1557265213",
+      "title": "Call of Cthulhu: Dark Corners of the Earth",
+      "intro_files": [
+        "beth_logo.wmv",
+        "cocdcote_logo.wmv",
+        "hf_logo.wmv",
+        "legal.wmv",
+        "warning.wmv"
+      ]
+    },
+    {
+      "app_id": "22340",
+      "title": "Call of Cthulhu: Dark Corners of the Earth",
+      "intro_files": [
+        "beth_logo.wmv",
+        "cocdcote_logo.wmv",
+        "hf_logo.wmv",
+        "legal.wmv",
+        "warning.wmv"
+      ]
+    },
+    {
+      "app_id": "42700",
+      "title": "Call of Duty: Black Ops",
+      "intro_files": [
+        "default.bik",
+        "treyarch.bik"
+      ]
+    },
+    {
+      "app_id": "202970",
+      "title": "Call of Duty: Black Ops II",
+      "intro_files": [
+        "default.bik",
+        "default.webm",
+        "dolby.webm",
+        "frontend_load.webm",
+        "intro.webm",
+        "treyarch.webm"
+      ]
+    },
+    {
+      "app_id": "311210",
+      "title": "Call of Duty: Black Ops III",
+      "intro_files": [
+        "aspyrlogo.stock.mov",
+        "bo3_global_logo_logosequence.mkv"
+      ]
+    },
+    {
+      "app_id": "393080",
+      "title": "Call of Duty: Modern Warfare Remastered",
+      "intro_files": [
+        "default.bik"
+      ]
+    },
+    {
+      "app_id": "1770556474",
+      "title": "Call of Juarez: Bound in Blood",
+      "intro_files": [
+        "attract.wmv",
+        "ubisoft_720p.wmv"
+      ]
+    },
+    {
+      "app_id": "21980",
+      "title": "Call of Juarez: Bound in Blood",
+      "intro_files": [
+        "attract.wmv",
+        "ubisoft_720p.wmv"
+      ]
+    },
+    {
+      "app_id": "33420",
+      "title": "Call of Juarez: The Cartel",
+      "intro_files": [
+        "intro_720p.wmv"
+      ]
+    },
+    {
+      "app_id": "645630",
+      "title": "Car Mechanic Simulator 2018",
+      "intro_files": [
+        "intro.mp4",
+        "playway.mp4",
+        "rdg.mp4"
+      ]
+    },
+    {
+      "app_id": "1207659963",
+      "title": "Carmageddon II: Carpocalypse Now",
+      "intro_files": [
+        "mix_intr.smk"
+      ]
+    },
+    {
+      "app_id": "282030",
+      "title": "Carmageddon II: Carpocalypse Now",
+      "intro_files": [
+        "mix_intr.smk"
+      ]
+    },
+    {
+      "app_id": "301760",
+      "title": "Cars 2",
+      "intro_files": [
+        "avlogo.bik",
+        "copyright.bik",
+        "dis.bik",
+        "gslogo.bik",
+        "opening.bik",
+        "pixar_logo.bik"
+      ]
+    },
+    {
+      "app_id": "343140",
+      "title": "Cars: Radiator Springs Adventures",
+      "intro_files": [
+        "awe.bik",
+        "bvg.bik",
+        "carslegal.bik",
+        "pixar.bik",
+        "thq.bik"
+      ]
+    },
+    {
+      "app_id": "234080",
+      "title": "Castlevania: Lords of Shadow",
+      "intro_files": [
+        "0f3e1581650a393c.bik",
+        "5d92185f11ff78c6.bik",
+        "840af5545e1b3717.bik",
+        "d26aafe1aa7385a4.bik"
+      ]
+    },
+    {
+      "app_id": "239250",
+      "title": "Castlevania: Lords of Shadow 2",
+      "intro_files": [
+        "138243771.bik",
+        "226441803.bik",
+        "28409563.bik"
+      ]
+    },
+    {
+      "app_id": "1016800",
+      "title": "Chernobylite",
+      "intro_files": [
+        "splashallinn.mp4",
+        "splashmataboo.mp4",
+        "splashpartnerlogos.mp4",
+        "splashreality51.mp4",
+        "splashscreen.mp4",
+        "splashthefarm51.mp4",
+        "splashunrealengine.mp4",
+        "title_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1472128402",
+      "title": "Chernobylite",
+      "intro_files": [
+        "splashallinn.mp4",
+        "splashmataboo.mp4",
+        "splashpartnerlogos.mp4",
+        "splashreality51.mp4",
+        "splashscreen.mp4",
+        "splashthefarm51.mp4",
+        "splashunrealengine.mp4",
+        "title_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1824220",
+      "title": "Chivalry 2",
+      "intro_files": [
+        "logo.mp4",
+        "loop.mp4"
+      ]
+    },
+    {
+      "app_id": "301840",
+      "title": "City of Brass",
+      "intro_files": [
+        "intro_trailer_1080p.mp4",
+        "intro_trailer_720p.mp4",
+        "startupmovie.mp4"
+      ]
+    },
+    {
+      "app_id": "281430",
+      "title": "Clans",
+      "intro_files": [
+        "intro.smk",
+        "intro_house.smk",
+        "intro_strategy.smk"
+      ]
+    },
+    {
+      "app_id": "1104123739",
+      "title": "Clock Tower: Rewind",
+      "intro_files": [
+        "intro.ogv"
+      ]
+    },
+    {
+      "app_id": "2794770",
+      "title": "Clock Tower: Rewind",
+      "intro_files": [
+        "intro.ogv"
+      ]
+    },
+    {
+      "app_id": "1434357748",
+      "title": "Codename: Outbreak",
+      "intro_files": [
+        "intro.avi",
+        "intro2.avi",
+        "intro3.avi"
+      ]
+    },
+    {
+      "app_id": "1297439746",
+      "title": "Cold Fear",
+      "intro_files": [
+        "logo_dar.bik",
+        "logo_ubi.bik",
+        "renderware.bik",
+        "rw.bik"
+      ]
+    },
+    {
+      "app_id": "15270",
+      "title": "Cold Fear",
+      "intro_files": [
+        "logo_dar.bik",
+        "logo_ubi.bik",
+        "renderware.bik",
+        "rw.bik"
+      ]
+    },
+    {
+      "app_id": "49300",
+      "title": "Commander: Conquest of the Americas",
+      "intro_files": [
+        "intro.wmv",
+        "nitrogames_logo.wmv",
+        "topware_logo.wmv"
+      ]
+    },
+    {
+      "app_id": "1207662223",
+      "title": "Commandos 3: Destination Berlin",
+      "intro_files": [
+        "eidos.bik",
+        "pyro.bik"
+      ]
+    },
+    {
+      "app_id": "6840",
+      "title": "Commandos 3: Destination Berlin",
+      "intro_files": [
+        "eidos.bik",
+        "pyro.bik"
+      ]
+    },
+    {
+      "app_id": "1207662193",
+      "title": "Commandos: Behind Enemy Lines",
+      "intro_files": [
+        "h_intro.avi"
+      ]
+    },
+    {
+      "app_id": "6800",
+      "title": "Commandos: Behind Enemy Lines",
+      "intro_files": [
+        "h_intro.avi"
+      ]
+    },
+    {
+      "app_id": "1207662203",
+      "title": "Commandos: Beyond the Call of Duty",
+      "intro_files": [
+        "h_intro.avi"
+      ]
+    },
+    {
+      "app_id": "6810",
+      "title": "Commandos: Beyond the Call of Duty",
+      "intro_files": [
+        "h_intro.avi"
+      ]
+    },
+    {
+      "app_id": "1479730",
+      "title": "Commandos: Origins",
+      "intro_files": [
+        "intro.mp4"
+      ]
+    },
+    {
+      "app_id": "6820",
+      "title": "Commandos: Strike Force",
+      "intro_files": [
+        "eidos.bik",
+        "nvidia.bik",
+        "pyro.bik",
+        "rw.bik",
+        "trailer.bik"
+      ]
+    },
+    {
+      "app_id": "1677280",
+      "title": "Company of Heroes 3",
+      "intro_files": [
+        "amd_intro.webm",
+        "cohdev_intro.webm",
+        "relic_intro.webm",
+        "sega_intro_dark.webm",
+        "sega_intro_light.webm"
+      ]
+    },
+    {
+      "app_id": "1528332522",
+      "title": "Conarium",
+      "intro_files": [
+        "iceberg_logo.mp4",
+        "ue4_logo.mp4",
+        "zoetrope_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "313780",
+      "title": "Conarium",
+      "intro_files": [
+        "iceberg_logo.mp4",
+        "ue4_logo.mp4",
+        "zoetrope_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "8100",
+      "title": "Conflict: Denied Ops",
+      "intro_files": [
+        "dell_p6.wmv",
+        "eidos_p6.wmv",
+        "game_logo_p6.wmv",
+        "legal_p6.wmv",
+        "legal_pc_n6.wmv",
+        "legal_pc_p6.wmv",
+        "nvidia_p6.wmv",
+        "pivotal_logo_p6.wmv"
+      ]
+    },
+    {
+      "app_id": "238430",
+      "title": "Contagion",
+      "intro_files": [
+        "contagion.bik",
+        "gameservers.bik"
+      ]
+    },
+    {
+      "app_id": "1620402149",
+      "title": "Cossacks II: Battle for Europe",
+      "intro_files": [
+        "1.bik",
+        "2.bik",
+        "3.bik"
+      ]
+    },
+    {
+      "app_id": "4890",
+      "title": "Cossacks II: Battle for Europe",
+      "intro_files": [
+        "1.bik",
+        "2.bik",
+        "3.bik"
+      ]
+    },
+    {
+      "app_id": "115200",
+      "title": "Cossacks II: Napoleonic Wars",
+      "intro_files": [
+        "1.bik",
+        "2.bik",
+        "3.bik"
+      ]
+    },
+    {
+      "app_id": "1360549960",
+      "title": "Cossacks II: Napoleonic Wars",
+      "intro_files": [
+        "1.bik",
+        "2.bik",
+        "3.bik"
+      ]
+    },
+    {
+      "app_id": "1378990",
+      "title": "Crash Bandicoot 4: It's About Time",
+      "intro_files": [
+        "bumper_hsl_sting.mp4",
+        "bumperatvi.mp4",
+        "bumpertfb.mp4",
+        "bumperunreal.mp4",
+        "introloadingbar.mp4"
+      ]
+    },
+    {
+      "app_id": "731490",
+      "title": "Crash Bandicoot N. Sane Trilogy",
+      "intro_files": [
+        "bumper_atvi.bk2"
+      ]
+    },
+    {
+      "app_id": "1523738129",
+      "title": "Creature in the Well",
+      "intro_files": [
+        "splashscreens.mp4"
+      ]
+    },
+    {
+      "app_id": "852300",
+      "title": "Creature in the Well",
+      "intro_files": [
+        "splashscreens.mp4"
+      ]
+    },
+    {
+      "app_id": "1795705248",
+      "title": "Croc: Legend of the Gobbos (2025)",
+      "intro_files": [
+        "argonautroom.ogv",
+        "blank-0.2-sec.ogv"
+      ]
+    },
+    {
+      "app_id": "3043940",
+      "title": "Croc: Legend of the Gobbos (2025)",
+      "intro_files": [
+        "argonautroom.ogv",
+        "blank-0.2-sec.ogv"
+      ]
+    },
+    {
+      "app_id": "1207658956",
+      "title": "Crusaders of Might and Magic",
+      "intro_files": [
+        "3do.bik",
+        "cmmintro.bik"
+      ]
+    },
+    {
+      "app_id": "17300",
+      "title": "Crysis",
+      "intro_files": [
+        "crytek.sfd",
+        "trailer_crytek.sfd",
+        "trailer_crytekc.sfd",
+        "trailer_demolegal.sfd",
+        "trailer_ea.sfd",
+        "trailer_intel.sfd",
+        "trailer_nvidia.sfd",
+        "trailer_pegi.sfd",
+        "trailer_rating_full.sfd",
+        "trailer_rating_logo.sfd"
+      ]
+    },
+    {
+      "app_id": "1809223221",
+      "title": "Crysis",
+      "intro_files": [
+        "crytek.sfd",
+        "trailer_crytek.sfd",
+        "trailer_crytekc.sfd",
+        "trailer_demolegal.sfd",
+        "trailer_ea.sfd",
+        "trailer_intel.sfd",
+        "trailer_nvidia.sfd",
+        "trailer_pegi.sfd",
+        "trailer_rating_full.sfd",
+        "trailer_rating_logo.sfd"
+      ]
+    },
+    {
+      "app_id": "1666511461",
+      "title": "Crysis Warhead",
+      "intro_files": [
+        "crytek.sfd",
+        "trailer_crytek.sfd",
+        "trailer_crytekc.sfd",
+        "trailer_demolegal.sfd",
+        "trailer_ea.sfd",
+        "trailer_intel.sfd",
+        "trailer_nvidia.sfd",
+        "trailer_pegi.sfd",
+        "trailer_rating_full.sfd",
+        "trailer_rating_logo.sfd"
+      ]
+    },
+    {
+      "app_id": "17330",
+      "title": "Crysis Warhead",
+      "intro_files": [
+        "crytek.sfd",
+        "trailer_crytek.sfd",
+        "trailer_crytekc.sfd",
+        "trailer_demolegal.sfd",
+        "trailer_ea.sfd",
+        "trailer_intel.sfd",
+        "trailer_nvidia.sfd",
+        "trailer_pegi.sfd",
+        "trailer_rating_full.sfd",
+        "trailer_rating_logo.sfd"
+      ]
+    },
+    {
+      "app_id": "1684624696",
+      "title": "Curse: The Eye of Isis",
+      "intro_files": [
+        "asy.avi",
+        "dist.avi",
+        "wan.avi"
+      ]
+    },
+    {
+      "app_id": "302210",
+      "title": "Curse: The Eye of Isis",
+      "intro_files": [
+        "asy.avi",
+        "dist.avi",
+        "wan.avi"
+      ]
+    },
+    {
+      "app_id": "1433153796",
+      "title": "D4: Dark Dreams Don't Die",
+      "intro_files": [
+        "ag_logo.bik",
+        "ms_logo.bik",
+        "nowloading.bik",
+        "ue_logo.bik"
+      ]
+    },
+    {
+      "app_id": "358090",
+      "title": "D4: Dark Dreams Don't Die",
+      "intro_files": [
+        "ag_logo.bik",
+        "ms_logo.bik",
+        "nowloading.bik",
+        "ue_logo.bik"
+      ]
+    },
+    {
+      "app_id": "767390",
+      "title": "Dakar 18",
+      "intro_files": [
+        "dakar_bigmoonlogointro.mp4",
+        "dakar_unreal.mp4"
+      ]
+    },
+    {
+      "app_id": "1839940",
+      "title": "Dakar Desert Rally",
+      "intro_files": [
+        "bnk_dakar_logos_intro.bk2",
+        "bnk_dakar_logos_intro_4k.bk2"
+      ]
+    },
+    {
+      "app_id": "1998138683",
+      "title": "Dark Rift",
+      "intro_files": [
+        "black.smk",
+        "intro.smk",
+        "kronos.smk",
+        "vtokai.smk"
+      ]
+    },
+    {
+      "app_id": "2308120",
+      "title": "Dark Rift",
+      "intro_files": [
+        "black.smk",
+        "intro.smk",
+        "kronos.smk",
+        "vtokai.smk"
+      ]
+    },
+    {
+      "app_id": "29900",
+      "title": "Dark Sector",
+      "intro_files": [
+        "apyr720.avi"
+      ]
+    },
+    {
+      "app_id": "1430901154",
+      "title": "Darksiders",
+      "intro_files": [
+        "amd_logo_movie.wmv",
+        "kaiko_logo.wmv",
+        "main_menu_intro.wmv",
+        "start_screen_intro.wmv",
+        "thq_logo1280x720.wmv",
+        "thqnordic_logo_color_white.wmv",
+        "vigil_logo1280x720.wmv"
+      ]
+    },
+    {
+      "app_id": "50620",
+      "title": "Darksiders",
+      "intro_files": [
+        "amd_logo_movie.wmv",
+        "kaiko_logo.wmv",
+        "main_menu_intro.wmv",
+        "start_screen_intro.wmv",
+        "thq_logo1280x720.wmv",
+        "thqnordic_logo_color_white.wmv",
+        "vigil_logo1280x720.wmv"
+      ]
+    },
+    {
+      "app_id": "1391134754",
+      "title": "Darksiders Genesis",
+      "intro_files": [
+        "as_logobasic.mp4",
+        "cg_intro_lowvi.mp4",
+        "thq_logobasic.mp4"
+      ]
+    },
+    {
+      "app_id": "710920",
+      "title": "Darksiders Genesis",
+      "intro_files": [
+        "as_logobasic.mp4",
+        "cg_intro_lowvi.mp4",
+        "thq_logobasic.mp4"
+      ]
+    },
+    {
+      "app_id": "1430901285",
+      "title": "Darksiders II",
+      "intro_files": [
+        "2011_thq_logo_fadeout_720p.bik",
+        "vigil_logo1280x720.bik"
+      ]
+    },
+    {
+      "app_id": "50650",
+      "title": "Darksiders II",
+      "intro_files": [
+        "2011_thq_logo_fadeout_720p.bik",
+        "vigil_logo1280x720.bik"
+      ]
+    },
+    {
+      "app_id": "1207658704",
+      "title": "Darkstar One",
+      "intro_files": [
+        "use replacement ascaron.bik"
+      ]
+    },
+    {
+      "app_id": "12330",
+      "title": "Darkstar One",
+      "intro_files": [
+        "use replacement ascaron.bik"
+      ]
+    },
+    {
+      "app_id": "1127395101",
+      "title": "Days Gone",
+      "intro_files": [
+        "bend_studio.mp4",
+        "climax_2024_ident_waudio.mp4",
+        "ps_studios.mp4",
+        "sie_presents.mp4"
+      ]
+    },
+    {
+      "app_id": "1259420",
+      "title": "Days Gone",
+      "intro_files": [
+        "bend_studio.mp4",
+        "climax_2024_ident_waudio.mp4",
+        "ps_studios.mp4",
+        "sie_presents.mp4"
+      ]
+    },
+    {
+      "app_id": "1466287699",
+      "title": "De Blob",
+      "intro_files": [
+        "00_chromacity.bik",
+        "00_chromacity.bik.ogv",
+        "logomovie.bik",
+        "logomovie.bik.ogv",
+        "thqnordic_logo_color_white.bik",
+        "thqnordic_logo_color_white.bik.ogv"
+      ]
+    },
+    {
+      "app_id": "532320",
+      "title": "De Blob",
+      "intro_files": [
+        "00_chromacity.bik",
+        "00_chromacity.bik.ogv",
+        "logomovie.bik",
+        "logomovie.bik.ogv",
+        "thqnordic_logo_color_white.bik",
+        "thqnordic_logo_color_white.bik.ogv"
+      ]
+    },
+    {
+      "app_id": "2070890632",
+      "title": "De Blob 2",
+      "intro_files": [
+        "logomovie.bik",
+        "logomovie.bik.ogv",
+        "sizzle.bik",
+        "sizzle.bik.ogv",
+        "thqnordic_logo_color_white.bik",
+        "thqnordic_logo_color_white.bik.ogv"
+      ]
+    },
+    {
+      "app_id": "563190",
+      "title": "De Blob 2",
+      "intro_files": [
+        "logomovie.bik",
+        "logomovie.bik.ogv",
+        "sizzle.bik",
+        "sizzle.bik.ogv",
+        "thqnordic_logo_color_white.bik",
+        "thqnordic_logo_color_white.bik.ogv"
+      ]
+    },
+    {
+      "app_id": "934700",
+      "title": "Dead Island 2",
+      "intro_files": [
+        "bootamdlogo.mp4",
+        "bootlogo.mp4",
+        "bootlogo_4k.mp4",
+        "bootloop.mp4",
+        "bootloop_4k.mp4",
+        "deadisland2_titles.mp4",
+        "deadisland2_titles_4k.mp4",
+        "intro.mp4",
+        "intro_4k.mp4"
+      ]
+    },
+    {
+      "app_id": "1230412827",
+      "title": "Deadlight: Director's Cut",
+      "intro_files": [
+        "splash_screen_01.bk2",
+        "splash_screen_02.bk2",
+        "splash_screen_03.bk2",
+        "splash_screen_04.bk2",
+        "splash_screen_05.bk2",
+        "tequila_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "423950",
+      "title": "Deadlight: Director's Cut",
+      "intro_files": [
+        "splash_screen_01.bk2",
+        "splash_screen_02.bk2",
+        "splash_screen_03.bk2",
+        "splash_screen_04.bk2",
+        "splash_screen_05.bk2",
+        "tequila_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "224060",
+      "title": "Deadpool",
+      "intro_files": [
+        "logo_activision.bik",
+        "logo_highmoon.bik",
+        "logo_marvel.bik",
+        "logo_mercenary.bik",
+        "tf_initialstartup.bik",
+        "tf_initialstartup_deu.bik",
+        "tf_initialstartup_esn.bik",
+        "tf_initialstartup_fra.bik",
+        "tf_initialstartup_ita.bik",
+        "tf_initialstartup_rus.bik"
+      ]
+    },
+    {
+      "app_id": "1436109729",
+      "title": "Death end re;Quest",
+      "intro_files": [
+        "logo_ch.usm",
+        "logo_cri.usm",
+        "logo_if.usm",
+        "logo_silicon.usm",
+        "logo_silicon_en.usm"
+      ]
+    },
+    {
+      "app_id": "990050",
+      "title": "Death end re;Quest",
+      "intro_files": [
+        "logo_ch.usm",
+        "logo_cri.usm",
+        "logo_if.usm",
+        "logo_silicon.usm",
+        "logo_silicon_en.usm"
+      ]
+    },
+    {
+      "app_id": "1252330",
+      "title": "Deathloop",
+      "intro_files": [
+        "arkane.bk2",
+        "bethesda.bk2",
+        "legal.bk2",
+        "warning.bk2"
+      ]
+    },
+    {
+      "app_id": "1395742506",
+      "title": "Deliver Us the Moon",
+      "intro_files": [
+        "dutm_intro_nosound.mp4",
+        "dutm_splashscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "428660",
+      "title": "Deliver Us the Moon",
+      "intro_files": [
+        "dutm_intro_nosound.mp4",
+        "dutm_splashscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "202710",
+      "title": "Demigod",
+      "intro_files": [
+        "dg_amd_logo.bik",
+        "dg_gpg_logo.bik",
+        "dg_intro.bik",
+        "dg_stardock_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1098383189",
+      "title": "Destroy All Humans!",
+      "intro_files": [
+        "bfglogo1080p.mp4",
+        "bumper_legalsplash.mp4",
+        "thqnordic_logo_color_white.mp4"
+      ]
+    },
+    {
+      "app_id": "803330",
+      "title": "Destroy All Humans!",
+      "intro_files": [
+        "bfglogo1080p.mp4",
+        "bumper_legalsplash.mp4",
+        "thqnordic_logo_color_white.mp4"
+      ]
+    },
+    {
+      "app_id": "310560",
+      "title": "DiRT Rally",
+      "intro_files": [
+        "attract.bk2"
+      ]
+    },
+    {
+      "app_id": "201700",
+      "title": "DiRT Showdown",
+      "intro_files": [
+        "and delete or rename all files except sting.bik"
+      ]
+    },
+    {
+      "app_id": "433170",
+      "title": "Die Young",
+      "intro_files": [
+        "loading_01_15sec.mp4",
+        "logostart.mp4"
+      ]
+    },
+    {
+      "app_id": "973000",
+      "title": "Die Young: Prologue",
+      "intro_files": [
+        "loading_prologue.mp4",
+        "logostart.mp4"
+      ]
+    },
+    {
+      "app_id": "338300",
+      "title": "Disney's Chicken Little: Ace in Action",
+      "intro_files": [
+        "avlogo.bik",
+        "binklegal.bik",
+        "bvg.bik",
+        "dsny.bik",
+        "legal.bik"
+      ]
+    },
+    {
+      "app_id": "1207659263",
+      "title": "Divinity: Dragon Commander",
+      "intro_files": [
+        "splash_legal_lines.bik",
+        "splash_logo_larian.bik"
+      ]
+    },
+    {
+      "app_id": "243950",
+      "title": "Divinity: Dragon Commander",
+      "intro_files": [
+        "splash_legal_lines.bik",
+        "splash_logo_larian.bik"
+      ]
+    },
+    {
+      "app_id": "220440",
+      "title": "DmC: Devil May Cry",
+      "intro_files": [
+        "amdlogo.bik",
+        "capcom.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1390579243",
+      "title": "Doom (2016)",
+      "intro_files": [
+        "boot_sequence.bik"
+      ]
+    },
+    {
+      "app_id": "379720",
+      "title": "Doom (2016)",
+      "intro_files": [
+        "boot_sequence.bik"
+      ]
+    },
+    {
+      "app_id": "1733124578",
+      "title": "Doom 3: BFG Edition",
+      "intro_files": [
+        "loadvideo.bik"
+      ]
+    },
+    {
+      "app_id": "208200",
+      "title": "Doom 3: BFG Edition",
+      "intro_files": [
+        "loadvideo.bik"
+      ]
+    },
+    {
+      "app_id": "1344230395",
+      "title": "Doom Eternal",
+      "intro_files": [
+        "boot_sequence.bk2"
+      ]
+    },
+    {
+      "app_id": "782330",
+      "title": "Doom Eternal",
+      "intro_files": [
+        "boot_sequence.bk2"
+      ]
+    },
+    {
+      "app_id": "2633500",
+      "title": "Dragon Throne: Battle of Red Cliffs",
+      "intro_files": [
+        "fod.avi",
+        "gpmom.avi",
+        "strategyfirst.avi"
+      ]
+    },
+    {
+      "app_id": "442070",
+      "title": "Drawful 2",
+      "intro_files": [
+        "developerintro.usm"
+      ]
+    },
+    {
+      "app_id": "1207659045",
+      "title": "Dreamfall: The Longest Journey",
+      "intro_files": [
+        "alienware_logo.bik",
+        "ati_logo.bik",
+        "creative_sbosb.bik",
+        "funcom.bik"
+      ]
+    },
+    {
+      "app_id": "6300",
+      "title": "Dreamfall: The Longest Journey",
+      "intro_files": [
+        "alienware_logo.bik",
+        "ati_logo.bik",
+        "creative_sbosb.bik",
+        "funcom.bik"
+      ]
+    },
+    {
+      "app_id": "33440",
+      "title": "Driver: San Francisco",
+      "intro_files": [
+        "driversplash.bik",
+        "ubisoft.bik"
+      ]
+    },
+    {
+      "app_id": "57900",
+      "title": "Duke Nukem Forever",
+      "intro_files": [
+        "attract.bik",
+        "dice_intro.bik",
+        "legal.bik",
+        "logo.bik"
+      ]
+    },
+    {
+      "app_id": "1172710",
+      "title": "Dune: Awakening",
+      "intro_files": [
+        "epilepsyinfo.bk2",
+        "initialintro4k.bk2",
+        "logo_4k_funcom_2s.bk2",
+        "logo_4k_legendary_2s.bk2",
+        "logo_4k_levelinfinite_2s.bk2",
+        "logo_4k_unreal_2s.bk2",
+        "startupue4.bk2"
+      ]
+    },
+    {
+      "app_id": "1142020247",
+      "title": "Dungeon Siege III",
+      "intro_files": [
+        "000_obsidian.bik",
+        "000_square.bik"
+      ]
+    },
+    {
+      "app_id": "39160",
+      "title": "Dungeon Siege III",
+      "intro_files": [
+        "000_obsidian.bik",
+        "000_square.bik"
+      ]
+    },
+    {
+      "app_id": "57650",
+      "title": "Dungeons",
+      "intro_files": [
+        "dungeons.wmv",
+        "kalypso.wmv",
+        "logo_01.wmv",
+        "realmforge.wmv"
+      ]
+    },
+    {
+      "app_id": "200550",
+      "title": "Dungeons: The Dark Lord",
+      "intro_files": [
+        "dungeons.wmv",
+        "kalypso.wmv",
+        "logo_01.wmv",
+        "realmforge.wmv"
+      ]
+    },
+    {
+      "app_id": "1448452156",
+      "title": "Dying Light",
+      "intro_files": [
+        "dltb_video.bik"
+      ]
+    },
+    {
+      "app_id": "239140",
+      "title": "Dying Light",
+      "intro_files": [
+        "dltb_video.bik"
+      ]
+    },
+    {
+      "app_id": "1885888793",
+      "title": "ELEX",
+      "intro_files": [
+        "logo_pb.bik",
+        "logo_thqnordic.bik"
+      ]
+    },
+    {
+      "app_id": "411300",
+      "title": "ELEX",
+      "intro_files": [
+        "logo_pb.bik",
+        "logo_thqnordic.bik"
+      ]
+    },
+    {
+      "app_id": "1937944261",
+      "title": "ELEX II",
+      "intro_files": [
+        "logo_pb.bik",
+        "logo_thqnordic.bik"
+      ]
+    },
+    {
+      "app_id": "900040",
+      "title": "ELEX II",
+      "intro_files": [
+        "logo_pb.bik",
+        "logo_thqnordic.bik"
+      ]
+    },
+    {
+      "app_id": "25930",
+      "title": "East India Company",
+      "intro_files": [
+        "intro.wmv",
+        "nitrogames_logo.wmv",
+        "topware_logo.wmv"
+      ]
+    },
+    {
+      "app_id": "311080",
+      "title": "Echelon (2001)",
+      "intro_files": [
+        "logo.wmv"
+      ]
+    },
+    {
+      "app_id": "311100",
+      "title": "Echelon: Wind Warriors",
+      "intro_files": [
+        "intro.avi"
+      ]
+    },
+    {
+      "app_id": "2145436309",
+      "title": "Echo",
+      "intro_files": [
+        "uu_logo_opening_movie.mp4"
+      ]
+    },
+    {
+      "app_id": "551770",
+      "title": "Echo",
+      "intro_files": [
+        "uu_logo_opening_movie.mp4"
+      ]
+    },
+    {
+      "app_id": "783420",
+      "title": "Elementium",
+      "intro_files": [
+        "game_logo.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "251310",
+      "title": "Eleusis",
+      "intro_files": [
+        "nocturnallogo.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "359320",
+      "title": "Elite Dangerous",
+      "intro_files": [
+        "ident_frontier_arena.webm",
+        "ident_frontier_elitehorizons.webm",
+        "ident_frontier_eliteneutral.webm"
+      ]
+    },
+    {
+      "app_id": "655940",
+      "title": "Elo Hell",
+      "intro_files": [
+        "gcsplash_1080.mp4"
+      ]
+    },
+    {
+      "app_id": "1886767424",
+      "title": "Emperor of the Fading Suns",
+      "intro_files": [
+        "applicable to the similarly named .smk",
+        "hdilogo1.mp4",
+        "introsnd.mp4",
+        "sega.mp4"
+      ]
+    },
+    {
+      "app_id": "2799350",
+      "title": "Emperor of the Fading Suns",
+      "intro_files": [
+        "applicable to the similarly named .smk",
+        "hdilogo1.mp4",
+        "introsnd.mp4",
+        "sega.mp4"
+      ]
+    },
+    {
+      "app_id": "1207658859",
+      "title": "Empire Earth III",
+      "intro_files": [
+        "fe_intro.bik",
+        "md_intro.bik",
+        "nvidia.bik",
+        "sierralogo.bik"
+      ]
+    },
+    {
+      "app_id": "254800",
+      "title": "Empire Earth III",
+      "intro_files": [
+        "fe_intro.bik",
+        "md_intro.bik",
+        "nvidia.bik",
+        "sierralogo.bik"
+      ]
+    },
+    {
+      "app_id": "10500",
+      "title": "Empire: Total War",
+      "intro_files": [
+        "ca.bik",
+        "corei7_intro.bik",
+        "game_intro_01.bik",
+        "sega_logo_sting_hd.bik"
+      ]
+    },
+    {
+      "app_id": "1207659993",
+      "title": "Entomorph: Plague of the Darkfall",
+      "intro_files": [
+        "cyblogo.smk",
+        "opening.smk"
+      ]
+    },
+    {
+      "app_id": "1046790",
+      "title": "Eternal Threads",
+      "intro_files": [
+        "start_video.mp4"
+      ]
+    },
+    {
+      "app_id": "265950",
+      "title": "Ether One",
+      "intro_files": [
+        "ue3_logo.bik",
+        "wpgsplash.bik"
+      ]
+    },
+    {
+      "app_id": "1207661343",
+      "title": "Ether One Redux",
+      "intro_files": [
+        "default_startup.mp4",
+        "ue3_logo.bik",
+        "wpgsplash.bik"
+      ]
+    },
+    {
+      "app_id": "391920",
+      "title": "Ether One Redux",
+      "intro_files": [
+        "default_startup.mp4"
+      ]
+    },
+    {
+      "app_id": "1207659112",
+      "title": "Etherlords",
+      "intro_files": [
+        "firstlogo.bik",
+        "fishtank.bik",
+        "intro.bik",
+        "nival.bik"
+      ]
+    },
+    {
+      "app_id": "270770",
+      "title": "Etherlords",
+      "intro_files": [
+        "firstlogo.bik",
+        "fishtank.bik",
+        "intro.bik",
+        "nival.bik"
+      ]
+    },
+    {
+      "app_id": "1207659167",
+      "title": "Etherlords II",
+      "intro_files": [
+        "intro.bik",
+        "nival.bik",
+        "sfi.bik"
+      ]
+    },
+    {
+      "app_id": "270790",
+      "title": "Etherlords II",
+      "intro_files": [
+        "intro.bik",
+        "nival.bik",
+        "sfi.bik"
+      ]
+    },
+    {
+      "app_id": "12390",
+      "title": "Exodus from the Earth",
+      "intro_files": [
+        "logo.ogv",
+        "publisher.ogv"
+      ]
+    },
+    {
+      "app_id": "1207658789",
+      "title": "Expendable",
+      "intro_files": [
+        "intro.bik",
+        "ragelogo.bik"
+      ]
+    },
+    {
+      "app_id": "804000",
+      "title": "Expendable",
+      "intro_files": [
+        "intro.bik",
+        "ragelogo.bik"
+      ]
+    },
+    {
+      "app_id": "1217589235",
+      "title": "F.E.A.R. 3",
+      "intro_files": [
+        "logotrain.bik"
+      ]
+    },
+    {
+      "app_id": "21100",
+      "title": "F.E.A.R. 3",
+      "intro_files": [
+        "logotrain.bik"
+      ]
+    },
+    {
+      "app_id": "1330470",
+      "title": "F.I.S.T.: Forged in Shadow Torch",
+      "intro_files": [
+        "startupmovie.mp4"
+      ]
+    },
+    {
+      "app_id": "928600",
+      "title": "F1 2019",
+      "intro_files": [
+        "attract.bk2",
+        "cm_f1_sting.bk2"
+      ]
+    },
+    {
+      "app_id": "1080110",
+      "title": "F1 2020",
+      "intro_files": [
+        "attract.bk2",
+        "cm_f1_sting.bk2"
+      ]
+    },
+    {
+      "app_id": "288470",
+      "title": "Fable Anniversary",
+      "intro_files": [
+        "lionhead.bik",
+        "msstudio.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "105400",
+      "title": "Fable III",
+      "intro_files": [
+        "lionhead_logo.bik",
+        "microsoft_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1207658979",
+      "title": "Fahrenheit",
+      "intro_files": [
+        "logoatar.bik",
+        "logoquan.bik",
+        "nvidia.bik"
+      ]
+    },
+    {
+      "app_id": "9740",
+      "title": "Fahrenheit",
+      "intro_files": [
+        "logoatar.bik",
+        "logoquan.bik",
+        "nvidia.bik"
+      ]
+    },
+    {
+      "app_id": "1440163405",
+      "title": "Fallout Tactics: Brotherhood of Steel",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "38420",
+      "title": "Fallout Tactics: Brotherhood of Steel",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "214230",
+      "title": "Family Guy: Back to the Multiverse",
+      "intro_files": [
+        "v100.bik"
+      ]
+    },
+    {
+      "app_id": "1430136345",
+      "title": "Fantasy General",
+      "intro_files": [
+        "100.smk"
+      ]
+    },
+    {
+      "app_id": "1741120",
+      "title": "Fantasy General",
+      "intro_files": [
+        "100.smk"
+      ]
+    },
+    {
+      "app_id": "1207658750",
+      "title": "Far Cry",
+      "intro_files": [
+        "crytek.bik",
+        "sandbox.bik",
+        "ubi.bik"
+      ]
+    },
+    {
+      "app_id": "13520",
+      "title": "Far Cry",
+      "intro_files": [
+        "crytek.bik",
+        "sandbox.bik",
+        "ubi.bik"
+      ]
+    },
+    {
+      "app_id": "678030",
+      "title": "Fast & Furious Crossroads",
+      "intro_files": [
+        "videomp_0.bik",
+        "videosp_1.bik"
+      ]
+    },
+    {
+      "app_id": "1436454557",
+      "title": "Final Liberation: Warhammer Epic 40,000",
+      "intro_files": [
+        "flintro.smk",
+        "hdilogo2.smk",
+        "ssi_log.smk"
+      ]
+    },
+    {
+      "app_id": "4280920",
+      "title": "Final Liberation: Warhammer Epic 40,000",
+      "intro_files": [
+        "flintro.smk",
+        "hdilogo2.smk",
+        "ssi_log.smk"
+      ]
+    },
+    {
+      "app_id": "1434372124",
+      "title": "FireStarter",
+      "intro_files": [
+        "intro.avi"
+      ]
+    },
+    {
+      "app_id": "1486529526",
+      "title": "Flashback",
+      "intro_files": [
+        "microids.mp4"
+      ]
+    },
+    {
+      "app_id": "961620",
+      "title": "Flashback",
+      "intro_files": [
+        "microids.mp4"
+      ]
+    },
+    {
+      "app_id": "12360",
+      "title": "FlatOut: Ultimate Carnage",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "34009",
+      "title": "Football Manager 2010",
+      "intro_files": [
+        "esrb.ogv",
+        "license.ogv",
+        "partners.ogv",
+        "sega.ogv",
+        "si.ogv"
+      ]
+    },
+    {
+      "app_id": "71270",
+      "title": "Football Manager 2012",
+      "intro_files": [
+        "license.ogv",
+        "partners.ogv",
+        "sega.ogv",
+        "si.ogv"
+      ]
+    },
+    {
+      "app_id": "624090",
+      "title": "Football Manager 2018",
+      "intro_files": [
+        "license.ogv",
+        "loading_in.ogv",
+        "partners.ogv",
+        "sega.ogv",
+        "si.ogv"
+      ]
+    },
+    {
+      "app_id": "1100600",
+      "title": "Football Manager 2020",
+      "intro_files": [
+        "license.ogv",
+        "loading_in.ogv",
+        "partners.ogv",
+        "sega.ogv",
+        "si.ogv"
+      ]
+    },
+    {
+      "app_id": "1207658929",
+      "title": "Forgotten Realms: Demon Stone",
+      "intro_files": [
+        "atari.bik",
+        "hasbro.bik",
+        "sfslogo.bik",
+        "wotc.bik",
+        "zono.bik"
+      ]
+    },
+    {
+      "app_id": "3843530",
+      "title": "Forgotten Realms: Demon Stone",
+      "intro_files": [
+        "atari.bik",
+        "hasbro.bik",
+        "sfslogo.bik",
+        "wotc.bik",
+        "zono.bik"
+      ]
+    },
+    {
+      "app_id": "253530",
+      "title": "Fortress Forever",
+      "intro_files": [
+        "valve.avi"
+      ]
+    },
+    {
+      "app_id": "438740",
+      "title": "Friday the 13th: The Game",
+      "intro_files": [
+        "f13intros1088p.mp4"
+      ]
+    },
+    {
+      "app_id": "43000",
+      "title": "Front Mission Evolved",
+      "intro_files": [
+        "gameopening.usm"
+      ]
+    },
+    {
+      "app_id": "1601580",
+      "title": "Frostpunk 2",
+      "intro_files": [
+        "splash_01_11bit.bk2",
+        "splash_02_amd.bk2",
+        "splash_03_uewwise.bk2"
+      ]
+    },
+    {
+      "app_id": "1728870436",
+      "title": "Frostpunk 2",
+      "intro_files": [
+        "splash_01_11bit.bk2",
+        "splash_02_amd.bk2",
+        "splash_03_uewwise.bk2"
+      ]
+    },
+    {
+      "app_id": "12800",
+      "title": "Fuel",
+      "intro_files": [
+        "blank.bik",
+        "download blank.bik",
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "44350",
+      "title": "GRID 2",
+      "intro_files": [
+        "intel_sting.bk2",
+        "sting.bk2"
+      ]
+    },
+    {
+      "app_id": "255220",
+      "title": "GRID Autosport",
+      "intro_files": [
+        "intel_sting.bk2",
+        "sting.bk2"
+      ]
+    },
+    {
+      "app_id": "1342466874",
+      "title": "GRIP: Combat Racing",
+      "intro_files": [
+        "cagedelement_logo_anim_black.mp4",
+        "safeinourworld.mp4",
+        "wiredproductions_black.mp4"
+      ]
+    },
+    {
+      "app_id": "396900",
+      "title": "GRIP: Combat Racing",
+      "intro_files": [
+        "cagedelement_logo_anim_black.mp4",
+        "safeinourworld.mp4",
+        "wiredproductions_black.mp4"
+      ]
+    },
+    {
+      "app_id": "44600",
+      "title": "GTR - FIA GT Racing Game",
+      "intro_files": [
+        "gameintro.bik",
+        "gfxintro.bik",
+        "simbin.bik"
+      ]
+    },
+    {
+      "app_id": "8790",
+      "title": "GTR 2 - FIA GT Racing Game",
+      "intro_files": [
+        "gameintro.bik",
+        "intro.bik",
+        "simbin.bik"
+      ]
+    },
+    {
+      "app_id": "1207659206",
+      "title": "Galactic Civilizations",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "214150",
+      "title": "Galactic Civilizations",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "1444400746",
+      "title": "Galactic Civilizations II: Dread Lords",
+      "intro_files": [
+        "gc2_intro.bik"
+      ]
+    },
+    {
+      "app_id": "202200",
+      "title": "Galactic Civilizations II: Dread Lords",
+      "intro_files": [
+        "gc2_intro.bik"
+      ]
+    },
+    {
+      "app_id": "1207659108",
+      "title": "Gangsters: Organized Crime",
+      "intro_files": [
+        "eidos.smk",
+        "intro.smk"
+      ]
+    },
+    {
+      "app_id": "2523720",
+      "title": "Gears of War: Reloaded",
+      "intro_files": [
+        "epiclogo.bik",
+        "mgslogo.bik",
+        "thecoalitionlogo.bik",
+        "ue3animatedlogo.bik"
+      ]
+    },
+    {
+      "app_id": "1541701876",
+      "title": "Genesis Alpha One",
+      "intro_files": [
+        "bootflow1.mp4",
+        "bootflow2.mp4",
+        "bootflow3.mp4"
+      ]
+    },
+    {
+      "app_id": "712190",
+      "title": "Genesis Alpha One",
+      "intro_files": [
+        "bootflow1.mp4",
+        "bootflow2.mp4",
+        "bootflow3.mp4"
+      ]
+    },
+    {
+      "app_id": "2215430",
+      "title": "Ghost of Tsushima Director's Cut",
+      "intro_files": [
+        "splash_pc.webm"
+      ]
+    },
+    {
+      "app_id": "2383990",
+      "title": "Ghostbusters: Spirits Unleashed",
+      "intro_files": [
+        "intel_pc.mp4",
+        "intel_pc.webm",
+        "intrologos.mp4",
+        "intrologos.webm",
+        "intrologos_low.mp4",
+        "intrologos_low.webm"
+      ]
+    },
+    {
+      "app_id": "9870",
+      "title": "Ghostbusters: The Video Game",
+      "intro_files": [
+        "loading.ogv",
+        "logo.ogv"
+      ]
+    },
+    {
+      "app_id": "1449280",
+      "title": "Ghostbusters: The Video Game Remastered",
+      "intro_files": [
+        "logo.mp4",
+        "logo.ogv"
+      ]
+    },
+    {
+      "app_id": "1825685277",
+      "title": "Ghostrunner 2",
+      "intro_files": [
+        "gr2_loop.mp4",
+        "gr2_loop1.mp4",
+        "gr2_loop2.mp4",
+        "gr2_splashscreen.mp4",
+        "ue_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "2144740",
+      "title": "Ghostrunner 2",
+      "intro_files": [
+        "gr2_loop.mp4",
+        "gr2_loop1.mp4",
+        "gr2_loop2.mp4",
+        "gr2_splashscreen.mp4",
+        "ue_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1893370",
+      "title": "Ghostware: Arena of the Dead",
+      "intro_files": [
+        "gwvid_00_bootup.mp4",
+        "gwvid_01_disclaimer.mp4",
+        "gwvid_01_entroduction.mp4"
+      ]
+    },
+    {
+      "app_id": "1074905459",
+      "title": "God of War",
+      "intro_files": [
+        "ps_studios_long_strawberry_4k30_006.bk2"
+      ]
+    },
+    {
+      "app_id": "1593500",
+      "title": "God of War",
+      "intro_files": [
+        "ps_studios_long_strawberry_4k30_006.bk2"
+      ]
+    },
+    {
+      "app_id": "2322010",
+      "title": "God of War Ragnarök",
+      "intro_files": [
+        "pss_studios.bk2",
+        "pss_studios_30.bk2",
+        "pss_studios_4k_30.bk2"
+      ]
+    },
+    {
+      "app_id": "1297900",
+      "title": "Gothic 1 Remake",
+      "intro_files": [
+        "alkimia_logo.bk2",
+        "thqnordic_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "1537831577",
+      "title": "Gothic 1 Remake",
+      "intro_files": [
+        "alkimia_logo.bk2",
+        "thqnordic_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "1207658986",
+      "title": "Gothic 3",
+      "intro_files": [
+        "cpt.bik",
+        "g3_logo_01.bik",
+        "publisher.bik"
+      ]
+    },
+    {
+      "app_id": "39500",
+      "title": "Gothic 3",
+      "intro_files": [
+        "cpt.bik",
+        "g3_logo_01.bik",
+        "publisher.bik"
+      ]
+    },
+    {
+      "app_id": "1207658993",
+      "title": "Gothic 3: Forsaken Gods",
+      "intro_files": [
+        "cpt.bik",
+        "publisher.bik"
+      ]
+    },
+    {
+      "app_id": "65600",
+      "title": "Gothic 3: Forsaken Gods",
+      "intro_files": [
+        "cpt.bik",
+        "publisher.bik"
+      ]
+    },
+    {
+      "app_id": "23450",
+      "title": "Grand Ages: Rome",
+      "intro_files": [
+        "fx.bik",
+        "haemimont.bik",
+        "intro.bik",
+        "publisher2.bik"
+      ]
+    },
+    {
+      "app_id": "1546970",
+      "title": "Grand Theft Auto III – The Definitive Edition",
+      "intro_files": [
+        "gta_3_rstar_credits_final_1920x1080_15hq.mp4",
+        "gta_3_rstar_stinger_final_1920x1080_15hq.mp4"
+      ]
+    },
+    {
+      "app_id": "271590",
+      "title": "Grand Theft Auto V",
+      "intro_files": [
+        "rockstar_logos.bik"
+      ]
+    },
+    {
+      "app_id": "3240220",
+      "title": "Grand Theft Auto V Enhanced",
+      "intro_files": [
+        "rockstar_logos.bik"
+      ]
+    },
+    {
+      "app_id": "1547000",
+      "title": "Grand Theft Auto: San Andreas – The Definitive Edition",
+      "intro_files": [
+        "gta_sa_credits_final_1920x1080.mp4",
+        "gta_sa_rstar_stinger_final_1920x1080.mp4"
+      ]
+    },
+    {
+      "app_id": "1546990",
+      "title": "Grand Theft Auto: Vice City – The Definitive Edition",
+      "intro_files": [
+        "gta_vc_credits_final_1920x1080.mp4",
+        "gta_vc_rstar_stinger_final_1920x1080.mp4"
+      ]
+    },
+    {
+      "app_id": "558260",
+      "title": "Gravel",
+      "intro_files": [
+        "jap_publisherlogo.mp4",
+        "milestone.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1371690",
+      "title": "Graven",
+      "intro_files": [
+        "graven_logos.mp4",
+        "replace graven_logos.mp4"
+      ]
+    },
+    {
+      "app_id": "1884696426",
+      "title": "Graven",
+      "intro_files": [
+        "graven_logos.mp4",
+        "replace graven_logos.mp4"
+      ]
+    },
+    {
+      "app_id": "1207664743",
+      "title": "Gray Matter",
+      "intro_files": [
+        "dtp.bik",
+        "wizarbox.bik"
+      ]
+    },
+    {
+      "app_id": "260570",
+      "title": "Gray Matter",
+      "intro_files": [
+        "dtp.bik",
+        "wizarbox.bik"
+      ]
+    },
+    {
+      "app_id": "2218400",
+      "title": "Greedland",
+      "intro_files": [
+        "all4k.mp4",
+        "intromovie.mp4",
+        "warning_4k.mp4"
+      ]
+    },
+    {
+      "app_id": "2032258750",
+      "title": "Grow Up",
+      "intro_files": [
+        "reflectionsident5seconds.bik",
+        "ubisoftsplash.bik"
+      ]
+    },
+    {
+      "app_id": "426790",
+      "title": "Grow Up",
+      "intro_files": [
+        "reflectionsident5seconds.bik",
+        "ubisoftsplash.bik"
+      ]
+    },
+    {
+      "app_id": "1460036036",
+      "title": "Gun",
+      "intro_files": [
+        "atvi.bik",
+        "beenox.bik",
+        "nsintro.bik"
+      ]
+    },
+    {
+      "app_id": "2610",
+      "title": "Gun",
+      "intro_files": [
+        "atvi.bik",
+        "beenox.bik",
+        "nsintro.bik"
+      ]
+    },
+    {
+      "app_id": "1719266458",
+      "title": "Gun Metal",
+      "intro_files": [
+        "cgplayed_01.wmv",
+        "cgplayed_01_h.wmv",
+        "intro1_ps.wmv",
+        "intro1_ps_h.wmv",
+        "intro2_ps.wmv",
+        "intro2_ps_h.wmv"
+      ]
+    },
+    {
+      "app_id": "267920",
+      "title": "Gun Metal",
+      "intro_files": [
+        "cgplayed_01.wmv",
+        "cgplayed_01_h.wmv",
+        "intro1_ps.wmv",
+        "intro1_ps_h.wmv",
+        "intro2_ps.wmv",
+        "intro2_ps_h.wmv"
+      ]
+    },
+    {
+      "app_id": "1064271",
+      "title": "Halo 3",
+      "intro_files": [
+        "fms_logo_microsoft_7_1_.bk2"
+      ]
+    },
+    {
+      "app_id": "1064272",
+      "title": "Halo 3: ODST",
+      "intro_files": [
+        "fms_logo_microsoft_7_1_.bk2"
+      ]
+    },
+    {
+      "app_id": "1064273",
+      "title": "Halo 4",
+      "intro_files": [
+        "fms_logo_microsoft_7_1_.bk2"
+      ]
+    },
+    {
+      "app_id": "459220",
+      "title": "Halo Wars: Definitive Edition",
+      "intro_files": [
+        "343_intro.bik",
+        "msgamestudio_intro.bik"
+      ]
+    },
+    {
+      "app_id": "1064221",
+      "title": "Halo: Combat Evolved Anniversary",
+      "intro_files": [
+        "fms_logo_microsoft_7_1_.bk2"
+      ]
+    },
+    {
+      "app_id": "1064220",
+      "title": "Halo: Reach",
+      "intro_files": [
+        "fms_logo_microsoft_7_1_.bk2"
+      ]
+    },
+    {
+      "app_id": "976730",
+      "title": "Halo: The Master Chief Collection",
+      "intro_files": [
+        "fms_logo_343_7_1_.bk2",
+        "fms_logo_microsoft_7_1_.bk2"
+      ]
+    },
+    {
+      "app_id": "1731168163",
+      "title": "Hard Truck 2",
+      "intro_files": [
+        "kotr.avi",
+        "kotrdemo.avi"
+      ]
+    },
+    {
+      "app_id": "4487840",
+      "title": "Hard Truck 2",
+      "intro_files": [
+        "kotr.avi",
+        "kotrdemo.avi"
+      ]
+    },
+    {
+      "app_id": "2069488821",
+      "title": "Hatred",
+      "intro_files": [
+        "default_startup.mp4"
+      ]
+    },
+    {
+      "app_id": "341940",
+      "title": "Hatred",
+      "intro_files": [
+        "default_startup.mp4"
+      ]
+    },
+    {
+      "app_id": "797410",
+      "title": "Headsnatchers",
+      "intro_files": [
+        "icebergiguanabeefpl.mp4",
+        "ue4_startup_moving_logo_1088_60.mp4"
+      ]
+    },
+    {
+      "app_id": "686810",
+      "title": "Hell Let Loose",
+      "intro_files": [
+        "blackmatter4k.mp4",
+        "expressionlogo.mp4",
+        "flixinteractive.mp4",
+        "team17.mp4",
+        "unreal.mp4",
+        "vivox.mp4"
+      ]
+    },
+    {
+      "app_id": "1620730",
+      "title": "Hell is Us",
+      "intro_files": [
+        "nc_nacon_4k_60fps.bk2",
+        "roguefactor_logo.bk2",
+        "unreal_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "1573355755",
+      "title": "Hellblade: Senua's Sacrifice",
+      "intro_files": [
+        "ninjatheory_logo.bik",
+        "qloc_logo_1080.bik",
+        "qloc_logo_4k.bik",
+        "thirdparty_logo.bik",
+        "thirdparty_logo_onion.bik",
+        "ue4_logo.bik"
+      ]
+    },
+    {
+      "app_id": "414340",
+      "title": "Hellblade: Senua's Sacrifice",
+      "intro_files": [
+        "ninjatheory_logo.bik",
+        "qloc_logo_1080.bik",
+        "qloc_logo_4k.bik",
+        "thirdparty_logo.bik",
+        "thirdparty_logo_onion.bik",
+        "ue4_logo.bik"
+      ]
+    },
+    {
+      "app_id": "297000",
+      "title": "Heroes of Might and Magic III - HD Edition",
+      "intro_files": [
+        "dotemu.ogv",
+        "h3intro.ogv",
+        "ubisoft_hd25_3sec.ogv",
+        "ubisoft_hd25_6sec.ogv"
+      ]
+    },
+    {
+      "app_id": "1576810170",
+      "title": "Hidden & Dangerous 2",
+      "intro_files": [
+        "intro.bik",
+        "logo1.bik",
+        "logo2.bik",
+        "logo3.bik"
+      ]
+    },
+    {
+      "app_id": "703320",
+      "title": "Hidden & Dangerous 2",
+      "intro_files": [
+        "intro.bik",
+        "logo1.bik",
+        "logo2.bik",
+        "logo3.bik"
+      ]
+    },
+    {
+      "app_id": "1583230",
+      "title": "High on Life",
+      "intro_files": [
+        "middleware_fade.bk2",
+        "squanch_logo_v1.bk2"
+      ]
+    },
+    {
+      "app_id": "33500",
+      "title": "Hired Guns: The Jagged Edge",
+      "intro_files": [
+        "logo.bik"
+      ]
+    },
+    {
+      "app_id": "1942346586",
+      "title": "Hitman: Blood Money",
+      "intro_files": [
+        "gfxlogo.bik",
+        "intro_bi.bik"
+      ]
+    },
+    {
+      "app_id": "6860",
+      "title": "Hitman: Blood Money",
+      "intro_files": [
+        "gfxlogo.bik",
+        "intro_bi.bik"
+      ]
+    },
+    {
+      "app_id": "2114871440",
+      "title": "Homeworld 2 Remastered Edition",
+      "intro_files": [
+        "gbxlogo.webm"
+      ]
+    },
+    {
+      "app_id": "244160",
+      "title": "Homeworld 2 Remastered Edition",
+      "intro_files": [
+        "gbxlogo.webm"
+      ]
+    },
+    {
+      "app_id": "1766413869",
+      "title": "Homeworld: Cataclysm",
+      "intro_files": [
+        "bdogintro.bik",
+        "sierra.bik"
+      ]
+    },
+    {
+      "app_id": "2039843838",
+      "title": "Horace",
+      "intro_files": [
+        "ident.bk2"
+      ]
+    },
+    {
+      "app_id": "629090",
+      "title": "Horace",
+      "intro_files": [
+        "ident.bk2"
+      ]
+    },
+    {
+      "app_id": "2561580",
+      "title": "Horizon Zero Dawn Remastered",
+      "intro_files": [
+        "guerrilla_logo.bk2",
+        "logo.bk2",
+        "nixxes_logo.bk2",
+        "sony_studios_reel.bk2",
+        "weaseltron_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "1271700",
+      "title": "Hot Wheels Unleashed",
+      "intro_files": [
+        "intro.mp4"
+      ]
+    },
+    {
+      "app_id": "1281590",
+      "title": "House of Ashes",
+      "intro_files": [
+        "dpskullintro.bk2"
+      ]
+    },
+    {
+      "app_id": "1124300",
+      "title": "Humankind",
+      "intro_files": [
+        "amplitude studios.webm"
+      ]
+    },
+    {
+      "app_id": "1632475257",
+      "title": "I Am Alive",
+      "intro_files": [
+        "logo-ubisoft.bik",
+        "logo_esrb.bik",
+        "unreal_techlogo.bik"
+      ]
+    },
+    {
+      "app_id": "214250",
+      "title": "I Am Alive",
+      "intro_files": [
+        "logo-ubisoft.bik",
+        "logo_esrb.bik",
+        "unreal_techlogo.bik"
+      ]
+    },
+    {
+      "app_id": "448370",
+      "title": "IS Defense",
+      "intro_files": [
+        "default_startup.mp4",
+        "isd_intro.mp4"
+      ]
+    },
+    {
+      "app_id": "2221920",
+      "title": "Immortals Fenyx Rising",
+      "intro_files": [
+        "anvil_logo.webm",
+        "applyinggraphicmode.webm",
+        "epilepsy.webm",
+        "ubisoftlogo.webm",
+        "warningsaving.webm"
+      ]
+    },
+    {
+      "app_id": "2009100",
+      "title": "Immortals of Aveum",
+      "intro_files": [
+        "companylogo.mp4",
+        "enginelogo.mp4",
+        "publisherlogo.mp4"
+      ]
+    },
+    {
+      "app_id": "1448280463",
+      "title": "Impossible Creatures",
+      "intro_files": [
+        "nordic_games.bik",
+        "relicintro.bik"
+      ]
+    },
+    {
+      "app_id": "324680",
+      "title": "Impossible Creatures",
+      "intro_files": [
+        "nordic_games.bik",
+        "relicintro.bik"
+      ]
+    },
+    {
+      "app_id": "811270",
+      "title": "Impulsion",
+      "intro_files": [
+        "impulsionintro.mp4"
+      ]
+    },
+    {
+      "app_id": "1207659256",
+      "title": "InFlux",
+      "intro_files": [
+        "impromptusplash.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "246980",
+      "title": "InFlux",
+      "intro_files": [
+        "impromptusplash.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1425034773",
+      "title": "Indiana Jones and the Emperor's Tomb",
+      "intro_files": [
+        "logo_collective.bik",
+        "logo_legal.bik",
+        "logo_lucas.bik"
+      ]
+    },
+    {
+      "app_id": "560430",
+      "title": "Indiana Jones and the Emperor's Tomb",
+      "intro_files": [
+        "logo_collective.bik",
+        "logo_legal.bik",
+        "logo_lucas.bik"
+      ]
+    },
+    {
+      "app_id": "1953447949",
+      "title": "Indiana Jones and the Great Circle",
+      "intro_files": [
+        "boot_sequence_pc.bk2"
+      ]
+    },
+    {
+      "app_id": "2677660",
+      "title": "Indiana Jones and the Great Circle",
+      "intro_files": [
+        "boot_sequence_pc.bk2"
+      ]
+    },
+    {
+      "app_id": "1172650",
+      "title": "Industria",
+      "intro_files": [
+        "industria_logo_gamestartup.mp4"
+      ]
+    },
+    {
+      "app_id": "1804122723",
+      "title": "Industria",
+      "intro_files": [
+        "industria_logo_gamestartup.mp4"
+      ]
+    },
+    {
+      "app_id": "242700",
+      "title": "Injustice: Gods Among Us",
+      "intro_files": [
+        "openinglogos.bk2"
+      ]
+    },
+    {
+      "app_id": "205730",
+      "title": "Insanely Twisted Shadow Planet",
+      "intro_files": [
+        "itsp_intro_credits.wmv"
+      ]
+    },
+    {
+      "app_id": "581320",
+      "title": "Insurgency: Sandstorm",
+      "intro_files": [
+        "focus_blue_master_ue4_optimized.mp4",
+        "focus_blue_master_ue4_optimized_4k_60fps.mp4",
+        "nwi_1088p_60.mp4",
+        "ue_startup_still_1080_30.mp4"
+      ]
+    },
+    {
+      "app_id": "2060870",
+      "title": "Invincible Presents: Atom Eve",
+      "intro_files": [
+        "01_skybound.mp4",
+        "02_terribleposture.mp4"
+      ]
+    },
+    {
+      "app_id": "1207659237",
+      "title": "Jade Empire: Special Edition",
+      "intro_files": [
+        "bwlogo.bik",
+        "graymatr.bik",
+        "gsl_short.bik",
+        "publisher.bik"
+      ]
+    },
+    {
+      "app_id": "7110",
+      "title": "Jade Empire: Special Edition",
+      "intro_files": [
+        "bwlogo.bik",
+        "graymatr.bik",
+        "gsl_short.bik",
+        "publisher.bik"
+      ]
+    },
+    {
+      "app_id": "1366850",
+      "title": "Jected - Rivals",
+      "intro_files": [
+        "startupmovie_powwow-intro.bk2",
+        "startupmovie_thqn-logo.bk2",
+        "trailer.bk2"
+      ]
+    },
+    {
+      "app_id": "1519147341",
+      "title": "Journey to the Savage Planet",
+      "intro_files": [
+        "505games_logo_1088p.mp4",
+        "alienware_logo_1088p.mp4",
+        "legal_1088p.mp4",
+        "typhoonintrovideo_1088p.mp4",
+        "ue4_moving_logo_1088p.mp4"
+      ]
+    },
+    {
+      "app_id": "973810",
+      "title": "Journey to the Savage Planet",
+      "intro_files": [
+        "505games_logo_1088p.mp4",
+        "alienware_logo_1088p.mp4",
+        "legal_1088p.mp4",
+        "typhoonintrovideo_1088p.mp4",
+        "ue4_moving_logo_1088p.mp4"
+      ]
+    },
+    {
+      "app_id": "9400",
+      "title": "Juiced 2: Hot Import Nights",
+      "intro_files": [
+        "intro.bik",
+        "juicelogo.bik",
+        "thqlogo.bik"
+      ]
+    },
+    {
+      "app_id": "300840",
+      "title": "Juju",
+      "intro_files": [
+        "intro.bik",
+        "trademarks.bik",
+        "ue3.bik"
+      ]
+    },
+    {
+      "app_id": "1748253806",
+      "title": "Kao the Kangaroo",
+      "intro_files": [
+        "blank_msvc.avi",
+        "tate.avi"
+      ]
+    },
+    {
+      "app_id": "2360020",
+      "title": "Kao the Kangaroo",
+      "intro_files": [
+        "blank_msvc.avi",
+        "tate.avi"
+      ]
+    },
+    {
+      "app_id": "1408399958",
+      "title": "Killer Is Dead",
+      "intro_files": [
+        "cl_deepsilver.bik",
+        "cl_ghm.bik",
+        "cl_kadokawa.bik",
+        "cl_utech.bik"
+      ]
+    },
+    {
+      "app_id": "261110",
+      "title": "Killer Is Dead",
+      "intro_files": [
+        "cl_deepsilver.bik",
+        "cl_ghm.bik",
+        "cl_kadokawa.bik",
+        "cl_utech.bik"
+      ]
+    },
+    {
+      "app_id": "232090",
+      "title": "Killing Floor 2",
+      "intro_files": [
+        "logohardsuit.bik",
+        "logotripwire.bik"
+      ]
+    },
+    {
+      "app_id": "1430190",
+      "title": "Killing Floor 3",
+      "intro_files": [
+        "ada-rtx-opening-bumper.mp4",
+        "ga_logo.mp4",
+        "gamingc-core-arc-sigid-4k-2sec-2160-60fps.mp4",
+        "twi_logo_1080.mp4",
+        "ue_still_logo_v04_4k.mp4",
+        "wwise_havok_logos.mp4"
+      ]
+    },
+    {
+      "app_id": "1041720",
+      "title": "Kingdoms of Amalur: Re-Reckoning",
+      "intro_files": [
+        "logo_kaiko.bik",
+        "logo_thq_nordic.bik"
+      ]
+    },
+    {
+      "app_id": "1077045575",
+      "title": "Kingdoms of Amalur: Re-Reckoning",
+      "intro_files": [
+        "logo_kaiko.bik",
+        "logo_thq_nordic.bik"
+      ]
+    },
+    {
+      "app_id": "102500",
+      "title": "Kingdoms of Amalur: Reckoning",
+      "intro_files": [
+        "38_logo.bik",
+        "bhg_logo.bik",
+        "ea_logo.bik",
+        "reckoninglogotrain.bik"
+      ]
+    },
+    {
+      "app_id": "823800",
+      "title": "Kitty Play",
+      "intro_files": [
+        "intro.wmv"
+      ]
+    },
+    {
+      "app_id": "1207658772",
+      "title": "Knights and Merchants",
+      "intro_files": [
+        "kamlogo.avi"
+      ]
+    },
+    {
+      "app_id": "253900",
+      "title": "Knights and Merchants",
+      "intro_files": [
+        "kamlogo.avi"
+      ]
+    },
+    {
+      "app_id": "1194610",
+      "title": "Knights of the Temple: Infernal Crusade",
+      "intro_files": [
+        "bd_02.bik",
+        "nvidia.bik",
+        "sbz.bik",
+        "tdk.bik"
+      ]
+    },
+    {
+      "app_id": "35130",
+      "title": "Lara Croft and the Guardian of Light",
+      "intro_files": [
+        "delete intro.bik",
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "350280",
+      "title": "LawBreakers",
+      "intro_files": [
+        "logo_movie.webm"
+      ]
+    },
+    {
+      "app_id": "1255378890",
+      "title": "Layers of Fear (2023)",
+      "intro_files": [
+        "startup_pc_merged.bk2"
+      ]
+    },
+    {
+      "app_id": "1946700",
+      "title": "Layers of Fear (2023)",
+      "intro_files": [
+        "startup_pc_merged.bk2"
+      ]
+    },
+    {
+      "app_id": "500",
+      "title": "Left 4 Dead",
+      "intro_files": [
+        "l4d_intro.bik",
+        "valve.bik",
+        "valve.mov"
+      ]
+    },
+    {
+      "app_id": "550",
+      "title": "Left 4 Dead 2",
+      "intro_files": [
+        "l4d2_intro.bik",
+        "valve.bik"
+      ]
+    },
+    {
+      "app_id": "1207659088",
+      "title": "Legacy of Kain: Defiance",
+      "intro_files": [
+        "eidos.bik"
+      ]
+    },
+    {
+      "app_id": "224300",
+      "title": "Legacy of Kain: Defiance",
+      "intro_files": [
+        "eidos.bik"
+      ]
+    },
+    {
+      "app_id": "1207659030",
+      "title": "Legacy of Kain: Soul Reaver",
+      "intro_files": [
+        "crylogo.bik",
+        "publogo.bik"
+      ]
+    },
+    {
+      "app_id": "224920",
+      "title": "Legacy of Kain: Soul Reaver",
+      "intro_files": [
+        "crylogo.bik",
+        "publogo.bik"
+      ]
+    },
+    {
+      "app_id": "1426765313",
+      "title": "Lichdom: Battlemage",
+      "intro_files": [
+        "amdlogo.usm",
+        "cryengine.usm",
+        "splashlegal.usm",
+        "xaviantlogo.usm"
+      ]
+    },
+    {
+      "app_id": "261760",
+      "title": "Lichdom: Battlemage",
+      "intro_files": [
+        "amdlogo.usm",
+        "cryengine.usm",
+        "splashlegal.usm",
+        "xaviantlogo.usm"
+      ]
+    },
+    {
+      "app_id": "595060",
+      "title": "Lionheart: Legacy of the Crusader",
+      "intro_files": [
+        "black isle.bik",
+        "intro.bik",
+        "reflexive.bik"
+      ]
+    },
+    {
+      "app_id": "8",
+      "title": "Lionheart: Legacy of the Crusader",
+      "intro_files": [
+        "black isle.bik",
+        "intro.bik",
+        "reflexive.bik"
+      ]
+    },
+    {
+      "app_id": "1194630",
+      "title": "Little Hope",
+      "intro_files": [
+        "dpskullintro.bk2"
+      ]
+    },
+    {
+      "app_id": "1207658778",
+      "title": "Lords of Magic",
+      "intro_files": [
+        "credits.smk",
+        "imptitle.smk",
+        "intro.smk"
+      ]
+    },
+    {
+      "app_id": "404040",
+      "title": "Lords of Magic",
+      "intro_files": [
+        "credits.smk",
+        "imptitle.smk",
+        "intro.smk"
+      ]
+    },
+    {
+      "app_id": "1207663263",
+      "title": "Lords of the Realm II",
+      "intro_files": [
+        "intro.smk"
+      ]
+    },
+    {
+      "app_id": "397350",
+      "title": "Lords of the Realm II",
+      "intro_files": [
+        "intro.smk"
+      ]
+    },
+    {
+      "app_id": "1505930119",
+      "title": "Lost Ember",
+      "intro_files": [
+        "mooneye_logo.mp4",
+        "mooneye_reveal_logo_1920.mp4"
+      ]
+    },
+    {
+      "app_id": "563840",
+      "title": "Lost Ember",
+      "intro_files": [
+        "mooneye_logo.mp4",
+        "mooneye_reveal_logo_1920.mp4"
+      ]
+    },
+    {
+      "app_id": "15290",
+      "title": "Lost: Via Domus",
+      "intro_files": [
+        "abc.bik",
+        "loc_xx_ubipresents.bik",
+        "logo_ubisoft_1280x720.bik"
+      ]
+    },
+    {
+      "app_id": "2840000",
+      "title": "Lumina Veil",
+      "intro_files": [
+        "gifvid1.mp4"
+      ]
+    },
+    {
+      "app_id": "520940",
+      "title": "MX vs. ATV All Out",
+      "intro_files": [
+        "intro.bik",
+        "intro_mxvsatv.bk2",
+        "intro_rainbow.bk2",
+        "intro_thqnordic.bk2"
+      ]
+    },
+    {
+      "app_id": "256370",
+      "title": "MXGP",
+      "intro_files": [
+        "intro.wmv",
+        "mileston.wmv"
+      ]
+    },
+    {
+      "app_id": "1018160",
+      "title": "MXGP 2019",
+      "intro_files": [
+        "milestone.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "208860",
+      "title": "Mad Riders",
+      "intro_files": [
+        "logos_1024x768.wmv",
+        "logos_1280x720.wmv"
+      ]
+    },
+    {
+      "app_id": "764050",
+      "title": "Maelstrom",
+      "intro_files": [
+        "gpg_logo_60fps.mp4",
+        "ue4_logo_60fps.mp4"
+      ]
+    },
+    {
+      "app_id": "1816059595",
+      "title": "Mafia II",
+      "intro_files": [
+        "logos.bik",
+        "nvidia_logo.bik"
+      ]
+    },
+    {
+      "app_id": "50130",
+      "title": "Mafia II",
+      "intro_files": [
+        "logos.bik",
+        "nvidia_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1030830",
+      "title": "Mafia II: Definitive Edition",
+      "intro_files": [
+        "d3t.bik",
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "1943447848",
+      "title": "Mafia II: Definitive Edition",
+      "intro_files": [
+        "d3t.bik",
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "1030840",
+      "title": "Mafia: Definitive Edition",
+      "intro_files": [
+        "use a modified _logo_2k_h13_bullet.bik"
+      ]
+    },
+    {
+      "app_id": "1993581340",
+      "title": "Mafia: Definitive Edition",
+      "intro_files": [
+        "use a modified _logo_2k_h13_bullet.bik"
+      ]
+    },
+    {
+      "app_id": "1078920",
+      "title": "Main Assembly",
+      "intro_files": [
+        "byglogo.mp4",
+        "team17_ident_2018_01_mainassembly_audio.mp4"
+      ]
+    },
+    {
+      "app_id": "939850",
+      "title": "Man of Medan",
+      "intro_files": [
+        "dp_mom_logo_revised.bk2"
+      ]
+    },
+    {
+      "app_id": "12130",
+      "title": "Manhunt",
+      "intro_files": [
+        "titles.bik"
+      ]
+    },
+    {
+      "app_id": "1207665123",
+      "title": "Mark of the Ninja",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "214560",
+      "title": "Mark of the Ninja",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "249680",
+      "title": "Marlow Briggs and the Mask of Death",
+      "intro_files": [
+        "delete logo505.wmv",
+        "logo505.wmv"
+      ]
+    },
+    {
+      "app_id": "17460",
+      "title": "Mass Effect",
+      "intro_files": [
+        "bwlogo.bik",
+        "db_standard.bik",
+        "me_easig_720p_v2_raw.bik"
+      ]
+    },
+    {
+      "app_id": "2362420",
+      "title": "Mass Effect 2",
+      "intro_files": [
+        "bwlogo.bik",
+        "me_easig_720p_v2_raw.bik"
+      ]
+    },
+    {
+      "app_id": "1328670",
+      "title": "Mass Effect Legendary Edition",
+      "intro_files": [
+        "bwlogo1.bik"
+      ]
+    },
+    {
+      "app_id": "255390",
+      "title": "Max: The Curse of Brotherhood",
+      "intro_files": [
+        "splash.h264 and splash.ogv",
+        "splash.ogv"
+      ]
+    },
+    {
+      "app_id": "2147483045",
+      "title": "MechWarrior 5: Mercenaries",
+      "intro_files": [
+        "legalsplash-pc.bk2",
+        "piranha-logo-sound.bk2"
+      ]
+    },
+    {
+      "app_id": "784080",
+      "title": "MechWarrior 5: Mercenaries",
+      "intro_files": [
+        "legalsplash-pc.bk2",
+        "piranha-logo-sound.bk2"
+      ]
+    },
+    {
+      "app_id": "1207659126",
+      "title": "Medal of Honor: Allied Assault",
+      "intro_files": [
+        "ealogo.roq"
+      ]
+    },
+    {
+      "app_id": "1129580",
+      "title": "Medieval Dynasty",
+      "intro_files": [
+        "loading_short.bk2",
+        "logo_rendercube.bk2",
+        "logo_toplitz.bk2",
+        "logo_ue4.bk2"
+      ]
+    },
+    {
+      "app_id": "1224667888",
+      "title": "Medieval Dynasty",
+      "intro_files": [
+        "loading_short.bk2",
+        "logo_rendercube.bk2",
+        "logo_toplitz.bk2",
+        "logo_ue4.bk2"
+      ]
+    },
+    {
+      "app_id": "1207658764",
+      "title": "MegaRace 3",
+      "intro_files": [
+        "havokcinematic640.wmv",
+        "logo0.wmv",
+        "renderwarecinematic640.wmv"
+      ]
+    },
+    {
+      "app_id": "733770",
+      "title": "MegaRace 3",
+      "intro_files": [
+        "havokcinematic640.wmv",
+        "logo0.wmv",
+        "renderwarecinematic640.wmv"
+      ]
+    },
+    {
+      "app_id": "1769957642",
+      "title": "Metal Fatigue",
+      "intro_files": [
+        "logocinematic.avi",
+        "openingcinematic.avi"
+      ]
+    },
+    {
+      "app_id": "888040",
+      "title": "Metal Fatigue",
+      "intro_files": [
+        "logocinematic.avi",
+        "openingcinematic.avi"
+      ]
+    },
+    {
+      "app_id": "1436434037",
+      "title": "Metro 2033 Redux",
+      "intro_files": [
+        "delete contents of legal.ogv",
+        "legal.ogv"
+      ]
+    },
+    {
+      "app_id": "286690",
+      "title": "Metro 2033 Redux",
+      "intro_files": [
+        "delete contents of legal.ogv",
+        "legal.ogv"
+      ]
+    },
+    {
+      "app_id": "1407287452",
+      "title": "Metro Exodus",
+      "intro_files": [
+        "credits.webm",
+        "legal.webm"
+      ]
+    },
+    {
+      "app_id": "412020",
+      "title": "Metro Exodus",
+      "intro_files": [
+        "credits.webm",
+        "legal.webm"
+      ]
+    },
+    {
+      "app_id": "1430740172",
+      "title": "Metro: Last Light Redux",
+      "intro_files": [
+        "legal.ogv"
+      ]
+    },
+    {
+      "app_id": "287390",
+      "title": "Metro: Last Light Redux",
+      "intro_files": [
+        "legal.ogv"
+      ]
+    },
+    {
+      "app_id": "203850",
+      "title": "Microsoft Flight",
+      "intro_files": [
+        "mgs.usm"
+      ]
+    },
+    {
+      "app_id": "1213504814",
+      "title": "Middle-earth: Shadow of Mordor",
+      "intro_files": [
+        "feral.webm",
+        "intro.webm",
+        "intro_language.webm",
+        "nvidia_splash.webm",
+        "wbplay.webm"
+      ]
+    },
+    {
+      "app_id": "241930",
+      "title": "Middle-earth: Shadow of Mordor",
+      "intro_files": [
+        "feral.webm",
+        "intro.webm",
+        "intro_language.webm",
+        "nvidia_splash.webm",
+        "wbplay.webm"
+      ]
+    },
+    {
+      "app_id": "12160",
+      "title": "Midnight Club II",
+      "intro_files": [
+        "mc2intro.bik",
+        "rockstar.bik",
+        "sdlogo.bik"
+      ]
+    },
+    {
+      "app_id": "238750",
+      "title": "Might & Magic X - Legacy",
+      "intro_files": [
+        "devlogos.bk2"
+      ]
+    },
+    {
+      "app_id": "61700",
+      "title": "Might & Magic: Clash of Heroes",
+      "intro_files": [
+        "capy_logo_anim.bik",
+        "esrb.bik",
+        "ubi_sphere.bik"
+      ]
+    },
+    {
+      "app_id": "1207658978",
+      "title": "Might and Magic IX",
+      "intro_files": [
+        "3dologo.bik",
+        "intro.bik",
+        "new world logo.bik"
+      ]
+    },
+    {
+      "app_id": "63200",
+      "title": "Monday Night Combat",
+      "intro_files": [
+        "trademarks.bik",
+        "unrealsplash.bik"
+      ]
+    },
+    {
+      "app_id": "1953564736",
+      "title": "Monster Boy and the Cursed Kingdom",
+      "intro_files": [
+        "intro.mp4",
+        "intro2.mp4",
+        "logos.mp4"
+      ]
+    },
+    {
+      "app_id": "449610",
+      "title": "Monster Boy and the Cursed Kingdom",
+      "intro_files": [
+        "intro.mp4",
+        "intro2.mp4",
+        "logos.mp4"
+      ]
+    },
+    {
+      "app_id": "1798624846",
+      "title": "Monster Jam Steel Titans",
+      "intro_files": [
+        "intro_rainbow.bk2",
+        "intro_thqnordic.bk2"
+      ]
+    },
+    {
+      "app_id": "824280",
+      "title": "Monster Jam Steel Titans",
+      "intro_files": [
+        "intro_rainbow.bk2",
+        "intro_thqnordic.bk2"
+      ]
+    },
+    {
+      "app_id": "1012840",
+      "title": "Moons of Madness",
+      "intro_files": [
+        "funcomlogo.mp4",
+        "rpglogo.mp4"
+      ]
+    },
+    {
+      "app_id": "1612211775",
+      "title": "Moons of Madness",
+      "intro_files": [
+        "funcomlogo.mp4",
+        "rpglogo.mp4"
+      ]
+    },
+    {
+      "app_id": "237110",
+      "title": "Mortal Kombat Komplete Edition",
+      "intro_files": [
+        "hvsthunderlogofix.bik",
+        "nrintrologo.bik",
+        "wbintrologo.bik"
+      ]
+    },
+    {
+      "app_id": "307780",
+      "title": "Mortal Kombat X",
+      "intro_files": [
+        "mkx_studiologos.bk2"
+      ]
+    },
+    {
+      "app_id": "3914860",
+      "title": "Moss: The Forgotten Relic",
+      "intro_files": [
+        "combinedbootflow.bk2"
+      ]
+    },
+    {
+      "app_id": "1749107974",
+      "title": "Mothergunship",
+      "intro_files": [
+        "gripdigital_logo_startup.mp4",
+        "humble_logo_startup.mp4",
+        "terribleposturegame_logo_startup.mp4",
+        "ue4_startup_moving_logo_1088_60.mp4"
+      ]
+    },
+    {
+      "app_id": "574090",
+      "title": "Mothergunship",
+      "intro_files": [
+        "gripdigital_logo_startup.mp4",
+        "humble_logo_startup.mp4",
+        "terribleposturegame_logo_startup.mp4",
+        "ue4_startup_moving_logo_1088_60.mp4"
+      ]
+    },
+    {
+      "app_id": "984780",
+      "title": "MotoGP 19",
+      "intro_files": [
+        "milestone.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1161490",
+      "title": "MotoGP 20",
+      "intro_files": [
+        "jap_publisherlogo.mp4",
+        "milestone.mp4"
+      ]
+    },
+    {
+      "app_id": "415200",
+      "title": "Motorsport Manager",
+      "intro_files": [
+        "attractintro.bk2",
+        "replacement .bk2",
+        "splashsequence.bk2"
+      ]
+    },
+    {
+      "app_id": "105420",
+      "title": "Ms. Splosion Man",
+      "intro_files": [
+        "intro2.bik",
+        "intro3.bik",
+        "intro4.bik",
+        "intro5.bik"
+      ]
+    },
+    {
+      "app_id": "675010",
+      "title": "MudRunner",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "1226193907",
+      "title": "Mutant Year Zero: Road to Eden",
+      "intro_files": [
+        "cgi_lowercomp.mp4",
+        "splashscreenfinal.mp4",
+        "ue4_moving_logo_1080_60.mp4",
+        "ue4_moving_logo_720_60.mp4"
+      ]
+    },
+    {
+      "app_id": "760060",
+      "title": "Mutant Year Zero: Road to Eden",
+      "intro_files": [
+        "cgi_lowercomp.mp4",
+        "splashscreenfinal.mp4",
+        "ue4_moving_logo_1080_60.mp4",
+        "ue4_moving_logo_720_60.mp4"
+      ]
+    },
+    {
+      "app_id": "1207659029",
+      "title": "Myst V: End of Ages",
+      "intro_files": [
+        "intro0.bik",
+        "intro1.bik"
+      ]
+    },
+    {
+      "app_id": "208110",
+      "title": "Myst V: End of Ages",
+      "intro_files": [
+        "intro0.bik",
+        "intro1.bik"
+      ]
+    },
+    {
+      "app_id": "1265860",
+      "title": "NASCAR Heat 5",
+      "intro_files": [
+        "mainintroshort.mp4",
+        "newintro.mp4"
+      ]
+    },
+    {
+      "app_id": "40380",
+      "title": "Nail'd",
+      "intro_files": [
+        "deepsilver_techland_1024x768.wmv",
+        "deepsilver_techland_1280x720.wmv",
+        "initial_bg.wmv"
+      ]
+    },
+    {
+      "app_id": "265690",
+      "title": "NaissanceE",
+      "intro_files": [
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "914110",
+      "title": "Narcos: Rise of the Cartels",
+      "intro_files": [
+        "vid_brandidents.mp4",
+        "vid_brandidents.webm"
+      ]
+    },
+    {
+      "app_id": "581200",
+      "title": "Nash Racing",
+      "intro_files": [
+        "gameintro.mp4"
+      ]
+    },
+    {
+      "app_id": "1624457803",
+      "title": "NecroVisioN",
+      "intro_files": [
+        "necro_logo_fin.bik",
+        "nvidia_logo.bik"
+      ]
+    },
+    {
+      "app_id": "7860",
+      "title": "NecroVisioN",
+      "intro_files": [
+        "necro_logo_fin.bik",
+        "nvidia_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1489253805",
+      "title": "NecroVisioN: Lost Company",
+      "intro_files": [
+        "necro_logo_fin.bik",
+        "nvidia_logo.bik"
+      ]
+    },
+    {
+      "app_id": "46250",
+      "title": "NecroVisioN: Lost Company",
+      "intro_files": [
+        "necro_logo_fin.bik",
+        "nvidia_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1222370",
+      "title": "Necromunda: Hired Gun",
+      "intro_files": [
+        "introvideo.mp4",
+        "loadingscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "1618128477",
+      "title": "Necromunda: Hired Gun",
+      "intro_files": [
+        "introvideo.mp4",
+        "loadingscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "24870",
+      "title": "Need for Speed: Shift",
+      "intro_files": [
+        "attract.bik",
+        "franchise_ident.bik"
+      ]
+    },
+    {
+      "app_id": "1454970",
+      "title": "New Tales from the Borderlands",
+      "intro_files": [
+        "2klogo.bk2",
+        "gbxlogo.bk2",
+        "loading.bk2"
+      ]
+    },
+    {
+      "app_id": "1580780",
+      "title": "Ninja Gaiden Σ",
+      "intro_files": [
+        "ninja_gaiden.wmv",
+        "ninja_vi.wmv"
+      ]
+    },
+    {
+      "app_id": "224260",
+      "title": "No More Room in Hell",
+      "intro_files": [
+        "valve.bik"
+      ]
+    },
+    {
+      "app_id": "2909110",
+      "title": "Nuclear Nightmare",
+      "intro_files": [
+        "introvideo.mp4",
+        "introvideoofficial.mp4"
+      ]
+    },
+    {
+      "app_id": "1449856523",
+      "title": "Observer",
+      "intro_files": [
+        "loadingloop.mp4",
+        "loadingloop.ogv",
+        "loadingscreen.mp4",
+        "loadingscreen.ogv"
+      ]
+    },
+    {
+      "app_id": "514900",
+      "title": "Observer",
+      "intro_files": [
+        "loadingloop.mp4",
+        "loadingloop.ogv",
+        "loadingscreen.mp4",
+        "loadingscreen.ogv"
+      ]
+    },
+    {
+      "app_id": "1386900",
+      "title": "Observer: System Redux",
+      "intro_files": [
+        "loadingscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "1585377690",
+      "title": "Observer: System Redux",
+      "intro_files": [
+        "loadingscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "311400",
+      "title": "Ocean City Racing",
+      "intro_files": [
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1207658950",
+      "title": "Oddworld: Stranger's Wrath HD",
+      "intro_files": [
+        "copyrights.bik",
+        "owilogo.bik"
+      ]
+    },
+    {
+      "app_id": "15750",
+      "title": "Oddworld: Stranger's Wrath HD",
+      "intro_files": [
+        "copyrights.bik",
+        "owilogo.bik"
+      ]
+    },
+    {
+      "app_id": "1113561740",
+      "title": "Of Ash and Steel",
+      "intro_files": [
+        "ff_logo.bk2",
+        "tb_logo.bk2",
+        "ue4_startup_still_logo_1088_60.bk2",
+        "ue4_startup_still_logo_1088_60_as.bk2"
+      ]
+    },
+    {
+      "app_id": "2893820",
+      "title": "Of Ash and Steel",
+      "intro_files": [
+        "ff_logo.bk2",
+        "tb_logo.bk2",
+        "ue4_startup_still_logo_1088_60.bk2",
+        "ue4_startup_still_logo_1088_60_as.bk2"
+      ]
+    },
+    {
+      "app_id": "200390",
+      "title": "Oil Rush",
+      "intro_files": [
+        "nvidia_twimtbp.ogv",
+        "oil_rush_logo.ogv",
+        "raknet_logo.ogv",
+        "unigine_logo.ogv"
+      ]
+    },
+    {
+      "app_id": "435420",
+      "title": "Operation: Matriarchy",
+      "intro_files": [
+        "intro.avi"
+      ]
+    },
+    {
+      "app_id": "201790",
+      "title": "Orcs Must Die! 2",
+      "intro_files": [
+        "robot.usm"
+      ]
+    },
+    {
+      "app_id": "1522820",
+      "title": "Orcs Must Die! 3",
+      "intro_files": [
+        "robotentertainment_logo_6_seconds.mp4"
+      ]
+    },
+    {
+      "app_id": "305050",
+      "title": "Outland",
+      "intro_files": [
+        "ubi_sphere_hd_5994_6sec.ogv"
+      ]
+    },
+    {
+      "app_id": "1566690",
+      "title": "Outpost: Infinity Siege",
+      "intro_files": [
+        "outpost_splash.mp4"
+      ]
+    },
+    {
+      "app_id": "709440",
+      "title": "Override: Mech City Brawl",
+      "intro_files": [
+        "startupbalance.mp4",
+        "startuplegal.mp4",
+        "startupmodus.mp4"
+      ]
+    },
+    {
+      "app_id": "578080",
+      "title": "PUBG: Battlegrounds",
+      "intro_files": [
+        "licensescreen.mp4",
+        "loadingscreen.mp4",
+        "loadingscreen_xbox.mp4",
+        "season_autoplay_film.mp4",
+        "survivorpassloadingmovie.mp4"
+      ]
+    },
+    {
+      "app_id": "1458140",
+      "title": "Pacific Drive",
+      "intro_files": [
+        "intro_segment_disclaimer.mp4",
+        "intro_segment_ironwood.mp4",
+        "intro_segment_kepler.mp4",
+        "intro_segment_unreal.mp4",
+        "intro_segment_wwise.mp4"
+      ]
+    },
+    {
+      "app_id": "1207658715",
+      "title": "Painkiller",
+      "intro_files": [
+        "logo-dreamcatcher.bik",
+        "logo-nvidia.bik",
+        "logo-pcf.bik"
+      ]
+    },
+    {
+      "app_id": "39530",
+      "title": "Painkiller",
+      "intro_files": [
+        "logo-dreamcatcher.bik",
+        "logo-nvidia.bik",
+        "logo-pcf.bik"
+      ]
+    },
+    {
+      "app_id": "214870",
+      "title": "Painkiller: Hell & Damnation",
+      "intro_files": [
+        "nordic_games_logo.bik",
+        "the_farm_51_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1879874988",
+      "title": "Painkiller: Overdose",
+      "intro_files": [
+        "logodreamcatcher.bik",
+        "logomindware.bik",
+        "logonvidia.bik"
+      ]
+    },
+    {
+      "app_id": "3270",
+      "title": "Painkiller: Overdose",
+      "intro_files": [
+        "logodreamcatcher.bik",
+        "logomindware.bik",
+        "logonvidia.bik"
+      ]
+    },
+    {
+      "app_id": "206760",
+      "title": "Painkiller: Recurring Evil",
+      "intro_files": [
+        "eggtooth_logo.bik",
+        "medart_logo.bik",
+        "nordic_logo.bik",
+        "pk_ugu_logo.bik"
+      ]
+    },
+    {
+      "app_id": "39560",
+      "title": "Painkiller: Resurrection",
+      "intro_files": [
+        "dc_logo.bik",
+        "jowood_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1526007082",
+      "title": "Parkan II",
+      "intro_files": [
+        "1.bik",
+        "nikita.bik",
+        "p2_title.bik"
+      ]
+    },
+    {
+      "app_id": "289400",
+      "title": "Parkan II",
+      "intro_files": [
+        "1.bik",
+        "nikita.bik",
+        "p2_title.bik"
+      ]
+    },
+    {
+      "app_id": "1444818876",
+      "title": "Pathologic Classic HD",
+      "intro_files": [
+        "intro.wmv",
+        "logo_devolver.wmv",
+        "logo_gambitious.wmv",
+        "logo_generalarcade.wmv",
+        "logo_icepick.wmv",
+        "replace video files with blank .wmv"
+      ]
+    },
+    {
+      "app_id": "384110",
+      "title": "Pathologic Classic HD",
+      "intro_files": [
+        "intro.wmv",
+        "logo_devolver.wmv",
+        "logo_gambitious.wmv",
+        "logo_generalarcade.wmv",
+        "logo_icepick.wmv",
+        "replace video files with blank .wmv"
+      ]
+    },
+    {
+      "app_id": "1207658706",
+      "title": "Patrician III: Rise of the Hanse",
+      "intro_files": [
+        "intro_1.bik",
+        "intro_2.bik",
+        "intro_3.bik"
+      ]
+    },
+    {
+      "app_id": "33570",
+      "title": "Patrician III: Rise of the Hanse",
+      "intro_files": [
+        "intro_1.bik",
+        "intro_2.bik",
+        "intro_3.bik"
+      ]
+    },
+    {
+      "app_id": "1356099797",
+      "title": "People's General",
+      "intro_files": [
+        "intro.mov"
+      ]
+    },
+    {
+      "app_id": "1723278812",
+      "title": "Phantom Fury",
+      "intro_files": [
+        "pf_simple_intro.mp4"
+      ]
+    },
+    {
+      "app_id": "1733240",
+      "title": "Phantom Fury",
+      "intro_files": [
+        "pf_simple_intro.mp4"
+      ]
+    },
+    {
+      "app_id": "1207659046",
+      "title": "Pharaoh",
+      "intro_files": [
+        "intro_big.bik"
+      ]
+    },
+    {
+      "app_id": "564530",
+      "title": "Pharaoh",
+      "intro_files": [
+        "intro_big.bik"
+      ]
+    },
+    {
+      "app_id": "1207658698",
+      "title": "Port Royale 2",
+      "intro_files": [
+        "ascaron.wmv",
+        "intro.wmv",
+        "nvidia.wmv"
+      ]
+    },
+    {
+      "app_id": "12470",
+      "title": "Port Royale 2",
+      "intro_files": [
+        "ascaron.wmv",
+        "intro.wmv",
+        "nvidia.wmv"
+      ]
+    },
+    {
+      "app_id": "1207658791",
+      "title": "Port Royale: Gold, Power and Pirates",
+      "intro_files": [
+        "intro.bik",
+        "ttime.bik"
+      ]
+    },
+    {
+      "app_id": "10220",
+      "title": "Postal III",
+      "intro_files": [
+        "logo_1_akella.bik",
+        "logo_2_rws.bik",
+        "logo_3_tms.bik",
+        "nvidia.bik",
+        "source_logo.bik",
+        "warning.bik",
+        "zoom_logo.bik"
+      ]
+    },
+    {
+      "app_id": "401680",
+      "title": "Postal Redux",
+      "intro_files": [
+        "rws intro.mp4"
+      ]
+    },
+    {
+      "app_id": "1207658795",
+      "title": "Praetorians",
+      "intro_files": [
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "277460",
+      "title": "Praetorians",
+      "intro_files": [
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "1158493447",
+      "title": "Prey (2017)",
+      "intro_files": [
+        "arkanelogoanim_redux_1080p2997_st-16lufs.bk2",
+        "bethesda_logo_anim_white.bk2",
+        "legalscreens.bk2",
+        "ryzen_bumper.bk2"
+      ]
+    },
+    {
+      "app_id": "480490",
+      "title": "Prey (2017)",
+      "intro_files": [
+        "arkanelogoanim_redux_1080p2997_st-16lufs.bk2",
+        "bethesda_logo_anim_white.bk2",
+        "legalscreens.bk2",
+        "ryzen_bumper.bk2"
+      ]
+    },
+    {
+      "app_id": "1207659109",
+      "title": "Prince of Persia (2008)",
+      "intro_files": [
+        "ubi_logo.bik"
+      ]
+    },
+    {
+      "app_id": "19980",
+      "title": "Prince of Persia (2008)",
+      "intro_files": [
+        "ubi_logo.bik"
+      ]
+    },
+    {
+      "app_id": "33320",
+      "title": "Prince of Persia: The Forgotten Sands",
+      "intro_files": [
+        "taglogo.bik",
+        "ubi_new_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1207659091",
+      "title": "Prince of Persia: The Two Thrones",
+      "intro_files": [
+        "logorp.bik",
+        "ubimc.bik",
+        "ubisoft.bik"
+      ]
+    },
+    {
+      "app_id": "13530",
+      "title": "Prince of Persia: The Two Thrones",
+      "intro_files": [
+        "logorp.bik",
+        "ubimc.bik",
+        "ubisoft.bik"
+      ]
+    },
+    {
+      "app_id": "1207659082",
+      "title": "Prince of Persia: Warrior Within",
+      "intro_files": [
+        "logorp.bik",
+        "ubimtl.bik",
+        "ubisoft.bik"
+      ]
+    },
+    {
+      "app_id": "13500",
+      "title": "Prince of Persia: Warrior Within",
+      "intro_files": [
+        "logorp.bik",
+        "ubimtl.bik",
+        "ubisoft.bik"
+      ]
+    },
+    {
+      "app_id": "378860",
+      "title": "Project CARS 2",
+      "intro_files": [
+        "projectcars_boottrailer.bik"
+      ]
+    },
+    {
+      "app_id": "7010",
+      "title": "Project Snowblind",
+      "intro_files": [
+        "eidos_bumper.bik",
+        "psb_cd_bumper.bik",
+        "psb_prologue.bik"
+      ]
+    },
+    {
+      "app_id": "1609812781",
+      "title": "Project Wingman",
+      "intro_files": [
+        "humbleintro_pw.mp4"
+      ]
+    },
+    {
+      "app_id": "895870",
+      "title": "Project Wingman",
+      "intro_files": [
+        "humbleintro_pw.mp4"
+      ]
+    },
+    {
+      "app_id": "1207658807",
+      "title": "Psychonauts",
+      "intro_files": [
+        "dflogo.bik",
+        "majescologo.bik"
+      ]
+    },
+    {
+      "app_id": "3830",
+      "title": "Psychonauts",
+      "intro_files": [
+        "dflogo.bik",
+        "majescologo.bik"
+      ]
+    },
+    {
+      "app_id": "1207659122",
+      "title": "Puddle",
+      "intro_files": [
+        "neko.ogv"
+      ]
+    },
+    {
+      "app_id": "222140",
+      "title": "Puddle",
+      "intro_files": [
+        "neko.ogv"
+      ]
+    },
+    {
+      "app_id": "474960",
+      "title": "Quantum Break",
+      "intro_files": [
+        "startvideos.bk2",
+        "startvideos_4k.bk2"
+      ]
+    },
+    {
+      "app_id": "209730",
+      "title": "R.A.W. Realms of Ancient War",
+      "intro_files": [
+        "logo_focus.wmv",
+        "logo_shine.wmv",
+        "logo_wizarbox.wmv"
+      ]
+    },
+    {
+      "app_id": "8600",
+      "title": "RACE 07 - Official WTCC Game",
+      "intro_files": [
+        "race_intro.bik",
+        "simbin.bik"
+      ]
+    },
+    {
+      "app_id": "1207659233",
+      "title": "Race Driver: Grid",
+      "intro_files": [
+        "intro.bik",
+        "intro_us.bik"
+      ]
+    },
+    {
+      "app_id": "12750",
+      "title": "Race Driver: Grid",
+      "intro_files": [
+        "intro.bik",
+        "intro_us.bik"
+      ]
+    },
+    {
+      "app_id": "436320",
+      "title": "Raw Data",
+      "intro_files": [
+        "survioslogodarkedges.mp4"
+      ]
+    },
+    {
+      "app_id": "1207658947",
+      "title": "Rayman 3: Hoodlum Havoc",
+      "intro_files": [
+        "ubi.bik"
+      ]
+    },
+    {
+      "app_id": "242550",
+      "title": "Rayman Legends",
+      "intro_files": [
+        "blank_alt.bik",
+        "ubilogo_lums_framework_720p.bik"
+      ]
+    },
+    {
+      "app_id": "1207659234",
+      "title": "Rayman Origins",
+      "intro_files": [
+        "sample.bik"
+      ]
+    },
+    {
+      "app_id": "207490",
+      "title": "Rayman Origins",
+      "intro_files": [
+        "sample.bik"
+      ]
+    },
+    {
+      "app_id": "1453737805",
+      "title": "Rayman Raving Rabbids",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "15080",
+      "title": "Rayman Raving Rabbids",
+      "intro_files": [
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "1144200",
+      "title": "Ready or Not",
+      "intro_files": [
+        "readyornot_startupmovie.mp4"
+      ]
+    },
+    {
+      "app_id": "1057560",
+      "title": "Rebound Dodgeball Evolved",
+      "intro_files": [
+        "hexsplashscreen.mp4",
+        "reboundlogovideos.mp4",
+        "splashscreenaudioadjust.mp4"
+      ]
+    },
+    {
+      "app_id": "2029222893",
+      "title": "Red Faction Guerrilla Re-Mars-tered",
+      "intro_files": [
+        "legal_hd.bik",
+        "logo_kaiko.bik",
+        "logo_nordic_hd.bik",
+        "logo_volition_hd.bik"
+      ]
+    },
+    {
+      "app_id": "667720",
+      "title": "Red Faction Guerrilla Re-Mars-tered",
+      "intro_files": [
+        "legal_hd.bik",
+        "logo_kaiko.bik",
+        "logo_nordic_hd.bik",
+        "logo_volition_hd.bik"
+      ]
+    },
+    {
+      "app_id": "1207660613",
+      "title": "Red Faction II",
+      "intro_files": [
+        "outrage-logo.bik",
+        "thq-v.bik",
+        "volition-logo.bik"
+      ]
+    },
+    {
+      "app_id": "20550",
+      "title": "Red Faction II",
+      "intro_files": [
+        "outrage-logo.bik",
+        "thq-v.bik",
+        "volition-logo.bik"
+      ]
+    },
+    {
+      "app_id": "447290",
+      "title": "Redeemer",
+      "intro_files": [
+        "buka_logo_1080.mp4",
+        "gambitious_logo.mp4",
+        "loadingscreen.mp4",
+        "ue4_logo_1088p.mp4"
+      ]
+    },
+    {
+      "app_id": "1784456497",
+      "title": "Relicta",
+      "intro_files": [
+        "startup_relicta3.mp4",
+        "startup_relicta3.webm",
+        "startupvideologos.mp4",
+        "startupvideologos720p.mp4"
+      ]
+    },
+    {
+      "app_id": "941570",
+      "title": "Relicta",
+      "intro_files": [
+        "startup_relicta3.mp4",
+        "startup_relicta3.webm",
+        "startupvideologos.mp4",
+        "startupvideologos720p.mp4"
+      ]
+    },
+    {
+      "app_id": "228300",
+      "title": "Remember Me",
+      "intro_files": [
+        "bik_boot_capcom.bik",
+        "bik_boot_legal.bik",
+        "bik_boot_legal_dd_scea.bik",
+        "bik_boot_nvidia.bik"
+      ]
+    },
+    {
+      "app_id": "617290",
+      "title": "Remnant: From the Ashes",
+      "intro_files": [
+        "gunfiregameslogo.mp4",
+        "perfectworldlogo.mp4"
+      ]
+    },
+    {
+      "app_id": "1649240",
+      "title": "Returnal",
+      "intro_files": [
+        "logos_pc.mp4",
+        "logos_pc_uw21.mp4",
+        "logos_pc_uw32.mp4",
+        "logos_short_pc.mp4",
+        "logos_short_pc_uw21.mp4",
+        "logos_short_pc_uw32.mp4"
+      ]
+    },
+    {
+      "app_id": "1253896806",
+      "title": "Revenge of the Savage Planet",
+      "intro_files": [
+        "legal_1088p.mp4",
+        "rl_logo_1088p.mp4",
+        "ue4_moving_logo_1088p.mp4"
+      ]
+    },
+    {
+      "app_id": "2787320",
+      "title": "Revenge of the Savage Planet",
+      "intro_files": [
+        "legal_1088p.mp4",
+        "rl_logo_1088p.mp4",
+        "ue4_moving_logo_1088p.mp4"
+      ]
+    },
+    {
+      "app_id": "345660",
+      "title": "Ride",
+      "intro_files": [
+        "mileston.wmv"
+      ]
+    },
+    {
+      "app_id": "759740",
+      "title": "Ride 3",
+      "intro_files": [
+        "jap_publisherlog.mp4",
+        "milestone.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "287450",
+      "title": "Rise of Nations: Extended Edition",
+      "intro_files": [
+        "bhg_game_studios1m.wmv",
+        "ms_game_studios_1m.wmv",
+        "opening.wmv",
+        "skybox_intro_1440.wmv",
+        "skybox_intro_1920.wmv"
+      ]
+    },
+    {
+      "app_id": "12770",
+      "title": "Rise of the Argonauts",
+      "intro_files": [
+        "binklogo.bik",
+        "fmodlogo.bik",
+        "legal.bik",
+        "logos.bik",
+        "unreallogo.bik"
+      ]
+    },
+    {
+      "app_id": "1664741320",
+      "title": "Roboquest",
+      "intro_files": [
+        "bumper_starbreeze_1080_v2.mp4"
+      ]
+    },
+    {
+      "app_id": "692890",
+      "title": "Roboquest",
+      "intro_files": [
+        "bumper_starbreeze_1080_v2.mp4"
+      ]
+    },
+    {
+      "app_id": "872200",
+      "title": "Rogue Company",
+      "intro_files": [
+        "georgia_peach.mp4",
+        "hirezlogo.mp4"
+      ]
+    },
+    {
+      "app_id": "22310",
+      "title": "Rogue Warrior",
+      "intro_files": [
+        "bethesda.bik",
+        "reb.bik"
+      ]
+    },
+    {
+      "app_id": "1343806495",
+      "title": "Rome: Total War",
+      "intro_files": [
+        "atvi_spinning_logo_640x480.wmv",
+        "rome_title.wmv"
+      ]
+    },
+    {
+      "app_id": "4760",
+      "title": "Rome: Total War",
+      "intro_files": [
+        "atvi_spinning_logo_640x480.wmv",
+        "rome_title.wmv"
+      ]
+    },
+    {
+      "app_id": "1118306226",
+      "title": "Ruined King: A League of Legends Story",
+      "intro_files": [
+        "cinematic_cg_intro.mp4",
+        "logo_airshipsyndicate.mp4",
+        "logo_riotforge.mp4"
+      ]
+    },
+    {
+      "app_id": "1276790",
+      "title": "Ruined King: A League of Legends Story",
+      "intro_files": [
+        "cinematic_cg_intro.mp4",
+        "logo_airshipsyndicate.mp4",
+        "logo_riotforge.mp4"
+      ]
+    },
+    {
+      "app_id": "1637928515",
+      "title": "Ruiner",
+      "intro_files": [
+        "ue4_logo.bik"
+      ]
+    },
+    {
+      "app_id": "464060",
+      "title": "Ruiner",
+      "intro_files": [
+        "ue4_logo.bik"
+      ]
+    },
+    {
+      "app_id": "872670",
+      "title": "SCP: 5K",
+      "intro_files": [
+        "affraylogo_splash.mp4",
+        "seizurewarning.mp4"
+      ]
+    },
+    {
+      "app_id": "1207658688",
+      "title": "Sacred",
+      "intro_files": [
+        "ascaron.wmv",
+        "oem.wmv"
+      ]
+    },
+    {
+      "app_id": "12320",
+      "title": "Sacred",
+      "intro_files": [
+        "ascaron.wmv",
+        "oem.wmv"
+      ]
+    },
+    {
+      "app_id": "1430740458",
+      "title": "Saints Row 2",
+      "intro_files": [
+        "logo_thq_hd.bik",
+        "logo_volition_hd.bik"
+      ]
+    },
+    {
+      "app_id": "9480",
+      "title": "Saints Row 2",
+      "intro_files": [
+        "logo_thq_hd.bik",
+        "logo_volition_hd.bik"
+      ]
+    },
+    {
+      "app_id": "2037689757",
+      "title": "Saints Row IV",
+      "intro_files": [
+        "logo_amd.bik",
+        "logo_deep_silver.bik",
+        "logo_volition.bik"
+      ]
+    },
+    {
+      "app_id": "206420",
+      "title": "Saints Row IV",
+      "intro_files": [
+        "logo_amd.bik",
+        "logo_deep_silver.bik",
+        "logo_volition.bik"
+      ]
+    },
+    {
+      "app_id": "1978178686",
+      "title": "Saints Row: Gat out of Hell",
+      "intro_files": [
+        "hvs_logo.bk2",
+        "logo_deep_silver.bk2",
+        "logo_volition.bk2"
+      ]
+    },
+    {
+      "app_id": "301910",
+      "title": "Saints Row: Gat out of Hell",
+      "intro_files": [
+        "hvs_logo.bk2",
+        "logo_deep_silver.bk2",
+        "logo_volition.bk2"
+      ]
+    },
+    {
+      "app_id": "1430740694",
+      "title": "Saints Row: The Third",
+      "intro_files": [
+        "logo_amd_hd.bik",
+        "logo_thq_and_voli_hd.bik"
+      ]
+    },
+    {
+      "app_id": "55230",
+      "title": "Saints Row: The Third",
+      "intro_files": [
+        "logo_amd_hd.bik",
+        "logo_thq_and_voli_hd.bik"
+      ]
+    },
+    {
+      "app_id": "682570",
+      "title": "School Girl/Zombie Hunter",
+      "intro_files": [
+        "cri.mp4",
+        "d3.mp4",
+        "tamlogo.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1088150",
+      "title": "Scribble It!",
+      "intro_files": [
+        "detach.bk2"
+      ]
+    },
+    {
+      "app_id": "1276856962",
+      "title": "Seven: The Days Long Gone",
+      "intro_files": [
+        "startup.mp4"
+      ]
+    },
+    {
+      "app_id": "471010",
+      "title": "Seven: The Days Long Gone",
+      "intro_files": [
+        "startup.mp4"
+      ]
+    },
+    {
+      "app_id": "1036890",
+      "title": "Shadow Warrior 3",
+      "intro_files": [
+        "devolver_logo.bk2",
+        "fwh_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "1650413893",
+      "title": "Shadow Warrior 3",
+      "intro_files": [
+        "devolver_logo.bk2",
+        "fwh_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "1207658914",
+      "title": "Shadowgrounds",
+      "intro_files": [
+        "logo.wmv"
+      ]
+    },
+    {
+      "app_id": "2500",
+      "title": "Shadowgrounds",
+      "intro_files": [
+        "logo.wmv"
+      ]
+    },
+    {
+      "app_id": "8160",
+      "title": "Shellshock 2: Blood Trails",
+      "intro_files": [
+        "eidos.bik",
+        "rebellion.bik"
+      ]
+    },
+    {
+      "app_id": "1137300",
+      "title": "Sherlock Holmes: Chapter One",
+      "intro_files": [
+        "start_video_frog.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1505341785",
+      "title": "Sherlock Holmes: Chapter One",
+      "intro_files": [
+        "start_video_frog.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "11150",
+      "title": "Sherlock Holmes: Secret of the Silver Earring",
+      "intro_files": [
+        "logo_bink.bik",
+        "logo_frog.bik"
+      ]
+    },
+    {
+      "app_id": "1207658862",
+      "title": "Sherlock Holmes: Secret of the Silver Earring",
+      "intro_files": [
+        "logo_bink.bik",
+        "logo_frog.bik"
+      ]
+    },
+    {
+      "app_id": "47920",
+      "title": "Shift 2 Unleashed",
+      "intro_files": [
+        "bootflow_in.bik",
+        "bootflow_out.bik"
+      ]
+    },
+    {
+      "app_id": "1155330",
+      "title": "Showgunners",
+      "intro_files": [
+        "splashscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "1511366207",
+      "title": "Showgunners",
+      "intro_files": [
+        "splashscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "289070",
+      "title": "Sid Meier's Civilization VI",
+      "intro_files": [
+        "logo_2kfiraxis.bk2",
+        "logos.bk2",
+        "replacement .bk2"
+      ]
+    },
+    {
+      "app_id": "65980",
+      "title": "Sid Meier's Civilization: Beyond Earth",
+      "intro_files": [
+        "aspyr.bik",
+        "civbe_logos.bk2"
+      ]
+    },
+    {
+      "app_id": "1445250653",
+      "title": "Sid Meier's Pirates! (2004)",
+      "intro_files": [
+        "firaxis_logo.bik",
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "3920",
+      "title": "Sid Meier's Pirates! (2004)",
+      "intro_files": [
+        "firaxis_logo.bik",
+        "logos.bik"
+      ]
+    },
+    {
+      "app_id": "2051029707",
+      "title": "Silent Hill 2",
+      "intro_files": [
+        "loadingscreen.bk2"
+      ]
+    },
+    {
+      "app_id": "2124490",
+      "title": "Silent Hill 2",
+      "intro_files": [
+        "loadingscreen.bk2"
+      ]
+    },
+    {
+      "app_id": "1207659058",
+      "title": "Silent Storm",
+      "intro_files": [
+        "intro.bik",
+        "jowood.bik",
+        "nival.bik"
+      ]
+    },
+    {
+      "app_id": "254960",
+      "title": "Silent Storm",
+      "intro_files": [
+        "intro.bik",
+        "jowood.bik",
+        "nival.bik"
+      ]
+    },
+    {
+      "app_id": "1207659041",
+      "title": "Silver",
+      "intro_files": [
+        "info.avi",
+        "intro.avi"
+      ]
+    },
+    {
+      "app_id": "606680",
+      "title": "Silver",
+      "intro_files": [
+        "info.avi",
+        "intro.avi"
+      ]
+    },
+    {
+      "app_id": "1207659239",
+      "title": "Singularity",
+      "intro_files": [
+        "atvi_logo.bik",
+        "copyright_sing.bik",
+        "copyright_sing_esn.bik",
+        "copyright_sing_eu.bik",
+        "copyright_sing_fra.bik",
+        "copyright_sing_fra_na.bik",
+        "copyright_sing_ita.bik",
+        "ravenlogo.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "42670",
+      "title": "Singularity",
+      "intro_files": [
+        "atvi_logo.bik",
+        "copyright_sing.bik",
+        "copyright_sing_esn.bik",
+        "copyright_sing_eu.bik",
+        "copyright_sing_fra.bik",
+        "copyright_sing_fra_na.bik",
+        "copyright_sing_ita.bik",
+        "ravenlogo.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "691280",
+      "title": "Sinner: Sacrifice for Redemption",
+      "intro_files": [
+        "ailogo.mp4",
+        "cube_logo.mp4",
+        "darkstarlogo.mp4"
+      ]
+    },
+    {
+      "app_id": "1741843789",
+      "title": "Sleeping Dogs: Definitive Edition",
+      "intro_files": [
+        "hk_intro_video_console.bk2"
+      ]
+    },
+    {
+      "app_id": "307690",
+      "title": "Sleeping Dogs: Definitive Edition",
+      "intro_files": [
+        "hk_intro_video_console.bk2"
+      ]
+    },
+    {
+      "app_id": "544330",
+      "title": "Snake Pass",
+      "intro_files": [
+        "sumologo20.mp4",
+        "ue4_logopc_1080.mp4"
+      ]
+    },
+    {
+      "app_id": "312660",
+      "title": "Sniper Elite 4",
+      "intro_files": [
+        "rebellion.webm"
+      ]
+    },
+    {
+      "app_id": "1029690",
+      "title": "Sniper Elite 5",
+      "intro_files": [
+        "rebellion.webm"
+      ]
+    },
+    {
+      "app_id": "63380",
+      "title": "Sniper Elite V2",
+      "intro_files": [
+        "rebellion.bik"
+      ]
+    },
+    {
+      "app_id": "2169200",
+      "title": "Sniper Elite: Resistance",
+      "intro_files": [
+        "and wushu.webm",
+        "rebellion.webm",
+        "wushu.webm"
+      ]
+    },
+    {
+      "app_id": "1708301722",
+      "title": "Sniper: Ghost Warrior Contracts",
+      "intro_files": [
+        "intromovies.usm"
+      ]
+    },
+    {
+      "app_id": "973580",
+      "title": "Sniper: Ghost Warrior Contracts",
+      "intro_files": [
+        "intromovies.usm"
+      ]
+    },
+    {
+      "app_id": "1089210906",
+      "title": "Sniper: Ghost Warrior Contracts 2",
+      "intro_files": [
+        "intromovies.usm"
+      ]
+    },
+    {
+      "app_id": "1338770",
+      "title": "Sniper: Ghost Warrior Contracts 2",
+      "intro_files": [
+        "intromovies.usm"
+      ]
+    },
+    {
+      "app_id": "1867530",
+      "title": "Solar Ash",
+      "intro_files": [
+        "annapurnainteractive.mp4",
+        "hm_logo_nextgenanim_1080.mp4",
+        "hm_logo_nextgenanim_4k.mp4"
+      ]
+    },
+    {
+      "app_id": "1096570",
+      "title": "Song of Horror",
+      "intro_files": [
+        "logosinicio.mp4",
+        "replace logosinicio.mp4"
+      ]
+    },
+    {
+      "app_id": "1957403324",
+      "title": "Song of Horror",
+      "intro_files": [
+        "logosinicio.mp4",
+        "replace logosinicio.mp4"
+      ]
+    },
+    {
+      "app_id": "34190",
+      "title": "Sonic & Sega All-Stars Racing",
+      "intro_files": [
+        "logos.usm"
+      ]
+    },
+    {
+      "app_id": "1207659003",
+      "title": "Soulbringer",
+      "intro_files": [
+        "interplay.bik",
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "283310",
+      "title": "Soulbringer",
+      "intro_files": [
+        "interplay.bik",
+        "intro.bik"
+      ]
+    },
+    {
+      "app_id": "213670",
+      "title": "South Park: The Stick of Truth",
+      "intro_files": [
+        "000_autodesk.bk2",
+        "000_newday.bk2",
+        "000_obsidian.bk2",
+        "000_spds.bk2",
+        "000_test_load.bk2",
+        "000_ubisoft.bk2"
+      ]
+    },
+    {
+      "app_id": "1207660473",
+      "title": "SpellForce 2: Demons of the Past",
+      "intro_files": [
+        "pub_logo.bik"
+      ]
+    },
+    {
+      "app_id": "245050",
+      "title": "SpellForce 2: Demons of the Past",
+      "intro_files": [
+        "pub_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1914219141",
+      "title": "SpellForce 2: Faith in Destiny",
+      "intro_files": [
+        "pub_logo.bik"
+      ]
+    },
+    {
+      "app_id": "65530",
+      "title": "SpellForce 2: Faith in Destiny",
+      "intro_files": [
+        "pub_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1207658719",
+      "title": "SpellForce: The Order of Dawn",
+      "intro_files": [
+        "prelude_0.bik",
+        "prelude_1.bik",
+        "prelude_2.bik",
+        "prelude_3.bik"
+      ]
+    },
+    {
+      "app_id": "39540",
+      "title": "SpellForce: The Order of Dawn",
+      "intro_files": [
+        "prelude_0.bik",
+        "prelude_1.bik",
+        "prelude_2.bik",
+        "prelude_3.bik"
+      ]
+    },
+    {
+      "app_id": "397040",
+      "title": "Sphere III: Enchanted World",
+      "intro_files": [
+        "logo.ogv"
+      ]
+    },
+    {
+      "app_id": "263280",
+      "title": "Spintires",
+      "intro_files": [
+        "intro.wmv"
+      ]
+    },
+    {
+      "app_id": "2001120",
+      "title": "Split Fiction",
+      "intro_files": [
+        "splash_2160p60hq.bk2"
+      ]
+    },
+    {
+      "app_id": "677620",
+      "title": "Splitgate",
+      "intro_files": [
+        "1047games.mp4"
+      ]
+    },
+    {
+      "app_id": "996580",
+      "title": "Spyro Reignited Trilogy",
+      "intro_files": [
+        "bumperatvi.mp4",
+        "bumperatvi_gamma.mp4",
+        "bumpertfb.mp4",
+        "bumpertfb_gamma.mp4",
+        "bumperunreal.mp4",
+        "bumperunreal_gamma.mp4"
+      ]
+    },
+    {
+      "app_id": "736220",
+      "title": "Squad 44",
+      "intro_files": [
+        "delete or rename all .mp4"
+      ]
+    },
+    {
+      "app_id": "1174788223",
+      "title": "Star Trek: Armada II",
+      "intro_files": [
+        "activision.bik",
+        "intro.bik",
+        "maddocsoftware.bik",
+        "paramount.bik"
+      ]
+    },
+    {
+      "app_id": "1321659450",
+      "title": "Star Trek: Away Team",
+      "intro_files": [
+        "activision.bik",
+        "intro.bik",
+        "paramount.bik",
+        "reflexive.bik"
+      ]
+    },
+    {
+      "app_id": "1478736295",
+      "title": "Star Trek: Bridge Commander",
+      "intro_files": [
+        "activision.bik",
+        "bclogo.bik",
+        "opening.bik",
+        "paramount.bik",
+        "tg.bik"
+      ]
+    },
+    {
+      "app_id": "1156468375",
+      "title": "Star Trek: Starfleet Command III",
+      "intro_files": [
+        "activision.bik",
+        "intro.bik",
+        "paramount.bik",
+        "taldren.bik"
+      ]
+    },
+    {
+      "app_id": "1172380",
+      "title": "Star Wars Jedi: Fallen Order",
+      "intro_files": [
+        "default_startup.mp4",
+        "default_startup_loop.mp4"
+      ]
+    },
+    {
+      "app_id": "1774580",
+      "title": "Star Wars Jedi: Survivor",
+      "intro_files": [
+        "default_startup.mp4",
+        "default_startup_loop.mp4"
+      ]
+    },
+    {
+      "app_id": "1422286819",
+      "title": "Star Wars: Jedi Knight - Dark Forces II",
+      "intro_files": [
+        "01-02a.smk"
+      ]
+    },
+    {
+      "app_id": "32380",
+      "title": "Star Wars: Jedi Knight - Dark Forces II",
+      "intro_files": [
+        "01-02a.smk"
+      ]
+    },
+    {
+      "app_id": "1207666283",
+      "title": "Star Wars: Knights of the Old Republic",
+      "intro_files": [
+        "biologo.bik",
+        "leclogo.bik",
+        "legal.bik"
+      ]
+    },
+    {
+      "app_id": "32370",
+      "title": "Star Wars: Knights of the Old Republic",
+      "intro_files": [
+        "biologo.bik",
+        "leclogo.bik",
+        "legal.bik"
+      ]
+    },
+    {
+      "app_id": "1421404581",
+      "title": "Star Wars: Knights of the Old Republic II - The Sith Lords",
+      "intro_files": [
+        "aspyr.bik",
+        "leclogo.bik",
+        "legal.bik",
+        "obsidianent.bik"
+      ]
+    },
+    {
+      "app_id": "208580",
+      "title": "Star Wars: Knights of the Old Republic II - The Sith Lords",
+      "intro_files": [
+        "aspyr.bik",
+        "leclogo.bik",
+        "legal.bik",
+        "obsidianent.bik"
+      ]
+    },
+    {
+      "app_id": "1421405135",
+      "title": "Star Wars: Republic Commando",
+      "intro_files": [
+        "lecintro.avi",
+        "nvidiaintro.avi"
+      ]
+    },
+    {
+      "app_id": "6000",
+      "title": "Star Wars: Republic Commando",
+      "intro_files": [
+        "lecintro.avi",
+        "nvidiaintro.avi"
+      ]
+    },
+    {
+      "app_id": "1421404999",
+      "title": "Star Wars: Starfighter",
+      "intro_files": [
+        "lecintro.bik",
+        "slintro.bik"
+      ]
+    },
+    {
+      "app_id": "32350",
+      "title": "Star Wars: Starfighter",
+      "intro_files": [
+        "lecintro.bik",
+        "slintro.bik"
+      ]
+    },
+    {
+      "app_id": "32420",
+      "title": "Star Wars: The Clone Wars - Republic Heroes",
+      "intro_files": [
+        "krome_720p30.bik",
+        "lucasartslogo_hd.bik"
+      ]
+    },
+    {
+      "app_id": "1189268228",
+      "title": "Star Wars: The Force Unleashed",
+      "intro_files": [
+        "aspyr.bik",
+        "fmv-goldguy-wmv9_hd_stereo.bik",
+        "fmv-goldguy_xx-wmv9_hd_stereo.bik"
+      ]
+    },
+    {
+      "app_id": "32430",
+      "title": "Star Wars: The Force Unleashed",
+      "intro_files": [
+        "aspyr.bik",
+        "fmv-goldguy-wmv9_hd_stereo.bik",
+        "fmv-goldguy_xx-wmv9_hd_stereo.bik"
+      ]
+    },
+    {
+      "app_id": "1452257327",
+      "title": "Star Wolves 2",
+      "intro_files": [
+        "1clogo.bik",
+        "spaceintro.bik",
+        "xbow_logo.bik"
+      ]
+    },
+    {
+      "app_id": "46280",
+      "title": "Star Wolves 2",
+      "intro_files": [
+        "1clogo.bik",
+        "spaceintro.bik",
+        "xbow_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1426253436",
+      "title": "Star Wolves 3: Civil War",
+      "intro_files": [
+        "1clogo.bik",
+        "egt_logo.bik",
+        "sw3_cw_logo.bik"
+      ]
+    },
+    {
+      "app_id": "46260",
+      "title": "Star Wolves 3: Civil War",
+      "intro_files": [
+        "1clogo.bik",
+        "egt_logo.bik",
+        "sw3_cw_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1716740",
+      "title": "Starfield",
+      "intro_files": [
+        "bgs_logo_1080p_binkversion.bk2"
+      ]
+    },
+    {
+      "app_id": "108110",
+      "title": "Starpoint Gemini",
+      "intro_files": [
+        "lgmlogo.avi"
+      ]
+    },
+    {
+      "app_id": "1207659100",
+      "title": "Startopia",
+      "intro_files": [
+        "eidos.bik",
+        "startopia.bik"
+      ]
+    },
+    {
+      "app_id": "243040",
+      "title": "Startopia",
+      "intro_files": [
+        "eidos.bik",
+        "startopia.bik"
+      ]
+    },
+    {
+      "app_id": "241540",
+      "title": "State of Decay",
+      "intro_files": [
+        "intromovies.usm",
+        "intromovies_noesrb.usm"
+      ]
+    },
+    {
+      "app_id": "1663581818",
+      "title": "State of Mind",
+      "intro_files": [
+        "daedalic.mp4",
+        "ue4.mp4"
+      ]
+    },
+    {
+      "app_id": "437630",
+      "title": "State of Mind",
+      "intro_files": [
+        "daedalic.mp4",
+        "ue4.mp4"
+      ]
+    },
+    {
+      "app_id": "1965670180",
+      "title": "SteamWorld Heist II",
+      "intro_files": [
+        "logo_thunderful.webm"
+      ]
+    },
+    {
+      "app_id": "2396240",
+      "title": "SteamWorld Heist II",
+      "intro_files": [
+        "logo_thunderful.webm"
+      ]
+    },
+    {
+      "app_id": "1452983471",
+      "title": "Steel Rats",
+      "intro_files": [
+        "sr_startscreens.mp4"
+      ]
+    },
+    {
+      "app_id": "619700",
+      "title": "Steel Rats",
+      "intro_files": [
+        "sr_startscreens.mp4"
+      ]
+    },
+    {
+      "app_id": "460920",
+      "title": "Steep",
+      "intro_files": [
+        "disclaimer.bk2"
+      ]
+    },
+    {
+      "app_id": "1622910",
+      "title": "Still Wakes the Deep",
+      "intro_files": [
+        "geforce-splash.mp4",
+        "intel-splash-withaudio.mp4",
+        "intel-splash.mp4",
+        "tcr-and-secretmode-logo.mp4",
+        "ue-tcr-splash.mp4"
+      ]
+    },
+    {
+      "app_id": "312670",
+      "title": "Strange Brigade",
+      "intro_files": [
+        "rebellion.webm"
+      ]
+    },
+    {
+      "app_id": "1928816144",
+      "title": "Stranglehold",
+      "intro_files": [
+        "intro_c0010_bink.bik",
+        "intro_legal_euro.bik",
+        "intro_legal_us.bik",
+        "intro_logo_midway_hd.bik",
+        "intro_logo_shared.bik",
+        "intro_logo_tigerhill_hd.bik",
+        "intro_logo_unreal.bik"
+      ]
+    },
+    {
+      "app_id": "246700",
+      "title": "Strike Vector",
+      "intro_files": [
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "40960",
+      "title": "Stronghold 2",
+      "intro_files": [
+        "stronghold2 fmv.bik"
+      ]
+    },
+    {
+      "app_id": "1862877679",
+      "title": "Stubbs the Zombie in Rebel Without a Pulse",
+      "intro_files": [
+        "attract1.bik",
+        "creative.bik",
+        "nvidia.bik"
+      ]
+    },
+    {
+      "app_id": "7800",
+      "title": "Stubbs the Zombie in Rebel Without a Pulse",
+      "intro_files": [
+        "attract1.bik",
+        "creative.bik",
+        "nvidia.bik"
+      ]
+    },
+    {
+      "app_id": "2090261953",
+      "title": "Styx: Shards of Darkness",
+      "intro_files": [
+        "splashscreen-all.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "355790",
+      "title": "Styx: Shards of Darkness",
+      "intro_files": [
+        "splashscreen-all.mp4",
+        "ue4_logo.mp4"
+      ]
+    },
+    {
+      "app_id": "301860",
+      "title": "Submerged",
+      "intro_files": [
+        "startupmoviepc.mp4"
+      ]
+    },
+    {
+      "app_id": "1207664353",
+      "title": "Sudeki",
+      "intro_files": [
+        "climaxlogo.bik",
+        "fma01_poem.bik"
+      ]
+    },
+    {
+      "app_id": "233350",
+      "title": "Sudeki",
+      "intro_files": [
+        "climaxlogo.bik",
+        "fma01_poem.bik"
+      ]
+    },
+    {
+      "app_id": "1429850",
+      "title": "Sumerian Six",
+      "intro_files": [
+        "splashscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "1600194878",
+      "title": "Sumerian Six",
+      "intro_files": [
+        "splashscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "45760",
+      "title": "Super Street Fighter IV: Arcade Edition",
+      "intro_files": [
+        "theway_1280x800.wmv"
+      ]
+    },
+    {
+      "app_id": "879280",
+      "title": "Supesu",
+      "intro_files": [
+        "logo.mp4"
+      ]
+    },
+    {
+      "app_id": "321400",
+      "title": "Supraball",
+      "intro_files": [
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1207658848",
+      "title": "Syberia",
+      "intro_files": [
+        "blank.bik"
+      ]
+    },
+    {
+      "app_id": "46500",
+      "title": "Syberia",
+      "intro_files": [
+        "blank.bik"
+      ]
+    },
+    {
+      "app_id": "1207658849",
+      "title": "Syberia II",
+      "intro_files": [
+        "ci_preintro.bik",
+        "intro_microids.bik"
+      ]
+    },
+    {
+      "app_id": "46510",
+      "title": "Syberia II",
+      "intro_files": [
+        "ci_preintro.bik",
+        "intro_microids.bik"
+      ]
+    },
+    {
+      "app_id": "1448370350",
+      "title": "System Shock 2: 25th Anniversary Remaster",
+      "intro_files": [
+        "intro.ogv",
+        "kex.ogv",
+        "nightdive.ogv"
+      ]
+    },
+    {
+      "app_id": "866570",
+      "title": "System Shock 2: 25th Anniversary Remaster",
+      "intro_files": [
+        "intro.ogv",
+        "kex.ogv",
+        "nightdive.ogv"
+      ]
+    },
+    {
+      "app_id": "323370",
+      "title": "TERA",
+      "intro_files": [
+        "intro_atari.bik",
+        "intro_bhs.bik",
+        "intro_eme.bik",
+        "intro_fog.bik",
+        "intro_ubi.bik",
+        "prologue_kor.bik"
+      ]
+    },
+    {
+      "app_id": "21990",
+      "title": "TMNT: Teenage Mutant Ninja Turtles",
+      "intro_files": [
+        "attract.bik",
+        "rating.bik",
+        "ubisoft.bik"
+      ]
+    },
+    {
+      "app_id": "324810",
+      "title": "TOXIKK",
+      "intro_files": [
+        "reakktorlogo.bik",
+        "toxikklogo.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1082180",
+      "title": "TT Isle of Man: Ride on the Edge 2",
+      "intro_files": [
+        "bigben_720.mp4",
+        "splash_kt.mp4",
+        "splashscreen_bbi.mp4"
+      ]
+    },
+    {
+      "app_id": "740130",
+      "title": "Tales of Arise",
+      "intro_files": [
+        "mv_mep_010_15400.usm",
+        "mv_mep_060_00000.usm",
+        "mv_nowmaking.usm"
+      ]
+    },
+    {
+      "app_id": "440",
+      "title": "Team Fortress 2",
+      "intro_files": [
+        "valve.bik"
+      ]
+    },
+    {
+      "app_id": "389730",
+      "title": "Tekken 7",
+      "intro_files": [
+        "bne_logo_movie.usm",
+        "twimtbp_1920x1080.usm"
+      ]
+    },
+    {
+      "app_id": "1866824123",
+      "title": "Tempest 4000",
+      "intro_files": [
+        "atari.mp4"
+      ]
+    },
+    {
+      "app_id": "688140",
+      "title": "Tempest 4000",
+      "intro_files": [
+        "atari.mp4"
+      ]
+    },
+    {
+      "app_id": "1662585593",
+      "title": "Terminator: Resistance",
+      "intro_files": [
+        "loga.mp4",
+        "ue4.mp4"
+      ]
+    },
+    {
+      "app_id": "954740",
+      "title": "Terminator: Resistance",
+      "intro_files": [
+        "loga.mp4",
+        "ue4.mp4"
+      ]
+    },
+    {
+      "app_id": "21080",
+      "title": "Terminator: Salvation",
+      "intro_files": [
+        "alienware.bik",
+        "copies of blank.bik",
+        "equitygameslogo.bik",
+        "evolvedanimation.bik",
+        "grin_logo.bik",
+        "halcyonanimation.bik",
+        "warner_logo.bik"
+      ]
+    },
+    {
+      "app_id": "9930",
+      "title": "Test Drive Unlimited 2",
+      "intro_files": [
+        "bumper_atari.mkv",
+        "bumper_eden_tdu.mkv"
+      ]
+    },
+    {
+      "app_id": "1601570",
+      "title": "The Alters",
+      "intro_files": [
+        "bk_splashscreen.bk2"
+      ]
+    },
+    {
+      "app_id": "1855265933",
+      "title": "The Alters",
+      "intro_files": [
+        "bk_splashscreen.bk2"
+      ]
+    },
+    {
+      "app_id": "212580",
+      "title": "The Amazing Spider-Man (2012)",
+      "intro_files": [
+        "activisionintro.usm",
+        "beenoxintro.usm",
+        "columbiaintro.usm",
+        "intro.usm",
+        "marvelintro.usm"
+      ]
+    },
+    {
+      "app_id": "1122680",
+      "title": "The Artful Escape",
+      "intro_files": [
+        "artfulintro_4k.mp4"
+      ]
+    },
+    {
+      "app_id": "1207659164",
+      "title": "The Bard's Tale (2005)",
+      "intro_files": [
+        "bardtale.wmv",
+        "inxile.wmv",
+        "ttslogo.wmv"
+      ]
+    },
+    {
+      "app_id": "41900",
+      "title": "The Bard's Tale (2005)",
+      "intro_files": [
+        "bardtale.wmv",
+        "inxile.wmv",
+        "ttslogo.wmv"
+      ]
+    },
+    {
+      "app_id": "1091980",
+      "title": "The Bard's Tale IV: Director's Cut",
+      "intro_files": [
+        "bardiv_firelogo.mp4",
+        "bardiv_inxilelogo.mp4",
+        "bardiv_legalscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "1487730861",
+      "title": "The Bard's Tale IV: Director's Cut",
+      "intro_files": [
+        "bardiv_firelogo.mp4",
+        "bardiv_inxilelogo.mp4",
+        "bardiv_legalscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "599080",
+      "title": "The Blackout Club",
+      "intro_files": [
+        "intromovie.mp4",
+        "openingsplash-blindlight.mp4",
+        "openingsplash-question.mp4"
+      ]
+    },
+    {
+      "app_id": "1544020",
+      "title": "The Callisto Protocol",
+      "intro_files": [
+        "amd_logo_4k.bk2",
+        "krafton_sds_logos_4k.bk2",
+        "unreal_logo_4k.bk2",
+        "wwise_instalod_logos_4k.bk2"
+      ]
+    },
+    {
+      "app_id": "320890",
+      "title": "The Chronicles of Narnia: Prince Caspian",
+      "intro_files": [
+        "disney_logo.bik",
+        "tt_logo.bik"
+      ]
+    },
+    {
+      "app_id": "437220",
+      "title": "The Culling",
+      "intro_files": [
+        "loadingscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "1567020",
+      "title": "The Devil in Me",
+      "intro_files": [
+        "dpskullintro.bk2"
+      ]
+    },
+    {
+      "app_id": "1242989820",
+      "title": "The Elder Scrolls IV: Oblivion",
+      "intro_files": [
+        "2k games.bik",
+        "bethesda softworks hd720p.bik",
+        "game studios.bik",
+        "oblivion iv logo.bik",
+        "oblivion legal.bik"
+      ]
+    },
+    {
+      "app_id": "22330",
+      "title": "The Elder Scrolls IV: Oblivion",
+      "intro_files": [
+        "2k games.bik",
+        "bethesda softworks hd720p.bik",
+        "game studios.bik",
+        "oblivion iv logo.bik",
+        "oblivion legal.bik"
+      ]
+    },
+    {
+      "app_id": "1171957437",
+      "title": "The Evil Within",
+      "intro_files": [
+        "openingcredits_tew.bk2"
+      ]
+    },
+    {
+      "app_id": "268050",
+      "title": "The Evil Within",
+      "intro_files": [
+        "openingcredits_tew.bk2"
+      ]
+    },
+    {
+      "app_id": "1452692111",
+      "title": "The Flame in the Flood",
+      "intro_files": [
+        "fitf_titled_hero.mp4"
+      ]
+    },
+    {
+      "app_id": "318600",
+      "title": "The Flame in the Flood",
+      "intro_files": [
+        "fitf_titled_hero.mp4"
+      ]
+    },
+    {
+      "app_id": "1432136857",
+      "title": "The Incredible Adventures of Van Helsing",
+      "intro_files": [
+        "neocore_logo.mov",
+        "neocore_logo.wmv",
+        "nvidia.wmv",
+        "vh_logo.mov",
+        "vh_logo.wmv"
+      ]
+    },
+    {
+      "app_id": "215530",
+      "title": "The Incredible Adventures of Van Helsing",
+      "intro_files": [
+        "neocore_logo.mov",
+        "neocore_logo.wmv",
+        "nvidia.wmv",
+        "vh_logo.mov",
+        "vh_logo.wmv"
+      ]
+    },
+    {
+      "app_id": "1448013298",
+      "title": "The Incredible Adventures of Van Helsing: Final Cut",
+      "intro_files": [
+        "neocore_logo.webm",
+        "neocore_logo.wmv",
+        "nvidia.webm",
+        "nvidia.wmv"
+      ]
+    },
+    {
+      "app_id": "400170",
+      "title": "The Incredible Adventures of Van Helsing: Final Cut",
+      "intro_files": [
+        "neocore_logo.webm",
+        "neocore_logo.wmv",
+        "nvidia.webm",
+        "nvidia.wmv"
+      ]
+    },
+    {
+      "app_id": "331670",
+      "title": "The Jackbox Party Pack",
+      "intro_files": [
+        "developerintro.usm"
+      ]
+    },
+    {
+      "app_id": "434170",
+      "title": "The Jackbox Party Pack 3",
+      "intro_files": [
+        "developerintro.usm"
+      ]
+    },
+    {
+      "app_id": "610180",
+      "title": "The Jackbox Party Pack 4",
+      "intro_files": [
+        "developerintro.usm"
+      ]
+    },
+    {
+      "app_id": "774461",
+      "title": "The Jackbox Party Pack 5",
+      "intro_files": [
+        "developerintro.usm"
+      ]
+    },
+    {
+      "app_id": "1835492050",
+      "title": "The King of Fighters XIII",
+      "intro_files": [
+        "opening.wmv"
+      ]
+    },
+    {
+      "app_id": "222940",
+      "title": "The King of Fighters XIII",
+      "intro_files": [
+        "opening.wmv"
+      ]
+    },
+    {
+      "app_id": "1207664553",
+      "title": "The Last Door: Collector's Edition",
+      "intro_files": [
+        "bootseq.mp4",
+        "replace bootseq.mp4"
+      ]
+    },
+    {
+      "app_id": "284390",
+      "title": "The Last Door: Collector's Edition",
+      "intro_files": [
+        "bootseq.mp4",
+        "replace bootseq.mp4"
+      ]
+    },
+    {
+      "app_id": "1447763046",
+      "title": "The Long Dark",
+      "intro_files": [
+        "intro_cards.mp4",
+        "intro_cards.webm"
+      ]
+    },
+    {
+      "app_id": "305620",
+      "title": "The Long Dark",
+      "intro_files": [
+        "intro_cards.mp4",
+        "intro_cards.webm"
+      ]
+    },
+    {
+      "app_id": "2933130",
+      "title": "The Lord of the Rings: Return to Moria",
+      "intro_files": [
+        "mov_cinematic1_nofade.mp4",
+        "mov_logo_freerangegames.mp4",
+        "mov_logo_middleearthenterprises.mp4",
+        "mov_logo_northbeachgames.mp4",
+        "mov_logo_partners.mp4",
+        "mov_ue4_moving_logo_1080_60.mp4",
+        "movvp9_logo_freerangegames.mp4",
+        "movvp9_logo_middleearthenterprises.mp4",
+        "movvp9_logo_northbeachgames.mp4",
+        "movvp9_logo_partners.mp4",
+        "movvp9_ue4_moving_logo_1080_60.mp4"
+      ]
+    },
+    {
+      "app_id": "1260828108",
+      "title": "The Medium",
+      "intro_files": [
+        "loadingscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "1293160",
+      "title": "The Medium",
+      "intro_files": [
+        "loadingscreen.mp4"
+      ]
+    },
+    {
+      "app_id": "1081173744",
+      "title": "The Midnight Walk",
+      "intro_files": [
+        "fms_ftg_animatedlogo_horizontal.mp4",
+        "fms_moonhood_logo_animated.mp4"
+      ]
+    },
+    {
+      "app_id": "2863640",
+      "title": "The Midnight Walk",
+      "intro_files": [
+        "fms_ftg_animatedlogo_horizontal.mp4",
+        "fms_moonhood_logo_animated.mp4"
+      ]
+    },
+    {
+      "app_id": "2127248426",
+      "title": "The Occupation",
+      "intro_files": [
+        "s_loadupsplashscreens.mp4"
+      ]
+    },
+    {
+      "app_id": "765880",
+      "title": "The Occupation",
+      "intro_files": [
+        "s_loadupsplashscreens.mp4"
+      ]
+    },
+    {
+      "app_id": "1242541569",
+      "title": "The Outer Worlds",
+      "intro_files": [
+        "startup_splash_1.mp4",
+        "startup_splash_2.mp4"
+      ]
+    },
+    {
+      "app_id": "578650",
+      "title": "The Outer Worlds",
+      "intro_files": [
+        "startup_splash_1.mp4",
+        "startup_splash_2.mp4"
+      ]
+    },
+    {
+      "app_id": "1304930",
+      "title": "The Outlast Trials",
+      "intro_files": [
+        "redbarrelslogo.bk2",
+        "tot_thirdparty.bk2"
+      ]
+    },
+    {
+      "app_id": "1207659163",
+      "title": "The Settlers II: 10th Anniversary",
+      "intro_files": [
+        "bb_logo.bik",
+        "funaticsalpha.bik",
+        "intro.bik",
+        "ubisoft.bik"
+      ]
+    },
+    {
+      "app_id": "1207659254",
+      "title": "The Settlers IV",
+      "intro_files": [
+        "bb_logo.bik",
+        "s4.bik",
+        "ubisoft_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1416551475",
+      "title": "The Sinking City",
+      "intro_files": [
+        "start_video_frog.mp4",
+        "ue4_logo.mp4",
+        "ue4_logo_bb.mp4"
+      ]
+    },
+    {
+      "app_id": "750130",
+      "title": "The Sinking City",
+      "intro_files": [
+        "remove or rename .mp4",
+        "start_video_frog.mp4",
+        "ue4_logo.mp4",
+        "ue4_logo_bb.mp4"
+      ]
+    },
+    {
+      "app_id": "2018838490",
+      "title": "The Sinking City Remastered",
+      "intro_files": [
+        "remove or rename .mp4"
+      ]
+    },
+    {
+      "app_id": "2069406260",
+      "title": "The Talos Principle 2",
+      "intro_files": [
+        "logo_all.bk2"
+      ]
+    },
+    {
+      "app_id": "835960",
+      "title": "The Talos Principle 2",
+      "intro_files": [
+        "logo_all.bk2"
+      ]
+    },
+    {
+      "app_id": "2806640",
+      "title": "The Talos Principle: Reawakened",
+      "intro_files": [
+        "logo_inthebeginning.bk2",
+        "logo_islands.bk2",
+        "logo_landofdeath.bk2",
+        "logo_landoffaith.bk2",
+        "logo_landofruins.bk2",
+        "logo_nexus.bk2",
+        "logo_roadtogehenna.bk2"
+      ]
+    },
+    {
+      "app_id": "1695904593",
+      "title": "The Thing: Remastered",
+      "intro_files": [
+        "ca_logo.ogv",
+        "kex.ogv",
+        "nightdive.ogv",
+        "thing_logo.ogv",
+        "un_logo.ogv"
+      ]
+    },
+    {
+      "app_id": "2958970",
+      "title": "The Thing: Remastered",
+      "intro_files": [
+        "ca_logo.ogv",
+        "kex.ogv",
+        "nightdive.ogv",
+        "thing_logo.ogv",
+        "un_logo.ogv"
+      ]
+    },
+    {
+      "app_id": "289480",
+      "title": "The Tomorrow War",
+      "intro_files": [
+        "1c.avi",
+        "crioland.avi",
+        "zv_intro.avi"
+      ]
+    },
+    {
+      "app_id": "246580",
+      "title": "The Typing of The Dead: Overkill",
+      "intro_files": [
+        "segalogo.ogv",
+        "segalogolow.ogv"
+      ]
+    },
+    {
+      "app_id": "1207658930",
+      "title": "The Witcher 2: Assassins of Kings",
+      "intro_files": [
+        "cdpr.usm"
+      ]
+    },
+    {
+      "app_id": "20920",
+      "title": "The Witcher 2: Assassins of Kings",
+      "intro_files": [
+        "cdpr.usm"
+      ]
+    },
+    {
+      "app_id": "1284626411",
+      "title": "Thymesia",
+      "intro_files": [
+        "bf_corsairlogo.mp4",
+        "bf_fsr_logo.mp4",
+        "bf_legaltext.mp4",
+        "bf_overborderlogo.mp4",
+        "bf_team17logo.mp4",
+        "bf_unreallogo.mp4"
+      ]
+    },
+    {
+      "app_id": "1343240",
+      "title": "Thymesia",
+      "intro_files": [
+        "bf_corsairlogo.mp4",
+        "bf_fsr_logo.mp4",
+        "bf_legaltext.mp4",
+        "bf_overborderlogo.mp4",
+        "bf_team17logo.mp4",
+        "bf_unreallogo.mp4"
+      ]
+    },
+    {
+      "app_id": "10130",
+      "title": "TimeShift",
+      "intro_files": [
+        "saber_logo.bik",
+        "sierra_logo.bik",
+        "twimtbp.bik"
+      ]
+    },
+    {
+      "app_id": "1460032883",
+      "title": "TimeShift",
+      "intro_files": [
+        "saber_logo.bik",
+        "sierra_logo.bik",
+        "twimtbp.bik"
+      ]
+    },
+    {
+      "app_id": "1286680",
+      "title": "Tiny Tina's Wonderlands",
+      "intro_files": [
+        "2klogo.mp4",
+        "amdlogo.mp4"
+      ]
+    },
+    {
+      "app_id": "1237970",
+      "title": "Titanfall 2",
+      "intro_files": [
+        "ea.bik",
+        "menu_act01.bik",
+        "respawn.bik"
+      ]
+    },
+    {
+      "app_id": "2231380",
+      "title": "Tom Clancy's Ghost Recon Breakpoint",
+      "intro_files": [
+        "amd.bk2",
+        "ubisoft_logo.bk2"
+      ]
+    },
+    {
+      "app_id": "460930",
+      "title": "Tom Clancy's Ghost Recon Wildlands",
+      "intro_files": [
+        "nvidia.bk2",
+        "ubisoft_logo.bk2",
+        "video_experience.bk2",
+        "video_globa_000.bk2",
+        "video_intro_gam.bk2"
+      ]
+    },
+    {
+      "app_id": "212630",
+      "title": "Tom Clancy's Ghost Recon: Future Soldier",
+      "intro_files": [
+        "blank .bik",
+        "spl_esrb_ubi_clancy.bik",
+        "spl_intro_trailer.bik",
+        "spl_rse_logo_fade.bik"
+      ]
+    },
+    {
+      "app_id": "21900",
+      "title": "Tom Clancy's H.A.W.X",
+      "intro_files": [
+        "clancyman_720p.bik",
+        "d_geoeye.bik",
+        "disclaimers.bik",
+        "logo_wide.bik",
+        "rating.bik",
+        "teaser_logo.bik",
+        "ubipresents.bik"
+      ]
+    },
+    {
+      "app_id": "48180",
+      "title": "Tom Clancy's H.A.W.X. 2",
+      "intro_files": [
+        "disclaimer_logos.bik",
+        "geoeye.bik",
+        "hawx2_ubi_logo.bik",
+        "tom_clancy_yellow.bik",
+        "trailer_ersb2.bik",
+        "ubisoft_presents_en.bik"
+      ]
+    },
+    {
+      "app_id": "19830",
+      "title": "Tom Clancy's Rainbow Six 3: Raven Shield",
+      "intro_files": [
+        "logos.bik",
+        "rs_intro.bik"
+      ]
+    },
+    {
+      "app_id": "1207659034",
+      "title": "Tom Clancy's Splinter Cell",
+      "intro_files": [
+        "logos.bik",
+        "videointro.bik"
+      ]
+    },
+    {
+      "app_id": "13560",
+      "title": "Tom Clancy's Splinter Cell",
+      "intro_files": [
+        "logos.bik",
+        "videointro.bik"
+      ]
+    },
+    {
+      "app_id": "33229",
+      "title": "Tom Clancy's Splinter Cell: Conviction",
+      "intro_files": [
+        "logo_clancy_01.bik",
+        "logo_esrb_01.bik",
+        "logo_esrb_02.bik",
+        "logo_middleware_01.bik",
+        "logo_ubisoft.bik"
+      ]
+    },
+    {
+      "app_id": "1202885143",
+      "title": "Tomb Raider: Anniversary",
+      "intro_files": [
+        "intro.bik",
+        "intro_w.bik",
+        "nvidia.bik"
+      ]
+    },
+    {
+      "app_id": "8000",
+      "title": "Tomb Raider: Anniversary",
+      "intro_files": [
+        "intro.bik",
+        "intro_w.bik",
+        "nvidia.bik"
+      ]
+    },
+    {
+      "app_id": "1207663523",
+      "title": "Tomb Raider: Chronicles",
+      "intro_files": [
+        "fmv0.bik",
+        "fmv1.bik"
+      ]
+    },
+    {
+      "app_id": "225000",
+      "title": "Tomb Raider: Chronicles",
+      "intro_files": [
+        "fmv0.bik",
+        "fmv1.bik"
+      ]
+    },
+    {
+      "app_id": "1810841502",
+      "title": "Tomb Raider: Legend",
+      "intro_files": [
+        "nvidia.bik",
+        "title.bik"
+      ]
+    },
+    {
+      "app_id": "7000",
+      "title": "Tomb Raider: Legend",
+      "intro_files": [
+        "nvidia.bik",
+        "title.bik"
+      ]
+    },
+    {
+      "app_id": "1207663513",
+      "title": "Tomb Raider: The Last Revelation",
+      "intro_files": [
+        "fmv00.bik"
+      ]
+    },
+    {
+      "app_id": "224980",
+      "title": "Tomb Raider: The Last Revelation",
+      "intro_files": [
+        "fmv00.bik"
+      ]
+    },
+    {
+      "app_id": "2395210",
+      "title": "Tony Hawk's Pro Skater 1 + 2",
+      "intro_files": [
+        "alc-intro-final_1080p_30fps.mp4",
+        "move or delete all .mp4"
+      ]
+    },
+    {
+      "app_id": "2545710",
+      "title": "Tony Hawk's Pro Skater 3 + 4",
+      "intro_files": [
+        "atvi_logo.bk2",
+        "demonware_logo.bk2",
+        "ig_logo.bk2",
+        "playfab_logo.bk2",
+        "skater_intro_video.bk2",
+        "ue4_logo.bk2",
+        "wwise.bk2"
+      ]
+    },
+    {
+      "app_id": "1576420196",
+      "title": "Total War: Rome II",
+      "intro_files": [
+        "intel_logo_english.bik",
+        "intro.bik",
+        "sega_logo_sting_hd.bik"
+      ]
+    },
+    {
+      "app_id": "214950",
+      "title": "Total War: Rome II",
+      "intro_files": [
+        "intel_logo_english.bik",
+        "intro.bik",
+        "sega_logo_sting_hd.bik"
+      ]
+    },
+    {
+      "app_id": "34330",
+      "title": "Total War: Shogun 2",
+      "intro_files": [
+        "intel_logo_english.bik",
+        "intro.bik",
+        "sega_logo_sting_hd.bik"
+      ]
+    },
+    {
+      "app_id": "262120",
+      "title": "Toy Soldiers: Complete",
+      "intro_files": [
+        "signalstudios_logo.ogv"
+      ]
+    },
+    {
+      "app_id": "300820",
+      "title": "Toy Story 3: The Video Game",
+      "intro_files": [
+        "avlogo.bik",
+        "dis2010.bik",
+        "gslogo.bik",
+        "pixar_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1282590",
+      "title": "Train Sim World 2",
+      "intro_files": [
+        "dtg_logo.mp4",
+        "playerintrovideo.mp4"
+      ]
+    },
+    {
+      "app_id": "2967990",
+      "title": "Train Sim World 5",
+      "intro_files": [
+        "intro v5.mp4",
+        "intro v5_1080.mp4"
+      ]
+    },
+    {
+      "app_id": "3656800",
+      "title": "Train Sim World 6",
+      "intro_files": [
+        "intro v5.mp4",
+        "intro v5_1080.mp4"
+      ]
+    },
+    {
+      "app_id": "213120",
+      "title": "Transformers: Fall of Cybertron",
+      "intro_files": [
+        "logo_activision.bik",
+        "logo_hasbro.bik",
+        "logo_highmoon.bik",
+        "logo_mercenary.bik",
+        "tf_initialstartup.bik"
+      ]
+    },
+    {
+      "app_id": "245760",
+      "title": "Transformers: Rise of the Dark Spark",
+      "intro_files": [
+        "eor_tf_logo.bik",
+        "logo_activision.bik",
+        "logo_hasbro.bik",
+        "tf_initialstartup.bik"
+      ]
+    },
+    {
+      "app_id": "42650",
+      "title": "Transformers: War for Cybertron",
+      "intro_files": [
+        "fmv_intro_pc.bik",
+        "logo_activision.bik",
+        "logo_activision_pc.bik",
+        "logo_hasbro_pc.bik",
+        "logo_highmoon_pc.bik",
+        "tf_initialstartup.bik"
+      ]
+    },
+    {
+      "app_id": "1038370",
+      "title": "Trials of Fire",
+      "intro_files": [
+        "intrologorun_v2_720.mp4",
+        "intromovie.mp4"
+      ]
+    },
+    {
+      "app_id": "1879406248",
+      "title": "Trials of Fire",
+      "intro_files": [
+        "intrologorun_v2_720.mp4",
+        "intromovie.mp4"
+      ]
+    },
+    {
+      "app_id": "315440",
+      "title": "Tron: Evolution",
+      "intro_files": [
+        "disneylogo.bik",
+        "gamestarlogo.bik",
+        "propagandalogo.bik",
+        "sc1_01_01.bik",
+        "unreal.bik"
+      ]
+    },
+    {
+      "app_id": "1941218424",
+      "title": "Tropico 6",
+      "intro_files": [
+        "intro_kalypso.mp4",
+        "intro_limbic.mp4",
+        "intro_realmforge.mp4",
+        "intro_ue4.mp4",
+        "intro_wwise.mp4"
+      ]
+    },
+    {
+      "app_id": "492720",
+      "title": "Tropico 6",
+      "intro_files": [
+        "intro_kalypso.mp4",
+        "intro_limbic.mp4",
+        "intro_realmforge.mp4",
+        "intro_ue4.mp4",
+        "intro_wwise.mp4"
+      ]
+    },
+    {
+      "app_id": "1962176043",
+      "title": "Turnip Boy Robs a Bank",
+      "intro_files": [
+        "intro_animatic.mp4",
+        "intro_graffiti.mp4",
+        "with blank .mp4"
+      ]
+    },
+    {
+      "app_id": "2097230",
+      "title": "Turnip Boy Robs a Bank",
+      "intro_files": [
+        "intro_animatic.mp4",
+        "intro_graffiti.mp4",
+        "with blank .mp4"
+      ]
+    },
+    {
+      "app_id": "27900",
+      "title": "Twin Sector",
+      "intro_files": [
+        "dnslogo.bik",
+        "headuplogo.bik"
+      ]
+    },
+    {
+      "app_id": "1207659214",
+      "title": "Two Worlds II",
+      "intro_files": [
+        "intro1.wmv",
+        "intro3.wmv",
+        "intro5.wmv"
+      ]
+    },
+    {
+      "app_id": "7520",
+      "title": "Two Worlds II",
+      "intro_files": [
+        "intro1.wmv",
+        "intro3.wmv",
+        "intro5.wmv"
+      ]
+    },
+    {
+      "app_id": "1116960",
+      "title": "Undefeated (2019)",
+      "intro_files": [
+        "ue4 logo.mp4"
+      ]
+    },
+    {
+      "app_id": "1207659106",
+      "title": "Urban Chaos",
+      "intro_files": [
+        "eidos.bik",
+        "logo24.bik",
+        "pcintro_withsound.bik"
+      ]
+    },
+    {
+      "app_id": "243060",
+      "title": "Urban Chaos",
+      "intro_files": [
+        "eidos.bik",
+        "logo24.bik",
+        "pcintro_withsound.bik"
+      ]
+    },
+    {
+      "app_id": "294860",
+      "title": "Valkyria Chronicles",
+      "intro_files": [
+        "opening.sfd",
+        "segalogo.sfd"
+      ]
+    },
+    {
+      "app_id": "1207659240",
+      "title": "Vampire: The Masquerade - Bloodlines",
+      "intro_files": [
+        "activision.bik",
+        "nvidiabloodlogo.bik",
+        "troika.bik",
+        "whitewolf.bik"
+      ]
+    },
+    {
+      "app_id": "2600",
+      "title": "Vampire: The Masquerade - Bloodlines",
+      "intro_files": [
+        "activision.bik",
+        "nvidiabloodlogo.bik",
+        "troika.bik",
+        "whitewolf.bik"
+      ]
+    },
+    {
+      "app_id": "1207658831",
+      "title": "Vampire: The Masquerade - Redemption",
+      "intro_files": [
+        "logo.bik"
+      ]
+    },
+    {
+      "app_id": "559680",
+      "title": "Vampire: The Masquerade - Redemption",
+      "intro_files": [
+        "logo.bik"
+      ]
+    },
+    {
+      "app_id": "460810",
+      "title": "Vanquish",
+      "intro_files": [
+        "b_jp_0000.sfd",
+        "b_us_0000.sfd",
+        "pg.sfd"
+      ]
+    },
+    {
+      "app_id": "16720",
+      "title": "Velvet Assassin",
+      "intro_files": [
+        "physx.bik",
+        "replay_logo.bik",
+        "southpeak.bik"
+      ]
+    },
+    {
+      "app_id": "246900",
+      "title": "Viscera Cleanup Detail",
+      "intro_files": [
+        "rslogo.bik",
+        "ue3_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1462810",
+      "title": "WRC 10: FIA World Rally Championship",
+      "intro_files": [
+        "splash_kt.mp4",
+        "wrc9.mp4"
+      ]
+    },
+    {
+      "app_id": "1267540",
+      "title": "WRC 9: FIA World Rally Championship",
+      "intro_files": [
+        "splash_kt.mp4",
+        "wrc9.mp4"
+      ]
+    },
+    {
+      "app_id": "1953520",
+      "title": "WRC Generations",
+      "intro_files": [
+        "splash_kt.mp4"
+      ]
+    },
+    {
+      "app_id": "1101790",
+      "title": "War Mongrels",
+      "intro_files": [
+        "dclogo.mp4",
+        "do_not_power_off_device.mp4",
+        "historyinspired.mp4"
+      ]
+    },
+    {
+      "app_id": "2025833167",
+      "title": "War Mongrels",
+      "intro_files": [
+        "dclogo.mp4",
+        "do_not_power_off_device.mp4",
+        "historyinspired.mp4"
+      ]
+    },
+    {
+      "app_id": "1455545518",
+      "title": "War Wind",
+      "intro_files": [
+        "logos.avi",
+        "wwopen.avi"
+      ]
+    },
+    {
+      "app_id": "1741140",
+      "title": "War Wind",
+      "intro_files": [
+        "logos.avi",
+        "wwopen.avi"
+      ]
+    },
+    {
+      "app_id": "1441098222",
+      "title": "War Wind II: Human Onslaught",
+      "intro_files": [
+        "ww2open.smk"
+      ]
+    },
+    {
+      "app_id": "1741150",
+      "title": "War Wind II: Human Onslaught",
+      "intro_files": [
+        "ww2open.smk"
+      ]
+    },
+    {
+      "app_id": "291480",
+      "title": "Warface",
+      "intro_files": [
+        "logo_cryengine3.usm",
+        "logo_crytek.usm"
+      ]
+    },
+    {
+      "app_id": "2005010",
+      "title": "Warhammer 40,000: Boltgun",
+      "intro_files": [
+        "auroch_splashscreen.mp4",
+        "auroch_splashscreen_720.mp4",
+        "focus_indies_splashscreen.mp4",
+        "focus_indies_splashscreen_720.mp4",
+        "warhammer_splash.mp4",
+        "warhammer_splash_720.mp4"
+      ]
+    },
+    {
+      "app_id": "2028053392",
+      "title": "Warhammer 40,000: Boltgun",
+      "intro_files": [
+        "auroch_splashscreen.mp4",
+        "auroch_splashscreen_720.mp4",
+        "focus_indies_splashscreen.mp4",
+        "focus_indies_splashscreen_720.mp4",
+        "warhammer_splash.mp4",
+        "warhammer_splash_720.mp4"
+      ]
+    },
+    {
+      "app_id": "15620",
+      "title": "Warhammer 40,000: Dawn of War II",
+      "intro_files": [
+        "amd_intro.avi",
+        "dowii_intro_final.avi",
+        "gfwl_logo.avi",
+        "gw_logo_720p_divx1.avi",
+        "nvidia_logo.avi",
+        "relicintro_720p_divx.avi",
+        "sega_logo_new_720p_divx.avi"
+      ]
+    },
+    {
+      "app_id": "2080123698",
+      "title": "Warhammer 40,000: Dawn of War II",
+      "intro_files": [
+        "amd_intro.avi",
+        "dowii_intro_final.avi",
+        "gfwl_logo.avi",
+        "gw_logo_720p_divx1.avi",
+        "nvidia_logo.avi",
+        "relicintro_720p_divx.avi",
+        "sega_logo_new_720p_divx.avi"
+      ]
+    },
+    {
+      "app_id": "20570",
+      "title": "Warhammer 40,000: Dawn of War II: Chaos Rising",
+      "intro_files": [
+        "amd_intro.avi",
+        "dowii_intro_final.avi",
+        "gfwl_logo.avi",
+        "gw_logo_720p_divx1.avi",
+        "relicintro_720p_divx.avi",
+        "sega_logo_new_720p_divx.avi"
+      ]
+    },
+    {
+      "app_id": "2078475324",
+      "title": "Warhammer 40,000: Dawn of War II: Retribution",
+      "intro_files": [
+        "amd_intro.avi",
+        "gw_logo_720p_divx1.avi",
+        "sega_logo_new_720p_divx.avi",
+        "thq_logo_new_720p_divx.avi",
+        "xp2_intro.avi"
+      ]
+    },
+    {
+      "app_id": "56437",
+      "title": "Warhammer 40,000: Dawn of War II: Retribution",
+      "intro_files": [
+        "amd_intro.avi",
+        "gw_logo_720p_divx1.avi",
+        "sega_logo_new_720p_divx.avi",
+        "thq_logo_new_720p_divx.avi",
+        "xp2_intro.avi"
+      ]
+    },
+    {
+      "app_id": "275610",
+      "title": "Warhammer 40,000: Kill Team",
+      "intro_files": [
+        "d3t_1080.bik",
+        "d3t_720.bik",
+        "logo_first.bik",
+        "logo_first_sound.bik",
+        "logo_second.bik"
+      ]
+    },
+    {
+      "app_id": "1197056652",
+      "title": "Warhammer 40,000: Space Marine - Master Crafted Edition",
+      "intro_files": [
+        "relic.webm",
+        "sega.webm",
+        "sneakybox.webm"
+      ]
+    },
+    {
+      "app_id": "3169520",
+      "title": "Warhammer 40,000: Space Marine - Master Crafted Edition",
+      "intro_files": [
+        "relic.webm",
+        "sega.webm",
+        "sneakybox.webm"
+      ]
+    },
+    {
+      "app_id": "1207658725",
+      "title": "Warlords Battlecry III",
+      "intro_files": [
+        "logo.bik"
+      ]
+    },
+    {
+      "app_id": "433280",
+      "title": "Warlords Battlecry III",
+      "intro_files": [
+        "logo.bik"
+      ]
+    },
+    {
+      "app_id": "1171690",
+      "title": "Wayfinder",
+      "intro_files": [
+        "airshipintrologo.mkv",
+        "airshipintrologo.mp4"
+      ]
+    },
+    {
+      "app_id": "1097350",
+      "title": "Weird West",
+      "intro_files": [
+        "logo_devolver.mp4",
+        "logo_weirdwest.mp4",
+        "logo_wolfeye.mp4",
+        "motionseq_sec4_30fps_2.mp4"
+      ]
+    },
+    {
+      "app_id": "1421555971",
+      "title": "Weird West",
+      "intro_files": [
+        "logo_devolver.mp4",
+        "logo_weirdwest.mp4",
+        "logo_wolfeye.mp4",
+        "motionseq_sec4_30fps_2.mp4"
+      ]
+    },
+    {
+      "app_id": "1938010",
+      "title": "Wild Hearts",
+      "intro_files": [
+        "logo.wmv",
+        "logo_1920_1200.wmv",
+        "logo_2880_1200.wmv"
+      ]
+    },
+    {
+      "app_id": "1207659230",
+      "title": "Wizardry 8",
+      "intro_files": [
+        "sirtech.bik"
+      ]
+    },
+    {
+      "app_id": "245450",
+      "title": "Wizardry 8",
+      "intro_files": [
+        "sirtech.bik"
+      ]
+    },
+    {
+      "app_id": "10170",
+      "title": "Wolfenstein",
+      "intro_files": [
+        "bumper1.bik",
+        "bumper2.bik",
+        "bumper3.bik",
+        "id_logo.bik"
+      ]
+    },
+    {
+      "app_id": "1320703337",
+      "title": "Wolfenstein II: The New Colossus",
+      "intro_files": [
+        "boot_pc.bk2"
+      ]
+    },
+    {
+      "app_id": "612880",
+      "title": "Wolfenstein II: The New Colossus",
+      "intro_files": [
+        "boot_pc.bk2"
+      ]
+    },
+    {
+      "app_id": "1943729964",
+      "title": "Wolfenstein: The New Order",
+      "intro_files": [
+        "loadvideo_pc_xboxone.bik",
+        "menu_credits.bik"
+      ]
+    },
+    {
+      "app_id": "201810",
+      "title": "Wolfenstein: The New Order",
+      "intro_files": [
+        "loadvideo_pc_xboxone.bik",
+        "menu_credits.bik"
+      ]
+    },
+    {
+      "app_id": "1961572821",
+      "title": "Wolfenstein: The Old Blood",
+      "intro_files": [
+        "loadvideo_pc_xboxone.bik",
+        "oldgame_in.bik",
+        "simply removing the intro or using an empty .bik"
+      ]
+    },
+    {
+      "app_id": "350080",
+      "title": "Wolfenstein: The Old Blood",
+      "intro_files": [
+        "loadvideo_pc_xboxone.bik",
+        "oldgame_in.bik",
+        "simply removing the intro or using an empty .bik"
+      ]
+    },
+    {
+      "app_id": "233840",
+      "title": "Worms Clan Wars",
+      "intro_files": [
+        "intromovie_xxx.wmv",
+        "team17.wmv"
+      ]
+    },
+    {
+      "app_id": "1421309312",
+      "title": "Worms Revolution",
+      "intro_files": [
+        "team17.wmv"
+      ]
+    },
+    {
+      "app_id": "200170",
+      "title": "Worms Revolution",
+      "intro_files": [
+        "team17.wmv"
+      ]
+    },
+    {
+      "app_id": "1170760",
+      "title": "XIII",
+      "intro_files": [
+        "alien.bik",
+        "nvidia.bik",
+        "ubi.bik"
+      ]
+    },
+    {
+      "app_id": "1207658920",
+      "title": "XIII",
+      "intro_files": [
+        "alien.bik",
+        "nvidia.bik",
+        "ubi.bik"
+      ]
+    },
+    {
+      "app_id": "252230",
+      "title": "Yaiba: Ninja Gaiden Z",
+      "intro_files": [
+        "sparklogo.bik",
+        "sparklogo_jpp.bik",
+        "startupnvidia.bik"
+      ]
+    },
+    {
+      "app_id": "311240",
+      "title": "Zero Escape: Zero Time Dilemma",
+      "intro_files": [
+        "logo_spikechun.webm"
+      ]
+    },
+    {
+      "app_id": "1207659039",
+      "title": "Zeus: Master of Olympus",
+      "intro_files": [
+        "zeus_intro.bik",
+        "zeus_intro_hiq.bik"
+      ]
+    },
+    {
+      "app_id": "566050",
+      "title": "Zeus: Master of Olympus",
+      "intro_files": [
+        "zeus_intro.bik",
+        "zeus_intro_hiq.bik"
+      ]
+    }
+  ]
+}
