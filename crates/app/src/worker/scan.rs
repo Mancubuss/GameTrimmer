@@ -226,19 +226,13 @@ fn run_scan(
             return;
         }
     };
-    // An overlay that does not parse must not silently kill or degrade the
-    // scan: warn, keep the built-ins, keep going. Saying it loudly is the
-    // point - the visible symptom of an ignored overlay is indistinguishable
-    // from the overlay simply being wrong about the library.
-    if let Some(path) = super::overlay_pack_path(PackKind::CategoryRules) {
-        match RuleEngine::load(&path)
-            .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
-        {
-            Ok(overlay) => engine.absorb(overlay),
-            Err(err) => notifier.report_warning(i18n::Reported::new(lang, |l| {
-                i18n::rules_json_load_failed(l, &err)
-            })),
-        }
+    if let Err(err) = super::absorb_rules_overlay(
+        &mut engine,
+        super::overlay_pack_path(PackKind::CategoryRules).as_deref(),
+    ) {
+        notifier.report_warning(i18n::Reported::new(lang, |l| {
+            i18n::rules_json_load_failed(l, &err)
+        }));
     }
 
     // The third pack: this machine's personal exceptions, folded on top of
@@ -279,25 +273,13 @@ fn run_scan(
     // executable extends them if it is there. The merge is the one the
     // community-pack flow already used - additive, so an overlay can teach
     // the detector new codes but never blind it to a built-in one.
-    let lang_data = match super::overlay_pack_path(PackKind::LangPack) {
-        None => LangData::builtin(),
-        Some(path) => match std::fs::read_to_string(&path)
-            .map_err(CoreError::from)
-            .and_then(|text| LangPack::from_json(&text))
-            .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
-        {
-            Ok(overlay) => Arc::new(LangData::compile(&LangPack::merge(
-                LangPack::builtin(),
-                overlay,
-            ))),
-            Err(err) => {
-                notifier.report_warning(i18n::Reported::new(lang, |l| {
-                    i18n::l10n_rules_load_failed(l, &err)
-                }));
-                LangData::builtin()
-            }
-        },
-    };
+    let (lang_data, lang_overlay_error) =
+        super::lang_data_with_overlay(super::overlay_pack_path(PackKind::LangPack).as_deref());
+    if let Some(err) = lang_overlay_error {
+        notifier.report_warning(i18n::Reported::new(lang, |l| {
+            i18n::l10n_rules_load_failed(l, &err)
+        }));
+    }
     let lang_detector = LangDetector::with_data(lang_data, keep_languages);
 
     let mut conn = match db::open(db_path) {

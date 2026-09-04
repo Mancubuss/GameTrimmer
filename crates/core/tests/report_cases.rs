@@ -13,7 +13,7 @@
 //! (Europa Universalis 4 `common\province_names\french.txt` and Paradox
 //! `localisation\*_l_french.yml`, which the game loads for every language
 //! at once). Distinguishing those needs per-game community rules, not a
-//! heuristic — see the rules import/export design.
+//! heuristic — see docs/rules-packs.md.
 
 use gametrimmer_core::langdetect::{LangDetector, LangFinding};
 use gametrimmer_core::rules::{Category, RuleEngine};

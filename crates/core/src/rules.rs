@@ -128,8 +128,7 @@ fn is_builtin_origin(origin: &RuleOrigin) -> bool {
 ///
 /// A veto is deliberately *not* a new mechanism beside the rules: an exception
 /// differs from a deleting rule in this field and in [`Rule::app_id`] alone, so
-/// it is written in the same file format, validated by the same parser and
-/// carried by the same import/export machinery.
+/// it is written in the same file format and validated by the same parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RulePolarity {
@@ -250,8 +249,8 @@ impl Category {
 }
 
 /// One rule from rules.json. `Serialize` keeps the round trip lossless for
-/// the "Export rules"/"Import rules" flow (see
-/// `crate::packs`), which rewrites the merged list back to disk.
+/// the personal exception pack, which is read, appended to and written back
+/// (see `crate::packs::add_rule`).
 ///
 /// # Versioning of the two fields added for exceptions
 ///

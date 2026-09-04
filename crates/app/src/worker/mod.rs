@@ -359,6 +359,62 @@ pub fn overlay_pack_path(kind: gametrimmer_core::packs::PackKind) -> Option<Path
     path.is_file().then_some(path)
 }
 
+/// Folds a category-rules overlay into `engine`, if there is one.
+///
+/// `None` means no overlay is installed, which is the normal case and does
+/// nothing. An overlay that does not parse is returned as an error for the
+/// caller to report: it must not kill or degrade the scan, but it must be
+/// said out loud, because an ignored overlay looks exactly like an overlay
+/// that is wrong about the library.
+pub fn absorb_rules_overlay(
+    engine: &mut gametrimmer_core::rules::RuleEngine,
+    overlay: Option<&Path>,
+) -> Result<(), gametrimmer_core::error::CoreError> {
+    let Some(path) = overlay else {
+        return Ok(());
+    };
+    let loaded = gametrimmer_core::rules::RuleEngine::load(path).map_err(|err| {
+        gametrimmer_core::error::CoreError::Other(format!("{}: {err}", path.display()))
+    })?;
+    engine.absorb(loaded);
+    Ok(())
+}
+
+/// The compiled language tables a scan runs on: the built-in ones, extended
+/// by `overlay` if there is one.
+///
+/// Returns the tables it could build plus whatever went wrong, rather than a
+/// `Result`, because those are not alternatives here: a broken overlay still
+/// leaves a usable detector, and the caller has to both keep scanning and
+/// report the file.
+pub fn lang_data_with_overlay(
+    overlay: Option<&Path>,
+) -> (
+    std::sync::Arc<gametrimmer_core::langdetect::LangData>,
+    Option<gametrimmer_core::error::CoreError>,
+) {
+    use gametrimmer_core::langdetect::{LangData, LangPack};
+
+    let Some(path) = overlay else {
+        return (LangData::builtin(), None);
+    };
+    match std::fs::read_to_string(path)
+        .map_err(gametrimmer_core::error::CoreError::from)
+        .and_then(|text| LangPack::from_json(&text))
+        .map_err(|err| {
+            gametrimmer_core::error::CoreError::Other(format!("{}: {err}", path.display()))
+        }) {
+        Ok(pack) => (
+            std::sync::Arc::new(LangData::compile(&LangPack::merge(
+                LangPack::builtin(),
+                pack,
+            ))),
+            None,
+        ),
+        Err(err) => (LangData::builtin(), Some(err)),
+    }
+}
+
 /// Ensures `dir/file_name` exists, seeding it with `builtin` on first use.
 /// An existing file is never touched.
 fn ensure_data_file_in(dir: &Path, file_name: &str, builtin: &str) -> io::Result<PathBuf> {
@@ -384,6 +440,117 @@ pub fn ensure_personal_rules_path() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole point of the overlay: a file next to the executable has to
+    /// actually change what a scan decides. Written as a keep rule because a
+    /// veto is the one verdict nothing else can produce, so a green result
+    /// cannot be a built-in rule happening to agree.
+    #[test]
+    fn a_rules_overlay_next_to_the_exe_changes_the_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay = dir.path().join(RULES_FILE_NAME);
+        let path = r"_CommonRedist\DirectX\dxsetup.exe";
+
+        let mut engine = gametrimmer_core::rules::RuleEngine::from_json(
+            gametrimmer_core::rules::BUILTIN_RULES_JSON,
+        )
+        .expect("the built-in rules compile");
+        // The counter-example, and it has to come first: without it a keep
+        // that "worked" could just be a path the built-ins never claimed.
+        assert!(
+            matches!(
+                engine.classify(path, Some("620")),
+                gametrimmer_core::rules::Verdict::Flagged(_)
+            ),
+            "the built-in rules must flag this path, or the veto below proves nothing",
+        );
+
+        std::fs::write(
+            &overlay,
+            gametrimmer_core::rules::serialize_rule_list(&[
+                gametrimmer_core::rules::Rule::keep_file("620", path, "Overlay probe".into()),
+            ])
+            .expect("the overlay serializes"),
+        )
+        .expect("write the overlay");
+
+        absorb_rules_overlay(&mut engine, Some(&overlay)).expect("the overlay loads");
+
+        assert_eq!(
+            engine.classify(path, Some("620")),
+            gametrimmer_core::rules::Verdict::Kept,
+            "the overlay next to the executable was not applied",
+        );
+    }
+
+    /// A broken overlay is reported, not fatal - and the built-ins stay.
+    #[test]
+    fn a_broken_overlay_is_reported_and_leaves_the_builtins_standing() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join(RULES_FILE_NAME);
+        std::fs::write(&rules, "{ not json").unwrap();
+        let mut engine = gametrimmer_core::rules::RuleEngine::from_json(
+            gametrimmer_core::rules::BUILTIN_RULES_JSON,
+        )
+        .expect("the built-in rules compile");
+
+        assert!(absorb_rules_overlay(&mut engine, Some(&rules)).is_err());
+        assert!(
+            matches!(
+                engine.classify(r"_CommonRedist\DirectX\dxsetup.exe", Some("620")),
+                gametrimmer_core::rules::Verdict::Flagged(_)
+            ),
+            "a broken overlay took the built-in rules down with it",
+        );
+
+        let lang = dir.path().join(L10N_RULES_FILE_NAME);
+        std::fs::write(&lang, r#"{"version": 99, "languages": []}"#).unwrap();
+        let (data, err) = lang_data_with_overlay(Some(&lang));
+        assert!(err.is_some(), "a pack from a newer build was accepted");
+        assert_eq!(
+            data.language_keys().len(),
+            gametrimmer_core::langdetect::LangData::builtin()
+                .language_keys()
+                .len(),
+            "a broken overlay took the built-in language tables down with it",
+        );
+    }
+
+    /// The language half of the same claim: an overlay teaches the detector a
+    /// code the built-in tables do not have, and keeps every one they do.
+    #[test]
+    fn a_language_overlay_next_to_the_exe_adds_to_the_builtin_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay = dir.path().join(L10N_RULES_FILE_NAME);
+        let builtin = gametrimmer_core::langdetect::LangData::builtin();
+        assert!(
+            !builtin.language_keys().contains(&"tlh"),
+            "pick a key the built-in tables do not already have",
+        );
+
+        std::fs::write(
+            &overlay,
+            r#"{"version": 1, "languages": [{"key": "tlh", "level_a": ["klingon"]}],
+                "industry_words": [], "keep_default": [],
+                "markers": {"negative": [], "overridable_negative": [], "audio": [],
+                "text": [], "video": [], "font": [], "loc_generic": [], "loc_specific": [],
+                "video_extensions": [], "font_extensions": [], "text_extensions": []}}"#,
+        )
+        .expect("write the overlay");
+
+        let (data, err) = lang_data_with_overlay(Some(&overlay));
+
+        assert!(err.is_none(), "{err:?}");
+        assert!(
+            data.language_keys().contains(&"tlh"),
+            "the overlay next to the executable was not merged in",
+        );
+        assert_eq!(
+            data.language_keys().len(),
+            builtin.language_keys().len() + 1,
+            "an overlay must extend the built-in tables, not replace them",
+        );
+    }
 
     /// The empty pack the file is seeded with has to be a pack the scan can
     /// then load - a first run would otherwise warn about its own default.
@@ -487,10 +654,10 @@ mod tests {
                             continue;
                         }
                         // A worker may leave the logging to the handler that
-                        // receives the message - `BundleDone` and the rules
-                        // import/export do exactly that - so a variant logged
-                        // in its `app.rs` arm is compliant too. What nothing
-                        // may do is go unlogged in both places.
+                        // receives the message - `BundleDone` does exactly
+                        // that - so a variant logged in its `app.rs` arm is
+                        // compliant too. What nothing may do is go unlogged
+                        // in both places.
                         let variant: String = message
                             .trim_start_matches("WorkerMsg::")
                             .chars()
