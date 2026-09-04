@@ -1488,3 +1488,88 @@ fn a_folder_that_names_its_language_is_not_judged_by_shape() {
         found.iter().map(|(_, f)| &f.lang_tag).collect::<Vec<_>>()
     );
 }
+
+/// HUMANKIND, `AssetBundles\`: eleven asset bundles named
+/// `<locale>-Localization`, two files each.
+const HUMANKIND_BUNDLES: &[&str] = &[
+    r"AssetBundles\de-DE-Localization\de-DE-Localization",
+    r"AssetBundles\de-DE-Localization\de-de-localization.assetbundle",
+    r"AssetBundles\es-ES-Localization\es-ES-Localization",
+    r"AssetBundles\es-ES-Localization\es-es-localization.assetbundle",
+    r"AssetBundles\fr-FR-Localization\fr-FR-Localization",
+    r"AssetBundles\fr-FR-Localization\fr-fr-localization.assetbundle",
+    r"AssetBundles\it-IT-Localization\it-IT-Localization",
+    r"AssetBundles\it-IT-Localization\it-it-localization.assetbundle",
+    r"AssetBundles\ko-KR-Localization\ko-KR-Localization",
+    r"AssetBundles\ko-KR-Localization\ko-kr-localization.assetbundle",
+    r"AssetBundles\pl-PL-Localization\pl-PL-Localization",
+    r"AssetBundles\pl-PL-Localization\pl-pl-localization.assetbundle",
+    r"AssetBundles\pt-BR-Localization\pt-BR-Localization",
+    r"AssetBundles\pt-BR-Localization\pt-br-localization.assetbundle",
+    r"AssetBundles\ru-RU-Localization\ru-RU-Localization",
+    r"AssetBundles\ru-RU-Localization\ru-ru-localization.assetbundle",
+    r"AssetBundles\tr-TR-Localization\tr-TR-Localization",
+    r"AssetBundles\tr-TR-Localization\tr-tr-localization.assetbundle",
+    r"AssetBundles\zh-CN-Localization\zh-CN-Localization",
+    r"AssetBundles\zh-CN-Localization\zh-cn-localization.assetbundle",
+    r"AssetBundles\zh-TW-Localization\zh-TW-Localization",
+    r"AssetBundles\zh-TW-Localization\zh-tw-localization.assetbundle",
+];
+
+/// GT-472: the same file was labelled a different language from run to run.
+///
+/// Each of these folders belongs to two name-shape families at once - the
+/// eleven-folder set whose token is the whole locale tag, and a ten-folder
+/// set where the entire folder name matched as a tag with trailing parts and
+/// only the bare prefix survived. Both wrote into the same cell, the later
+/// write won, and map iteration order is deliberately different in every
+/// process: six consecutive runs over the real game gave `pt` once and
+/// `pt-br` five times, with Traditional Chinese flipping to Simplified
+/// alongside it.
+///
+/// Which is why this test runs the analysis forty times rather than once: a
+/// single run was green five times in six and proved nothing. The two
+/// interesting rows are `pt-BR` and `zh-TW`, the only two folders here whose
+/// coarse and fine readings disagree.
+///
+/// The counter-example is in the same list and is not optional:
+/// `de-DE-Localization` has no finer reading to prefer, and must still come
+/// back as plain German. Preferring the more specific answer must not invent
+/// one where none exists.
+#[test]
+fn a_locale_folder_reads_the_same_language_in_every_run() {
+    let expected: Vec<(String, String)> = [
+        ("de-DE-Localization", "de"),
+        ("de-de-localization.assetbundle", "de"),
+        ("es-ES-Localization", "es"),
+        ("es-es-localization.assetbundle", "es"),
+        ("fr-FR-Localization", "fr"),
+        ("fr-fr-localization.assetbundle", "fr"),
+        ("it-IT-Localization", "it"),
+        ("it-it-localization.assetbundle", "it"),
+        ("ko-KR-Localization", "ko"),
+        ("ko-kr-localization.assetbundle", "ko"),
+        ("pl-PL-Localization", "pl"),
+        ("pl-pl-localization.assetbundle", "pl"),
+        ("pt-BR-Localization", "pt-br"),
+        ("pt-br-localization.assetbundle", "pt-br"),
+        ("ru-RU-Localization", "ru"),
+        ("ru-ru-localization.assetbundle", "ru"),
+        ("tr-TR-Localization", "tr"),
+        ("tr-tr-localization.assetbundle", "tr"),
+        ("zh-CN-Localization", "zh-hans"),
+        ("zh-TW-Localization", "zh-hant"),
+        ("zh-cn-localization.assetbundle", "zh-hans"),
+        ("zh-tw-localization.assetbundle", "zh-hant"),
+    ]
+    .map(|(name, tag)| (name.to_string(), tag.to_string()))
+    .to_vec();
+
+    for run in 0..40 {
+        assert_eq!(
+            flagged_labels(HUMANKIND_BUNDLES),
+            expected,
+            "run {run} disagreed"
+        );
+    }
+}

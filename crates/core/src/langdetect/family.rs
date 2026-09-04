@@ -197,6 +197,33 @@ fn upsert(map: &mut HashMap<usize, FamilyHit>, file_idx: usize, hit: FamilyHit) 
     }
 }
 
+/// Orders two claims on the same *folder* the way [`upsert`] orders claims
+/// on the same file. A folder family names no token inside a file name, so
+/// the position term is dropped and only confidence, the canonical and the
+/// family size remain.
+///
+/// One folder can belong to two name-shape families at once (GT-472).
+/// HUMANKIND's `AssetBundles\pt-BR-Localization\` joins the eleven-folder
+/// set shaped `<tag>-Localization`, where the token is the whole locale tag
+/// `pt-br`; and a second, ten-folder set where the *entire* folder name
+/// matched as a locale tag with trailing parts, leaving `pt` — the same
+/// coarse reading that collapses `zh-CN` and `zh-TW` into one Chinese and so
+/// counts one language fewer. Both wrote their verdict into the same cell,
+/// the later write won, and Rust deliberately varies map iteration order per
+/// process: six consecutive runs of the same binary over the same game
+/// labelled that folder `pt` once and `pt-br` five times, and `zh-TW` flipped
+/// between the two Chinese scripts with it. The set of paths never moved —
+/// only the label, which is the one thing the user's keep-list is applied to.
+///
+/// Confidence settles both cases on its own and in the right direction: a
+/// tag read whole (`pt-br`, `zh-tw`) is a Level A dictionary hit, while the
+/// coarse reading falls back to the bare prefix and its Level C. Where no
+/// finer reading exists — `de-DE-Localization`, both readings say German —
+/// there is nothing to choose between and the answer is unchanged.
+fn claim_rank(claim: &(&'static str, u8, usize)) -> (u8, std::cmp::Reverse<&'static str>, usize) {
+    (claim.1, std::cmp::Reverse(claim.0), claim.2)
+}
+
 /// Bare two-letter codes that a language name spelled out in full in the
 /// same directory contradicts, as `(file index, occurrence start)` pairs the
 /// two filename mechanisms must skip.
@@ -1147,10 +1174,15 @@ fn compute_prefixed_folder_family(
             if keep.contains(canonical) {
                 continue;
             }
-            confirmed.insert(
-                (parent_prefix.clone(), child_lower.clone()),
-                (canonical, family_confidence(level), distinct.len()),
-            );
+            let claim = (canonical, family_confidence(level), distinct.len());
+            confirmed
+                .entry((parent_prefix.clone(), child_lower.clone()))
+                .and_modify(|held| {
+                    if claim_rank(&claim) > claim_rank(held) {
+                        *held = claim;
+                    }
+                })
+                .or_insert(claim);
         }
     }
 
