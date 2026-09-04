@@ -594,3 +594,50 @@ fn a_bare_am_stays_amharic_where_no_sibling_spells_american_out() {
         "{labels:?}"
     );
 }
+
+/// GT-466: the two Chinese texts of that same folder stopped being findings
+/// altogether - 0.04 MB, but a whole localization the user could see on disk
+/// and not in the app, while the French, German, Italian and Spanish files
+/// beside them stayed.
+///
+/// They are not members of any name-shape family (`Tannoy_Chinese_S` carries a
+/// script suffix no sibling has); they belong to the folder through the
+/// shared-position mechanism, and there they hang by a thread. A member of a
+/// position group has to share a *distinctive* atom with a different language,
+/// and an atom carried by more than half the group is not distinctive - so
+/// `Tannoy` proves nothing, and the only other atom `Tannoy_Chinese_T` has is
+/// the `t` of the short set's `t_*` names. When the dictionary learned `am`,
+/// `t_am.asr` joined that group as its seventh `t`, tipped `t` over the half
+/// mark, and both Chinese files fell out at once: `_T` lost its support and
+/// `_S`, which never had any of its own, lost the language that had been
+/// carrying it.
+///
+/// So this test is the whole folder, line for line, and it is deliberately
+/// unforgiving: sixteen files, ten findings, one label each. It is also run
+/// repeatedly, because the labels of a two-family folder are exactly what
+/// GT-229 made stop moving between runs.
+#[test]
+fn the_tannoy_folder_reads_the_same_ten_findings_every_run() {
+    let expected: Vec<(String, String)> = [
+        ("Tannoy_Chinese_S.asr", "zh-hans"),
+        ("Tannoy_Chinese_T.asr", "zh-hans"),
+        ("Tannoy_French.asr", "fr"),
+        ("Tannoy_German.asr", "de"),
+        ("Tannoy_Italian.asr", "it"),
+        ("Tannoy_Spanish.asr", "es"),
+        ("t_fr.asr", "fr"),
+        ("t_ge.asr", "de"),
+        ("t_it.asr", "it"),
+        ("t_sp.asr", "es"),
+    ]
+    .map(|(name, tag)| (name.to_string(), tag.to_string()))
+    .to_vec();
+
+    for run in 0..20 {
+        assert_eq!(
+            flagged_labels(TANNOY_FOLDER),
+            expected,
+            "run {run} disagreed"
+        );
+    }
+}
