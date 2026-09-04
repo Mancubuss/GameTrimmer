@@ -63,6 +63,30 @@ const MIN_FAMILY_SIZE_BARE_ONLY: usize = 5;
 /// bundles where de/el/he are body-variant codes, not German/Greek/Hebrew).
 /// Genuine bare-code sets essentially always cover 4+ languages.
 const MIN_SHAPE_FAMILY_SIZE_BARE_ONLY: usize = 4;
+/// How thin the language-named share of a folder's subdirectories may get
+/// before the folder reads as a storage tree rather than a set of
+/// translations, as a reciprocal: 20 means "at least one in twenty" (GT-465).
+///
+/// Warhammer 40,000: Darktide keeps `bundle\data\`, a content-addressed store
+/// of 256 subfolders named `00`..`ff`. Four of those names (`ca`, `da`, `de`,
+/// `fa`) are also language codes, and the moment the dictionary learned `ca`
+/// and `fa` the folder crossed the three-language bar and the whole tree
+/// became a localization: 55 findings became 3,605, and 1.28 GB of game data
+/// was offered for deletion. Counting how many languages a folder holds was
+/// never the question; the question is what share of it they are.
+///
+/// The threshold is measured, not guessed. Enumerating every folder in the
+/// library that a language-named subdirectory sits in: the thinnest *genuine*
+/// set is Galactic Civilizations III's `Movies\` at 3 of 26 (11.5%), and the
+/// densest *false* one is Dead Effect 2's `GI\level66` at 3 of 94 (3.2%).
+/// Nothing at all falls between 3.2% and 11.5%, and everything below is a
+/// hash tree. One in twenty sits in that gap with room on both sides.
+///
+/// This also subsumes the narrower guard the ticket proposed - "every code
+/// here is spelled with a-f only, so the folder is hexadecimal" - and reaches
+/// further: Underrail's `data\locale\creatures\` is 5 language names among
+/// 1,226 creature folders, and not one of them is hex.
+const MIN_LANGUAGE_FOLDER_SHARE: usize = 20;
 /// Length of the bare two-letter code class (`de`, `es`, `am`) - the only
 /// evidence [`shadowed_bare_codes`] ever second-guesses.
 const BARE_CODE_LEN: usize = 2;
@@ -976,6 +1000,9 @@ fn compute_folder_family(
     // parent_prefix -> child segment text (lowercase) -> (canonical, level)
     let mut folder_children: HashMap<String, HashMap<String, (&'static str, Level)>> =
         HashMap::new();
+    // parent_prefix -> *every* child folder name, language or not. The
+    // denominator - see `MIN_LANGUAGE_FOLDER_SHARE`.
+    let mut all_children: HashMap<String, HashSet<String>> = HashMap::new();
 
     for (i, segs) in seg_lists.iter().enumerate() {
         if i % CANCEL_POLL_INTERVAL == 0 {
@@ -987,6 +1014,10 @@ fn compute_folder_family(
         for j in 0..segs.len() - 1 {
             let parent_prefix = dir_key(segs, j);
             let child = &segs[j];
+            all_children
+                .entry(parent_prefix.clone())
+                .or_default()
+                .insert(child.lower.clone());
             if let Some((canonical, level)) = data.lookup(&child.lower) {
                 folder_children
                     .entry(parent_prefix)
@@ -1000,6 +1031,13 @@ fn compute_folder_family(
     for (parent_prefix, children) in &folder_children {
         let distinct: HashSet<&'static str> = children.values().map(|(c, _)| *c).collect();
         if distinct.len() < MIN_FAMILY_SIZE {
+            continue;
+        }
+        // A handful of language names lost among hundreds of siblings is a
+        // storage tree that happens to spell a few of them, not a set of
+        // translations - GT-465.
+        let siblings = all_children.get(parent_prefix).map_or(0, HashSet::len);
+        if children.len() * MIN_LANGUAGE_FOLDER_SHARE < siblings {
             continue;
         }
         for (child_lower, value) in children {

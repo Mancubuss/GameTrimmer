@@ -1006,6 +1006,85 @@ fn harness_replay_library() {
     }
 }
 
+// --- GT-465: a few language names among hundreds of siblings ------------
+
+/// Warhammer 40,000: Darktide stores its content by hash, in 256 folders
+/// named `00`..`ff`. Four of those names - `ca`, `da`, `de`, `fa` - are also
+/// language codes, and the day the dictionary learned `ca` and `fa` the
+/// folder crossed the three-language bar and the whole store became a
+/// localization: 55 findings turned into 3,605 and 1.28 GB of game data was
+/// offered for deletion.
+///
+/// The hexadecimal alphabet is what makes this inevitable rather than
+/// unlucky - a dense fixed alphabet will always spell a few language codes
+/// eventually - so the guard is about *share*, not about hex.
+#[test]
+fn four_language_names_among_two_hundred_and_fifty_six_are_a_hash_tree() {
+    let paths: Vec<String> = (0..256)
+        .map(|n| format!("bundle\\data\\{n:02x}\\{n:02x}36aa7024366ba7.stream"))
+        .collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    assert!(
+        found.is_empty(),
+        "a content-addressed store is not a language set, got {:?}",
+        found
+            .iter()
+            .map(|(i, f)| (refs[*i], &f.lang_tag))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The counter-example the ticket requires: an ordinary set of a handful of
+/// language subdirectories must still be recognized, or the fix has switched
+/// the mechanism off instead of narrowing it. Bare two-letter codes under a
+/// folder that says nothing, so the answer rests on the folder family alone.
+#[test]
+fn a_handful_of_language_folders_is_still_a_family() {
+    let found = find_for(&[
+        "data\\en\\text.dat",
+        "data\\de\\text.dat",
+        "data\\fr\\text.dat",
+        "data\\uk\\text.dat",
+        "data\\pl\\text.dat",
+    ]);
+
+    let tags: HashSet<&str> = found.iter().map(|(_, f)| f.lang_tag.as_str()).collect();
+    assert_eq!(
+        tags,
+        ["de", "fr", "pl"].into_iter().collect(),
+        "en and uk are kept, the rest is a family: {found:?}"
+    );
+}
+
+/// The tightest genuine case the library holds, and the one that fixes where
+/// the bar may sit: Galactic Civilizations III keeps three language folders
+/// among twenty-six. Three in twenty-six is the thinnest real set measured
+/// across every folder family in the library, and it has to survive - so the
+/// share may not be asked more strictly than about one in nine.
+#[test]
+fn three_language_folders_among_twenty_six_still_count() {
+    let mut paths: Vec<String> = ["fr", "de", "ru"]
+        .iter()
+        .map(|lang| format!("data\\{lang}\\clip.dat"))
+        .collect();
+    for n in 0..23 {
+        paths.push(format!("data\\cutscene{n:02}\\clip.dat"));
+    }
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    let tags: HashSet<&str> = found.iter().map(|(_, f)| f.lang_tag.as_str()).collect();
+    assert_eq!(
+        tags,
+        ["fr", "de", "ru"].into_iter().collect(),
+        "three in twenty-six is a real localization: {found:?}"
+    );
+}
+
 // --- GT-468: a slot that mostly holds something else is not a language set
 
 /// Learn Japanese To Survive ships the hiragana syllabary as voice clips.
