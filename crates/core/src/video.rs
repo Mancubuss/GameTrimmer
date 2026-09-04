@@ -372,16 +372,17 @@ fn encoder_for(codec: &str) -> Option<Encoder> {
             quality: &["-crf", "32", "-b:v", "0"],
             bits_per_pixel: 0.090,
         },
-        // `-g 64`, and the power of two is the point. libtheora packs its
-        // granule position by shifting the keyframe number by the width of
-        // the keyframe interval; handed ffmpeg's default it dies mid-file
-        // with `theora_encode_packetout failed [-1]` and leaves a truncated
-        // file behind. A power of two pushes the failure much further out but
-        // does not always remove it, which is why the frame check in
-        // `verify` is load-bearing for this codec in particular.
+        // `-g 256` is load-bearing, not a tuning preference. Handed ffmpeg's
+        // default keyframe interval, libtheora dies part-way through a long
+        // file with `theora_encode_packetout failed [-1]` and leaves a
+        // truncated one behind. The wall moves with the interval: measured on
+        // one 20 087-frame cutscene, the default stopped at frame 2 872,
+        // `-g 64` at 10 532, and `-g 256` encoded all of it. `-g 1024`
+        // produced a byte-identical file to `-g 256`, so the interval is
+        // clamped somewhere at or below 256 and asking for more buys nothing.
         "theora" => Encoder {
             name: "libtheora",
-            quality: &["-q:v", "6", "-g", "64"],
+            quality: &["-q:v", "6", "-g", "256"],
             bits_per_pixel: 0.140,
         },
         _ => return None,
