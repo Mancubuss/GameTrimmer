@@ -325,10 +325,9 @@ pub fn classify_game(
     // so it runs once over all of this game's files rather than per-file.
     // The cancellable variant polls `cancel` inside its own hot loops, so a
     // Stop request lands promptly even mid-analysis of a huge game.
-    let lang_findings: HashMap<usize, LangFinding> = lang_detector
-        .analyze_game_cancellable(&entries, cancel)?
-        .into_iter()
-        .collect();
+    let lang_analysis = lang_detector.analyze_game_cancellable(&entries, cancel)?;
+    let lang_findings: HashMap<usize, LangFinding> =
+        lang_analysis.findings.iter().cloned().collect();
 
     // First pass: combine each entry's rule/localization findings, keeping
     // the entry's index into `entries` so `assign_group_dirs` (which needs
@@ -428,7 +427,7 @@ pub fn classify_game(
 
     let flagged: HashSet<usize> = combined_by_index.iter().map(|(index, _)| *index).collect();
     let group_dirs = perf::timed(perf::Stage::Grouping, || {
-        assign_group_dirs(&entries, &flagged)
+        assign_group_dirs(&entries, &flagged, &lang_analysis.kept)
     });
 
     // One capture per game: every finding here shares the same trusted root,
@@ -609,16 +608,30 @@ fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<
 /// `\`-separated path of its shallowest fully-flagged ancestor directory,
 /// for UI-only tree grouping (see `model::build_tree`).
 ///
-/// Rationale: a folder where *every* file is flagged as non-essential can be
-/// shown - and deleted - as one unit instead of scattering its files across
+/// Rationale: a folder where *every* file is accounted for can be shown -
+/// and deleted - as one unit instead of scattering its files across
 /// whichever categories happen to match each of them individually. The
 /// *shallowest* such ancestor is chosen deliberately: it is the largest unit
 /// that is still wholly non-essential, so collapsing to it merges the most
 /// files while remaining exactly as safe to remove as any single flagged
-/// descendant. A directory must contain at least 2 files to be collapsible -
-/// a single-file "folder" gains nothing from collapsing, since the file's
-/// own row already represents it - and the (implicit) game root is never a
-/// candidate, since there is no bounding folder above it to collapse into.
+/// descendant. At least 2 of them must be flagged for the folder to be
+/// collapsible - collapsing a single row into a folder gains nothing, since
+/// the file's own row already represents it - and the (implicit) game root
+/// is never a candidate, since there is no bounding folder above it to
+/// collapse into.
+///
+/// "Accounted for" is deliberately wider than "flagged": a file the
+/// keep-language list claims (`keep_listed`, from
+/// [`LangAnalysis::kept`](crate::langdetect::LangAnalysis::kept)) does not
+/// block its folder either. A folder of 30 languages with `uk,en` kept used
+/// to produce 28 separate rows, because the two folders the user himself
+/// asked to keep made the folder "not fully flagged" - the one thing about
+/// it he had already decided. Anything left unflagged for *any other* reason
+/// still blocks the collapse, and that distinction is the whole point of the
+/// third argument: `Data\` with five junk files among two hundred the game
+/// needs must never collapse into a row reading `Data`, and it is exactly
+/// the case a rule of "collapse whatever has no unflagged blockers left"
+/// would get wrong.
 ///
 /// The directory chains are *borrowed* from each entry's `rel_path` wherever
 /// possible (see [`dir_prefixes`]): every ancestor path is a prefix of the
@@ -630,17 +643,25 @@ fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<
 pub fn assign_group_dirs(
     entries: &[FileEntry],
     flagged: &HashSet<usize>,
+    keep_listed: &HashSet<usize>,
 ) -> HashMap<usize, String> {
-    // Directory path -> (total files under it, flagged files under it).
-    let mut dir_stats: HashMap<Cow<'_, str>, (u32, u32)> = HashMap::new();
+    // Directory path -> (total files under it, flagged, keep-listed).
+    let mut dir_stats: HashMap<Cow<'_, str>, (u32, u32, u32)> = HashMap::new();
 
     for (index, entry) in entries.iter().enumerate() {
         let is_flagged = flagged.contains(&index);
+        // A rule that does not claim to match localized content can flag a
+        // file the keep-list also claims; counted once, on the flagged side,
+        // so the two counters can never sum past `total`.
+        let is_keep_listed = !is_flagged && keep_listed.contains(&index);
         for dir in dir_prefixes(&entry.rel_path) {
-            let stats = dir_stats.entry(dir).or_insert((0, 0));
+            let stats = dir_stats.entry(dir).or_insert((0, 0, 0));
             stats.0 += 1;
             if is_flagged {
                 stats.1 += 1;
+            }
+            if is_keep_listed {
+                stats.2 += 1;
             }
         }
     }
@@ -657,8 +678,9 @@ pub fn assign_group_dirs(
         // The chain is shallowest-first, so the first collapsible entry
         // found is the shallowest collapsible ancestor.
         let collapsible = dir_prefixes(&entry.rel_path).into_iter().find(|dir| {
-            let (total, flagged_count) = dir_stats.get(dir).copied().unwrap_or((0, 0));
-            total >= 2 && total == flagged_count
+            let (total, flagged_count, keep_listed_count) =
+                dir_stats.get(dir).copied().unwrap_or((0, 0, 0));
+            flagged_count >= 2 && total == flagged_count + keep_listed_count
         });
         if let Some(dir) = collapsible {
             group_dirs.insert(index, dir.into_owned());
@@ -846,7 +868,7 @@ mod tests {
         let entries = vec![entry(r"junk\a.txt"), entry(r"junk\b.txt")];
         let flagged: HashSet<usize> = [0, 1].into_iter().collect();
 
-        let groups = assign_group_dirs(&entries, &flagged);
+        let groups = assign_group_dirs(&entries, &flagged, &HashSet::new());
 
         assert_eq!(groups.get(&0), Some(&"junk".to_string()));
         assert_eq!(groups.get(&1), Some(&"junk".to_string()));
@@ -860,7 +882,7 @@ mod tests {
         ];
         let flagged: HashSet<usize> = [0].into_iter().collect();
 
-        let groups = assign_group_dirs(&entries, &flagged);
+        let groups = assign_group_dirs(&entries, &flagged, &HashSet::new());
 
         assert_eq!(
             groups.get(&0),
@@ -869,12 +891,68 @@ mod tests {
         );
     }
 
+    /// GT-42: the folder the old rule got wrong. A `Localization\` holding
+    /// 30 languages, with `uk,en` on the keep-list, is entirely accounted
+    /// for - 28 rows to delete, 2 the user himself asked to keep - so it
+    /// collapses to one row instead of 28.
+    #[test]
+    fn assign_group_dirs_collapses_a_folder_whose_unflagged_files_are_all_keep_listed() {
+        let langs = [
+            "uk", "en", "de", "fr", "es", "it", "pl", "pt", "ru", "ja", "ko", "zh", "cs", "da",
+            "nl", "fi", "el", "hu", "no", "sv", "tr", "ar", "bg", "he", "hr", "ro", "sk", "sl",
+            "th", "vi",
+        ];
+        let entries: Vec<FileEntry> = langs
+            .iter()
+            .map(|lang| entry(&format!("Localization\\text_{lang}.dat")))
+            .collect();
+        // Everything but the two kept languages is flagged; the two kept
+        // ones are unflagged, and the keep-list is why.
+        let keep_listed: HashSet<usize> = [0, 1].into_iter().collect();
+        let flagged: HashSet<usize> = (2..langs.len()).collect();
+
+        let groups = assign_group_dirs(&entries, &flagged, &keep_listed);
+
+        assert_eq!(
+            groups.len(),
+            28,
+            "every flagged language file belongs to the collapsed folder"
+        );
+        for index in 2..langs.len() {
+            assert_eq!(
+                groups.get(&index),
+                Some(&"Localization".to_string()),
+                "a keep-listed language must not stop its folder collapsing"
+            );
+        }
+    }
+
+    /// The other half of the same rule, and the reason it is not simply
+    /// "collapse anything with no blockers left": a `Data\` folder with five
+    /// junk files among two hundred the game needs must stay five rows, not
+    /// become one row reading `Data`.
+    #[test]
+    fn assign_group_dirs_does_not_collapse_a_folder_of_files_the_game_needs() {
+        let entries: Vec<FileEntry> = (0..200)
+            .map(|i| entry(&format!("Data\\asset_{i:03}.bin")))
+            .collect();
+        let flagged: HashSet<usize> = (0..5).collect();
+
+        let groups = assign_group_dirs(&entries, &flagged, &HashSet::new());
+
+        assert!(
+            groups.is_empty(),
+            "195 files the game needs are unflagged for a reason the keep-list \
+             never gave, so \"Data\" must not collapse"
+        );
+    }
+
     #[test]
     fn assign_group_dirs_does_not_collapse_a_single_file_folder() {
         let entries = vec![entry(r"lonely\only.txt")];
         let flagged: HashSet<usize> = [0].into_iter().collect();
 
-        let groups = assign_group_dirs(&entries, &flagged);
+        let groups = assign_group_dirs(&entries, &flagged, &HashSet::new());
 
         assert_eq!(
             groups.get(&0),
@@ -891,7 +969,7 @@ mod tests {
         let entries = vec![entry("junk/a.txt"), entry(r"junk\b.txt")];
         let flagged: HashSet<usize> = [0, 1].into_iter().collect();
 
-        let groups = assign_group_dirs(&entries, &flagged);
+        let groups = assign_group_dirs(&entries, &flagged, &HashSet::new());
 
         assert_eq!(groups.get(&0), Some(&"junk".to_string()));
         assert_eq!(groups.get(&1), Some(&"junk".to_string()));
@@ -902,7 +980,7 @@ mod tests {
         let entries = vec![entry(r"junk\a.txt"), entry(r"junk\b.txt")];
         let flagged: HashSet<usize> = [0].into_iter().collect();
 
-        let groups = assign_group_dirs(&entries, &flagged);
+        let groups = assign_group_dirs(&entries, &flagged, &HashSet::new());
 
         assert_eq!(
             groups.len(),
@@ -919,7 +997,7 @@ mod tests {
         let entries = vec![entry("a.txt"), entry("b.txt")];
         let flagged: HashSet<usize> = [0, 1].into_iter().collect();
 
-        let groups = assign_group_dirs(&entries, &flagged);
+        let groups = assign_group_dirs(&entries, &flagged, &HashSet::new());
 
         assert!(groups.is_empty(), "root-level files are always orphans");
     }
@@ -935,7 +1013,7 @@ mod tests {
         ];
         let flagged: HashSet<usize> = [0, 1, 2].into_iter().collect();
 
-        let groups = assign_group_dirs(&entries, &flagged);
+        let groups = assign_group_dirs(&entries, &flagged, &HashSet::new());
 
         assert_eq!(groups.get(&0), Some(&"top".to_string()));
         assert_eq!(groups.get(&1), Some(&"top".to_string()));
@@ -1011,6 +1089,54 @@ mod tests {
             FindingSource::Loc(LangKind::Text)
         ));
         assert_eq!(combined.lang_tag.as_deref(), Some("de"));
+    }
+
+    /// The wiring the two `assign_group_dirs` keep-list tests cannot see:
+    /// the kept indices have to travel from the localization detector to
+    /// the collapse rule. Nothing else populates them, so a `kept` set that
+    /// arrives empty would leave the rule correct and the feature dead.
+    #[test]
+    fn classify_game_lets_a_kept_language_folder_collapse_its_parent() {
+        // No rule matches; only the localization detector speaks here, and
+        // its default keep-list (uk, en) claims the English folder.
+        let engine = RuleEngine::from_json(
+            r#"{"version":1,"rules":[{"category":"docs_file","pattern":"zzz_never_matches","desc":"inert","confidence":50}]}"#,
+        )
+        .expect("valid test rules.json");
+        let lang_detector = LangDetector::new();
+        let entries = vec![
+            entry("Localization\\german\\text.txt"),
+            entry("Localization\\french\\text.txt"),
+            entry("Localization\\english\\text.txt"),
+        ];
+
+        let prepared = classify_game(
+            &engine,
+            &lang_detector,
+            GameIdentity {
+                id: 1,
+                name: "Test Game",
+                install_dir: Path::new("C:/Games/Test"),
+                app_id: None,
+            },
+            entries,
+            &interactive(&[]),
+            &AtomicBool::new(false),
+        )
+        .expect("uncancelled classify_game should succeed");
+
+        assert_eq!(
+            prepared.findings.len(),
+            2,
+            "German and French are removable; English is on the keep-list"
+        );
+        for finding in &prepared.findings {
+            assert_eq!(
+                finding.group_dir.as_deref(),
+                Some("Localization"),
+                "the kept English folder must not stop \"Localization\" collapsing"
+            );
+        }
     }
 
     /// `classify_game`'s `enabled_categories` filter is the single choke

@@ -77,6 +77,27 @@ pub struct LangFinding {
     pub reason: LangReason,
 }
 
+/// The result of analyzing one game: the removable-localization findings,
+/// plus the files the keep-language list claimed.
+///
+/// The kept indices are reported rather than dropped because "not a finding"
+/// covers two very different files - one the user's own keep-list protected,
+/// and one nothing had anything to say about - and at least one caller has to
+/// tell them apart. Folder-collapsing (`worker::assign_group_dirs`) is that
+/// caller: a folder of 30 languages with `uk,en` kept is wholly accounted
+/// for, so it collapses to one row, while a folder holding five junk files
+/// among two hundred the game needs is not, and must not.
+#[derive(Debug, Default, Clone)]
+pub struct LangAnalysis {
+    /// `(index into the analyzed file list, finding)` for every file
+    /// identified as a removable localization.
+    pub findings: Vec<(usize, LangFinding)>,
+    /// Indices of files a kept language claims, so no stage may remove them.
+    /// This is the same predicate [`LangDetector::carries_kept_language`]
+    /// answers for a lone path.
+    pub kept: HashSet<usize>,
+}
+
 /// The detection engine. Holds the data tables and the keep-list.
 pub struct LangDetector {
     data: Arc<LangData>,
@@ -117,6 +138,7 @@ impl LangDetector {
     pub fn analyze_game(&self, files: &[FileEntry]) -> Vec<(usize, LangFinding)> {
         self.analyze_game_cancellable(files, &AtomicBool::new(false))
             .expect("analyze_game without a cancel flag cannot fail")
+            .findings
     }
 
     /// Like [`analyze_game`](Self::analyze_game), but polls `cancel` inside its
@@ -132,7 +154,7 @@ impl LangDetector {
         &self,
         files: &[FileEntry],
         cancel: &AtomicBool,
-    ) -> CoreResult<Vec<(usize, LangFinding)>> {
+    ) -> CoreResult<LangAnalysis> {
         let seg_lists: Vec<_> = perf::timed(perf::Stage::Tokenize, || {
             collect_cancellable(files.iter().map(|f| tokenize_path(&f.rel_path)), cancel)
         })?;
@@ -148,6 +170,7 @@ impl LangDetector {
 
         let decide_started = std::time::Instant::now();
         let mut out = Vec::with_capacity(files.len());
+        let mut kept: HashSet<usize> = HashSet::new();
         for (i, (file, segs)) in files.iter().zip(seg_lists.iter()).enumerate() {
             if i % CANCEL_POLL_INTERVAL == 0 && cancel.load(Ordering::Relaxed) {
                 return Err(CoreError::Other("cancelled".to_string()));
@@ -158,6 +181,26 @@ impl LangDetector {
             // path for every one of a scan's ~875k findings.
             let ext = segs.last().and_then(|seg| extension_of(&seg.lower));
 
+            // A file living under a keep-language folder belongs to that
+            // language, no matter what its own name resembles: GRID keeps
+            // Japanese-named engine cues (`collision_drift_jpn_01.raw`)
+            // inside `audio\speech\en\` — the `en\` folder wins. The same
+            // goes for a file whose own name carries an unambiguous (A/B)
+            // keep-language token: `ai_voice_sk_vo_english.spk` is English
+            // VO ("sk" is a mission code), `*_LOC_INT.upk` is the English
+            // master locale.
+            //
+            // Asked before the executable skip below, so that `kept` answers
+            // the same question [`carries_kept_language`] does for a lone
+            // path: `Localization\en\helper.dll` *is* claimed by a kept
+            // language, and a caller that has to tell "the user kept it"
+            // apart from "nothing matched it" would otherwise be told the
+            // wrong one. Neither branch can produce a finding, so which one
+            // wins changes nothing about the findings themselves.
+            if self.keep_language_protects(&occ_lists[i], segs) {
+                kept.insert(i);
+                continue;
+            }
             // Executable code is never a removable localization, whatever
             // its name says: NVIDIA Streamline ships `sl.dlss.dll` ("sl" is
             // not Slovenian) and installers routinely embed helper DLLs.
@@ -167,17 +210,6 @@ impl LangDetector {
             let is_satellite_assembly =
                 ends_with_ignore_ascii_case(&file.rel_path, b".resources.dll");
             if matches!(ext, Some("dll") | Some("exe")) && !is_satellite_assembly {
-                continue;
-            }
-            // A file living under a keep-language folder belongs to that
-            // language, no matter what its own name resembles: GRID keeps
-            // Japanese-named engine cues (`collision_drift_jpn_01.raw`)
-            // inside `audio\speech\en\` — the `en\` folder wins. The same
-            // goes for a file whose own name carries an unambiguous (A/B)
-            // keep-language token: `ai_voice_sk_vo_english.spk` is English
-            // VO ("sk" is a mission code), `*_LOC_INT.upk` is the English
-            // master locale.
-            if self.keep_language_protects(&occ_lists[i], segs) {
                 continue;
             }
 
@@ -197,7 +229,10 @@ impl LangDetector {
         // Only the completed path is charged: a cancelled analysis reports
         // nothing anyway, so the early return above needs no bookkeeping.
         perf::add(perf::Stage::LangDecide, decide_started.elapsed());
-        Ok(out)
+        Ok(LangAnalysis {
+            findings: out,
+            kept,
+        })
     }
 
     /// Whether one of the user's kept languages claims this file, so no
