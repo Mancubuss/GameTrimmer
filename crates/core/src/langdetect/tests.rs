@@ -862,3 +862,90 @@ fn a_neighbour_that_is_not_a_curated_variant_does_not_qualify_the_language() {
         "a numeric neighbour must not invent a language variant, got {tags:?}"
     );
 }
+
+/// Replays the detector over real library paths and reports what it finds,
+/// broken down by language and by the evidence that produced each finding.
+///
+/// A full rescan needs administrator rights (the MFT reader) and about a
+/// minute and a half, which makes it a poor instrument for the inner loop of
+/// a detector change - and an impossible one when nobody is at the keyboard
+/// to answer the elevation prompt. This replays the paths of an existing
+/// scan instead: same detector, same real names, no privileges, seconds.
+///
+/// Ignored by default because it needs data that is not in the repository.
+/// Export it from the scan database and point the variable at it:
+///
+/// ```text
+/// sqlite3 -noheader copy-of-gametrimmer.db "
+///   SELECT g.name || char(9) || fi.rel_path
+///   FROM files fi JOIN games g ON g.id = fi.game_id
+///   ORDER BY g.name, fi.rel_path;" > paths.tsv
+/// GT460_PATHS=paths.tsv cargo test -p gametrimmer-core --lib -- \
+///   --ignored --nocapture harness_replay_library
+/// ```
+///
+/// What it cannot see: the scan database stores only files that produced a
+/// finding, so a replay carries the family members but not the silent files
+/// around them. Counts therefore track a rescan closely without being it -
+/// use it to compare a change against itself, not to replace the measurement.
+#[test]
+#[ignore]
+fn harness_replay_library() {
+    use std::collections::BTreeMap;
+    let path = std::env::var("GT460_PATHS").expect("set GT460_PATHS to the exported tsv");
+    let raw = std::fs::read_to_string(&path).expect("read tsv");
+
+    let mut by_game: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for line in raw.lines() {
+        let mut cols = line.split('\t');
+        let (Some(game), Some(rel)) = (cols.next(), cols.next()) else {
+            continue;
+        };
+        by_game
+            .entry(game.to_string())
+            .or_default()
+            .push(rel.to_string());
+    }
+
+    let detector = LangDetector::new();
+    let mut grand = 0usize;
+    for (game, paths) in &by_game {
+        let files: Vec<FileEntry> = paths.iter().map(|p| fe(p)).collect();
+        let found = detector.analyze_game(&files);
+        grand += found.len();
+        let mut per_tag: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, f) in &found {
+            *per_tag.entry(f.lang_tag.as_str()).or_default() += 1;
+        }
+        let top: Vec<String> = {
+            let mut v: Vec<_> = per_tag.into_iter().collect();
+            v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            v.into_iter()
+                .take(6)
+                .map(|(t, n)| format!("{t}:{n}"))
+                .collect()
+        };
+        let mut per_ev: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, f) in &found {
+            let name = match &f.reason.evidence {
+                LangEvidence::LocPair { .. } => "LocPair",
+                LangEvidence::TokenWithMarker { .. } => "TokenWithMarker",
+                LangEvidence::BareToken { .. } => "BareToken",
+                LangEvidence::Family { .. } => "Family",
+                LangEvidence::FamilyAtSharedPosition { .. } => "FamilyAtSharedPosition",
+                LangEvidence::SubfolderFamily { .. } => "SubfolderFamily",
+                LangEvidence::SubfolderFamilyWithPrefix { .. } => "SubfolderFamilyWithPrefix",
+            };
+            *per_ev.entry(name).or_default() += 1;
+        }
+        let ev: Vec<String> = per_ev.iter().map(|(k, n)| format!("{k}={n}")).collect();
+        println!(
+            "REPLAY {game}\tfiles={}\tfindings={}\t{}\t| {}",
+            paths.len(),
+            found.len(),
+            top.join(" "),
+            ev.join(" ")
+        );
+    }
+    println!("REPLAY TOTAL findings={grand}");
+}
