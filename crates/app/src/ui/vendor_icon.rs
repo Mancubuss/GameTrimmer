@@ -127,6 +127,17 @@ pub enum LauncherSource {
         inner: &'static str,
         exe: &'static str,
     },
+    /// Installed as a Microsoft Store package. Such an app has no uninstall
+    /// entry and no registry path at all, and its install directory carries
+    /// the package version in its own name, so any hard-coded path would die
+    /// on the launcher's first update. `family` is the package *family* name,
+    /// which never changes across versions, and Windows is asked where that
+    /// family is installed; `exe` is the executable's path inside the package
+    /// directory.
+    StorePackage {
+        family: &'static str,
+        exe: &'static str,
+    },
     /// No launcher executable to read an icon from, so the row keeps the
     /// lettered mark. Each entry below says why.
     None,
@@ -142,7 +153,9 @@ pub enum LauncherSource {
 /// resolved ten. Two more (EA, Paradox) resolve through
 /// [`LauncherSource::VersionedInstall`] - walking Program Files for the
 /// version-numbered folder the launcher actually installed into, since
-/// neither one's uninstall entry can be trusted to name the executable.
+/// neither one's uninstall entry can be trusted to name the executable. The
+/// last one (Xbox) is a Store package and appears in no registry route at
+/// all, so it resolves through [`LauncherSource::StorePackage`].
 pub const LAUNCHER_SOURCES: [(&str, LauncherSource); 15] = [
     (
         "amazon",
@@ -239,8 +252,17 @@ pub const LAUNCHER_SOURCES: [(&str, LauncherSource); 15] = [
         },
     ),
     // The Xbox app is a Store package: it has no uninstall entry and no
-    // registry path to its executable.
-    ("xbox", LauncherSource::None),
+    // registry path to its executable, so neither route above can reach it.
+    // Windows is asked for the package directory instead - the app itself
+    // carries a 256px icon, and the same extraction as everyone else reads
+    // it.
+    (
+        "xbox",
+        LauncherSource::StorePackage {
+            family: "Microsoft.GamingApp_8wekyb3d8bbwe",
+            exe: "XboxPcApp.exe",
+        },
+    ),
 ];
 
 /// Where `vendor`'s launcher lives, or [`LauncherSource::None`] for a vendor

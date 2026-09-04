@@ -19,7 +19,10 @@
 //!    own file, see [`is_plausible_launcher_icon`]) plus Steam's own install
 //!    root, plus - for a launcher whose uninstall entry cannot be trusted at
 //!    all - walking Program Files for the version-numbered folder it
-//!    actually installed into (see [`versioned_install_path`]).
+//!    actually installed into (see [`versioned_install_path`]), plus - for a
+//!    launcher installed from the Microsoft Store, which appears in no
+//!    registry route at all - asking Windows itself where the package lives
+//!    (see [`store_package_path`]).
 //! 2. **Extract the icon**, largest size first and scaled *down* - an
 //!    upscaled 16x16 icon would look worse than the letters it replaces.
 //! 3. **Cache the result**, hit or miss, for the life of the session. A
@@ -32,9 +35,14 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
+use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::Graphics::Gdi::{
     DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER,
     BI_RGB, DIB_RGB_COLORS, HDC, HGDIOBJ,
+};
+use windows::Win32::Storage::Packaging::Appx::{
+    GetPackagePathByFullName, GetPackagesByPackageFamily,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyIcon, GetIconInfo, PrivateExtractIconsW, HICON, ICONINFO,
@@ -135,6 +143,7 @@ fn launcher_exe(vendor: &str) -> Option<PathBuf> {
         LauncherSource::VersionedInstall { parent, inner, exe } => {
             versioned_install_path(parent, inner, exe)
         }
+        LauncherSource::StorePackage { family, exe } => store_package_path(family, exe),
         LauncherSource::None => None,
     }
 }
@@ -310,6 +319,114 @@ fn find_in_version_folders(parent: &Path, inner: &str, exe: &str) -> Option<Path
             .collect();
     candidates.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
     candidates.pop().map(|(path, ..)| path)
+}
+
+/// The fourth lookup route: a Microsoft Store package, which is in neither
+/// the uninstall registry nor a predictable directory. Windows is asked which
+/// packages of `family` are installed and where each one lives; the family
+/// name is the part of a package's identity that survives every update, while
+/// the directory name carries the version and does not.
+fn store_package_path(family: &str, exe: &str) -> Option<PathBuf> {
+    first_package_holding(
+        package_full_names(family)
+            .iter()
+            .filter_map(|full_name| package_path(full_name)),
+        exe,
+    )
+}
+
+/// The first package directory that actually holds `exe`.
+///
+/// Two reasons this is a search rather than a single lookup: one family can
+/// have several packages installed at once (a second architecture, a staged
+/// update), and `WindowsApps` is an access-controlled directory - a package
+/// this process cannot read simply fails the file check and the next
+/// candidate, or the lettered mark, takes over.
+fn first_package_holding(roots: impl IntoIterator<Item = PathBuf>, exe: &str) -> Option<PathBuf> {
+    roots
+        .into_iter()
+        .map(|root| root.join(to_windows_path(exe)))
+        .find(|path| path.is_file())
+}
+
+/// Full names of every installed package in `family`. Empty when the family
+/// is not installed at all, which is the ordinary case for a launcher this
+/// machine does not have and must stay as quiet as any other miss.
+fn package_full_names(family: &str) -> Vec<String> {
+    let family = wide(family);
+    let mut count = 0u32;
+    let mut chars = 0u32;
+    // SAFETY: the sizing call - both out params are live for its duration,
+    // and passing no buffers is how this API is asked how large they must be.
+    //
+    // Its own code is deliberately dropped: a *successful* sizing call
+    // reports "insufficient buffer", so the two sizes it wrote are the
+    // answer, and the guard below reads them instead.
+    unsafe {
+        let _ =
+            GetPackagesByPackageFamily(PCWSTR(family.as_ptr()), &mut count, None, &mut chars, None);
+    };
+    if count == 0 || chars == 0 {
+        return Vec::new();
+    }
+
+    let mut names = vec![PWSTR::null(); count as usize];
+    let mut buffer = vec![0u16; chars as usize];
+    // SAFETY: `names` holds exactly `count` entries and `buffer` exactly
+    // `chars` wide chars - the sizes the call above asked for. The pointers
+    // written into `names` point into `buffer`, which outlives the reads.
+    let error = unsafe {
+        GetPackagesByPackageFamily(
+            PCWSTR(family.as_ptr()),
+            &mut count,
+            Some(names.as_mut_ptr()),
+            &mut chars,
+            Some(PWSTR(buffer.as_mut_ptr())),
+        )
+    };
+    if error != ERROR_SUCCESS {
+        return Vec::new();
+    }
+    names
+        .iter()
+        .take(count as usize)
+        // SAFETY: each pointer was written by the call above and names a
+        // NUL-terminated string inside `buffer`, still alive here.
+        .filter_map(|name| unsafe { name.to_string() }.ok())
+        .collect()
+}
+
+/// Where Windows installed one package, by full name.
+fn package_path(full_name: &str) -> Option<PathBuf> {
+    let full_name = wide(full_name);
+    let mut chars = 0u32;
+    // SAFETY: the sizing call; `chars` is live and no buffer is passed. Its
+    // code is dropped for the same reason as above - the size it writes is
+    // the answer, and the guard below reads it.
+    unsafe {
+        let _ = GetPackagePathByFullName(PCWSTR(full_name.as_ptr()), &mut chars, None);
+    };
+    if chars == 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; chars as usize];
+    // SAFETY: `buffer` holds exactly the `chars` wide chars the call above
+    // asked for, including the terminator.
+    let error = unsafe {
+        GetPackagePathByFullName(
+            PCWSTR(full_name.as_ptr()),
+            &mut chars,
+            Some(PWSTR(buffer.as_mut_ptr())),
+        )
+    };
+    (error == ERROR_SUCCESS)
+        .then(|| PathBuf::from(String::from_utf16_lossy(&buffer).trim_end_matches('\0')))
+}
+
+/// A NUL-terminated wide string, which is what both package calls take.
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// Reads the largest icon `exe` carries and scales it down to [`STORED_PX`].
@@ -665,6 +782,48 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("does not exist");
         assert_eq!(find_in_version_folders(&missing, "", "app.exe"), None);
+    }
+
+    #[test]
+    fn the_package_directory_holding_the_exe_is_chosen() {
+        // A family with two packages installed - a second architecture, or
+        // an update staged beside the running one - where only one of them
+        // carries the executable.
+        let dir = tempfile::tempdir().unwrap();
+        touch(
+            dir.path(),
+            r"Microsoft.GamingApp_1.0.0.0_x86__8wek\other.exe",
+        );
+        touch(
+            dir.path(),
+            r"Microsoft.GamingApp_2.0.0.0_x64__8wek\XboxPcApp.exe",
+        );
+        let roots = vec![
+            dir.path().join("Microsoft.GamingApp_1.0.0.0_x86__8wek"),
+            dir.path().join("Microsoft.GamingApp_2.0.0.0_x64__8wek"),
+        ];
+
+        assert_eq!(
+            first_package_holding(roots, "XboxPcApp.exe"),
+            Some(
+                dir.path()
+                    .join("Microsoft.GamingApp_2.0.0.0_x64__8wek")
+                    .join("XboxPcApp.exe")
+            ),
+            "a package of the family that does not carry the executable was chosen"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_or_absent_package_directory_falls_back_without_panicking() {
+        // The counter-example: WindowsApps is access-controlled, and a
+        // family that is not installed resolves to no directory at all.
+        // Both must be as quiet as any other miss.
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![dir.path().join("Microsoft.GamingApp_1.0.0.0_x64__8wek")];
+
+        assert_eq!(first_package_holding(roots, "XboxPcApp.exe"), None);
+        assert_eq!(first_package_holding(Vec::new(), "XboxPcApp.exe"), None);
     }
 
     #[test]
