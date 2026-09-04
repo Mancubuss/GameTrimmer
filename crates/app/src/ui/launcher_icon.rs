@@ -15,7 +15,11 @@
 //!    documented `App Paths` key was measured first and resolved none of the
 //!    14 vendors on a real machine, so the route is the uninstall registry
 //!    (`InstallLocation` plus the launcher's file name, falling back to the
-//!    `DisplayIcon` the same entry records) plus Steam's own install root.
+//!    `DisplayIcon` the same entry records - guarded against an installer's
+//!    own file, see [`is_plausible_launcher_icon`]) plus Steam's own install
+//!    root, plus - for a launcher whose uninstall entry cannot be trusted at
+//!    all - walking Program Files for the version-numbered folder it
+//!    actually installed into (see [`versioned_install_path`]).
 //! 2. **Extract the icon**, largest size first and scaled *down* - an
 //!    upscaled 16x16 icon would look worse than the letters it replaces.
 //! 3. **Cache the result**, hit or miss, for the life of the session. A
@@ -128,6 +132,9 @@ fn launcher_exe(vendor: &str) -> Option<PathBuf> {
             exe.is_file().then_some(exe)
         }
         LauncherSource::Uninstall { .. } => uninstall_paths().get(vendor).cloned(),
+        LauncherSource::VersionedInstall { parent, inner, exe } => {
+            versioned_install_path(parent, inner, exe)
+        }
         LauncherSource::None => None,
     }
 }
@@ -195,7 +202,33 @@ fn launcher_path_from_entry(entry: &RegKey, exe: &str) -> Option<PathBuf> {
     }
     let icon = entry.get_value::<String, _>("DisplayIcon").ok()?;
     let candidate = to_windows_path(&parse_icon_spec(&icon));
-    candidate.is_file().then_some(candidate)
+    (candidate.is_file() && is_plausible_launcher_icon(&candidate)).then_some(candidate)
+}
+
+/// Rejects a `DisplayIcon` that plainly does not name the launcher itself,
+/// so a wrong icon is never shown - the lettered mark is a better fallback
+/// than someone else's file. Two shapes are rejected: a path staged under a
+/// Windows Installer `Package Cache` directory (an installer bundle left
+/// behind after install, never the app - this is what defeated Paradox,
+/// whose `DisplayIcon` points at `LauncherInstallerBundle.exe` there), and a
+/// file whose own name reads as an installer or uninstaller rather than the
+/// product (`unins000.exe`, `FooInstaller.exe`).
+///
+/// Humble's `DisplayIcon` (`Humble App.exe`) and itch's (`app.ico`) are the
+/// legitimate route for those two vendors and must keep passing this check.
+fn is_plausible_launcher_icon(path: &Path) -> bool {
+    if path
+        .to_string_lossy()
+        .to_lowercase()
+        .contains("package cache")
+    {
+        return false;
+    }
+    let stem = path
+        .file_stem()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    !stem.starts_with("unins") && !stem.contains("installer")
 }
 
 /// Registry paths are not consistently backslashed - Riot records its install
@@ -217,6 +250,66 @@ fn parse_icon_spec(spec: &str) -> String {
         Some(at) if trimmed[at + 1..].trim().parse::<i32>().is_ok() => trimmed[..at].to_string(),
         _ => trimmed.to_string(),
     }
+}
+
+/// Program Files roots to search: the 64-bit one, plus the distinct 32-bit
+/// one when `ProgramFiles(x86)` names a different directory. Both Paradox
+/// and EA ship 64-bit installers today, but checking the 32-bit root too
+/// costs one extra env var read and protects against an older or
+/// differently-built install landing there instead.
+fn program_files_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(dir) = std::env::var("ProgramFiles") {
+        roots.push(PathBuf::from(dir));
+    }
+    if let Ok(dir) = std::env::var("ProgramFiles(x86)") {
+        let dir = PathBuf::from(dir);
+        if !roots.contains(&dir) {
+            roots.push(dir);
+        }
+    }
+    roots
+}
+
+/// The third lookup route: `parent` (relative to a Program Files root) holds
+/// one subfolder per installed version, and [`find_in_version_folders`]
+/// picks the one that actually carries the launcher.
+fn versioned_install_path(parent: &str, inner: &str, exe: &str) -> Option<PathBuf> {
+    program_files_roots()
+        .into_iter()
+        .find_map(|root| find_in_version_folders(&root.join(to_windows_path(parent)), inner, exe))
+}
+
+/// Picks the one immediate subfolder of `parent` that actually holds
+/// `inner/exe` (`inner` empty when the exe sits directly in the version
+/// folder). `parent` can hold subfolders that are not version folders at
+/// all: Paradox's also keeps a `.cpatch` service folder with no exe in it,
+/// and it shares its modification time with the real version folder, so
+/// "pick the newest folder" alone cannot tell them apart. Only a folder
+/// that actually contains the exe is a candidate; if more than one does,
+/// the newest modification time wins, and a further tie goes to the
+/// greatest folder name.
+fn find_in_version_folders(parent: &Path, inner: &str, exe: &str) -> Option<PathBuf> {
+    let mut candidates: Vec<(PathBuf, std::time::SystemTime, std::ffi::OsString)> =
+        std::fs::read_dir(parent)
+            .ok()?
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| {
+                let mut candidate = entry.path();
+                if !inner.is_empty() {
+                    candidate = candidate.join(to_windows_path(inner));
+                }
+                candidate = candidate.join(exe);
+                if !candidate.is_file() {
+                    return None;
+                }
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                Some((candidate, modified, entry.file_name()))
+            })
+            .collect();
+    candidates.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
+    candidates.pop().map(|(path, ..)| path)
 }
 
 /// Reads the largest icon `exe` carries and scales it down to [`STORED_PX`].
@@ -502,6 +595,109 @@ mod tests {
         assert!(icons.texture_with(&ctx, "steam", load).is_some());
         assert!(icons.texture_with(&ctx, "steam", load).is_some());
         assert_eq!(calls.get(), 1, "the icon was extracted more than once");
+    }
+
+    /// Creates an empty file at `dir/rel`, making its parent directories
+    /// first. Used to build the small directory trees the version-folder
+    /// tests probe.
+    fn touch(dir: &Path, rel: &str) {
+        let path = dir.join(to_windows_path(rel));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"").unwrap();
+    }
+
+    #[test]
+    fn only_the_subfolder_holding_the_exe_is_chosen() {
+        // Paradox's real shape: a `.cpatch` service folder with no exe next
+        // to the actual version folder that has one.
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), r".cpatch\launcher-v2-bootstrapper");
+        touch(dir.path(), r"launcher-v2.2026.10\Paradox Launcher.exe");
+
+        let found = find_in_version_folders(dir.path(), "", "Paradox Launcher.exe");
+        assert_eq!(
+            found,
+            Some(
+                dir.path()
+                    .join("launcher-v2.2026.10")
+                    .join("Paradox Launcher.exe")
+            ),
+            "the service folder with no exe was picked over the real version folder"
+        );
+    }
+
+    #[test]
+    fn an_inner_subpath_below_the_version_folder_resolves() {
+        // EA's shape: the exe sits one folder deeper than the version
+        // folder itself.
+        let dir = tempfile::tempdir().unwrap();
+        touch(
+            dir.path(),
+            r"13.764.6.6279-1786420265\EA Desktop\EADesktop.exe",
+        );
+
+        let found = find_in_version_folders(dir.path(), "EA Desktop", "EADesktop.exe");
+        assert_eq!(
+            found,
+            Some(
+                dir.path()
+                    .join("13.764.6.6279-1786420265")
+                    .join("EA Desktop")
+                    .join("EADesktop.exe")
+            ),
+            "the inner-subpath shape was not resolved"
+        );
+    }
+
+    #[test]
+    fn no_version_folder_at_all_falls_back_without_panicking() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "ThirdPartyLicenses.txt");
+
+        assert_eq!(
+            find_in_version_folders(dir.path(), "", "Paradox Launcher.exe"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_missing_parent_directory_returns_none_without_panicking() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does not exist");
+        assert_eq!(find_in_version_folders(&missing, "", "app.exe"), None);
+    }
+
+    #[test]
+    fn a_display_icon_under_package_cache_is_rejected() {
+        let path = PathBuf::from(
+            r"C:\Users\Mancubus\AppData\Local\Package Cache\{GUID}\LauncherInstallerBundle.exe",
+        );
+        assert!(
+            !is_plausible_launcher_icon(&path),
+            "an installer bundle staged under Package Cache was accepted as the launcher"
+        );
+    }
+
+    #[test]
+    fn a_display_icon_named_like_an_uninstaller_is_rejected() {
+        assert!(!is_plausible_launcher_icon(&PathBuf::from(
+            r"C:\Program Files (x86)\GOG Galaxy\unins001.exe"
+        )));
+        assert!(!is_plausible_launcher_icon(&PathBuf::from(
+            r"C:\Users\Mancubus\AppData\Local\Amazon Games\App\Uninstall Amazon Games.exe"
+        )));
+    }
+
+    #[test]
+    fn humble_and_itch_display_icons_are_still_accepted() {
+        // The counter-example: without it, the guard above could be
+        // rejecting everything and still look green.
+        assert!(is_plausible_launcher_icon(&PathBuf::from(
+            r"C:\Users\Mancubus\AppData\Local\Programs\Humble App\Humble App.exe"
+        )));
+        assert!(is_plausible_launcher_icon(&PathBuf::from(
+            r"C:\Users\Mancubus\AppData\Local\itch\app.ico"
+        )));
     }
 
     #[test]

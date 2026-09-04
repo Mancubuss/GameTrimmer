@@ -114,6 +114,19 @@ pub enum LauncherSource {
         display_name: &'static str,
         exe: &'static str,
     },
+    /// Installed under a version-numbered subfolder of a known parent
+    /// directory (resolved under Program Files), for a launcher whose
+    /// uninstall entry cannot be trusted to name the executable: Paradox
+    /// Launcher registers an entry but leaves `InstallLocation` empty and
+    /// records its installer bundle as `DisplayIcon`; EA Desktop registers
+    /// no uninstall entry at all. `parent` is relative to a Program Files
+    /// root; `inner` is the subpath below the version folder itself, empty
+    /// when the exe sits directly in it.
+    VersionedInstall {
+        parent: &'static str,
+        inner: &'static str,
+        exe: &'static str,
+    },
     /// No launcher executable to read an icon from, so the row keeps the
     /// lettered mark. Each entry below says why.
     None,
@@ -126,7 +139,10 @@ pub enum LauncherSource {
 /// documented `App Paths` registry key was probed first and resolved *zero*
 /// of the 14 - not Steam, not GOG, not Epic - so it is not consulted at all;
 /// the uninstall registry, which the standalone-games sweep already reads,
-/// resolved ten.
+/// resolved ten. Two more (EA, Paradox) resolve through
+/// [`LauncherSource::VersionedInstall`] - walking Program Files for the
+/// version-numbered folder the launcher actually installed into, since
+/// neither one's uninstall entry can be trusted to name the executable.
 pub const LAUNCHER_SOURCES: [(&str, LauncherSource); 15] = [
     (
         "amazon",
@@ -143,9 +159,16 @@ pub const LAUNCHER_SOURCES: [(&str, LauncherSource); 15] = [
         },
     ),
     // The EA app installs under a version-numbered directory and registers
-    // no uninstall entry and no path value of its own, so there is nothing
-    // stable to point at.
-    ("ea", LauncherSource::None),
+    // no uninstall entry of its own, so it is found the same way as
+    // Paradox below: by walking Program Files for the version folder.
+    (
+        "ea",
+        LauncherSource::VersionedInstall {
+            parent: r"Electronic Arts\EA Desktop",
+            inner: "EA Desktop",
+            exe: "EADesktop.exe",
+        },
+    ),
     (
         "epic",
         LauncherSource::Uninstall {
@@ -181,10 +204,15 @@ pub const LAUNCHER_SOURCES: [(&str, LauncherSource); 15] = [
     ),
     // Added by hand: no launcher exists by definition.
     ("manual", LauncherSource::None),
+    // Paradox does register an uninstall entry ("Paradox Launcher v2"), but
+    // both the HKLM and HKCU copies leave `InstallLocation` empty and record
+    // their installer bundle (under `Package Cache`) as `DisplayIcon` - not
+    // the launcher. Read the same way as EA above instead of trusting either.
     (
         "paradox",
-        LauncherSource::Uninstall {
-            display_name: "Paradox Launcher",
+        LauncherSource::VersionedInstall {
+            parent: r"Paradox Interactive\launcher",
+            inner: "",
             exe: "Paradox Launcher.exe",
         },
     ),
