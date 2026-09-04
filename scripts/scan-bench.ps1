@@ -172,6 +172,37 @@ if (-not $SkipBuild) {
 if (-not (Test-Path $BenchExe)) {
     Fail "нема $BenchExe - прожени без -SkipBuild."
 }
+
+# Existing is not the same as current. `-SkipBuild` used to check only that
+# the file was there, so a bench exe built a week ago ran happily and its
+# entry went into the log signed with today's HEAD - the log then asserted a
+# commit the measured binary had never seen. That is worse than no number: it
+# produced "РЕГРЕСІЯ: total 65.1s -> 116.3s" on code that was not in the
+# binary, and it was caught only because the expected direction happened to be
+# the opposite one.
+#
+# The guard compares mtimes, not commits, and that choice is the answer to
+# "will this cry wolf on the normal workflow?". Committing does not touch a
+# working file's mtime, so the ordinary order - build, measure, commit - still
+# passes with -SkipBuild afterwards. What fails is the only case that matters:
+# a source file newer than the binary, which the binary therefore cannot
+# contain. It also catches the exact incident above, where a fresh build had
+# been copied to dist/gametrimmer.exe while the bench kept running the stale
+# dist/gametrimmer-bench.exe beside it.
+if ($SkipBuild) {
+    $benchBuilt = (Get-Item $BenchExe).LastWriteTimeUtc
+    $sources = @(Get-ChildItem -Path (Join-Path $RepoRoot 'crates') -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in '.rs', '.toml', '.json' })
+    $sources += @(Get-ChildItem -Path (Join-Path $RepoRoot 'Cargo.toml'), (Join-Path $RepoRoot 'Cargo.lock') -ErrorAction SilentlyContinue)
+    $newer = @($sources | Where-Object { $_.LastWriteTimeUtc -gt $benchBuilt } | Sort-Object LastWriteTimeUtc -Descending)
+    if ($newer.Count -gt 0) {
+        $names = ($newer | Select-Object -First 3 | ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1) }) -join ', '
+        $more = if ($newer.Count -gt 3) { " (і ще $($newer.Count - 3))" } else { '' }
+        Fail ("бінар $BenchExe зібрано $($benchBuilt.ToLocalTime().ToString('yyyy-MM-dd HH:mm')), " +
+            "а джерела новіші за нього: $names$more. Прожени без -SkipBuild - інакше запис піде у " +
+            'журнал підписаний поточним HEAD, якого цей бінар не бачив.')
+    }
+}
 }
 
 # --------------------------------------------------------------------- run
