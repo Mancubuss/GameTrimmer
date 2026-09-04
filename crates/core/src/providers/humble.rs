@@ -168,6 +168,11 @@ struct HumbleGame {
     machine_name: Option<String>,
     #[serde(rename = "filePath")]
     file_path: Option<String>,
+    /// What is actually on disk right now - see `build_ids` below. Not
+    /// `latestBuildVersion`, which is what Humble's servers currently offer
+    /// and may not be downloaded yet.
+    #[serde(rename = "downloadedVersion")]
+    downloaded_version: Option<String>,
 }
 
 /// Parses the config JSON into the download location and installed games it
@@ -229,6 +234,68 @@ fn build_game_install(game: HumbleGame) -> Option<GameInstall> {
         install_dir: path,
         app_id: game.machine_name,
     })
+}
+
+/// Per-game "what's installed right now" build ids, keyed by `machineName` -
+/// the same value this provider reports as `app_id` in `build_game_install`
+/// above - to `downloadedVersion`, the version actually sitting on disk.
+/// This is Humble's counterpart to Steam's `buildid` and Epic's
+/// `AppVersionString`: `gamestate::changed_games` diffs the value recorded at
+/// the last scan against the one read here to answer "did this game come
+/// back after an update?" without rescanning its files.
+///
+/// Deliberately reads `downloadedVersion`, not `latestBuildVersion`.
+/// `latestBuildVersion` only says a newer build exists on Humble's servers;
+/// until the app actually downloads it, nothing on disk has changed and no
+/// previous trim has been undone. That belongs to a future "an update is
+/// brewing" warning, not to this "what came back" comparison.
+///
+/// Humble App not installed (no config.json) is the ordinary case on a
+/// machine without the launcher, matching `discover_humble`'s treatment of
+/// the same condition - not an error, an empty map. A read failure past that
+/// point is unexpected and propagated.
+pub fn build_ids() -> crate::error::Result<std::collections::HashMap<String, String>> {
+    let Some(config_path) = config_path().filter(|path| path.is_file()) else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let contents = std::fs::read_to_string(&config_path)?;
+    build_ids_from_config(&contents)
+}
+
+/// The testable core of `build_ids`: everything past a read config.json.
+/// Split out so tests can drive it directly, mirroring `parse_config_report`.
+///
+/// Mirrors `build_game_install`'s installed/downloaded status filter -
+/// a map that disagreed with discovery about which games exist would report
+/// phantom changes for games this provider does not even consider present.
+/// And like `build_game_install`, a missing or blank `machineName` or
+/// `downloadedVersion` drops the entry rather than inserting an empty
+/// string, so `changed_games` reads its absence as "unknown, claim nothing"
+/// instead of a false update.
+pub fn build_ids_from_config(
+    contents: &str,
+) -> crate::error::Result<std::collections::HashMap<String, String>> {
+    let config: HumbleConfig = serde_json::from_str(contents)?;
+    let mut ids = std::collections::HashMap::new();
+    for game in config.game_collection {
+        let Some(status) = game.status.as_deref() else {
+            continue;
+        };
+        if !INSTALLED_STATUSES
+            .iter()
+            .any(|installed| installed.eq_ignore_ascii_case(status.trim()))
+        {
+            continue;
+        }
+        let Some(machine_name) = game.machine_name.filter(|s| !s.trim().is_empty()) else {
+            continue;
+        };
+        let Some(version) = game.downloaded_version.filter(|s| !s.trim().is_empty()) else {
+            continue;
+        };
+        ids.insert(machine_name, version);
+    }
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -330,6 +397,7 @@ mod tests {
             game_name: None,
             machine_name: Some("ftl_game".to_string()),
             file_path: Some(r"F:\Humble\FTL".to_string()),
+            downloaded_version: None,
         })
         .expect("expected a parsed game");
 
@@ -343,6 +411,7 @@ mod tests {
             game_name: Some("Game".to_string()),
             machine_name: None,
             file_path: None,
+            downloaded_version: None,
         })
         .is_none());
     }
@@ -480,5 +549,73 @@ mod tests {
             "the failed probe must be visible, not silently dropped: {:?}",
             report.diagnostics
         );
+    }
+
+    #[test]
+    fn build_ids_from_config_maps_machine_name_to_downloaded_version() {
+        let json = r#"
+{
+    "game-collection-4": [
+        {
+            "status": "installed",
+            "gameName": "FTL: Faster Than Light",
+            "machineName": "ftl_game",
+            "filePath": "F:\\Humble\\FTL",
+            "downloadedVersion": "1.6.13"
+        }
+    ]
+}
+"#;
+
+        let ids = build_ids_from_config(json).unwrap();
+
+        assert_eq!(ids.get("ftl_game"), Some(&"1.6.13".to_string()));
+    }
+
+    /// A missing or blank `downloadedVersion` must drop the entry entirely,
+    /// not map it to `""` - an empty string would misrepresent it as a known
+    /// (and matching-anything) build id, the same reasoning as
+    /// `build_ids_from_manifests_omits_entry_when_version_missing` in
+    /// `epic.rs`.
+    #[test]
+    fn build_ids_from_config_omits_entry_with_missing_or_empty_downloaded_version() {
+        let json = r#"
+{
+    "game-collection-4": [
+        { "status": "installed", "gameName": "No Version", "machineName": "no_version_game", "filePath": "F:\\Humble\\NoVersion" },
+        { "status": "installed", "gameName": "Blank Version", "machineName": "blank_version_game", "filePath": "F:\\Humble\\Blank", "downloadedVersion": "   " }
+    ]
+}
+"#;
+
+        let ids = build_ids_from_config(json).unwrap();
+
+        assert!(ids.is_empty(), "{ids:?}");
+    }
+
+    /// A catalogue entry Humble has not installed (`available`, the ordinary
+    /// state for an owned-but-not-downloaded title) must not appear in the
+    /// map even if it happens to carry a `downloadedVersion` from a prior
+    /// install - a map that disagrees with discovery about which games exist
+    /// would report a phantom change for a game this provider does not
+    /// consider present.
+    #[test]
+    fn build_ids_from_config_excludes_a_game_that_is_not_installed() {
+        let json = r#"
+{
+    "game-collection-4": [
+        { "status": "available", "gameName": "Owned Not Installed", "machineName": "owned_not_installed", "downloadedVersion": "2.0.0" }
+    ]
+}
+"#;
+
+        let ids = build_ids_from_config(json).unwrap();
+
+        assert!(ids.is_empty(), "{ids:?}");
+    }
+
+    #[test]
+    fn build_ids_from_config_returns_err_for_malformed_json() {
+        assert!(build_ids_from_config("not json").is_err());
     }
 }

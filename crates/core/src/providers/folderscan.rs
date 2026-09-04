@@ -379,6 +379,37 @@ struct GogInfo {
     game_id: Option<String>,
     #[serde(rename = "rootGameId")]
     root_game_id: Option<String>,
+    // GOG's own manifests write this as a JSON string (e.g. "50596806354071163"),
+    // but nothing enforces that beyond convention. If this field were typed as
+    // `Option<String>` and one install wrote it as a bare JSON number, serde
+    // would fail to deserialize the *entire* `GogInfo` struct for that
+    // manifest - silently losing the name and gameId read too, not just the
+    // build id. Accepting either shape here keeps a numeric buildId from
+    // regressing the name/id lookup that already ships.
+    #[serde(rename = "buildId", default, deserialize_with = "deserialize_build_id")]
+    build_id: Option<String>,
+}
+
+/// Accepts `buildId` as either a JSON string or a JSON number and normalizes
+/// both to a `String` - see the comment on `GogInfo::build_id` for why this
+/// must not be a strict `Option<String>`.
+fn deserialize_build_id<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumber {
+        String(String),
+        Number(serde_json::Number),
+    }
+
+    Ok(
+        Option::<StringOrNumber>::deserialize(deserializer)?.map(|value| match value {
+            StringOrNumber::String(s) => s,
+            StringOrNumber::Number(n) => n.to_string(),
+        }),
+    )
 }
 
 impl GogInfo {
@@ -395,6 +426,73 @@ impl GogInfo {
         let name = self.name.clone().filter(|s| !s.trim().is_empty())?;
         Some((name, self.game_id.clone()))
     }
+}
+
+/// Reads the base game's `buildId` from every GOG game folder directly under
+/// `library_root`, keyed by the same `gameId` value folderscan reports as
+/// `app_id`. This is GOG's answer to Steam's build id: the manifest carries
+/// no update timestamp, so `buildId` is the only field that changes when a
+/// game's content changes, which is what lets `core::gamestate::changed_games`
+/// tell "this game came back after an update" apart from "this is the same
+/// install as last scan".
+///
+/// Uses the same game/non-game boundary discovery already applies for GOG
+/// folders (`is_infrastructure_dir`, `try_holds_installed_files`) so this map
+/// never reports a build id for - or omits one for - a directory discovery
+/// itself would disagree about.
+///
+/// Deliberately narrower than `read_gog_info_report`'s name lookup: a folder
+/// whose only manifest is a DLC (or otherwise fails `is_base_game`) is simply
+/// absent here, with no fallback to "the first manifest found". Name lookup
+/// falls back for display purposes, where an approximate name is harmless;
+/// a build id borrowed from the wrong product would misreport whether the
+/// *base game* changed, which is actively wrong rather than imprecise.
+///
+/// A missing or unreadable `library_root`, a directory with no base manifest,
+/// or a base manifest with no (or empty) `buildId` all yield an absent entry
+/// rather than an error - `changed_games` reads a missing entry as "unknown,
+/// claim nothing", which is the honest outcome for all three cases.
+pub fn gog_build_ids(
+    library_root: &std::path::Path,
+) -> crate::error::Result<std::collections::HashMap<String, String>> {
+    let mut build_ids = std::collections::HashMap::new();
+    let entries = match std::fs::read_dir(library_root) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(build_ids),
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || is_infrastructure_dir(&path) {
+            continue;
+        }
+        if !matches!(try_holds_installed_files(&path), Ok(true)) {
+            continue;
+        }
+        if let Some((game_id, build_id)) = read_gog_build_id(&path) {
+            build_ids.insert(game_id, build_id);
+        }
+    }
+    Ok(build_ids)
+}
+
+/// Finds the base-game `goggame-<id>.info` manifest in `dir` and returns its
+/// `(gameId, buildId)`, if both are present and non-empty.
+fn read_gog_build_id(dir: &Path) -> Option<(String, String)> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let base = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| is_gog_info_file(path))
+        .filter_map(|path| std::fs::read_to_string(&path).ok())
+        .filter_map(|contents| serde_json::from_str::<GogInfo>(&contents).ok())
+        .find(GogInfo::is_base_game)?;
+    let game_id = base.game_id?;
+    let build_id = base.build_id.filter(|s| !s.trim().is_empty())?;
+    Some((game_id, build_id))
 }
 
 #[cfg(test)]
@@ -551,5 +649,91 @@ mod tests {
         assert!(is_infrastructure_dir(Path::new(r"F:\Epic\.egstore")));
         assert!(is_infrastructure_dir(Path::new(r"C:\$Recycle.Bin")));
         assert!(!is_infrastructure_dir(Path::new(r"F:\Epic\Celeste")));
+    }
+
+    #[test]
+    fn gog_build_ids_maps_game_id_to_build_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let game_dir = temp.path().join("AD2044");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        write_file(
+            &game_dir.join("goggame-2075976504.info"),
+            r#"{ "name": "AD 2044", "gameId": "2075976504", "rootGameId": "2075976504", "buildId": "50596806354071163" }"#,
+        );
+
+        let build_ids = gog_build_ids(temp.path()).unwrap();
+
+        assert_eq!(
+            build_ids.get("2075976504").map(String::as_str),
+            Some("50596806354071163")
+        );
+    }
+
+    #[test]
+    fn gog_build_ids_omits_manifest_without_build_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let game_dir = temp.path().join("Fallout 2");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        write_file(
+            &game_dir.join("goggame-1440151285.info"),
+            r#"{ "name": "Fallout 2", "gameId": "1440151285", "rootGameId": "1440151285" }"#,
+        );
+
+        let build_ids = gog_build_ids(temp.path()).unwrap();
+
+        assert!(
+            !build_ids.contains_key("1440151285"),
+            "a missing buildId must be absent, never mapped to an empty string"
+        );
+    }
+
+    #[test]
+    fn gog_build_ids_ignores_dlc_only_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let game_dir = temp.path().join("Witcher DLC");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        write_file(
+            &game_dir.join("goggame-2.info"),
+            r#"{ "name": "Some DLC", "gameId": "2", "rootGameId": "1", "buildId": "999" }"#,
+        );
+
+        let build_ids = gog_build_ids(temp.path()).unwrap();
+
+        assert!(build_ids.is_empty());
+    }
+
+    #[test]
+    fn gog_build_ids_is_empty_for_missing_library_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("does-not-exist");
+
+        let build_ids = gog_build_ids(&missing).unwrap();
+
+        assert!(build_ids.is_empty());
+    }
+
+    #[test]
+    fn gog_build_ids_numeric_build_id_does_not_break_name_and_id_read() {
+        // Same fixture shape as `build_game_reads_gog_manifest_name_and_id`,
+        // but with `buildId` written as a bare JSON number - proving that
+        // shape does not regress the existing name/id read (see the comment
+        // on `GogInfo::build_id`).
+        let temp = tempfile::tempdir().unwrap();
+        let game_dir = temp.path().join("Fallout 2");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        write_file(
+            &game_dir.join("goggame-1440151285.info"),
+            r#"{ "name": "Fallout 2", "gameId": "1440151285", "rootGameId": "1440151285", "buildId": 50596806354071163 }"#,
+        );
+
+        let game = build_game("gog", game_dir.clone()).expect("expected a game");
+        assert_eq!(game.name, "Fallout 2");
+        assert_eq!(game.app_id.as_deref(), Some("1440151285"));
+
+        let build_ids = gog_build_ids(temp.path()).unwrap();
+        assert_eq!(
+            build_ids.get("1440151285").map(String::as_str),
+            Some("50596806354071163")
+        );
     }
 }

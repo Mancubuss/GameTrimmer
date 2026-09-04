@@ -303,14 +303,30 @@ pub(super) fn persist_libraries(
 
 /// Content build ids for one library, keyed by vendor app id (build-ID history).
 ///
-/// Only Steam publishes one: `buildid` in each `appmanifest_*.acf`, bumped by
-/// Valve on every content update and by a `Verify` that re-downloads files.
-/// Every other vendor yields an empty map, so their games are stored with
-/// `build_id = NULL` - which `gamestate::changed_games` reads as "unknown,
-/// claim nothing" rather than "changed".
+/// A build id is whatever value a launcher bumps when it changes a game's
+/// installed content - Steam's `buildid`, Epic's `AppVersionString`, GOG's
+/// `buildId`, Amazon's `InstallVersion`, itch's `caves.build_id`, Humble's
+/// `downloadedVersion`. Comparing the one recorded at the last scan against
+/// the one on disk now is what lets `gamestate::changed_games` say "this game
+/// came back" without re-walking a single game folder.
 ///
-/// Cheap by construction: this reads a few dozen small text files, never
-/// walking the games themselves.
+/// A vendor with no such value, or a game whose entry is missing from its
+/// launcher's own records, yields no entry at all - and is therefore stored
+/// with `build_id = NULL`, which `changed_games` reads as "unknown, claim
+/// nothing" rather than "changed". That asymmetry is deliberate: silence is
+/// the only honest answer when the evidence is absent.
+///
+/// Cheap by construction: every vendor here reads the small manifest, config
+/// or SQLite row its provider already read during discovery, never walking
+/// the games themselves.
+///
+/// Steam and GOG are answered per library root; the other four launchers keep
+/// one machine-wide record each, so their readers return every installed game
+/// and this runs them once per library of that vendor. Re-reading one config
+/// file (or one small SQLite query) two or three times per scan is not worth a
+/// cache next to the millions of files the scan itself walks - and the map is
+/// only ever consulted by the app ids of *this* library's games, so a wider
+/// map cannot put a foreign game's build id on a local row.
 ///
 /// Unreadable manifests are not a scan failure. A build id is only ever used
 /// to report that a game changed since the last scan, and that report already
@@ -320,19 +336,28 @@ pub(super) fn persist_libraries(
 /// every other library's results down with it, which is the opposite of what
 /// per-library evidence is for.
 fn build_ids_for(library: &DiscoveredLibrary) -> HashMap<String, String> {
-    if library.vendor != "steam" {
-        return HashMap::new();
-    }
+    let read = match library.vendor {
+        "steam" => providers::steam::manifest_states(&library.path).map(|states| {
+            states
+                .into_iter()
+                .filter_map(|state| Some((state.app_id, state.build_id?)))
+                .collect()
+        }),
+        "epic" => providers::epic::build_ids(),
+        "gog" => providers::folderscan::gog_build_ids(&library.path),
+        "amazon" => providers::amazon::build_ids(),
+        "itch" => providers::itch::build_ids(),
+        "humble" => providers::humble::build_ids(),
+        _ => return HashMap::new(),
+    };
 
-    match providers::steam::manifest_states(&library.path) {
-        Ok(states) => states
-            .into_iter()
-            .filter_map(|state| Some((state.app_id, state.build_id?)))
-            .collect(),
+    match read {
+        Ok(ids) => ids,
         Err(err) => {
             crate::logger::error(&format!(
-                "build ids unavailable for {}: {err}",
-                library.path.display()
+                "build ids unavailable for {} ({}): {err}",
+                library.path.display(),
+                library.vendor
             ));
             HashMap::new()
         }

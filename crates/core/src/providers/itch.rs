@@ -190,6 +190,99 @@ fn database_path() -> Option<PathBuf> {
     Some(PathBuf::from(app_data).join(DATABASE_RELATIVE_PATH))
 }
 
+/// Content build ids for every installed itch cave, keyed by the same value
+/// the provider reports as `app_id` (`caves.game_id`, stringified - see
+/// `build_game_install`). This is itch's counterpart to
+/// `steam::manifest_states`, feeding `persistence::build_ids_for` the same
+/// "did the content change since last scan" signal Steam's `buildid` gives.
+///
+/// itch not being installed, or the database file missing, is not a
+/// failure - there is simply no build history to report yet, same as any
+/// other vendor that does not publish one. Only a genuine read failure
+/// against a database that does exist is an `Err`.
+pub fn build_ids() -> Result<std::collections::HashMap<String, String>> {
+    let Some(db_path) = database_path().filter(|path| path.is_file()) else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    build_ids_from_conn(&conn)
+}
+
+/// The testable core of `build_ids`: everything past an open `butler.db`
+/// connection, split out the same way `discover_itch_from_conn` is - so
+/// tests can drive it against an in-memory database instead of the real
+/// `%APPDATA%\itch\db\butler.db`.
+///
+/// Deliberately its own small query rather than widening
+/// `read_games_report`'s join: that join exists to resolve an install
+/// directory, which a build id has no use for, and dragging `games` and
+/// `install_locations` into this path would only give a location-less or
+/// title-less cave a way to silently drop its build id too.
+///
+/// `caves.build_id` is butler's own upload version counter, bumped on every
+/// content push the same way Steam's `buildid` is - so it is the same kind
+/// of signal `persistence::build_ids_for` wants. Butler writes `0` for an
+/// upload that predates build tracking or was pushed without one; that
+/// carries no more information than a NULL, so both are folded into "no
+/// build id" rather than stored as the literal value `0`. An empty/blank
+/// string is folded in for the same reason, and because SQLite's manifest
+/// typing lets a TEXT value land in a column declared INTEGER regardless of
+/// the schema.
+///
+/// A cave can in principle be re-registered for a game it is already
+/// installed for (e.g. a reinstall butler never cleaned the old cave record
+/// for), so more than one cave row per `game_id` is possible. When that
+/// happens this keeps the numerically highest build id - the most recently
+/// pushed content - rather than an arbitrary row; a non-numeric or tied
+/// value falls back to whichever row the query happened to return last.
+pub fn build_ids_from_conn(conn: &Connection) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT game_id, build_id FROM caves ORDER BY id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, rusqlite::types::Value>(1)?,
+        ))
+    })?;
+
+    let mut build_ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for row in rows {
+        let (game_id, raw_build_id) = row?;
+        let Some(build_id) = normalize_build_id(raw_build_id) else {
+            continue;
+        };
+        let key = game_id.to_string();
+        let should_replace = match (build_ids.get(&key), build_id.parse::<i64>()) {
+            (None, _) => true,
+            // Numeric build ids: keep the highest, i.e. the most recent
+            // push. `>=` so a tie still lets the later row win.
+            (Some(existing), Ok(new_id)) => existing
+                .parse::<i64>()
+                .map_or(true, |existing_id| new_id >= existing_id),
+            // A non-numeric value has no ordering to compare - fall back to
+            // last-row-wins, same as an unparseable existing value.
+            (Some(_), Err(_)) => true,
+        };
+        if should_replace {
+            build_ids.insert(key, build_id);
+        }
+    }
+    Ok(build_ids)
+}
+
+/// Normalizes a raw `caves.build_id` value into "no build id" (`None`) or a
+/// stringified id (`Some`). See `build_ids_from_conn`'s doc comment for why
+/// zero, NULL, and an empty/blank string are all folded into "no build id".
+fn normalize_build_id(value: rusqlite::types::Value) -> Option<String> {
+    use rusqlite::types::Value;
+    match value {
+        Value::Integer(0) => None,
+        Value::Integer(n) => Some(n.to_string()),
+        Value::Text(s) if s.trim().is_empty() => None,
+        Value::Text(s) => Some(s.trim().to_string()),
+        Value::Null | Value::Real(_) | Value::Blob(_) => None,
+    }
+}
+
 /// Reads installed games from an open `butler.db` connection.
 #[cfg(test)]
 fn read_games(conn: &Connection) -> rusqlite::Result<Vec<GameInstall>> {
@@ -270,6 +363,26 @@ fn build_game_install(entry: RawItchEntry) -> Option<GameInstall> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An in-memory `caves` table carrying `build_id`, for the build-id
+    /// tests below only. Kept separate from `test_db()` on purpose: every
+    /// existing fixture in this file inserts into `caves` with the
+    /// column-less positional `VALUES (...)` form, so widening that shared
+    /// table would break every one of them on a column-count mismatch.
+    fn build_id_test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE caves (
+                 id TEXT PRIMARY KEY,
+                 game_id INTEGER,
+                 install_location_id TEXT,
+                 install_folder_name TEXT,
+                 build_id INTEGER
+             );",
+        )
+        .unwrap();
+        conn
+    }
 
     /// An in-memory replica of the subset of butler.db's schema we read.
     fn test_db() -> Connection {
@@ -643,5 +756,84 @@ mod tests {
             "the failed probe must be visible, not silently dropped: {:?}",
             report.diagnostics
         );
+    }
+
+    #[test]
+    fn build_ids_from_conn_maps_game_id_to_build_id() {
+        let conn = build_id_test_db();
+        conn.execute(
+            "INSERT INTO caves (id, game_id, install_location_id, install_folder_name, build_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["cave-1", 123, "loc-1", "celeste", 42],
+        )
+        .unwrap();
+
+        let build_ids = build_ids_from_conn(&conn).unwrap();
+
+        assert_eq!(build_ids.get("123"), Some(&"42".to_string()));
+    }
+
+    /// NULL, `0`, and an empty/blank string all mean the same thing here -
+    /// see `build_ids_from_conn`'s doc comment - and must be absent from the
+    /// map rather than present with an empty-string value.
+    #[test]
+    fn build_ids_from_conn_omits_null_zero_and_empty_build_ids() {
+        let conn = build_id_test_db();
+        conn.execute(
+            "INSERT INTO caves (id, game_id, install_location_id, install_folder_name, build_id)
+             VALUES (?1, ?2, ?3, ?4, NULL)",
+            rusqlite::params!["cave-1", 111, "loc-1", "no-build-column"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO caves (id, game_id, install_location_id, install_folder_name, build_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["cave-2", 222, "loc-1", "zero-build", 0],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO caves (id, game_id, install_location_id, install_folder_name, build_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["cave-3", 333, "loc-1", "blank-build", "   "],
+        )
+        .unwrap();
+
+        let build_ids = build_ids_from_conn(&conn).unwrap();
+
+        assert!(build_ids.is_empty(), "{build_ids:?}");
+    }
+
+    #[test]
+    fn build_ids_from_conn_on_an_empty_database_yields_an_empty_map_not_an_error() {
+        let conn = build_id_test_db();
+
+        let build_ids = build_ids_from_conn(&conn).unwrap();
+
+        assert!(build_ids.is_empty());
+    }
+
+    /// The multi-cave rule: when one `game_id` somehow has more than one
+    /// cave row (a reinstall butler never cleaned the old record for), the
+    /// numerically highest build id wins - the most recently pushed
+    /// content - regardless of which row the query happens to return first.
+    #[test]
+    fn build_ids_from_conn_keeps_the_highest_build_id_across_multiple_caves_for_one_game() {
+        let conn = build_id_test_db();
+        conn.execute(
+            "INSERT INTO caves (id, game_id, install_location_id, install_folder_name, build_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["cave-1", 123, "loc-1", "celeste-old", 10],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO caves (id, game_id, install_location_id, install_folder_name, build_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["cave-2", 123, "loc-1", "celeste-new", 99],
+        )
+        .unwrap();
+
+        let build_ids = build_ids_from_conn(&conn).unwrap();
+
+        assert_eq!(build_ids.get("123"), Some(&"99".to_string()));
     }
 }

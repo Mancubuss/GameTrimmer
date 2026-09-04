@@ -5,6 +5,7 @@
 //! The database is opened read-only; the running launcher may hold locks, in
 //! which case discovery fails with a warning rather than corrupting anything.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rusqlite::{Connection, OpenFlags};
@@ -204,6 +205,62 @@ fn build_game_install(entry: RawAmazonEntry) -> Option<GameInstall> {
         install_dir: path,
         app_id: Some(entry.id),
     })
+}
+
+/// Content build ids for installed Amazon Games, keyed by the same `Id`
+/// value the provider reports as `app_id` (see `build_game_install`). The
+/// value is `InstallVersion` - what is actually installed right now - since
+/// this map feeds `core::gamestate::changed_games`'s "this game came back
+/// after an update" comparison, and only a change to what is really on disk
+/// can have undone a previous trim.
+///
+/// `LastKnownLatestVersion` (an update Amazon has metadata for but has not
+/// downloaded yet) is deliberately left out: an update nobody has downloaded
+/// has not undone anything yet, so it belongs to a future "an update is
+/// brewing" warning, not to this "what came back" comparison.
+///
+/// Amazon Games not being installed, or the database file being missing, is
+/// not a failure - same as `discover_amazon`, it is reported as an empty
+/// map. Only a genuine read failure (a corrupt or unreadable database) is
+/// `Err`.
+pub fn build_ids() -> Result<HashMap<String, String>> {
+    let Some(db_path) = database_path() else {
+        return Ok(HashMap::new());
+    };
+    match std::fs::metadata(&db_path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Ok(HashMap::new()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(err) => return Err(err.into()),
+    }
+    let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    build_ids_from_conn(&conn)
+}
+
+/// The testable core of `build_ids`: everything past an open
+/// `GameInstallInfo.sqlite` connection, split out the same way
+/// `discover_amazon_from_conn` is so tests can drive it against an
+/// in-memory database.
+pub fn build_ids_from_conn(conn: &Connection) -> Result<HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT Id, InstallVersion FROM DbSet WHERE Installed = 1")?;
+    let rows = stmt.query_map([], |row| {
+        let id: String = row.get(0)?;
+        let install_version: Option<String> = row.get(1)?;
+        Ok((id, install_version))
+    })?;
+
+    let mut ids = HashMap::new();
+    for row in rows {
+        let (id, install_version) = row?;
+        // A NULL or blank `InstallVersion` is left out rather than mapped to
+        // "": `changed_games` reads a missing entry as "unknown, claim
+        // nothing", which is the honest answer for a row Amazon Games itself
+        // has not given a version to yet.
+        if let Some(install_version) = install_version.filter(|v| !v.trim().is_empty()) {
+            ids.insert(id, install_version);
+        }
+    }
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -464,5 +521,76 @@ mod tests {
             "the failed probe must be visible, not silently dropped: {:?}",
             report.diagnostics
         );
+    }
+
+    /// An in-memory `DbSet` shaped for `build_ids` tests. Kept separate from
+    /// `test_db` so the discovery tests above stay untouched by this table's
+    /// extra `InstallVersion` column.
+    fn test_db_with_version(rows: &[(&str, Option<&str>, i64)]) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE DbSet (
+                Id TEXT PRIMARY KEY,
+                InstallVersion TEXT,
+                Installed INTEGER
+            )",
+        )
+        .unwrap();
+
+        for (id, install_version, installed) in rows {
+            conn.execute(
+                "INSERT INTO DbSet (Id, InstallVersion, Installed) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, install_version, installed],
+            )
+            .unwrap();
+        }
+
+        conn
+    }
+
+    #[test]
+    fn build_ids_maps_id_to_install_version() {
+        let conn = test_db_with_version(&[("amzn1.adg.product.1", Some("1.2.3"), 1)]);
+
+        let ids = build_ids_from_conn(&conn).unwrap();
+
+        assert_eq!(ids.get("amzn1.adg.product.1"), Some(&"1.2.3".to_string()));
+    }
+
+    /// A NULL or blank `InstallVersion` must be absent from the map, not
+    /// present with an empty-string value - `changed_games` treats a missing
+    /// entry as "unknown, claim nothing", which an empty string would defeat.
+    #[test]
+    fn build_ids_omits_rows_with_no_install_version() {
+        let conn = test_db_with_version(&[
+            ("amzn1.adg.product.1", None, 1),
+            ("amzn1.adg.product.2", Some(""), 1),
+            ("amzn1.adg.product.3", Some("   "), 1),
+        ]);
+
+        let ids = build_ids_from_conn(&conn).unwrap();
+
+        assert!(ids.is_empty(), "{ids:?}");
+    }
+
+    /// Matches `read_games_report`'s `WHERE Installed = 1`: an uninstalled
+    /// record's version is stale and must not be reported as "currently
+    /// installed".
+    #[test]
+    fn build_ids_excludes_uninstalled_rows() {
+        let conn = test_db_with_version(&[("amzn1.adg.product.1", Some("1.0.0"), 0)]);
+
+        let ids = build_ids_from_conn(&conn).unwrap();
+
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn build_ids_from_conn_returns_empty_map_for_empty_table() {
+        let conn = test_db_with_version(&[]);
+
+        let ids = build_ids_from_conn(&conn).unwrap();
+
+        assert!(ids.is_empty());
     }
 }
