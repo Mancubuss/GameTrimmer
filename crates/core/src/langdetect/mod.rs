@@ -65,10 +65,27 @@ pub enum LangKind {
     Unknown,
 }
 
+/// The `lang_tag` of a finding whose language the dictionary could not name
+/// (GT-464). `und` is ISO 639-2's own code for "undetermined", so it is a
+/// real answer rather than an invented sentinel — and it is deliberately not
+/// a key any pack defines, so nothing can look it up, keep-list it, or
+/// mistake it for a language.
+///
+/// Such a file belongs to a *confirmed* set of languages and fills its slot
+/// with a token the dictionary does not carry. Reporting it is the same
+/// principle as showing a found-but-empty folder: silence reads to the user
+/// as broken detection, not as "there is nothing here". The caller turns
+/// this tag into an absent language (see `worker::classify::combine_finding`)
+/// so the row shows without a label, is never taken by bulk selection, and
+/// carries the "worth a look" mark.
+pub const UNDETERMINED_LANG: &str = "und";
+
 /// One localization finding for a file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LangFinding {
-    /// Normalized language key, lowercase (e.g. "es", "pt-br", "de").
+    /// Normalized language key, lowercase (e.g. "es", "pt-br", "de") — or
+    /// [`UNDETERMINED_LANG`] when the file sits in a confirmed language set
+    /// under a name the dictionary cannot read.
     pub lang_tag: String,
     pub kind: LangKind,
     /// 0-100.

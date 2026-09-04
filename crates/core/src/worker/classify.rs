@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::error::{CoreError, Result as CoreResult};
-use crate::langdetect::{LangDetector, LangFinding, LangKind};
+use crate::langdetect::{LangDetector, LangFinding, LangKind, UNDETERMINED_LANG};
 use crate::orphans::OrphanKind;
 use crate::perf;
 use crate::rules::{Category, Finding, RuleEngine, RuleProvenance, Verdict};
@@ -598,7 +598,11 @@ fn combine_finding(rule: Option<Finding>, lang: Option<&LangFinding>) -> Option<
             rule_id: l.reason.to_string(),
             confidence: l.confidence,
             provenance: RuleProvenance::Builtin,
-            lang_tag: Some(l.lang_tag.clone()),
+            // A localization finding with no language is a real state, not a
+            // missing one (GT-464): the file stands in a confirmed set of
+            // languages under a name the dictionary cannot read. The row
+            // shows without a label rather than not showing at all.
+            lang_tag: (l.lang_tag != UNDETERMINED_LANG).then(|| l.lang_tag.clone()),
         }),
         (None, None) => None,
     }

@@ -562,6 +562,13 @@ fn a_spelled_out_american_keeps_its_own_abbreviation_out_of_amharic() {
     assert_eq!(
         short,
         [
+            // `Zs`/`Zt` are this studio's codes for the two Chinese scripts:
+            // languages the dictionary cannot name, reported as undetermined
+            // rather than hidden (GT-464). What this test guards is `t_am`,
+            // which is still absent - a code the dictionary *can* read is
+            // judged on its own merits and never reaches the unnamed path.
+            ("t_Zs.asr", "und"),
+            ("t_Zt.asr", "und"),
             ("t_fr.asr", "fr"),
             ("t_ge.asr", "de"),
             ("t_it.asr", "it"),
@@ -727,6 +734,14 @@ fn the_tannoy_folder_reads_the_same_ten_findings_every_run() {
         ("Tannoy_German.asr", "de"),
         ("Tannoy_Italian.asr", "it"),
         ("Tannoy_Spanish.asr", "es"),
+        // GT-464: the studio's own codes for the two Chinese scripts. They
+        // are languages, the dictionary cannot name them, and until this
+        // card they were the only two files in the folder that produced
+        // nothing at all - invisible in exactly the way a missing detector
+        // is invisible. They now report as undetermined: shown, unlabelled,
+        // and out of reach of bulk selection.
+        ("t_Zs.asr", "und"),
+        ("t_Zt.asr", "und"),
         ("t_fr.asr", "fr"),
         ("t_ge.asr", "de"),
         ("t_it.asr", "it"),
@@ -1572,4 +1587,81 @@ fn a_locale_folder_reads_the_same_language_in_every_run() {
             "run {run} disagreed"
         );
     }
+}
+
+/// GT-464: a file that fills a confirmed set's slot with a name the
+/// dictionary cannot read is reported, not hidden.
+///
+/// `sounds_jap.pck` is Japanese - the dictionary carries `jpn` and not `jap`
+/// - and before this card it produced nothing at all. Four rows appeared and
+/// the fifth file did not, which from the outside is the same picture as a
+/// detector that missed the folder entirely. Across the library that silence
+/// covered 4,206 files, most of them real languages spelled in a notation
+/// the pack does not list (`esn`, `ptb`, `cht`, `zht`, `mex`).
+///
+/// The two guards are the point of the test, because without them this is
+/// the "ride along with no evidence of your own" path that `8b03b91` closed:
+///
+/// - **width**: `sounds_master.pck` fits between the same literals, but the
+///   set spells its languages in three letters and `master` is six. A set
+///   that does not agree on the width of its own slot claims nothing at all.
+/// - **vocabulary**: `sounds_dub.pck` is three letters in the right place,
+///   and `dub` is a word the engine already knows to mean dubbing. A word
+///   with a known non-language meaning is not a language going unnamed.
+///
+/// What no rule can do is separate an unknown language from an ordinary word
+/// of the same length - `sfx` sits in this slot in fifteen games. That is
+/// exactly why the answer is "undetermined" and not a guess, and why the app
+/// keeps such rows out of bulk selection.
+#[test]
+fn a_slot_filled_with_an_unreadable_name_is_reported_as_undetermined() {
+    let paths = [
+        r"sound\sounds_fre.pck",
+        r"sound\sounds_ger.pck",
+        r"sound\sounds_ita.pck",
+        r"sound\sounds_spa.pck",
+        r"sound\sounds_jap.pck",
+        r"sound\sounds_master.pck",
+        r"sound\sounds_dub.pck",
+    ];
+
+    let labels = flagged_labels(&paths);
+
+    assert!(
+        labels.contains(&("sounds_jap.pck".to_string(), "und".to_string())),
+        "the unreadable name should be reported as undetermined, got {labels:?}"
+    );
+    for hidden in ["sounds_master.pck", "sounds_dub.pck"] {
+        assert!(
+            !labels.iter().any(|(name, _)| name == hidden),
+            "{hidden} must not ride along with the set, got {labels:?}"
+        );
+    }
+}
+
+/// The counter-example the ticket requires: a game with no confirmed set of
+/// languages must not start reporting "undetermined" on short codes that
+/// merely look like one.
+///
+/// War Thunder's `res\ships\` names its hulls by nation, not by language
+/// (`ger_`, `it_`), and Call of Duty's `mp_br_*` / `cp_sv_*` are map and
+/// campaign prefixes. Neither directory ever confirms a language family, so
+/// there is no slot to fill and nothing to report - the same conclusion the
+/// engine already reaches for them today, reached for the same reason.
+#[test]
+fn a_folder_with_no_confirmed_set_reports_nothing_undetermined() {
+    let paths = [
+        r"res\ships\ger_bismarck.blk",
+        r"res\ships\it_littorio.blk",
+        r"res\ships\mp_br_favela.blk",
+        r"res\ships\cp_sv_hunted.blk",
+        r"res\ships\usa_iowa.blk",
+    ];
+
+    let labels = flagged_labels(&paths);
+
+    assert!(
+        !labels.iter().any(|(_, tag)| tag == "und"),
+        "a folder that never confirmed a language set has no slot to fill, got {labels:?}"
+    );
 }

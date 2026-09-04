@@ -137,7 +137,22 @@ impl FindingRow {
     /// re-trim path (see `gametrimmer_core::ops`) and drives the game row's
     /// anti-cheat badge; it has nothing left to gate here.
     pub fn bulk_selectable(&self) -> bool {
-        self.individually_selectable() && !self.imported_untrusted
+        self.individually_selectable() && !self.imported_untrusted && !self.language_is_unnamed()
+    }
+
+    /// A localization finding whose language the detector could not name
+    /// (GT-464): the file stands in a confirmed set of languages and fills
+    /// its slot with a token the dictionary does not carry.
+    ///
+    /// The row is shown, because not showing it is indistinguishable from
+    /// the detector being broken. It is not bulk-selectable, because the
+    /// engine genuinely cannot tell an unknown language from an ordinary
+    /// word of the same length: `sounds_jap.pck` and `sounds_sfx.pck` stand
+    /// in the same slot of the same set, and only one of them is a
+    /// translation. Showing a question is useful; letting "select all" answer
+    /// it is not.
+    pub fn language_is_unnamed(&self) -> bool {
+        self.display_category() == DisplayCategory::Loc && self.lang_tag.is_none()
     }
 }
 
@@ -1809,13 +1824,44 @@ mod tests {
     /// game - on the owner's real library, 112k+ findings across 162 games.
     #[test]
     fn anti_cheat_protected_loc_row_is_bulk_selectable() {
-        let mut protected = item(1, "Game", FindingSource::Loc(LangKind::Text), 90, 10);
+        // Deliberately a row that *names* its language: a localization row
+        // with no tag is the separate GT-464 state, and it is held back from
+        // bulk selection for a reason that has nothing to do with anti-cheat.
+        let mut protected = loc_item(1, "Game", LangKind::Text, "de", 90, 10);
         protected.row.anti_cheat_protected = true;
 
         assert!(
             protected.row.bulk_selectable(),
             "a whole-file delete in a protected game is ordinary - anti-cheat cannot notice \
              an uninstalled language pack any differently than the user doing it by hand"
+        );
+    }
+
+    /// GT-464: a localization row whose language could not be named is shown
+    /// and can be ticked, but "select all" never takes it.
+    ///
+    /// The reason is not caution for its own sake. The detector places such a
+    /// file by its neighbours - it fills the slot of a confirmed set of
+    /// languages - and it genuinely cannot tell an unknown language from an
+    /// ordinary word of the same length: `sounds_jap.pck` and `sounds_sfx.pck`
+    /// stand in the same slot of the same set, and only the first is a
+    /// translation. The row asks the user a question; bulk selection must not
+    /// answer it on their behalf.
+    #[test]
+    fn a_loc_row_with_no_language_is_shown_and_tickable_but_never_swept() {
+        let unnamed = item(1, "Game", FindingSource::Loc(LangKind::Audio), 60, 10);
+
+        assert!(
+            unnamed.row.language_is_unnamed(),
+            "a localization row with no tag is the undetermined-language state"
+        );
+        assert!(
+            unnamed.row.individually_selectable(),
+            "the user may still decide about it one row at a time"
+        );
+        assert!(
+            !unnamed.row.bulk_selectable(),
+            "select-all must not answer a question the detector could not"
         );
     }
 

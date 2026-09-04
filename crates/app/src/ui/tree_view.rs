@@ -1943,6 +1943,10 @@ fn show_file_row(
 
     let lang_col = match &item.row.lang_tag {
         Some(lang_tag) => egui::RichText::new(format!("[{lang_tag}]")),
+        // GT-464: a localization row with no language is not a row with
+        // nothing to say - it is the detector saying it cannot read this
+        // name. An empty column would read as an ordinary rule finding.
+        None if item.row.language_is_unnamed() => egui::RichText::new("[?]").weak(),
         None => egui::RichText::new(""),
     };
     let needs_review = item.row.confidence < REVIEW_CONFIDENCE_THRESHOLD;
@@ -1956,8 +1960,12 @@ fn show_file_row(
         .descriptions
         .display(item.row.source, &item.row.rule_desc);
     let mut hover = i18n::hover_reason(lang, &abs_path, &reason, item.row.confidence);
-    if let Some(lang_tag) = &item.row.lang_tag {
-        hover.push_str(&i18n::hover_lang_suffix(lang, lang_tag));
+    match &item.row.lang_tag {
+        Some(lang_tag) => hover.push_str(&i18n::hover_lang_suffix(lang, lang_tag)),
+        None if item.row.language_is_unnamed() => {
+            hover.push_str(&i18n::hover_lang_unnamed_suffix(lang))
+        }
+        None => {}
     }
     if item.row.display_category() == DisplayCategory::Intro {
         hover.push_str(&i18n::hover_stub_suffix(lang));

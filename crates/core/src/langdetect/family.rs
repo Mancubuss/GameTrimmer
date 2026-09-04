@@ -42,6 +42,7 @@ use crate::langdetect::dict::Level;
 use crate::langdetect::occurrences::Occurrence;
 use crate::langdetect::reason::{LangEvidence, LangReason};
 use crate::langdetect::tokens::Segment;
+use crate::langdetect::UNDETERMINED_LANG;
 use crate::scanner::CANCEL_POLL_INTERVAL;
 
 const MIN_FAMILY_SIZE: usize = 3;
@@ -366,7 +367,15 @@ pub fn compute_family(
 ) -> CoreResult<HashMap<usize, FamilyHit>> {
     let mut result = HashMap::new();
     let shadowed = shadowed_bare_codes(seg_lists, occ_lists, cancel)?;
-    compute_file_shape_family(seg_lists, occ_lists, keep, &shadowed, cancel, &mut result)?;
+    compute_file_shape_family(
+        data,
+        seg_lists,
+        occ_lists,
+        keep,
+        &shadowed,
+        cancel,
+        &mut result,
+    )?;
     compute_directory_occurrence_family(
         seg_lists,
         occ_lists,
@@ -383,6 +392,7 @@ pub fn compute_family(
 /// Mechanism 1: sibling files in the same directory whose name differs only
 /// by the recognized language token.
 fn compute_file_shape_family(
+    data: &LangData,
     seg_lists: &[Vec<Segment>],
     occ_lists: &[Vec<Occurrence>],
     keep: &HashSet<String>,
@@ -431,6 +441,16 @@ fn compute_file_shape_family(
         if !slot_is_mostly_languages(seg_lists, by_dir.get(parent_dir), shape, members) {
             continue;
         }
+        claim_unnamed_slot_fillers(
+            data,
+            seg_lists,
+            by_dir.get(parent_dir),
+            parent_dir,
+            shape,
+            members,
+            distinct.len(),
+            result,
+        );
         for (file_idx, canonical, level, token_start) in members.iter().copied() {
             if keep.contains(canonical) {
                 continue;
@@ -480,6 +500,143 @@ fn compute_file_shape_family(
 /// built them from. Only groups that already cleared the family-size
 /// threshold are asked, so the scan is over the few directories that produced
 /// a candidate rather than over the game.
+/// Confidence carried by a finding whose language could not be named
+/// (GT-464). Deliberately below every real family score, for two reasons at
+/// once: it loses any tie against a claim that *can* name the language, and
+/// it sits under the app's `REVIEW_CONFIDENCE_THRESHOLD`, so the row arrives
+/// already marked as worth a look.
+const UNNAMED_CONFIDENCE: u8 = 60;
+
+/// GT-464: the file that fills a confirmed set's slot with a token the
+/// dictionary cannot read.
+///
+/// A directory holding `sounds_fre.pck sounds_ger.pck sounds_ita.pck
+/// sounds_spa.pck` and one `sounds_jap.pck` shows the user four rows. The
+/// fifth file is not silent because the engine judged it and said no — it is
+/// silent because `jap` is not in the dictionary (`jpn` is), and a file with
+/// no recognized token produces nothing at all. From the outside those two
+/// are the same picture, which is the whole complaint behind
+/// "show found-but-empty rather than nothing".
+///
+/// The evidence here is entirely about the *neighbours*, never about the
+/// file: it must stand in a set this mechanism already confirmed, fill that
+/// set's exact name shape, and fill it with a single atom of the same width
+/// the set's own tokens use. That last condition is what keeps the rule from
+/// becoming the "ride along without evidence" path closed by `8b03b91`:
+/// `sounds_master.pck` beside three-letter language codes is seven letters
+/// wide and never qualifies.
+///
+/// What it cannot do is tell a language it has never heard of from an
+/// ordinary word of the same length — `sounds_sfx.pck` sits in the same slot
+/// as `sounds_jap.pck` and is not a language. That is why the answer is
+/// "undetermined" rather than a guess, why the row carries no label, and why
+/// the caller keeps it out of bulk selection: the user is being shown a
+/// question, not an answer.
+#[allow(clippy::too_many_arguments)]
+fn claim_unnamed_slot_fillers(
+    data: &LangData,
+    seg_lists: &[Vec<Segment>],
+    occupants: Option<&Vec<usize>>,
+    parent_dir: &str,
+    shape: &str,
+    members: &[FamilyMember],
+    languages: usize,
+    result: &mut HashMap<usize, FamilyHit>,
+) {
+    let Some(occupants) = occupants else {
+        return;
+    };
+    let Some(cut) = shape.find(SHAPE_PLACEHOLDER) else {
+        return;
+    };
+    let prefix = &shape[..cut];
+    let suffix = &shape[cut + SHAPE_PLACEHOLDER.len_utf8()..];
+
+    // The set has to agree on how wide its own slot is. A set spelling some
+    // of its languages `de` and others `german` describes no width at all,
+    // and anything at all would fit the gap between its literals.
+    let mut width: Option<usize> = None;
+    for (file_idx, ..) in members.iter().copied() {
+        let Some(name) = seg_lists[file_idx].last() else {
+            return;
+        };
+        let len = name.lower.len() + SHAPE_PLACEHOLDER.len_utf8() - shape.len();
+        match width {
+            Some(seen) if seen != len => return,
+            _ => width = Some(len),
+        }
+    }
+    let Some(width) = width else {
+        return;
+    };
+
+    let claimed: HashSet<usize> = members.iter().map(|(i, ..)| *i).collect();
+    for file_idx in occupants.iter().copied() {
+        if claimed.contains(&file_idx) || result.contains_key(&file_idx) {
+            continue;
+        }
+        let Some(name) = seg_lists[file_idx].last() else {
+            continue;
+        };
+        let low = name.lower.as_str();
+        if low.len() != prefix.len() + width + suffix.len() {
+            continue;
+        }
+        if !low.starts_with(prefix) || !low.ends_with(suffix) {
+            continue;
+        }
+        let filler = &low[prefix.len()..low.len() - suffix.len()];
+        // One atom, not a fragment of several: a gap holding `en_us` or
+        // `v2.1` is not this set's slot being filled, it is a different name
+        // that happens to be the same length.
+        if !filler.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            continue;
+        }
+        // A token the dictionary *can* read is an ordinary finding and has
+        // already been judged on its own merits; a word the engine knows to
+        // mean something else is not a language going unnamed.
+        if data.lookup(filler).is_some() || is_marker_word(data, filler) {
+            continue;
+        }
+        upsert(
+            result,
+            file_idx,
+            FamilyHit {
+                canonical: UNDETERMINED_LANG,
+                confidence: UNNAMED_CONFIDENCE,
+                reason: LangReason::new(LangEvidence::Family {
+                    languages,
+                    dir: display_dir(parent_dir),
+                }),
+                token_start: 0,
+                family_size: languages,
+            },
+        );
+    }
+}
+
+/// True if the engine already knows this word to mean something other than a
+/// language — an asset tree, a content type, or localization vocabulary.
+fn is_marker_word(data: &LangData, word: &str) -> bool {
+    [
+        &data.negative,
+        &data.overridable_negative,
+        &data.audio,
+        &data.text,
+        &data.video,
+        &data.font,
+        &data.loc_generic,
+        &data.loc_specific,
+        &data.video_extensions,
+        &data.font_extensions,
+        &data.text_extensions,
+        &data.audio_extensions,
+        &data.graphic_extensions,
+    ]
+    .iter()
+    .any(|set| set.contains(word))
+}
+
 fn slot_is_mostly_languages(
     seg_lists: &[Vec<Segment>],
     dir_files: Option<&Vec<usize>>,

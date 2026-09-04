@@ -1201,6 +1201,21 @@ pub fn hover_lang_suffix(lang: Lang, lang_tag: &str) -> String {
     }
 }
 
+/// Tooltip line for a localization finding whose language could not be named
+/// (GT-464). It says three things, because a blank label alone says none of
+/// them: the file does stand in a set of translations, the detector could not
+/// read which language it is, and that is why "select all" leaves it alone.
+pub fn hover_lang_unnamed_suffix(lang: Lang) -> String {
+    match lang {
+        Lang::En | Lang::Custom(_) => {
+            "\nLanguage: undetermined - this file fills a slot in a confirmed set of \
+             languages, but its name is not one this build's dictionary knows. \
+             Bulk selection leaves it for you to judge."
+                .to_string()
+        }
+    }
+}
+
 /// Tooltip line spelling out the logical size (allocated-size accounting): the row and totals show
 /// the on-disk allocated size as primary - the honest "space freed" figure -
 /// so this adds the logical size for context. Only shown when the two differ
