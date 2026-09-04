@@ -117,7 +117,7 @@ pub fn input_from_paths(
     Ok(BundleInput {
         db_path,
         settings_path: super::settings_path()?,
-        rules_path: super::ensure_rules_path()?,
+        rules_path: super::rules_path()?,
         log_path: super::log_path()?,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         elevated,

@@ -32,13 +32,15 @@ pub const L10N_RULES_FILE_NAME: &str = "l10n_rules.json";
 /// [`gametrimmer_core::rules::RulePolarity::Keep`]).
 ///
 /// A third file rather than more rules inside `rules.json`, for two reasons
-/// that both come down to ownership. `rules.json` is replaceable: "Restore
-/// defaults" overwrites it wholesale, and an imported community pack merges
-/// into it - neither may take a user's own decisions with it. And the split is
-/// what keeps the pack the user can share free of the exceptions they cannot:
-/// an exception names one path in one of *their* games and means nothing on
-/// anyone else's machine, which is why export/import deliberately does not
-/// carry this file.
+/// that both come down to ownership. `rules.json` is an optional overlay a
+/// user may drop in, replace or delete wholesale - it may not take their own
+/// decisions with it. And the split is what keeps a shareable pack free of
+/// the exceptions that are not shareable: an exception names one path in one
+/// of *their* games and means nothing on anyone else's machine.
+///
+/// This is also the only one of the three the app still creates: it is the
+/// user's own store rather than a copy of the built-in rules, so it cannot
+/// go stale against them.
 pub(crate) const PERSONAL_RULES_FILE_NAME: &str = "personal_rules.json";
 
 /// Messages sent from a worker thread back to the UI thread.
@@ -141,20 +143,6 @@ pub enum WorkerMsg {
     /// writing the CSV failed.
     ExportDone {
         path: Option<PathBuf>,
-        error: Option<String>,
-    },
-    /// The background "Export Rules" job finished. `path` is the
-    /// folder the two pack files were written into; `path` and `error` both
-    /// `None` means the user cancelled the folder picker.
-    RulesExportDone {
-        path: Option<PathBuf>,
-        error: Option<String>,
-    },
-    /// The background "Import Rules" job finished. `summary` is the
-    /// ready-to-show merge summary; `summary` and `error` both
-    /// `None` means the user cancelled the file picker.
-    RulesImportDone {
-        summary: Option<String>,
         error: Option<String>,
     },
     /// The background "Generate diagnostic bundle" job finished.
@@ -338,38 +326,47 @@ pub fn log_path() -> io::Result<PathBuf> {
     Ok(exe_dir()?.join(LOG_FILE_NAME))
 }
 
+/// Where `rules.json` (category rules) would sit if someone put one there.
+///
+/// The app never writes it. The rules a scan runs on are the ones compiled
+/// into this binary, so updating GameTrimmer updates its rules - which is
+/// the whole point: a copy written out once on first run stayed frozen at
+/// that day's rule set forever, and no later release could reach it.
+pub fn rules_path() -> io::Result<PathBuf> {
+    Ok(exe_dir()?.join(RULES_FILE_NAME))
+}
+
+/// Where `l10n_rules.json` (the localization detector's data pack) would sit
+/// - same contract as [`rules_path`].
+pub fn l10n_rules_path() -> io::Result<PathBuf> {
+    Ok(exe_dir()?.join(L10N_RULES_FILE_NAME))
+}
+
+/// The overlay pack of `kind`, if one is actually lying next to the
+/// executable.
+///
+/// This is the whole opt-in mechanism, and it is deliberately just a file
+/// test: a pack is in effect because it is there, the way `winapp2.ini` is.
+/// `None` means "run on the built-ins alone", which is the normal case and
+/// not a failure - an executable directory that cannot even be resolved
+/// says the same thing.
+pub fn overlay_pack_path(kind: gametrimmer_core::packs::PackKind) -> Option<PathBuf> {
+    let path = match kind {
+        gametrimmer_core::packs::PackKind::CategoryRules => rules_path(),
+        gametrimmer_core::packs::PackKind::LangPack => l10n_rules_path(),
+    }
+    .ok()?;
+    path.is_file().then_some(path)
+}
+
 /// Ensures `dir/file_name` exists, seeding it with `builtin` on first use.
-/// An existing file is never touched - user edits and imported community
-/// packs always win over the embedded defaults.
+/// An existing file is never touched.
 fn ensure_data_file_in(dir: &Path, file_name: &str, builtin: &str) -> io::Result<PathBuf> {
     let path = dir.join(file_name);
     if !path.is_file() {
         std::fs::write(&path, builtin)?;
     }
     Ok(path)
-}
-
-/// Ensures `rules.json` (category rules) exists next to the executable and
-/// returns its path, materializing the embedded defaults on first run. The
-/// scanner reads rules exclusively from this file - never from an invisible
-/// built-in - so users always have the full effective rule set on disk to
-/// audit and edit.
-pub fn ensure_rules_path() -> io::Result<PathBuf> {
-    ensure_data_file_in(
-        &exe_dir()?,
-        RULES_FILE_NAME,
-        gametrimmer_core::rules::BUILTIN_RULES_JSON,
-    )
-}
-
-/// Ensures `l10n_rules.json` (the localization detector's data pack) exists
-/// next to the executable and returns its path, materializing the built-in
-/// tables on first run - same transparency contract as [`ensure_rules_path`].
-pub fn ensure_l10n_rules_path() -> io::Result<PathBuf> {
-    let builtin = gametrimmer_core::langdetect::LangPack::builtin()
-        .to_json_pretty()
-        .map_err(io::Error::other)?;
-    ensure_data_file_in(&exe_dir()?, L10N_RULES_FILE_NAME, &builtin)
 }
 
 /// Ensures `personal_rules.json` exists next to the executable and returns

@@ -68,24 +68,28 @@ impl Descriptions {
             };
         }
 
-        let rules = super::ensure_rules_path()
-            .ok()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|text| gametrimmer_core::rules::parse_rule_list(&text).ok())
-            .map(|rules| {
-                rules
-                    .iter()
-                    .map(|rule| {
-                        (
-                            rule.desc
-                                .get(gametrimmer_core::localized::DEFAULT_LANG)
-                                .to_string(),
-                            rule.desc.get(lang.as_str()).to_string(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // The effective pack is the built-in one plus whatever overlay is
+        // lying next to the executable, in that order - so an overlay that
+        // reuses a built-in rule's English text also replaces its
+        // translation, which is the only sensible reading of an overlay.
+        let overlay = super::overlay_pack_path(gametrimmer_core::packs::PackKind::CategoryRules)
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        let mut rules = HashMap::new();
+        for text in
+            std::iter::once(gametrimmer_core::rules::BUILTIN_RULES_JSON).chain(overlay.as_deref())
+        {
+            let Ok(parsed) = gametrimmer_core::rules::parse_rule_list(text) else {
+                continue;
+            };
+            rules.extend(parsed.iter().map(|rule| {
+                (
+                    rule.desc
+                        .get(gametrimmer_core::localized::DEFAULT_LANG)
+                        .to_string(),
+                    rule.desc.get(lang.as_str()).to_string(),
+                )
+            }));
+        }
 
         Self { lang, rules }
     }

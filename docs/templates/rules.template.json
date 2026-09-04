@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "category": "redist_folder",
+      "pattern": "^_?commonredist(s)?$",
+      "desc": "Common redist folder",
+      "confidence": 90
+    }
+  ]
+}

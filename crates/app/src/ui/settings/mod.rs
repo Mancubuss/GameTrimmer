@@ -221,11 +221,10 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     if close {
         app.show_settings = false;
-        // A stale export/import or database-maintenance result must not greet
-        // the user on the next open; the top-bar status line keeps the last
-        // success anyway. Same for the save indicator: reopening the dialog
-        // must not claim to have just saved something.
-        app.rules_io_result = None;
+        // A stale database-maintenance result must not greet the user on the
+        // next open; the top-bar status line keeps the last success anyway.
+        // Same for the save indicator: reopening the dialog must not claim to
+        // have just saved something.
         app.db_maint_result = None;
         app.settings_saved = false;
         app.settings_save_error = None;

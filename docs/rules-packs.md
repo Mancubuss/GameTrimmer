@@ -1,0 +1,297 @@
+# Rule packs: `rules.json` and `l10n_rules.json`
+
+GameTrimmer classifies files using two data sets, compiled into the binary at
+build time from the repo root's own `rules.json` (category rules — the
+"delete this kind of folder/file" engine, `crates/core/src/rules.rs`) and
+`l10n_rules.json` (the localization/language pack — the word lists the
+language detector consults, `crates/core/src/langdetect/data.rs`). The
+program analyses with these built-in tables and creates no files next to
+itself.
+
+If a file named `rules.json` and/or `l10n_rules.json` happens to sit next to
+`gametrimmer.exe`, the program loads it and applies it **on top of** the
+built-in tables — an optional overlay, the same idea as `winapp2.ini` for
+CCleaner. There is no import or export button for this: the presence of the
+file next to the executable is the entire mechanism. Both files are
+independently optional — you can drop in a `rules.json` overlay with no
+`l10n_rules.json`, or the other way around, or neither.
+
+## Overlay, not replacement — and additive only
+
+An overlay never replaces the built-in table; it is folded on top of it. What
+"folded on top" means precisely differs slightly by file, because the two
+engines merge lists differently, but the property that matters for both is
+the same: **an overlay can only add.** It can add new category rules, new
+languages, new aliases, new marker words. It cannot delete or override a
+built-in entry outright.
+
+- **Category rules** (`rules.json`): the overlay's rules are appended
+  to the built-in rule list (`RuleEngine::absorb` in `crates/core/src/rules.rs`).
+  When more than one rule matches the same file, the winner is decided by
+  fixed precedence — category rank first, then whether the rule is a
+  **reference** entry (a catalogue lookup for one named game) versus a
+  **builtin** heuristic (a reference entry always outranks a heuristic within
+  the same category), then confidence as the final tie-breaker. An overlay
+  rule therefore does not automatically beat a built-in one; it competes on
+  the same terms.
+
+  The one entry that *does* always win, regardless of category or
+  confidence, is a **keep rule** — `"polarity": "keep"`. A keep rule is a
+  veto: if it matches a file, that file is off limits to every other rule
+  (built-in or overlay) and to the language detector that runs after the
+  rule engine. This is the mechanism to use when you want the program to
+  stop deleting something a built-in rule currently flags — write a keep
+  rule that matches that file, rather than trying to author a competing
+  delete rule that might or might not outrank the built-in one.
+
+- **Language pack** (`l10n_rules.json`): overlay entries are unioned into the
+  built-in tables case-insensitively (`LangPack::merge` in
+  `crates/core/src/langdetect/data.rs`) — a language that already exists gets
+  its alias lists extended, a new language key is appended, and every marker
+  word list (`negative`, `audio`, `loc_generic`, extensions, …) is
+  set-unioned. There is no polarity/veto concept here — the language pack has
+  no notion of "never treat this word as a marker"; it can only teach the
+  detector more words and more languages.
+
+## Where the two files live
+
+Both files sit directly next to `gametrimmer.exe` — the same folder, not a
+subfolder. Neither is required. If a file is missing, GameTrimmer runs on the
+built-in table for that file alone (the other file's overlay, if present,
+still applies normally).
+
+## Where do I see the built-in set?
+
+The repository's own `rules.json` and `l10n_rules.json`, at the repo root,
+*are* the embedded defaults — they are compiled into the binary verbatim via
+`include_str!` (`BUILTIN_RULES_JSON` in `crates/core/src/rules.rs`,
+`EMBEDDED_L10N_RULES_JSON` in `crates/core/src/langdetect/data.rs`). Reading
+those two files is reading exactly what ships in the binary; there is no
+separate "reference" copy anywhere else.
+
+## `rules.json` schema
+
+The whole file is one JSON object (a "pack"):
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `version` | integer | yes | See [Version semantics](#version-semantics). |
+| `rules` | array of `Rule` | yes | |
+
+Unknown top-level keys are rejected (`#[serde(deny_unknown_fields)]` on
+`RulePack`).
+
+### `Rule` object
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `category` | string (see [categories](#categories)) | required for a *deleting* rule; must be **absent** on a keep rule | — | The bucket a matching file is filed under. |
+| `pattern` | string | yes | — | Case-insensitive regex. For a folder/file-name rule it matches one path segment or the file name (which one depends on the category); for a keep rule it matches the whole `\`-separated relative path from the game root, anchored. Max 512 bytes (`MAX_REGEX_BYTES`). |
+| `desc` | string, or object of `{"<lang>": "<text>"}` | yes, and must be non-empty | — | Either one plain string shown regardless of interface language, or a per-language map (e.g. `{"en": "...", "uk": "..."}`). Falls back to `en`, then to whatever key sorts first, if the interface language isn't present. |
+| `confidence` | integer 0–100 | required for a *deleting* rule; must be **absent** on a keep rule | — | Breaks ties among same-category, same-origin matches. |
+| `polarity` | `"delete"` or `"keep"` | no | `"delete"` | `"keep"` makes this a veto rule — see [Keep rules](#keep-rules-the-veto). |
+| `app_id` | string | no | none (applies to every game) | Vendor id (Steam appid, GOG product id, …) from `games.app_id`. Scopes the rule to one game only. |
+| `provenance` | `"builtin"` or `"imported_untrusted"` | no | `"builtin"` | Internal trust marker carried through export/import; not something an overlay author normally needs to set. |
+| `origin` | `"builtin"` or `"reference"` | no | `"builtin"` | `"builtin"` = a heuristic pattern that generalizes over games. `"reference"` = a catalogue entry naming files for one specific game — **requires `app_id`** to also be set, or the pack is rejected. A `"reference"` rule outranks a `"builtin"` rule within the same category regardless of confidence. Must be **absent/`"builtin"`** on a keep rule. |
+| `max_depth` | integer, 0–32 | no | category default (2 for depth-limited categories, unlimited otherwise) | Per-rule override of how many path segments deep the rule is allowed to match. Must be **absent** on a keep rule. |
+| `extensions` | array of strings | no | none (no filter) | Lowercase, no leading dot, ASCII alphanumeric only, max 16 bytes each, max 32 entries. When set, the rule only matches files whose extension is in the list. Must be **absent** on a keep rule. |
+| `localized_content` | boolean | no | `false` | Marks that what the rule matches is player-facing localized content (as opposed to a startup/legal screen). This is what the app's separate "keep languages" setting checks — a file the user's kept language covers is protected from a rule that sets this flag. Must be **absent/`false`** on a keep rule. |
+
+Unknown fields anywhere in a `Rule` are rejected
+(`#[serde(deny_unknown_fields)]`).
+
+`category` name `"monolithic_archive"` is reserved — no `Category` variant
+was ever defined for it, and a pack naming it is rejected explicitly, with a
+clearer message than the generic "unknown variant" error.
+
+### Categories
+
+The `category` field accepts exactly these values (from the `Category` enum,
+`crates/core/src/rules.rs`):
+
+```
+redist_folder, redist_file, docs_folder, docs_file, bonus, dev_leftovers,
+intro, workshop_orphan, downloading_staging, shader_cache, crash_dump,
+diagnostic_logs, save_bloat, launcher_web_cache, mod_manager_downloads
+```
+
+### Keep rules — the veto
+
+A keep rule (`"polarity": "keep"`) is deliberately narrow: it carries only
+`pattern`, `desc`, `polarity`, and optionally `app_id`. Every field that
+belongs to the deleting side of a rule — `category`, `confidence`,
+`max_depth`, `extensions`, `localized_content` (true), and `origin` set to
+anything but `"builtin"` — is rejected on a keep rule, because none of them
+would do anything: a veto ranks against nothing, matches the whole relative
+path, and already outranks the language-keep list.
+
+```json
+{
+  "pattern": "^Support\\\\ru\\\\voices\\.pak$",
+  "desc": "Never touch this — I use the Russian voice pack",
+  "polarity": "keep",
+  "app_id": "620"
+}
+```
+
+Without `app_id`, a keep rule applies to every game; with it, only to the
+game whose vendor id matches.
+
+### Size and count limits
+
+| Limit | Value | Constant |
+|---|---|---|
+| Max file size | 1,048,576 bytes (1 MiB) | `MAX_RULE_PACK_BYTES` — shared with `l10n_rules.json` |
+| Max rules per pack | 2,000 | `MAX_RULES` |
+| Max regex pattern length | 512 bytes | `MAX_REGEX_BYTES` |
+| Max `max_depth` value | 32 | `MAX_RULE_DEPTH` |
+| Max `extensions` entries | 32 | `MAX_EXTENSIONS` |
+| Max bytes per extension | 16 | `MAX_EXTENSION_BYTES` |
+
+### Minimal worked example
+
+```json
+{
+  "version": 1,
+  "rules": [
+    {
+      "category": "redist_folder",
+      "pattern": "^_?commonredist(s)?$",
+      "desc": "Common redist folder",
+      "confidence": 90
+    }
+  ]
+}
+```
+
+## `l10n_rules.json` schema
+
+The whole file is one JSON object:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `version` | integer | yes | See [Version semantics](#version-semantics). |
+| `languages` | array of `LangPackEntry` | yes | |
+| `industry_words` | array of strings | yes | Level-A aliases that are localization-industry vocabulary (region-qualified forms, Steam folder names) rather than plain natural-language words. |
+| `keep_default` | array of strings | yes | The default "keep these languages" list shown in settings. |
+| `markers` | `MarkerTables` object | yes | |
+
+**Unknown top-level keys are rejected** (`#[serde(deny_unknown_fields)]` on
+`LangPack`) — a typo or a stray field makes the whole file refuse to load,
+not just that one field.
+
+### `LangPackEntry` object
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `key` | string | yes | — | Canonical language key, e.g. `"fr"`, `"pt-br"`. |
+| `level_a` | array of strings | no | `[]` | Self-sufficient aliases: full names, Steam folder names, locale tags (e.g. `"french"`, `"fr-fr"`). Matching one of these alone is enough to identify the language. |
+| `level_b` | array of strings | no | `[]` | Three-letter ISO codes — trusted only with supporting context. |
+| `level_c` | array of strings | no | `[]` | Two-letter ISO codes — trusted only alongside other evidence from the same language family. |
+
+### `MarkerTables` object
+
+Every list is an array of strings (or, for the two `*_extensions` fields
+without their own comment, an array of extensions without the leading dot).
+`deny_unknown_fields` applies here too.
+
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `negative` | yes | — | Words that argue *against* a folder being localization content. |
+| `overridable_negative` | yes | — | Same idea, but a negative match here can be outweighed by other evidence. |
+| `audio` | yes | — | Marker words for localized audio. |
+| `text` | yes | — | Marker words for localized text. |
+| `video` | yes | — | Marker words for localized video. |
+| `font` | yes | — | Marker words for localized fonts. |
+| `loc_generic` | yes | — | Generic localization marker words (e.g. "localization"). |
+| `loc_specific` | yes | — | Specific/narrower localization marker words. |
+| `video_extensions` | yes | — | File extensions (no dot) treated as video. |
+| `font_extensions` | yes | — | File extensions (no dot) treated as font. |
+| `text_extensions` | yes | — | File extensions (no dot) treated as text. |
+| `audio_extensions` | no | `[]` | Added after pack version 1 shipped, so it must tolerate its own absence — a pack from before it existed has no such key and must still load. |
+| `graphic_extensions` | no | `[]` | Same post-1.0 addition as `audio_extensions`. This is the only way a finding can get the `Graphic` kind — there is deliberately no graphic marker *word*, only extensions. |
+
+Note the asymmetry: the eleven "original" lists are required keys (an empty
+array `[]` is fine, but the key must be present), while `audio_extensions`
+and `graphic_extensions` are the two fields added since — they may be
+omitted entirely.
+
+### Minimal worked example
+
+```json
+{
+  "version": 1,
+  "languages": [
+    {
+      "key": "fr",
+      "level_a": ["french"],
+      "level_b": ["fra"],
+      "level_c": ["fr"]
+    }
+  ],
+  "industry_words": [],
+  "keep_default": ["en"],
+  "markers": {
+    "negative": [],
+    "overridable_negative": [],
+    "audio": [],
+    "text": [],
+    "video": [],
+    "font": [],
+    "loc_generic": [],
+    "loc_specific": [],
+    "video_extensions": [],
+    "font_extensions": [],
+    "text_extensions": []
+  }
+}
+```
+
+## Version semantics
+
+Both files carry a required integer `version` field. GameTrimmer currently
+supports version `1` for both packs (`RULE_PACK_VERSION` in
+`crates/core/src/rules.rs`, `LANG_PACK_VERSION` in
+`crates/core/src/langdetect/data.rs`). A file whose `version` is **greater**
+than the build's supported version is refused outright — the whole file is
+rejected, with an error naming the mismatch, rather than being partially or
+speculatively read. A file with an equal or lower version is accepted (and,
+for the language pack, older packs are expected to tolerate the two fields —
+`audio_extensions`, `graphic_extensions` — added since version 1 shipped, by
+simply omitting them).
+
+`version` is not optional and not defaulted: a file missing the field
+entirely fails to parse, the same as any other missing required field.
+
+## When a file is present but does not parse
+
+If `rules.json` and/or `l10n_rules.json` is present next to the executable
+but fails to parse — broken JSON, a version newer than this build supports,
+an unknown field, a rule that violates one of the structural rules above
+(e.g. a keep rule that also sets `confidence`) — GameTrimmer does not stop
+and does not silently ignore the file. It reports this as a warning and
+falls back to running on the built-in table alone for that file (the other
+overlay file, if present and valid, is unaffected). The warning is
+surfaced the same way other non-fatal scan problems are: in the list of
+warnings the app shows after a scan finishes, naming the file and the parse
+error.
+
+The Settings dialog's "Rules" section shows the same state without waiting
+for a scan: each pack reads either "Not present - built-in rules in use",
+"Valid", or "Does not parse", with the path of the file it looked for
+underneath. An overlay that does not parse is ignored, and being ignored
+looks exactly like being wrong about your library - that readout is how you
+tell the two apart.
+
+## Known limits
+
+- **An overlay cannot remove or override a built-in entry.** Both merges are
+  additive by construction. For category rules, the way to stop the program
+  deleting something is a keep rule (see above), which vetoes absolutely.
+  For the language pack there is no equivalent: a built-in language code or
+  marker word cannot be unlearned by an overlay. If that is ever needed, it
+  is a change to the merge, not something an overlay can express today.
+- **There is no way to see the effective merged set from inside the app.**
+  The built-in tables are the repo's own `rules.json` and `l10n_rules.json`;
+  your overlay is your file. The result of folding one onto the other is not
+  written anywhere.

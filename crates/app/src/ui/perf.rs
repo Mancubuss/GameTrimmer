@@ -172,30 +172,6 @@ fn the_rules_section_does_not_re_read_its_packs_every_frame() {
     );
 }
 
-/// The other half of the same claim: the cache must not turn the readout into
-/// a stale one. A restore rewrites the pack, so the line beside it has to
-/// re-read rather than report what it saw before the click.
-#[test]
-fn restoring_a_pack_re_reads_its_readout_instead_of_reporting_a_cached_one() {
-    let mut test = UiTest::new(GameTrimmerApp::draw_frame);
-    test.app_mut().show_settings = true;
-    test.app_mut().settings_section = SettingsSection::Rules;
-    test.run();
-    let before = test.pack_disk_reads();
-
-    let s = test.strings();
-    test.click(&format!(
-        "{} \u{2014} {}",
-        s.btn_restore_defaults,
-        crate::worker::RULES_FILE_NAME,
-    ));
-
-    assert!(
-        test.pack_disk_reads() > before,
-        "the readout was still served from the cache after a restore rewrote the pack",
-    );
-}
-
 /// The tree underneath is what makes a settings frame expensive at all, so
 /// the dialog must not add a cost of its own on top of it that grows with the
 /// findings. Compares the same frame with the dialog open and closed.

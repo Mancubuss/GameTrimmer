@@ -234,24 +234,6 @@ pub fn exported_to(lang: Lang, path: impl std::fmt::Display) -> String {
     }
 }
 
-pub fn rules_export_failed(lang: Lang, error: impl std::fmt::Display) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!("Failed to export rules: {error}"),
-    }
-}
-
-pub fn rules_exported_to(lang: Lang, path: impl std::fmt::Display) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!("Rules exported to {path}"),
-    }
-}
-
-pub fn rules_import_failed(lang: Lang, error: impl std::fmt::Display) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!("Failed to import rules: {error}"),
-    }
-}
-
 pub fn settings_save_failed(lang: Lang, err: impl std::fmt::Display) -> String {
     match lang {
         Lang::En | Lang::Custom(_) => format!("Failed to save settings: {err}"),
@@ -637,35 +619,6 @@ pub fn read_file_failed(
     }
 }
 
-pub fn read_picked_file_failed(lang: Lang, err: impl std::fmt::Display) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!("failed to read the file: {err}"),
-    }
-}
-
-pub fn prepare_rules_json_failed(lang: Lang, err: impl std::fmt::Display) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!("failed to prepare rules.json: {err}"),
-    }
-}
-
-pub fn prepare_l10n_rules_failed(lang: Lang, err: impl std::fmt::Display) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!("failed to prepare l10n_rules.json: {err}"),
-    }
-}
-
-#[cfg(test)]
-pub fn backup_failed(
-    lang: Lang,
-    path: impl std::fmt::Display,
-    err: impl std::fmt::Display,
-) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!("failed to create a backup copy {path}: {err}"),
-    }
-}
-
 pub fn write_failed(
     lang: Lang,
     path: impl std::fmt::Display,
@@ -675,57 +628,6 @@ pub fn write_failed(
         Lang::En | Lang::Custom(_) => format!("failed to write {path}: {err}"),
     }
 }
-
-pub fn rules_restored(lang: Lang, path: impl std::fmt::Display) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!(
-            "Built-in rules restored ({path}); the previous file was kept as *.bak. \
-             Changes take effect from the next scan."
-        ),
-    }
-}
-
-/// The restore succeeded but the displaced pack could not be parked beside it.
-/// Said out loud rather than folded into [`rules_restored`]: that message
-/// promises a `.bak` the user may be counting on to recover a hand edit, and
-/// silently not delivering it is how someone loses work they were told was
-/// safe.
-pub fn rules_restored_without_backup(
-    lang: Lang,
-    path: impl std::fmt::Display,
-    error: impl std::fmt::Display,
-) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!(
-            "Built-in rules restored ({path}), but the previous file could NOT be kept \
-             as *.bak: {error}. Changes take effect from the next scan."
-        ),
-    }
-}
-
-pub fn summary_categories_part(lang: Lang, added: usize, updated: usize) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => format!("categories - {added} new, {updated} updated"),
-    }
-}
-
-pub fn summary_lang_part(lang: Lang, added: usize, updated: usize) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => {
-            format!("localization - {added} new language(s), {updated} new word(s)")
-        }
-    }
-}
-
-pub fn summary_final(lang: Lang, parts: &str) -> String {
-    match lang {
-        Lang::En | Lang::Custom(_) => {
-            format!("Rules imported: {parts}. Changes take effect from the next scan.")
-        }
-    }
-}
-
-// -- ui::dialogs --
 
 pub fn confirm_permanent_question(lang: Lang, count: usize, size: &str) -> String {
     match lang {

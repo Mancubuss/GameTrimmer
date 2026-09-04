@@ -285,6 +285,7 @@ pub struct Strings {
     pub rules_pack_lang_label: &'static str,
     pub rules_valid_label: &'static str,
     pub rules_invalid_label: &'static str,
+    pub rules_pack_absent_label: &'static str,
 
     /// "Data & diagnostics": the database file and the irreversible wipe.
     pub db_path_label: &'static str,
@@ -383,9 +384,6 @@ pub struct Strings {
     pub confirm_clear_heading: &'static str,
     pub confirm_clear_body: &'static str,
     pub btn_confirm_clear: &'static str,
-    pub rules_label: &'static str,
-    pub btn_export_rules: &'static str,
-    pub btn_import_rules: &'static str,
     pub rules_hint: &'static str,
     pub running_ellipsis: &'static str,
     pub keep_languages_label: &'static str,
@@ -534,9 +532,6 @@ pub struct Strings {
     pub add_library_dialog_title: &'static str,
     pub export_dialog_title: &'static str,
     pub text_file_filter_label: &'static str,
-    pub rules_export_dialog_title: &'static str,
-    pub rules_import_dialog_title: &'static str,
-    pub rules_import_filter_label: &'static str,
 
     // -- app.rs: plain status/warning text --
     pub no_db_path: &'static str,
@@ -818,6 +813,9 @@ impl Strings {
         if let Some(val) = map.get("rules_invalid_label") {
             s.rules_invalid_label = Box::leak(val.clone().into_boxed_str());
         }
+        if let Some(val) = map.get("rules_pack_absent_label") {
+            s.rules_pack_absent_label = Box::leak(val.clone().into_boxed_str());
+        }
         if let Some(val) = map.get("db_path_label") {
             s.db_path_label = Box::leak(val.clone().into_boxed_str());
         }
@@ -964,15 +962,6 @@ impl Strings {
         }
         if let Some(val) = map.get("btn_confirm_clear") {
             s.btn_confirm_clear = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("rules_label") {
-            s.rules_label = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("btn_export_rules") {
-            s.btn_export_rules = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("btn_import_rules") {
-            s.btn_import_rules = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("rules_hint") {
             s.rules_hint = Box::leak(val.clone().into_boxed_str());
@@ -1198,15 +1187,6 @@ impl Strings {
         }
         if let Some(val) = map.get("text_file_filter_label") {
             s.text_file_filter_label = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("rules_export_dialog_title") {
-            s.rules_export_dialog_title = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("rules_import_dialog_title") {
-            s.rules_import_dialog_title = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("rules_import_filter_label") {
-            s.rules_import_filter_label = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("no_db_path") {
             s.no_db_path = Box::leak(val.clone().into_boxed_str());
@@ -1499,6 +1479,7 @@ impl Strings {
             ("rules_pack_lang_label", self.rules_pack_lang_label),
             ("rules_valid_label", self.rules_valid_label),
             ("rules_invalid_label", self.rules_invalid_label),
+            ("rules_pack_absent_label", self.rules_pack_absent_label),
             ("db_path_label", self.db_path_label),
             ("btn_copy", self.btn_copy),
             ("btn_open_folder", self.btn_open_folder),
@@ -1550,9 +1531,6 @@ impl Strings {
             ("confirm_clear_heading", self.confirm_clear_heading),
             ("confirm_clear_body", self.confirm_clear_body),
             ("btn_confirm_clear", self.btn_confirm_clear),
-            ("rules_label", self.rules_label),
-            ("btn_export_rules", self.btn_export_rules),
-            ("btn_import_rules", self.btn_import_rules),
             ("rules_hint", self.rules_hint),
             ("running_ellipsis", self.running_ellipsis),
             ("keep_languages_label", self.keep_languages_label),
@@ -1645,9 +1623,6 @@ impl Strings {
             ("add_library_dialog_title", self.add_library_dialog_title),
             ("export_dialog_title", self.export_dialog_title),
             ("text_file_filter_label", self.text_file_filter_label),
-            ("rules_export_dialog_title", self.rules_export_dialog_title),
-            ("rules_import_dialog_title", self.rules_import_dialog_title),
-            ("rules_import_filter_label", self.rules_import_filter_label),
             ("no_db_path", self.no_db_path),
             ("db_path_error", self.db_path_error),
             ("detecting_libraries", self.detecting_libraries),

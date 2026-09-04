@@ -19,8 +19,9 @@ use std::time::Instant;
 
 use gametrimmer_core::db;
 use gametrimmer_core::error::{CoreError, Result as CoreResult};
-use gametrimmer_core::langdetect::{LangData, LangDetector};
+use gametrimmer_core::langdetect::{LangData, LangDetector, LangPack};
 use gametrimmer_core::mftscan;
+use gametrimmer_core::packs::PackKind;
 use gametrimmer_core::perf;
 use gametrimmer_core::providers::OrphanEvidence;
 use gametrimmer_core::rules::RuleEngine;
@@ -210,43 +211,44 @@ fn run_scan(
         "Scan started (elevated: {elevated}, keep: {})",
         keep_languages.join(",")
     ));
-    // Both rule files live next to the executable and are materialized from
-    // the embedded defaults on first use (see `super::ensure_rules_path`) -
-    // the scan reads them exclusively from disk, so what the user can audit
-    // in those files is exactly what runs. A file that cannot be created or
-    // parsed must not silently kill or degrade the scan: warn, fall back to
-    // the built-ins, keep going.
-    let mut engine = match super::ensure_rules_path()
-        .map_err(CoreError::from)
-        .and_then(|path| {
-            RuleEngine::load(&path)
-                .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
-        }) {
+    // The category rules a scan runs on are the ones compiled into this
+    // binary. `rules.json` next to the executable is an optional overlay -
+    // absent on every normal install, and folded on top of the built-ins
+    // when someone puts one there (see `docs/rules-packs.md`).
+    let mut engine = match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON) {
         Ok(engine) => engine,
         Err(err) => {
-            notifier.report_warning(i18n::Reported::new(lang, |l| {
-                i18n::rules_json_load_failed(l, &err)
+            // The embedded defaults are validated by core tests, so this is
+            // unreachable short of a broken build.
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::builtin_rules_corrupted(l, &err)
             }));
-            match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON) {
-                Ok(engine) => engine,
-                Err(err) => {
-                    // The embedded defaults are validated by core tests, so
-                    // this is unreachable short of a broken build.
-                    notifier.report_error(i18n::Reported::new(lang, |l| {
-                        i18n::builtin_rules_corrupted(l, &err)
-                    }));
-                    return;
-                }
-            }
+            return;
         }
     };
+    // An overlay that does not parse must not silently kill or degrade the
+    // scan: warn, keep the built-ins, keep going. Saying it loudly is the
+    // point - the visible symptom of an ignored overlay is indistinguishable
+    // from the overlay simply being wrong about the library.
+    if let Some(path) = super::overlay_pack_path(PackKind::CategoryRules) {
+        match RuleEngine::load(&path)
+            .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
+        {
+            Ok(overlay) => engine.absorb(overlay),
+            Err(err) => notifier.report_warning(i18n::Reported::new(lang, |l| {
+                i18n::rules_json_load_failed(l, &err)
+            })),
+        }
+    }
 
     // The third pack: this machine's personal exceptions, folded on top of
-    // the category rules. Same file format, same parser, same materialize-
-    // once-then-never-overwrite contract as the other two (see
-    // `super::ensure_personal_rules_path`) - it is a rule pack that happens
-    // to hold keep rules, which is the whole point of giving `Rule` a
-    // polarity instead of building a second mechanism beside it.
+    // the category rules. Same file format and same parser - it is a rule
+    // pack that happens to hold keep rules, which is the whole point of
+    // giving `Rule` a polarity instead of building a second mechanism beside
+    // it. Unlike the two above it *is* created on first use (see
+    // `super::ensure_personal_rules_path`): it holds the user's own
+    // decisions rather than a copy of the built-ins, so it cannot go stale
+    // against them.
     //
     // A broken personal pack degrades the same way a broken `rules.json`
     // does, and for the stronger reason: refusing to scan because one hand
@@ -271,21 +273,30 @@ fn run_scan(
     // Keep-list comes from the persisted `keep_languages` setting (see
     // `gametrimmer_core::settings`), configurable in the settings dialog -
     // defaults to Ukrainian + English.
-    let lang_data = match super::ensure_l10n_rules_path()
-        .map_err(CoreError::from)
-        .and_then(|path| {
-            std::fs::read_to_string(&path)
-                .map_err(CoreError::from)
-                .and_then(|text| LangData::from_json(&text))
-                .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
-        }) {
-        Ok(data) => data,
-        Err(err) => {
-            notifier.report_warning(i18n::Reported::new(lang, |l| {
-                i18n::l10n_rules_load_failed(l, &err)
-            }));
-            LangData::builtin()
-        }
+    //
+    // The language pack follows the same shape as the category rules: the
+    // built-in tables always apply, and `l10n_rules.json` next to the
+    // executable extends them if it is there. The merge is the one the
+    // community-pack flow already used - additive, so an overlay can teach
+    // the detector new codes but never blind it to a built-in one.
+    let lang_data = match super::overlay_pack_path(PackKind::LangPack) {
+        None => LangData::builtin(),
+        Some(path) => match std::fs::read_to_string(&path)
+            .map_err(CoreError::from)
+            .and_then(|text| LangPack::from_json(&text))
+            .map_err(|err| CoreError::Other(format!("{}: {err}", path.display())))
+        {
+            Ok(overlay) => Arc::new(LangData::compile(&LangPack::merge(
+                LangPack::builtin(),
+                overlay,
+            ))),
+            Err(err) => {
+                notifier.report_warning(i18n::Reported::new(lang, |l| {
+                    i18n::l10n_rules_load_failed(l, &err)
+                }));
+                LangData::builtin()
+            }
+        },
     };
     let lang_detector = LangDetector::with_data(lang_data, keep_languages);
 

@@ -298,16 +298,6 @@ pub struct GameTrimmerApp {
     /// True while the background "Export..." save-dialog thread is
     /// running, so the button can't be clicked twice concurrently.
     pub export_active: bool,
-    /// True while a background rules export/import thread (its file dialog
-    /// plus the file work) is running - guards both settings-dialog rule
-    /// buttons at once, since they write/read the same pack files.
-    pub rules_io_active: bool,
-    /// Outcome of the last rules export/import, shown inside the settings
-    /// dialog (the top-bar status line is hidden behind the modal, so the
-    /// result must be visible right where the buttons are): `Ok` carries
-    /// the success summary, `Err` the failure text. Cleared when a new
-    /// rules operation starts and when the dialog closes.
-    pub rules_io_result: Option<Result<String, String>>,
     /// True while a user-triggered database maintenance job (compact or
     /// clear, started from the settings dialog) runs. Distinct from `busy`
     /// (which every job sets) so the dialog can show a spinner only for its
@@ -327,9 +317,9 @@ pub struct GameTrimmerApp {
     pub bundle_result: Option<Result<String, String>>,
     pub db_maint_active: bool,
     /// Outcome of the last database maintenance job, shown inside the
-    /// settings dialog next to its buttons for the same reason as
-    /// [`Self::rules_io_result`] (the top-bar status is hidden behind the
-    /// modal): `Ok` carries the success line, `Err` the failure text.
+    /// settings dialog next to its buttons because the top-bar status line
+    /// is hidden behind the modal: `Ok` carries the success line, `Err` the
+    /// failure text.
     pub db_maint_result: Option<Result<String, String>>,
 
     /// State of the delete confirmation modal, `None` while it is closed.
@@ -546,8 +536,6 @@ impl GameTrimmerApp {
             libraries,
             folder_picker_active: false,
             export_active: false,
-            rules_io_active: false,
-            rules_io_result: None,
             bundle_options: gametrimmer_core::bundle::BundleOptions::default(),
             bundle_preview: None,
             bundle_active: false,
@@ -856,97 +844,6 @@ impl GameTrimmerApp {
                 None => (None, None),
             };
             let _ = tx.send(WorkerMsg::ExportDone { path, error });
-        });
-    }
-
-    /// Overwrites one rule pack with the embedded defaults, keeping the
-    /// previous file as `*.bak` (see `worker::rules_io::restore_builtin`).
-    ///
-    /// Runs synchronously: unlike export/import it opens no file picker and
-    /// touches no database - it writes one small file, so a worker thread
-    /// and a round trip through [`WorkerMsg`] would buy nothing.
-    pub fn restore_rules_builtin(&mut self, kind: gametrimmer_core::packs::PackKind) {
-        if self.busy || self.rules_io_active {
-            return;
-        }
-        self.rules_io_result = Some(worker::rules_io::restore_builtin(self.lang(), kind));
-    }
-
-    /// Spawns the «Export rules» flow: a blocking folder picker on
-    /// a background thread, then writing both pack files there (see
-    /// `worker::rules_io::export_packs_to`). Result comes back as
-    /// [`WorkerMsg::RulesExportDone`].
-    pub fn start_rules_export(&mut self) {
-        if self.rules_io_active {
-            return;
-        }
-        self.rules_io_active = true;
-        self.rules_io_result = None;
-
-        let lang = self.lang();
-        let title = i18n::strings(lang).rules_export_dialog_title;
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let picked = rfd::FileDialog::new().set_title(title).pick_folder();
-
-            let (path, error) = match picked {
-                Some(dir) => match worker::rules_io::export_packs_to(lang, &dir) {
-                    Ok(()) => (Some(dir), None),
-                    Err(err) => (None, Some(err)),
-                },
-                None => (None, None),
-            };
-            let _ = tx.send(WorkerMsg::RulesExportDone { path, error });
-        });
-    }
-
-    /// Spawns the «Import rules» flow: a blocking multi-file picker, a
-    /// read-only active-snapshot impact preview, explicit confirmation, then
-    /// an atomic batch replacement. Result comes back as
-    /// [`WorkerMsg::RulesImportDone`]. The settings dialog
-    /// additionally disables the button while a scan runs, since the import
-    /// rewrites the files a scan reads at startup.
-    pub fn start_rules_import(&mut self) {
-        if self.rules_io_active {
-            return;
-        }
-        self.rules_io_active = true;
-        self.rules_io_result = None;
-
-        let lang = self.lang();
-        let s = i18n::strings(lang);
-        let (title, filter_label) = (s.rules_import_dialog_title, s.rules_import_filter_label);
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let picked = rfd::FileDialog::new()
-                .set_title(title)
-                .add_filter(filter_label, &["json"])
-                .pick_files();
-
-            let (summary, error) = match picked {
-                Some(files) => match worker::rules_io::prepare_pack_import(lang, &files) {
-                    Ok(prepared) => {
-                        let confirmed = rfd::MessageDialog::new()
-                            .set_title(title)
-                            .set_description(&prepared.preview)
-                            .set_level(rfd::MessageLevel::Warning)
-                            .set_buttons(rfd::MessageButtons::OkCancel)
-                            .show()
-                            == rfd::MessageDialogResult::Ok;
-                        if confirmed {
-                            match worker::rules_io::apply_prepared_import(lang, prepared) {
-                                Ok(summary) => (Some(summary), None),
-                                Err(err) => (None, Some(err)),
-                            }
-                        } else {
-                            (None, None)
-                        }
-                    }
-                    Err(err) => (None, Some(err)),
-                },
-                None => (None, None),
-            };
-            let _ = tx.send(WorkerMsg::RulesImportDone { summary, error });
         });
     }
 
@@ -1772,11 +1669,7 @@ impl GameTrimmerApp {
             self.tree_dirty = false;
         }
 
-        // `rules_io_active` keeps frames coming while a rules export/import
-        // runs behind its native file dialog, so the result label appears
-        // the moment the background thread reports back - not on the next
-        // mouse move.
-        if received_any || self.busy || self.rules_io_active || self.db_maint_active {
+        if received_any || self.busy || self.db_maint_active {
             ctx.request_repaint();
         }
     }
@@ -2038,31 +1931,6 @@ impl GameTrimmerApp {
                 }
                 // `path` and `error` both `None` means the user cancelled
                 // the save dialog - nothing to report.
-            }
-            WorkerMsg::RulesExportDone { path, error } => {
-                self.rules_io_active = false;
-                if let Some(error) = error {
-                    let msg = i18n::rules_export_failed(lang, error);
-                    crate::logger::error(&msg);
-                    self.rules_io_result = Some(Err(msg));
-                } else if let Some(path) = path {
-                    let msg = i18n::rules_exported_to(lang, path.display());
-                    self.rules_io_result = Some(Ok(msg.clone()));
-                    self.status_message = msg;
-                }
-                // Both `None`: the folder picker was cancelled.
-            }
-            WorkerMsg::RulesImportDone { summary, error } => {
-                self.rules_io_active = false;
-                if let Some(error) = error {
-                    let msg = i18n::rules_import_failed(lang, error);
-                    crate::logger::error(&msg);
-                    self.rules_io_result = Some(Err(msg));
-                } else if let Some(summary) = summary {
-                    self.rules_io_result = Some(Ok(summary.clone()));
-                    self.status_message = summary;
-                }
-                // Both `None`: the file picker was cancelled.
             }
             WorkerMsg::CompactDone { error, skipped } => {
                 self.end_job();

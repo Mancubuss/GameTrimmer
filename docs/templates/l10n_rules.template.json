@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "languages": [
+    {
+      "key": "fr",
+      "level_a": ["french"],
+      "level_b": ["fra"],
+      "level_c": ["fr"]
+    }
+  ],
+  "industry_words": [],
+  "keep_default": ["en"],
+  "markers": {
+    "negative": [],
+    "overridable_negative": [],
+    "audio": [],
+    "text": [],
+    "video": [],
+    "font": [],
+    "loc_generic": [],
+    "loc_specific": [],
+    "video_extensions": [],
+    "font_extensions": [],
+    "text_extensions": []
+  }
+}
