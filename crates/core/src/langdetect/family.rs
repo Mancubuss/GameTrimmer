@@ -340,6 +340,9 @@ fn compute_file_shape_family(
     result: &mut HashMap<usize, FamilyHit>,
 ) -> CoreResult<()> {
     let mut shape_groups: ShapeGroups = HashMap::new();
+    // Every file of the game by its directory, so a candidate group can be
+    // asked what *else* stands in its slot - see `slot_is_mostly_languages`.
+    let mut by_dir: HashMap<String, Vec<usize>> = HashMap::new();
 
     for (i, segs) in seg_lists.iter().enumerate() {
         if i % CANCEL_POLL_INTERVAL == 0 {
@@ -349,6 +352,7 @@ fn compute_file_shape_family(
             continue;
         };
         let parent_dir = dir_key(segs, segs.len() - 1);
+        by_dir.entry(parent_dir.clone()).or_default().push(i);
 
         for occ in &occ_lists[i] {
             if !occ.is_filename || shadowed.contains(&(i, occ.start)) {
@@ -362,7 +366,7 @@ fn compute_file_shape_family(
         }
     }
 
-    for ((parent_dir, _shape), members) in &shape_groups {
+    for ((parent_dir, shape), members) in &shape_groups {
         let distinct: HashSet<&'static str> = members.iter().map(|(_, c, _, _)| *c).collect();
         let all_bare = members.iter().all(|(_, _, level, _)| *level == Level::C);
         let threshold = if all_bare {
@@ -371,6 +375,9 @@ fn compute_file_shape_family(
             MIN_FAMILY_SIZE
         };
         if distinct.len() < threshold {
+            continue;
+        }
+        if !slot_is_mostly_languages(seg_lists, by_dir.get(parent_dir), shape, members) {
             continue;
         }
         for (file_idx, canonical, level, token_start) in members.iter().copied() {
@@ -395,6 +402,167 @@ fn compute_file_shape_family(
         }
     }
     Ok(())
+}
+
+/// Whether the slot this family varies actually holds languages, asked of
+/// *every* file in the directory rather than only of the ones the dictionary
+/// recognized (GT-468).
+///
+/// The shape family sees `da`, `de`, `ge`, `ko`, `no`, `ro`, `ru`, `ta`, `te`
+/// in `Learn Japanese To Survive`'s `www\audio\se\` and reads nine languages
+/// varying in one slot. What it does not see is the thirty-odd files beside
+/// them - `ka`, `ke`, `ki`, `ku`, `ma`, `me`, ... - which produce no
+/// occurrence and so never join the group at all. The slot holds the Japanese
+/// syllabary, and the nine that look like language codes are a minority in
+/// it. Same shape, same answer: Lambda Wars ships a browser-usage table keyed
+/// by *country* inside `caniuse-db\region-usage-json\`, and ARK ships ICU's
+/// locale tables in `Content\Localization\ICU\icudt53l\`.
+///
+/// So the set is confirmed only when the recognized values are more than half
+/// of everything standing in that slot. A real language folder passes
+/// trivially - Delta Force's twenty CEF packs are twenty languages and
+/// nothing else - and a real set keeps passing with a few stray neighbours,
+/// which is what "more than half" buys over "all".
+///
+/// The occupants are read by matching the shape's literal prefix and suffix
+/// against the directory's file names, which is the same thing `shape_of`
+/// built them from. Only groups that already cleared the family-size
+/// threshold are asked, so the scan is over the few directories that produced
+/// a candidate rather than over the game.
+fn slot_is_mostly_languages(
+    seg_lists: &[Vec<Segment>],
+    dir_files: Option<&Vec<usize>>,
+    shape: &str,
+    members: &[FamilyMember],
+) -> bool {
+    let Some((prefix, suffix)) = shape.split_once(SHAPE_PLACEHOLDER) else {
+        return true;
+    };
+    let Some(dir_files) = dir_files else {
+        return true;
+    };
+    let member_files: HashSet<usize> = members.iter().map(|(i, _, _, _)| *i).collect();
+
+    let mut occupants: HashSet<&str> = HashSet::new();
+    let mut recognized: HashSet<&str> = HashSet::new();
+    for i in dir_files.iter().copied() {
+        let Some(name) = seg_lists[i].last().map(|seg| seg.lower.as_str()) else {
+            continue;
+        };
+        if name.len() <= prefix.len() + suffix.len()
+            || !name.starts_with(prefix)
+            || !name.ends_with(suffix)
+        {
+            continue;
+        }
+        let value = &name[prefix.len()..name.len() - suffix.len()];
+        occupants.insert(value);
+        if member_files.contains(&i) {
+            recognized.insert(value);
+        }
+    }
+    recognized.len() * 2 > occupants.len()
+}
+
+/// The atom standing in one positional slot of `file`, or `None` when the
+/// file has no atom there. The slot is named the way
+/// `compute_directory_occurrence_family` names it: which atom sequence
+/// (stem-only or whole filename), counted from which end, at which index.
+/// Returns `None` when the file's name is not `width` atoms long, because a
+/// name of a different length is not laid out like the family's members and
+/// its atom at this index is not the same slot - see
+/// [`position_slot_is_mostly_languages`].
+fn slot_atom(
+    seg_lists: &[Vec<Segment>],
+    file: usize,
+    slot: (u8, bool, usize),
+    width: usize,
+) -> Option<&str> {
+    let (variant, from_start, idx) = slot;
+    let filename_seg = seg_lists[file].last()?;
+    let stem_end = filename_seg
+        .lower
+        .find('.')
+        .unwrap_or(filename_seg.lower.len());
+    let atoms: Vec<&_> = filename_seg
+        .atoms
+        .iter()
+        .filter(|a| variant == 1 || a.end <= stem_end)
+        .collect();
+    if atoms.len() != width {
+        return None;
+    }
+    let position = if from_start {
+        idx
+    } else {
+        atoms.len().checked_sub(idx + 1)?
+    };
+    atoms.get(position).map(|a| a.text.as_str())
+}
+
+/// How many atoms a file's name has in one of the two variants.
+fn atom_width(seg_lists: &[Vec<Segment>], file: usize, variant: u8) -> Option<usize> {
+    let filename_seg = seg_lists[file].last()?;
+    let stem_end = filename_seg
+        .lower
+        .find('.')
+        .unwrap_or(filename_seg.lower.len());
+    Some(
+        filename_seg
+            .atoms
+            .iter()
+            .filter(|a| variant == 1 || a.end <= stem_end)
+            .count(),
+    )
+}
+
+/// [`slot_is_mostly_languages`] for the positional family (GT-468). Same
+/// question, different way of naming the slot: here it is an atom index
+/// rather than a blanked-out shape.
+///
+/// Learn Japanese To Survive needs both. Its syllable clips are
+/// `hiragana-female-<syllable>.ogg`, so `hiragana` and `female` are on every
+/// file and the pair of them vouches for the whole group through the
+/// two-shared-naming-atoms rule - the shape check never gets to speak.
+///
+/// Only names of the *same length* are asked. A position means nothing across
+/// names built differently, and counting them as occupants convicts real
+/// sets: Wolfenstein: Youngblood keeps `italian.pack` and `russian.pack`
+/// beside twenty-eight `patch_<n>_<language>.pack`, and judging the bare pair
+/// against the whole folder lost 0.91 GB of genuine language packs.
+fn position_slot_is_mostly_languages(
+    seg_lists: &[Vec<Segment>],
+    dir_files: Option<&Vec<usize>>,
+    slot: (u8, bool, usize),
+    members: &[PositionMember],
+) -> bool {
+    let Some(dir_files) = dir_files else {
+        return true;
+    };
+    // Every member counts here, supported or not. The question is what the
+    // dictionary recognizes in this slot, not which members another rule
+    // vouched for - and a rider that joins the family later is recognized
+    // just the same.
+    let member_files: HashSet<usize> = members.iter().map(|m| m.file_idx).collect();
+    let Some(width) = members
+        .first()
+        .and_then(|m| atom_width(seg_lists, m.file_idx, slot.0))
+    else {
+        return true;
+    };
+
+    let mut occupants: HashSet<&str> = HashSet::new();
+    let mut recognized: HashSet<&str> = HashSet::new();
+    for i in dir_files.iter().copied() {
+        let Some(value) = slot_atom(seg_lists, i, slot, width) else {
+            continue;
+        };
+        occupants.insert(value);
+        if member_files.contains(&i) {
+            recognized.insert(value);
+        }
+    }
+    recognized.len() * 2 > occupants.len()
 }
 
 /// Mechanism 3: files in the same directory whose filename carries a
@@ -446,6 +614,7 @@ fn compute_directory_occurrence_family(
     //       (`Bk_<hash>.FRA` / `Bk_<hash>.DEU` / `Bk_<hash>.RUS`), which the
     //       stem-only variant would exclude entirely.
     let mut position_groups: PositionGroups = HashMap::new();
+    let mut by_dir: HashMap<String, Vec<usize>> = HashMap::new();
 
     for (i, segs) in seg_lists.iter().enumerate() {
         if i % CANCEL_POLL_INTERVAL == 0 {
@@ -455,6 +624,7 @@ fn compute_directory_occurrence_family(
             continue;
         };
         let parent_dir = dir_key(segs, segs.len() - 1);
+        by_dir.entry(parent_dir.clone()).or_default().push(i);
         let stem_end = filename_seg
             .lower
             .find('.')
@@ -730,6 +900,14 @@ fn compute_directory_occurrence_family(
             MIN_FAMILY_SIZE
         };
         if distinct.len() < threshold {
+            continue;
+        }
+        if !position_slot_is_mostly_languages(
+            seg_lists,
+            by_dir.get(parent_dir),
+            (*_variant, *_from_start, *_idx),
+            members,
+        ) {
             continue;
         }
         // A survivor that failed pair-support but whose language the

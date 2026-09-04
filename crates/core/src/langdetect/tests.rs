@@ -1006,6 +1006,107 @@ fn harness_replay_library() {
     }
 }
 
+// --- GT-468: a slot that mostly holds something else is not a language set
+
+/// Learn Japanese To Survive ships the hiragana syllabary as voice clips.
+/// Nine of its seventy syllables collide with a language code - `da`, `de`,
+/// `ge`, `ko`, `no`, `ro`, `ru`, `ta`, `te` - and the shape family saw nine
+/// languages varying in one slot and confirmed them, because the sixty-one
+/// syllables that produce no dictionary match never join the group at all.
+/// The slot has to be judged by everything standing in it.
+///
+/// The list is the folder as it ships, not a sample: the whole point is what
+/// the engine could not see.
+#[test]
+fn a_slot_that_mostly_holds_syllables_is_not_a_language_set() {
+    const SYLLABLES: &str = "a ba be bi bo bu chi da de do e fu ga ge gi go gu ha he hi ho i \
+         ji-2 ji ka ke ki ko ku ma me mi mo mu n na ne ni no nu o pa pe pi po pu ra re ri ro ru \
+         sa se shi so su ta te to tsu u wa wo ya yo yu za ze zo zu-2 zu";
+    let paths: Vec<String> = SYLLABLES
+        .split_whitespace()
+        .map(|s| format!("www\\audio\\se\\hiragana-female-{s}.ogg"))
+        .collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    assert!(
+        found.is_empty(),
+        "hiragana is not a set of languages, got {:?}",
+        found
+            .iter()
+            .map(|(i, f)| (refs[*i], &f.lang_tag))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Lambda Wars ships a browser-usage table keyed by *country* as a build
+/// dependency: `AD.json`, `AE.json`, ... 241 of them. Country codes and
+/// language codes are drawn from the same two-letter alphabet, so about forty
+/// of the files match the dictionary - and the other two hundred, which are
+/// the answer, were invisible.
+#[test]
+fn a_slot_of_country_codes_is_not_a_language_set() {
+    const COUNTRIES: &str = "AD AE AF AG AI AL alt-af alt-an alt-as alt-eu alt-na alt-oc alt-sa \
+         alt-ww AM AO AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BM BN BO BR BS BT BW BY BZ \
+         CA CD CF CG CH CI CK CL CM CN CO CR CU CV CX CY CZ DE DJ DK DM DO DZ EC EE EG ER ES ET \
+         FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GT GU GW GY HK HN HR HT HU \
+         ID IE IL IM IN IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK \
+         LR LS LT LU LV LY MA MC MD ME MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA \
+         NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO \
+         RS RU RW SA SB SC SD SE SG SH SI SK SL SM SN SO SR ST SV SY SZ TC TD TG TH TJ TK TL TM \
+         TN TO TR TT TV TW TZ UA UG US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW";
+    let paths: Vec<String> = COUNTRIES
+        .split_whitespace()
+        .map(|c| {
+            format!(
+                "lambdawars\\ui\\menu_next\\node_modules\\caniuse-db\\region-usage-json\\{c}.json"
+            )
+        })
+        .collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    assert!(
+        found.is_empty(),
+        "a table of countries is not a localization, got {:?}",
+        found
+            .iter()
+            .map(|(i, f)| (refs[*i], &f.lang_tag))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The counter-example, and the reason the bar is "more than half" rather
+/// than "all": a real per-language set keeps its neighbours.
+/// `Voice_english` / `Voice_french` / `Voice_german` / `Voice_polish` sit
+/// beside `intro_logo` and `intro_test`, and four languages against two
+/// strays is still a family. Bare two-letter codes are used deliberately:
+/// they are never trusted on their own, so this set stands or falls on the
+/// family and on nothing else.
+#[test]
+fn a_real_set_survives_a_few_neighbours_in_its_slot() {
+    let refs = [
+        "cine\\intro_en.bik",
+        "cine\\intro_de.bik",
+        "cine\\intro_fr.bik",
+        "cine\\intro_pl.bik",
+        "cine\\intro_it.bik",
+        "cine\\intro_logo.bik",
+        "cine\\intro_test.bik",
+    ];
+
+    let found = find_for(&refs);
+
+    let tags: HashSet<&str> = found.iter().map(|(_, f)| f.lang_tag.as_str()).collect();
+    assert_eq!(
+        tags,
+        ["de", "fr", "pl", "it"].into_iter().collect(),
+        "a real four-language set must survive two strays: {found:?}"
+    );
+}
+
 // --- GT-469: a set must not hang on which side of half an atom falls -----
 
 /// The Tannoy folder held its two Chinese files by accident. `tannoy` is the
