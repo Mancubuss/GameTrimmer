@@ -96,15 +96,18 @@ fn show_libraries(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
     let mut to_remove = None;
     let mut excluded = app.settings.excluded_libraries.clone();
+    // Borrowed as its own field, not through `app`, so the icon cache can be
+    // written while the library list is being read.
+    let icons = &mut app.launcher_icons;
     for library in &app.libraries {
         ui.horizontal(|ui| {
             // The mark sits beside the `[vendor]` text rather than replacing
-            // it: two letters on a coloured square reads faster once there
-            // are several libraries on screen, but it means nothing to a
-            // user who has not learned it yet, and the text is what tells
-            // them. See `crate::ui::vendor_icon` for the mark itself - a
-            // neutral drawn square, not a launcher's own logo.
-            crate::ui::vendor_icon::show(ui, &library.vendor);
+            // it: the launcher's icon reads faster once there are several
+            // libraries on screen, but the text is what names the vendor.
+            // See `crate::ui::vendor_icon` - the launcher's own icon, read
+            // at runtime from the copy installed on this machine, and our
+            // neutral lettered square whenever there is none to read.
+            crate::ui::vendor_icon::show(ui, icons, &library.vendor);
             ui.label(format!("[{}]", library.vendor));
             ui.label(row_actions::windows_path_string(&library.path));
             ui.label(model::format_size(

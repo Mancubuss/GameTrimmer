@@ -6,6 +6,7 @@ pub mod dialogs;
 #[cfg(test)]
 pub mod harness;
 pub mod highlight;
+pub mod launcher_icon;
 pub mod onboarding;
 #[cfg(test)]
 mod perf;

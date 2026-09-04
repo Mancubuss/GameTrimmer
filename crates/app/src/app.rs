@@ -113,6 +113,11 @@ pub struct GameTrimmerApp {
     /// Which section of the rebuilt settings dialog is showing. UI-only and
     /// never persisted - reopening the dialog starts at General.
     pub settings_section: ui::settings::SettingsSection,
+    /// Launcher icons read from the launchers installed on this machine, one
+    /// extraction per vendor per session - see [`ui::launcher_icon`]. Nothing
+    /// here is shipped with the app; a vendor with no readable icon is
+    /// remembered as a miss and its library row keeps the lettered mark.
+    pub launcher_icons: ui::launcher_icon::LauncherIcons,
     /// Filter text for the "Scanning" section's keep-language search box.
     /// UI-only, never persisted - and deliberately app state rather than
     /// egui memory, so the section stays a plain `show(app, ui)` function
@@ -502,6 +507,7 @@ impl GameTrimmerApp {
             system_lang,
             show_settings: false,
             settings_section: ui::settings::SettingsSection::General,
+            launcher_icons: ui::launcher_icon::LauncherIcons::default(),
             keep_language_query: String::new(),
             last_routing_breakdown: String::new(),
             settings_save_error: None,

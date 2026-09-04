@@ -3,16 +3,24 @@
 //! text is read - useful once there are several libraries on screen (a live
 //! run has 9).
 //!
-//! These are our own neutral marks, not launcher logos: a rounded square,
-//! a colour derived from the vendor string, and one or two letters. Real
-//! launcher logos, wordmarks and brand colours are third-party trademarks
-//! the owner decided (2026-09-04) not to source or imitate; this ships the
-//! plain version first and leaves real icons as a later, separate decision.
+//! What is drawn is the launcher's *own* icon whenever this machine has that
+//! launcher installed: the image is read at runtime out of the installed
+//! executable (see [`crate::ui::launcher_icon`]), the same way Explorer draws
+//! it. Nothing is shipped - no launcher logo, wordmark or artwork lives in
+//! this repository or in the release archive - and the icon is drawn only
+//! beside the library row it identifies, unrecoloured and unrestyled.
 //!
-//! The vendor -> (initials, colour) mapping lives in one function,
-//! [`vendor_mark`], so swapping in real logos later only touches this file.
+//! When no icon can be read - the library was swept off a drive or added by
+//! hand, the launcher was uninstalled but its games stayed, or the executable
+//! carries no usable icon - the row falls back to our own neutral mark: a
+//! rounded square, a colour derived from the vendor string, and one or two
+//! letters. The fallback is never a blank space.
+//!
+//! Both maps live here side by side: vendor -> (initials, colour) in
+//! [`vendor_mark`], and vendor -> where its launcher's executable is found in
+//! [`LAUNCHER_SOURCES`].
 
-use eframe::egui::{self, Color32};
+use eframe::egui::{self, Color32, TextureHandle};
 
 /// Hand-picked palette, not tied to any launcher's brand colour. Chosen for
 /// legible white or black text (see [`text_color_for`]) rather than for
@@ -87,6 +95,157 @@ fn fallback_initials(vendor: &str) -> String {
     }
 }
 
+/// Where a vendor's launcher executable is found on this machine, so its own
+/// icon can be read out of it at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LauncherSource {
+    /// Steam records its own install root in the registry and the provider
+    /// already reads it - see `gametrimmer_core::providers::steam`. Steam is
+    /// the one launcher that need not appear in the uninstall registry at
+    /// all: a portable install has no uninstall entry, and the dev machine's
+    /// Steam is exactly that.
+    SteamRoot,
+    /// Found through the Windows uninstall registry: the entry whose
+    /// `DisplayName` starts with `display_name` records where the launcher
+    /// was installed, and `exe` is the executable's path relative to that
+    /// directory (a bare file name for most; Epic buries its launcher a few
+    /// levels down).
+    Uninstall {
+        display_name: &'static str,
+        exe: &'static str,
+    },
+    /// No launcher executable to read an icon from, so the row keeps the
+    /// lettered mark. Each entry below says why.
+    None,
+}
+
+/// Vendor -> where to find its launcher, for every vendor this app can label
+/// a library with: the 14 in `gametrimmer_core::providers` plus `"manual"`.
+///
+/// The routes are measured on a real machine (2026-09-04), not guessed. The
+/// documented `App Paths` registry key was probed first and resolved *zero*
+/// of the 14 - not Steam, not GOG, not Epic - so it is not consulted at all;
+/// the uninstall registry, which the standalone-games sweep already reads,
+/// resolved ten.
+pub const LAUNCHER_SOURCES: [(&str, LauncherSource); 15] = [
+    (
+        "amazon",
+        LauncherSource::Uninstall {
+            display_name: "Amazon Games",
+            exe: "Amazon Games.exe",
+        },
+    ),
+    (
+        "battlenet",
+        LauncherSource::Uninstall {
+            display_name: "Battle.net",
+            exe: "Battle.net.exe",
+        },
+    ),
+    // The EA app installs under a version-numbered directory and registers
+    // no uninstall entry and no path value of its own, so there is nothing
+    // stable to point at.
+    ("ea", LauncherSource::None),
+    (
+        "epic",
+        LauncherSource::Uninstall {
+            display_name: "Epic Games Launcher",
+            exe: "Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe",
+        },
+    ),
+    // Swept off a drive: no launcher exists by definition.
+    ("folderscan", LauncherSource::None),
+    (
+        "gog",
+        LauncherSource::Uninstall {
+            display_name: "GOG GALAXY",
+            exe: "GalaxyClient.exe",
+        },
+    ),
+    (
+        "humble",
+        LauncherSource::Uninstall {
+            display_name: "Humble App",
+            exe: "Humble App.exe",
+        },
+    ),
+    (
+        "itch",
+        LauncherSource::Uninstall {
+            display_name: "itch",
+            // itch keeps its executable in a version-numbered directory, so
+            // the install location alone cannot name it; the icon comes from
+            // the `DisplayIcon` file the same entry records.
+            exe: "itch.exe",
+        },
+    ),
+    // Added by hand: no launcher exists by definition.
+    ("manual", LauncherSource::None),
+    (
+        "paradox",
+        LauncherSource::Uninstall {
+            display_name: "Paradox Launcher",
+            exe: "Paradox Launcher.exe",
+        },
+    ),
+    (
+        "riot",
+        LauncherSource::Uninstall {
+            display_name: "Riot Client",
+            exe: "RiotClientServices.exe",
+        },
+    ),
+    (
+        "rockstar",
+        LauncherSource::Uninstall {
+            display_name: "Rockstar Games Launcher",
+            exe: "Launcher.exe",
+        },
+    ),
+    ("steam", LauncherSource::SteamRoot),
+    (
+        "ubisoft",
+        LauncherSource::Uninstall {
+            display_name: "Ubisoft Connect",
+            exe: "UbisoftConnect.exe",
+        },
+    ),
+    // The Xbox app is a Store package: it has no uninstall entry and no
+    // registry path to its executable.
+    ("xbox", LauncherSource::None),
+];
+
+/// Where `vendor`'s launcher lives, or [`LauncherSource::None`] for a vendor
+/// with no launcher to read (including any future vendor tag not yet in
+/// [`LAUNCHER_SOURCES`], which simply keeps the lettered mark).
+pub fn launcher_source(vendor: &str) -> LauncherSource {
+    LAUNCHER_SOURCES
+        .iter()
+        .find(|(name, _)| *name == vendor)
+        .map_or(LauncherSource::None, |(_, source)| *source)
+}
+
+/// What a row draws for its vendor.
+pub enum Mark {
+    /// The launcher's own icon, read at runtime from the installed launcher.
+    Icon(TextureHandle),
+    /// Our neutral mark: initials on a coloured square.
+    Letters(String, Color32),
+}
+
+/// Picks between the two. Kept separate from [`show`] so the rule - an icon
+/// when one was read, the lettered mark whenever one was not - is testable
+/// without a registry, a shell or a window.
+pub fn mark_for(icon: Option<TextureHandle>, vendor: &str) -> Mark {
+    match icon {
+        Some(texture) => Mark::Icon(texture),
+        None => {
+            let (initials, color) = vendor_mark(vendor);
+            Mark::Letters(initials, color)
+        }
+    }
+}
+
 /// Black or white, whichever contrasts more with `bg` - independent of the
 /// app's light/dark theme, since the mark's fill colour comes from the fixed
 /// [`PALETTE`] rather than from `ui.visuals()`.
@@ -102,21 +261,43 @@ fn text_color_for(bg: Color32) -> Color32 {
 
 /// Draws the mark for `vendor` at the current cursor, sized to the row's
 /// text height, and returns the allocated response (hover text repeats the
-/// full vendor tag, since the mark itself only carries one or two letters).
-pub fn show(ui: &mut egui::Ui, vendor: &str) -> egui::Response {
+/// full vendor tag, since the mark itself may only carry one or two letters).
+///
+/// `icons` is the per-session cache: the launcher's icon is extracted at most
+/// once per vendor, and a vendor with no icon is remembered as such so a
+/// missing launcher is not re-probed on every repaint.
+pub fn show(
+    ui: &mut egui::Ui,
+    icons: &mut crate::ui::launcher_icon::LauncherIcons,
+    vendor: &str,
+) -> egui::Response {
     let size = ui.text_style_height(&egui::TextStyle::Body);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     if ui.is_rect_visible(rect) {
-        let (initials, color) = vendor_mark(vendor);
-        let painter = ui.painter();
-        painter.rect_filled(rect, size * 0.2, color);
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            initials,
-            egui::FontId::proportional(size * 0.55),
-            text_color_for(color),
-        );
+        match mark_for(icons.texture(ui.ctx(), vendor), vendor) {
+            // Drawn at full white tint, i.e. exactly the pixels Windows
+            // handed us: the launcher's image is never recoloured or
+            // restyled.
+            Mark::Icon(texture) => {
+                ui.painter().image(
+                    texture.id(),
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            Mark::Letters(initials, color) => {
+                let painter = ui.painter();
+                painter.rect_filled(rect, size * 0.2, color);
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    initials,
+                    egui::FontId::proportional(size * 0.55),
+                    text_color_for(color),
+                );
+            }
+        }
     }
     response.on_hover_text(vendor.to_string())
 }
@@ -167,6 +348,76 @@ mod tests {
     fn empty_vendor_string_still_produces_a_mark() {
         let (initials, _color) = vendor_mark("");
         assert!(!initials.is_empty());
+    }
+
+    #[test]
+    fn every_canonical_vendor_and_manual_has_a_launcher_source() {
+        for vendor in CANONICAL_VENDORS.iter().chain(["manual"].iter()) {
+            let listed = LAUNCHER_SOURCES
+                .iter()
+                .filter(|(name, _)| name == vendor)
+                .count();
+            assert_eq!(
+                listed, 1,
+                "vendor {vendor:?} appears {listed} times in LAUNCHER_SOURCES, expected exactly 1"
+            );
+        }
+        assert_eq!(
+            LAUNCHER_SOURCES.len(),
+            CANONICAL_VENDORS.len() + 1,
+            "LAUNCHER_SOURCES lists vendors beyond the canonical 14 plus \"manual\""
+        );
+    }
+
+    #[test]
+    fn no_two_vendors_claim_the_same_launcher_executable() {
+        let mut seen: Vec<(&str, &str)> = Vec::new();
+        for (vendor, source) in LAUNCHER_SOURCES.iter() {
+            if let LauncherSource::Uninstall { display_name, exe } = source {
+                if let Some((other, _)) = seen.iter().find(|(_, e)| e == exe) {
+                    panic!("vendors {other:?} and {vendor:?} both claim the executable {exe:?}");
+                }
+                if let Some((other, _)) = seen.iter().find(|(_, d)| d == display_name) {
+                    panic!(
+                        "vendors {other:?} and {vendor:?} both claim the uninstall entry {display_name:?}"
+                    );
+                }
+                seen.push((vendor, exe));
+                seen.push((vendor, display_name));
+            }
+        }
+    }
+
+    #[test]
+    fn a_vendor_whose_launcher_lookup_failed_falls_back_to_the_lettered_mark() {
+        // The failure is injected, not read off this machine: no icon, for
+        // any of the three live reasons (no launcher, uninstalled launcher,
+        // executable without a usable icon).
+        for vendor in CANONICAL_VENDORS.iter().chain(["manual"].iter()) {
+            match mark_for(None, vendor) {
+                Mark::Letters(initials, _) => assert!(
+                    !initials.is_empty(),
+                    "vendor {vendor:?} fell back to an empty mark"
+                ),
+                Mark::Icon(_) => panic!("vendor {vendor:?} claimed an icon it does not have"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_extracted_icon_replaces_the_letters() {
+        let ctx = egui::Context::default();
+        let texture = ctx.load_texture(
+            "test",
+            egui::ColorImage::filled([2, 2], Color32::RED),
+            egui::TextureOptions::LINEAR,
+        );
+        match mark_for(Some(texture), "steam") {
+            Mark::Icon(_) => {}
+            Mark::Letters(initials, _) => {
+                panic!("an extracted icon still drew the letters {initials:?}")
+            }
+        }
     }
 
     #[test]
