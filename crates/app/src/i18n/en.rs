@@ -153,10 +153,11 @@ pub(super) const STRINGS: Strings = Strings {
          libraries and settings are kept. The only cost is scanning again.",
     rules_hint: "GameTrimmer analyses with the rules built into it, so updating the program updates them - nothing is stored next to it and nothing goes stale. To extend them, put a rules.json or an l10n_rules.json of your own in this folder: it is applied on top of the built-in rules from the next scan, and can only add to them. The format is described in rules-packs.md beside the program, with a ready example of each in the templates folder.",
     running_ellipsis: "Running...",
-    keep_languages_label: "Languages never flagged:",
-    keep_languages_hint: "Files identified as belonging to a checked language are never \
-         proposed for deletion. At least one language must stay checked. \
-         Changes take effect on the next scan.",
+    keep_languages_label: "Localization languages to keep:",
+    keep_languages_hint: "Localization a game needs to run in a checked language - menus, \
+         fonts, textures, voice - is never proposed for deletion. Startup and logo videos \
+         are not localization, so they are still offered even from a language folder. \
+         At least one language must stay checked. Changes take effect on the next scan.",
     scan_method_label: "How the last scan read files:",
     scan_method_hint: "Chosen per drive: the NTFS index on hard drives, a folder walk on SSDs, \
          where walking is faster.",

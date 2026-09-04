@@ -360,6 +360,18 @@ pub struct Rule {
     /// startup screens go is not a decision a shipped pack should be making
     /// out of the player's sight.
     ///
+    /// Where the line falls, settled by the owner 2026-09-04 after a
+    /// catalogue entry offered `videos\en\Epilepsy.webm` in Assassin's Creed
+    /// Shadows, which ships that screen once per language: **the keep-language
+    /// list covers localization and nothing else** - what a game needs in
+    /// order to run in that language, meaning menus, fonts, textures and
+    /// voice. That is what makes deleting it dangerous, and that danger is
+    /// the whole reason the list exists. A startup video is not needed for
+    /// anything, so sitting in a language folder does not make it localization
+    /// and does not buy it the veto. The setting says so in as many words
+    /// (`i18n::keep_languages_hint`), because "files belonging to a checked
+    /// language" was read - correctly - as a wider promise than this.
+    ///
     /// The field stays because the pack format is not only ours: a personal
     /// or imported rule that genuinely does name content in the player's
     /// language declares it here and gets the veto.
