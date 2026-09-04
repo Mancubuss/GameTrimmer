@@ -595,6 +595,108 @@ fn a_bare_am_stays_amharic_where_no_sibling_spells_american_out() {
     );
 }
 
+/// 3DMark, `bin\x64\locales\` as it stands on disk: 51 Chromium/CEF
+/// language packs, `fi.pak` (Finnish) and `fil.pak` (Filipino) among them.
+/// `fil` is a real dictionary entry, but only at Level B - `l10n_rules.json`
+/// never lists it as a Level A, all-letters spelled-out name the way
+/// `american` is for English - so it is not the kind of sibling
+/// [`shadowed_bare_codes`] treats as spelling anything out, and the bare
+/// `fi` beside it stays Finnish, not shadowed into losing its family.
+const THREEDMARK_LOCALES: &[&str] = &[
+    r"3DMark\bin\x64\locales\am.pak",
+    r"3DMark\bin\x64\locales\ar.pak",
+    r"3DMark\bin\x64\locales\bg.pak",
+    r"3DMark\bin\x64\locales\bn.pak",
+    r"3DMark\bin\x64\locales\ca.pak",
+    r"3DMark\bin\x64\locales\cs.pak",
+    r"3DMark\bin\x64\locales\da.pak",
+    r"3DMark\bin\x64\locales\de.pak",
+    r"3DMark\bin\x64\locales\el.pak",
+    r"3DMark\bin\x64\locales\en-GB.pak",
+    r"3DMark\bin\x64\locales\en-US.pak",
+    r"3DMark\bin\x64\locales\es-419.pak",
+    r"3DMark\bin\x64\locales\es.pak",
+    r"3DMark\bin\x64\locales\et.pak",
+    r"3DMark\bin\x64\locales\fa.pak",
+    r"3DMark\bin\x64\locales\fi.pak",
+    r"3DMark\bin\x64\locales\fil.pak",
+    r"3DMark\bin\x64\locales\fr.pak",
+    r"3DMark\bin\x64\locales\gu.pak",
+    r"3DMark\bin\x64\locales\he.pak",
+    r"3DMark\bin\x64\locales\hi.pak",
+    r"3DMark\bin\x64\locales\hr.pak",
+    r"3DMark\bin\x64\locales\hu.pak",
+    r"3DMark\bin\x64\locales\id.pak",
+    r"3DMark\bin\x64\locales\it.pak",
+    r"3DMark\bin\x64\locales\ja.pak",
+    r"3DMark\bin\x64\locales\kn.pak",
+    r"3DMark\bin\x64\locales\ko.pak",
+    r"3DMark\bin\x64\locales\lt.pak",
+    r"3DMark\bin\x64\locales\lv.pak",
+    r"3DMark\bin\x64\locales\ml.pak",
+    r"3DMark\bin\x64\locales\mr.pak",
+    r"3DMark\bin\x64\locales\ms.pak",
+    r"3DMark\bin\x64\locales\nb.pak",
+    r"3DMark\bin\x64\locales\nl.pak",
+    r"3DMark\bin\x64\locales\pl.pak",
+    r"3DMark\bin\x64\locales\pt-BR.pak",
+    r"3DMark\bin\x64\locales\pt-PT.pak",
+    r"3DMark\bin\x64\locales\ro.pak",
+    r"3DMark\bin\x64\locales\ru.pak",
+    r"3DMark\bin\x64\locales\sk.pak",
+    r"3DMark\bin\x64\locales\sl.pak",
+    r"3DMark\bin\x64\locales\sr.pak",
+    r"3DMark\bin\x64\locales\sv.pak",
+    r"3DMark\bin\x64\locales\sw.pak",
+    r"3DMark\bin\x64\locales\ta.pak",
+    r"3DMark\bin\x64\locales\te.pak",
+    r"3DMark\bin\x64\locales\th.pak",
+    r"3DMark\bin\x64\locales\tr.pak",
+    r"3DMark\bin\x64\locales\uk.pak",
+    r"3DMark\bin\x64\locales\vi.pak",
+    r"3DMark\bin\x64\locales\zh-CN.pak",
+    r"3DMark\bin\x64\locales\zh-TW.pak",
+];
+
+/// The counterexample a loosened Level-A gate on [`shadowed_bare_codes`]
+/// would break silently: `fi.pak` has no full "finnish" name anywhere in
+/// this folder to save it, so if `fil` were ever promoted to Level A (or the
+/// gate stopped requiring Level A at all), `fil.pak`'s own bare token would
+/// start reading as a spelled-out claim on every `fi*` code, and `fi.pak`
+/// would lose the family evidence [`LangEvidence::is_family`] reports here.
+/// The label itself would not visibly change in *this* folder - `locales`
+/// is also a marker word, so a weaker, marker-only reading of the bare `fi`
+/// token quietly steps in and still calls it Finnish - but that fallback is
+/// a coincidence of this one directory name, not a guarantee: outside a
+/// folder literally named `locales`/`locale`, losing family is losing the
+/// finding outright, the way [`lone_iso2_without_family_is_never_flagged`]
+/// shows for any other bare two-letter code. Assert on the evidence, not
+/// just the label, or a regression here hides in a green test.
+#[test]
+fn a_bare_fi_stays_finnish_where_no_sibling_spells_filipino_out() {
+    let findings = find_for(THREEDMARK_LOCALES);
+    let finding_for = |basename: &str| {
+        THREEDMARK_LOCALES
+            .iter()
+            .position(|p| p.rsplit('\\').next() == Some(basename))
+            .and_then(|idx| findings.iter().find(|(i, _)| *i == idx))
+            .map(|(_, f)| f)
+            .unwrap_or_else(|| panic!("{basename} was not flagged: {findings:?}"))
+    };
+
+    let fi = finding_for("fi.pak");
+    assert_eq!(fi.lang_tag, "fi", "3DMark ships real Finnish: {fi:?}");
+    assert!(
+        fi.reason.evidence.is_family(),
+        "fi.pak must still be confirmed by the directory family, not merely \
+         by the `locales` marker word falling back to a plain dictionary \
+         lookup: {fi:?}"
+    );
+
+    let fil = finding_for("fil.pak");
+    assert_eq!(fil.lang_tag, "fil", "and real Filipino beside it: {fil:?}");
+}
+
 /// GT-466: the two Chinese texts of that same folder stopped being findings
 /// altogether - 0.04 MB, but a whole localization the user could see on disk
 /// and not in the app, while the French, German, Italian and Spanish files
