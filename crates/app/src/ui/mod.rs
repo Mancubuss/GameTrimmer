@@ -14,6 +14,7 @@ pub mod row_actions;
 pub mod settings;
 pub mod top_bar;
 pub mod tree_view;
+pub mod vendor_icon;
 
 use eframe::egui;
 
