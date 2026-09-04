@@ -47,6 +47,30 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Exit codes have to mean one thing each, and one of them did not.
+#
+# `Fail` exits 2 - the documented "could not be run or measured" - and every
+# explicit check uses it. But the line above turns any PowerShell error into a
+# terminating one, and a script that dies of an uncaught terminating error
+# exits 1: the same code this script uses to say "measured, and it got slower".
+# A run that fell over before measuring anything therefore looked exactly like
+# a regression, and the only way to tell them apart was to go and check by hand
+# whether an entry had actually been appended to the test log. That happened
+# for real (GT-471), and it is the wrong way round: a number nobody produced
+# must never be able to impersonate a number that got worse.
+#
+# The trap is script-scoped, so it catches anything the explicit checks did not
+# think of - a locked database the move cannot shift, an unreadable path, a
+# parse error in a changed log format - and reports it the same way `Fail`
+# would. `$_` carries the message and the line it came from, which is the part
+# the elevated console would otherwise take with it when the window closes.
+trap {
+    Write-Host "ЗУПИНКА: скрипт упав до кінця заміру: $_" -ForegroundColor Red
+    Write-Host ('   ' + $_.ScriptStackTrace) -ForegroundColor DarkGray
+    exit 2
+}
+
+
 # Every number this script writes is read back by its own comparison pass, so
 # formatting must not follow the machine's locale: on a uk-UA machine "85.2s"
 # is written "85,2s", the parser's [0-9.]+ never matches it, and every run
