@@ -711,8 +711,7 @@ mod tests {
         const TOTAL: usize = 3 * WRITE_BATCH_SIZE;
         const CHANNEL_CAPACITY: usize = 2;
 
-        let (result_tx, result_rx) =
-            std::sync::mpsc::sync_channel::<GameOutcome>(CHANNEL_CAPACITY);
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<GameOutcome>(CHANNEL_CAPACITY);
         let producer = std::thread::spawn(move || {
             for _ in 0..TOTAL {
                 // A blocking send: proof this producer is actually willing
@@ -762,6 +761,210 @@ mod tests {
             finding_count, TOTAL,
             "every queued game's finding must make it through despite a channel \
              smaller than one write batch"
+        );
+    }
+
+    // --- GT-462: what the scan's peak memory is actually made of ----------
+    //
+    // 5a3d4eb proved the handshake - a producer blocking on a channel far
+    // smaller than one write batch never outruns the writer - but never put a
+    // number on the bytes, and a bound nobody has measured cannot be called
+    // sufficient. The owner's library is 4.9M files and ~720k findings a run,
+    // so what matters is not that the footprint is bounded but whether the
+    // bound moves when the library grows.
+    //
+    // The instrument is a counting global allocator rather than the process
+    // working set. RSS is sampled rather than exact, is shared with every
+    // other test in this binary, and does not shrink promptly after a free,
+    // so two phases run back to back in one process cannot be compared by it.
+    // Peak *live heap* is exact and reproducible. It undercounts the process
+    // by a fixed amount (thread stacks, the loaded image, SQLite's own
+    // mappings); that offset is a constant, and this measurement is about the
+    // slope, not the intercept.
+    //
+    // ponytail: the counter is process-wide, hence the single-threaded run
+    // the test's `#[ignore]` note asks for; per-thread accounting only if this
+    // ever has to run inside a parallel suite.
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::AtomicUsize;
+
+    struct PeakTracking;
+
+    static IN_USE: AtomicUsize = AtomicUsize::new(0);
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe impl GlobalAlloc for PeakTracking {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = System.alloc(layout);
+            if !ptr.is_null() {
+                let live = IN_USE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
+                PEAK.fetch_max(live, Ordering::Relaxed);
+            }
+            ptr
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            IN_USE.fetch_sub(layout.size(), Ordering::Relaxed);
+            System.dealloc(ptr, layout);
+        }
+    }
+
+    // Gated by this module's `#[cfg(test)]` along with everything else here,
+    // so the shipped binary keeps the system allocator untouched.
+    #[global_allocator]
+    static ALLOCATOR: PeakTracking = PeakTracking;
+
+    /// One game of `files` entries, `findings` of which are flagged. Distinct
+    /// relative paths on purpose: a game whose entries all shared one `String`
+    /// would measure a corpus no scan ever produces.
+    fn synthetic_game(game_id: i64, files: usize, findings: usize) -> PreparedGame {
+        assert!(
+            findings <= files,
+            "a game cannot flag more files than it has"
+        );
+        let entries = (0..files)
+            .map(|i| FileEntry::logical_only(format!("data\\pak{i:05}.pak"), 1024, None))
+            .collect();
+        let findings = (0..findings)
+            .map(|i| PreparedFinding {
+                entry_index: i,
+                rel_path: format!("data\\pak{i:05}.pak"),
+                size: 1024,
+                size_on_disk: 1024,
+                source: FindingSource::Loc(gametrimmer_core::langdetect::LangKind::Text),
+                rule_id: "test rule".to_string(),
+                confidence: 90,
+                provenance: RuleProvenance::Builtin,
+                lang_tag: Some("de".to_string()),
+                group_dir: None,
+                safety: Err("no snapshot needed for this measurement".to_string()),
+            })
+            .collect();
+        PreparedGame {
+            game_id,
+            name: "Test Game".to_string(),
+            app_id: None,
+            install_dir: PathBuf::from("D:\\Library\\Test Game"),
+            entries,
+            findings,
+            kept: 0,
+            anti_cheat_protected: false,
+            imported_rules_refused: false,
+        }
+    }
+
+    /// Runs the writer over a synthetic corpus and returns the peak live heap
+    /// it added above where the process already stood.
+    ///
+    /// The games are built one at a time inside the producer thread, never
+    /// collected up front: a pre-built corpus would put the whole library on
+    /// the heap before the writer saw a byte of it, which is precisely the
+    /// shape this is measuring the absence of.
+    fn writer_peak_bytes(games: usize, files_per_game: usize, findings_per_game: usize) -> usize {
+        let dir = tempfile::tempdir().expect("temp dir for the measured database");
+        // File-backed rather than `db::open_in_memory`: an in-memory database
+        // keeps every written page on the heap, so its growth - linear in
+        // games by construction - would drown out the writer's own footprint.
+        let mut conn = db::open(&dir.path().join("peak.db")).expect("open db");
+        let scan_id = db::begin_scan(&conn, "complete").expect("begin scan");
+        let game_id = seed_game(&conn, scan_id);
+
+        // The real pool's capacity shape: a bounded channel, blocking sends.
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<GameOutcome>(2);
+        let producer = std::thread::spawn(move || {
+            for _ in 0..games {
+                let game = synthetic_game(game_id, files_per_game, findings_per_game);
+                if result_tx.send(GameOutcome::Scanned(game)).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let (msg_tx, msg_rx) = std::sync::mpsc::channel::<WorkerMsg>();
+        // Drained on a thread of its own. `Notifier::silent` still *sends* -
+        // it only skips the repaint - so one `Progress` per game would pile up
+        // in an unread channel and this would measure the test's own backlog
+        // growing with the corpus instead of the writer's footprint.
+        let drain = std::thread::spawn(move || while msg_rx.recv().is_ok() {});
+        let notifier = crate::worker::Notifier::silent(msg_tx);
+        let completed = AtomicUsize::new(0);
+        let cancel = AtomicBool::new(false);
+
+        let baseline = IN_USE.load(Ordering::Relaxed);
+        PEAK.store(baseline, Ordering::Relaxed);
+        let findings = run_writer(
+            &mut conn, result_rx, &notifier, games, &completed, &cancel, scan_id,
+        )
+        .expect("the writer must finish the synthetic corpus");
+        let peak = PEAK.load(Ordering::Relaxed);
+
+        assert_eq!(
+            findings.len(),
+            games * findings_per_game,
+            "the measurement is only meaningful if the writer actually carried every finding"
+        );
+        producer.join().expect("producer thread panicked");
+        drop(notifier);
+        drain.join().expect("progress drain thread panicked");
+
+        peak.saturating_sub(baseline)
+    }
+
+    /// GT-462, the half of GT-109's AUD-09 that 5a3d4eb closed lightly: the
+    /// backpressure mechanism was proved, its cost in bytes was not.
+    ///
+    /// Two questions, in the order they matter:
+    ///
+    /// 1. Does the writer's own footprint move when the library grows? Four
+    ///    times the games, no findings, must not cost four times the bytes -
+    ///    what is in flight at any moment is one `WRITE_BATCH_SIZE` plus the
+    ///    channel, and neither knows how many games are still coming.
+    /// 2. What does one finding cost? That is the part that legitimately does
+    ///    scale with the library: `run_writer` hands every `FindingRow` back
+    ///    for the UI to show, so 720k findings are 720k rows in memory at the
+    ///    end of a real scan, by design. The number is printed rather than
+    ///    only asserted, because the extrapolation to the owner's library is
+    ///    the whole reason the card exists.
+    ///
+    /// Ignored by default: the counter above is process-wide, so a parallel
+    /// suite would charge this test with every other test's allocations. Run
+    /// it on its own -
+    /// `cargo test -p gametrimmer --bin gametrimmer peak -- --ignored --nocapture --test-threads=1`.
+    #[test]
+    #[ignore = "measurement: the heap counter is process-wide, run with --test-threads=1"]
+    fn the_writers_peak_follows_the_batch_and_the_findings_it_keeps_but_not_the_game_count() {
+        const FILES: usize = 64;
+        const SMALL: usize = 8 * WRITE_BATCH_SIZE;
+        const LARGE: usize = 4 * SMALL;
+
+        let small = writer_peak_bytes(SMALL, FILES, 0);
+        let large = writer_peak_bytes(LARGE, FILES, 0);
+        let with_findings = writer_peak_bytes(LARGE, FILES, 1);
+
+        let per_finding = with_findings.saturating_sub(large) / LARGE;
+        eprintln!(
+            "GT-462 peak live heap: {SMALL} games -> {small} B, {LARGE} games -> {large} B \
+             ({FILES} files each, no findings); {LARGE} games with one finding each -> \
+             {with_findings} B, i.e. {per_finding} B per retained finding, which puts a \
+             720,000-finding run at about {} MiB of retained rows.",
+            (per_finding * 720_000) / (1024 * 1024)
+        );
+
+        assert!(
+            large < small * 2,
+            "peak heap must not follow the game count: {SMALL} games took {small} B and \
+             {LARGE} games (four times as many) took {large} B - more than double means \
+             something is accumulating per game that the write batch does not bound"
+        );
+        // A ceiling, not a target: a `FindingRow` is a handful of short
+        // strings and integers. Anything past 2 KiB each means a row started
+        // carrying something big - a full path list, a snapshot blob - and
+        // 720k of those would be gigabytes.
+        assert!(
+            per_finding < 2048,
+            "one retained finding grew to {per_finding} B; at 720,000 findings a real scan \
+             would hold {} MiB of rows",
+            (per_finding * 720_000) / (1024 * 1024)
         );
     }
 }
