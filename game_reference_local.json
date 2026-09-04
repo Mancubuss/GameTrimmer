@@ -4,7 +4,7 @@
     {
       "app_id": "1477940",
       "title": "Unknown 9: Awakening",
-      "note": "The whole boot-logo chain, 160.4 MB of it. Five of the eight are invisible to every built-in rule because they carry no separator-delimited 'logo' in the name - two of them are 60 MB each and say 'game_boot_flow-sequence_Unreal_Wwise' in as many words. PCGamingWiki has no page for this game, so nothing was going to reach them. Verified against the installed copy 2026-09-04.",
+      "note": "The whole boot-logo chain, 160.4 MB of it. Five of the eight are invisible to every built-in rule because they carry no separator-delimited 'logo' in the name - two of them are 60 MB each and say 'game_boot_flow-sequence_Unreal_Wwise' in as many words. No external catalogue covers this game, so nothing was going to reach them. Verified against the installed copy 2026-09-04.",
       "intro_files": [
         "BandaiLogo_1080p30.mp4",
         "KWM_awa2308_game_boot_flow-sequence_Bandai-Logo_2160p30.mp4",

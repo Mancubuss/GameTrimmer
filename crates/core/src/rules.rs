@@ -87,7 +87,7 @@ fn is_builtin_provenance(provenance: &RuleProvenance) -> bool {
 /// A built-in rule is a *heuristic*: `^(.*[_. -])?logos?.*\.bik$` is a
 /// pattern someone wrote because startup videos tend to be named that way,
 /// and for a game nobody has catalogued it is the only answer available.
-/// A reference rule is an *entry*: PCGamingWiki names this game's intro
+/// A reference rule is an *entry*: the catalogue names this game's intro
 /// videos one by one, so for that game there is nothing left to guess.
 ///
 /// This is separate from [`RuleProvenance`], which answers a different
@@ -1324,7 +1324,7 @@ mod tests {
         let mut engine = RuleEngine::load(&default_rules_path()).expect("repo rules.json loads");
         engine.absorb(
             RuleEngine::from_json(&pack(
-                r#"[{"category": "intro", "pattern": "^studio_logo\\.bik$", "desc": "PCGamingWiki entry", "confidence": 70, "app_id": "292030", "origin": "reference"}]"#,
+                r#"[{"category": "intro", "pattern": "^studio_logo\\.bik$", "desc": "Catalogue entry", "confidence": 70, "app_id": "292030", "origin": "reference"}]"#,
             ))
             .expect("reference pack compiles"),
         );
@@ -2163,7 +2163,7 @@ mod tests {
         pack(
             r#"[
             {"category": "intro", "pattern": "^logo\\.bik$", "desc": "Guessed: startup logo", "confidence": 99},
-            {"category": "intro", "pattern": "^(logo|weird_name)\\.bik$", "desc": "PCGamingWiki entry", "confidence": 70, "app_id": "480490", "origin": "reference"}
+            {"category": "intro", "pattern": "^(logo|weird_name)\\.bik$", "desc": "Catalogue entry", "confidence": 70, "app_id": "480490", "origin": "reference"}
         ]"#,
         )
     }
@@ -2177,7 +2177,7 @@ mod tests {
             .flagged()
             .expect("both rules match, one of them has to win");
 
-        assert_eq!(finding.rule_desc, "PCGamingWiki entry");
+        assert_eq!(finding.rule_desc, "Catalogue entry");
         assert_eq!(finding.confidence, 70);
     }
 

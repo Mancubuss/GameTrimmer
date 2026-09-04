@@ -979,9 +979,9 @@ fn games() -> Vec<(&'static str, Vec<Case>)> {
                 c("CookedPC\\sounds\\l03_camp_cs.fsb", Nothing),
             ],
         ),
-        // GT-209: the intro rules distilled from the PCGamingWiki
-        // "Skip intro videos" harvest (`docs/pcgw_skip_intro_dataset.json`).
-        // Positives are real file names the wiki documents deleting; the
+        // GT-209: the intro rules distilled from a catalogue of the startup
+        // videos games are known to ship. Positives are real file names
+        // documented as safe to delete; the
         // negatives below them are the names that merely *look* like the
         // positives - a frequent name is evidence that a name is common, not
         // that the video behind it is a logo, and an intro false positive
