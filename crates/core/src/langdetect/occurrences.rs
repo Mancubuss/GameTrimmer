@@ -175,6 +175,64 @@ pub fn collect_occurrences(data: &LangData, segments: &[Segment]) -> Vec<Occurre
             }
         }
 
+        // A script or region qualifier that is not a two-letter region code,
+        // so the pass above cannot see it: `ChineseTraditional` (glued in
+        // CamelCase), `Portuguese(Brazil)` (parenthesized), `es_MX` (the
+        // dictionary spells that tag with a hyphen, the file with an
+        // underscore).
+        //
+        // All three are the same failure. The strong/CamelCase split scatters
+        // the name into atoms, only the *base* language is a dictionary word
+        // on its own, and the qualifier is dropped - so a Traditional file is
+        // labelled Simplified and a Mexican one plain Spanish. The label is
+        // what the keep-language list is applied to, so a wrong label is not
+        // a cosmetic problem: it walks a file the player meant to keep past
+        // an intact guard.
+        //
+        // The span between the two atoms is read back out of the segment and
+        // looked up as written, then with `_` normalized to the `-` the
+        // dictionary uses. Only a curated Level A alias is accepted, which is
+        // what keeps the rule from inventing variants: `de` + `1` in
+        // `voice_de_1.pck` spells no alias and stays plain German.
+        for window in seg.atoms.windows(2) {
+            let (a, b) = (&window[0], &window[1]);
+            // A closing parenthesis belongs to the qualifier that opened it;
+            // the atom itself ends before it (`portuguese(brazil` + `)`).
+            let end =
+                if seg.lower[b.end..].starts_with(')') && seg.lower[a.start..b.end].contains('(') {
+                    b.end + 1
+                } else {
+                    b.end
+                };
+            let span = &seg.lower[a.start..end];
+            let as_written = data.lookup(span);
+            let hyphenated = as_written
+                .is_none()
+                .then(|| data.lookup(&span.replace('_', "-")))
+                .flatten();
+            let Some((canonical, Level::A)) = as_written.or(hyphenated) else {
+                continue;
+            };
+            covered.push((a.start, end));
+            let key = (seg.index, a.start, end, canonical);
+            if seen.insert(key) {
+                out.push(Occurrence {
+                    canonical,
+                    level: Level::A,
+                    matched: span.to_string(),
+                    is_filename: seg.is_filename,
+                    seg_index: seg.index,
+                    start: a.start,
+                    end,
+                    whole_segment: a.start == 0 && end == seg.lower.len(),
+                    whole_stem: a.start == 0 && end == seg_stem_end,
+                    loc_adjacent: false,
+                    loc_adjacent_generic: false,
+                    asset_adjacent: false,
+                });
+            }
+        }
+
         // Locale tags written solid: `presentations_ptbr.arch06`,
         // `presentations_eses`, `presentations_esla`. The strong split leaves
         // one opaque atom, so neither pass above can see the pair inside it -

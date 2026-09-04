@@ -743,3 +743,105 @@ fn the_tannoy_folder_reads_the_same_ten_findings_every_run() {
         );
     }
 }
+
+/// GT-455: a script or region qualifier sitting next to the base language
+/// name must survive tokenization.
+///
+/// Every case here is a real path from the 2026-09-04 library run, and every
+/// one of them used to answer with the *base* language: the strong/CamelCase
+/// split scatters `ChineseTraditional` into `chinese` + `traditional`, and
+/// only `chinese` is a dictionary word - so the qualifier was dropped and the
+/// file was labelled Simplified. The same shape appears with a region
+/// (`es_MX` -> `es`) and with the parenthesized spelling
+/// (`Portuguese(Brazil)` -> `pt`).
+///
+/// Why a wrong label is worse than a missing one: the keep-language list is
+/// applied to the label. A player keeping Traditional Chinese looks at a
+/// Traditional file marked Simplified, and their keep-list does not protect
+/// it - the guard is intact and bypassed at the same time.
+#[test]
+fn a_script_or_region_qualifier_beside_the_language_name_is_not_dropped() {
+    let labels = |paths: &[&str]| -> Vec<String> {
+        let files: Vec<FileEntry> = paths.iter().map(|p| fe(p)).collect();
+        let found = LangDetector::new().analyze_game(&files);
+        let mut out: Vec<String> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let tag = found
+                    .iter()
+                    .find(|(j, _)| *j == i)
+                    .map(|(_, f)| f.lang_tag.as_str())
+                    .unwrap_or("-");
+                format!("{p} = {tag}")
+            })
+            .collect();
+        out.sort();
+        out
+    };
+
+    // Brawlhalla: the qualifier is glued on in CamelCase.
+    assert_eq!(
+        labels(&[
+            r"fontData\Font_ChineseTraditional.swf",
+            r"fontData\Font_ChineseSimplified.swf",
+        ]),
+        vec![
+            r"fontData\Font_ChineseSimplified.swf = zh-hans".to_string(),
+            r"fontData\Font_ChineseTraditional.swf = zh-hant".to_string(),
+        ],
+        "a CamelCase qualifier must not be discarded"
+    );
+
+    // SteamVR: the region is separated by an underscore, and the dictionary
+    // spells the tag with a hyphen.
+    assert_eq!(
+        labels(&[
+            r"resources\localization\localization_es_MX.json",
+            r"resources\localization\localization_pt_BR.json",
+        ]),
+        vec![
+            r"resources\localization\localization_es_MX.json = es-419".to_string(),
+            r"resources\localization\localization_pt_BR.json = pt-br".to_string(),
+        ],
+        "an underscore-separated region must reach its hyphen-spelled alias"
+    );
+
+    // Crysis 3 Remastered: the qualifier is truncated to one letter.
+    assert_eq!(
+        labels(&[r"Localization\ChineseT.pak", r"Localization\ChineseS.pak",]),
+        vec![
+            r"Localization\ChineseS.pak = zh-hans".to_string(),
+            r"Localization\ChineseT.pak = zh-hant".to_string(),
+        ],
+        "the truncated script suffix must separate the two Chinese scripts"
+    );
+}
+
+/// The counter-example GT-455 names: the fix must not turn any short
+/// neighbour into a script qualifier.
+///
+/// `voice_de_1.pck` / `voice_de_2.pck` are two German banks numbered 1 and 2.
+/// If joining a language atom to its neighbour were accepted on shape rather
+/// than on a curated alias, `de` + `1` would become a "variant" of German and
+/// the pair would split into two languages that do not exist.
+#[test]
+fn a_neighbour_that_is_not_a_curated_variant_does_not_qualify_the_language() {
+    let files: Vec<FileEntry> = [
+        r"sound\voice_de_1.pck",
+        r"sound\voice_de_2.pck",
+        r"sound\voice_fr_1.pck",
+        r"sound\voice_fr_2.pck",
+    ]
+    .iter()
+    .map(|p| fe(p))
+    .collect();
+
+    let found = LangDetector::new().analyze_game(&files);
+    let tags: HashSet<&str> = found.iter().map(|(_, f)| f.lang_tag.as_str()).collect();
+
+    assert!(
+        tags.iter().all(|t| *t == "de" || *t == "fr"),
+        "a numeric neighbour must not invent a language variant, got {tags:?}"
+    );
+}

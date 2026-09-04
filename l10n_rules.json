@@ -240,7 +240,8 @@
         "chinesesimplified",
         "zh-cn",
         "zh-hans",
-        "zh-sg"
+        "zh-sg",
+        "chineses"
       ],
       "level_b": [
         "chn"
@@ -258,7 +259,8 @@
         "zh-tw",
         "zh-hant",
         "zh-hk",
-        "zh-mo"
+        "zh-mo",
+        "chineset"
       ],
       "level_b": [],
       "level_c": []
