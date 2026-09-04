@@ -345,6 +345,33 @@ pub fn collect_occurrences(data: &LangData, segments: &[Segment]) -> Vec<Occurre
         }
     }
 
+    // A qualified match swallows the base language it contains.
+    //
+    // `Portuguese(Brazil).snd` is matched twice: the weak-piece pass sees
+    // `portuguese` and answers Portuguese, and the qualifier pass above sees
+    // the whole `portuguese(brazil)` and answers Brazilian Portuguese. Both
+    // are true readings of a prefix, but only the longer one read the whole
+    // name - so the shorter is dropped rather than left to compete, which is
+    // what used to leave DOOM's Brazilian banks labelled `pt`.
+    //
+    // Only a *curated* Level A span may swallow, and only a span strictly
+    // wider than what it removes, so this can never turn one language into
+    // an unrelated other: the wider match is the same name plus the
+    // qualifier that was written next to it.
+    let swallowed: Vec<(usize, usize, usize)> = out
+        .iter()
+        .filter(|o| o.level == Level::A)
+        .map(|o| (o.seg_index, o.start, o.end))
+        .collect();
+    out.retain(|o| {
+        !swallowed.iter().any(|&(seg, start, end)| {
+            seg == o.seg_index
+                && start <= o.start
+                && o.end <= end
+                && (end - start) > (o.end - o.start)
+        })
+    });
+
     out
 }
 

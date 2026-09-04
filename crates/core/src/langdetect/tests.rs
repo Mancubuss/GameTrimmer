@@ -807,6 +807,23 @@ fn a_script_or_region_qualifier_beside_the_language_name_is_not_dropped() {
         "an underscore-separated region must reach its hyphen-spelled alias"
     );
 
+    // DOOM: The Dark Ages: the qualifier is parenthesized, and the base
+    // language also matches on its own as a prefix - so two readings compete
+    // and the shorter one used to win.
+    assert_eq!(
+        labels(&[
+            r"base\sound\soundbanks\hhpc\Portuguese(Brazil).snd",
+            r"base\sound\soundbanks\hhpc\Spanish(Mexico).snd",
+            r"base\sound\soundbanks\hhpc\Spanish(Spain).snd",
+        ]),
+        vec![
+            r"base\sound\soundbanks\hhpc\Portuguese(Brazil).snd = pt-br".to_string(),
+            r"base\sound\soundbanks\hhpc\Spanish(Mexico).snd = es-419".to_string(),
+            r"base\sound\soundbanks\hhpc\Spanish(Spain).snd = es".to_string(),
+        ],
+        "a parenthesized qualifier must beat the bare language name it starts with"
+    );
+
     // Crysis 3 Remastered: the qualifier is truncated to one letter.
     assert_eq!(
         labels(&[r"Localization\ChineseT.pak", r"Localization\ChineseS.pak",]),
