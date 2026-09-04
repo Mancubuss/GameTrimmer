@@ -1211,6 +1211,18 @@ pub fn hover_logical_size_suffix(lang: Lang, logical: &str) -> String {
     }
 }
 
+/// Tooltip line spelling out the on-disk size when the row itself has fallen
+/// back to showing the logical size instead (a resident NTFS file: content
+/// small enough to live inside the MFT record, so it occupies no cluster and
+/// `size_on_disk` is 0 - see `model::display_size_bytes`). Keeps the on-disk
+/// figure - the honest "this frees nothing" answer - reachable even though
+/// the row no longer shows it directly.
+pub fn hover_on_disk_size_suffix(lang: Lang, on_disk: &str) -> String {
+    match lang {
+        Lang::En | Lang::Custom(_) => format!("\nOn-disk size: {on_disk}"),
+    }
+}
+
 /// Tooltip suffix explaining that intro videos are replaced with micro-stubs on removal.
 pub fn hover_stub_suffix(lang: Lang) -> String {
     format!("\n{}", strings(lang).hover_stub_note)

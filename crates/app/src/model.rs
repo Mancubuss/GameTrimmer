@@ -1497,6 +1497,40 @@ pub fn group_size_bytes(items: &[FindingItem], indices: &[usize]) -> u64 {
     })
 }
 
+/// The size to *display* for one row: the on-disk allocated size, except when
+/// that would print as a lying zero. An NTFS resident file - small enough to
+/// live inside its own MFT record - occupies no cluster, so `size_on_disk` is
+/// genuinely 0 even though the file exists and has content; showing "0 Б" for
+/// 42,000 such rows in a live scan reads as broken detection, which is what
+/// this falls back to the logical size to avoid (owner decision, 2026-09-04:
+/// never show 0 where there is something - Explorer is the reference).
+///
+/// A file that is truly empty (`size` also 0) still shows 0, matching
+/// Explorer - "no zero where there is something", not "no zero ever".
+///
+/// Display-only: every figure that answers "how much will deleting this
+/// free" (selection totals, the delete confirmation, `deletion_controller`,
+/// [`group_size_bytes`]) stays on `size_on_disk` untouched - the 2026-07-24
+/// decision that on-disk is the honest freed-space figure still stands.
+pub fn display_size_bytes(row: &FindingRow) -> u64 {
+    if row.size_on_disk == 0 && row.size > 0 {
+        row.size
+    } else {
+        row.size_on_disk
+    }
+}
+
+/// Aggregate of [`display_size_bytes`] over `indices` - the display-only
+/// counterpart to [`group_size_bytes`], used for folder/category/game/branch
+/// header row totals so a folder holding only resident files doesn't sum to
+/// a lying "0 Б" either. Kept separate from `group_size_bytes` on purpose:
+/// nothing that computes freed space should ever read this one.
+pub fn group_display_size_bytes(items: &[FindingItem], indices: &[usize]) -> u64 {
+    indices.iter().fold(0, |total, &index| {
+        total.saturating_add(display_size_bytes(&items[index].row))
+    })
+}
+
 /// Live disk-usage snapshot produced at scan/load time (see
 /// `gametrimmer_core::db::occupied_by_library`): total bytes occupied by all
 /// scanned games plus the per-library breakdown. Never persisted - it is
@@ -3226,6 +3260,111 @@ mod tests {
         items[0].row.size_on_disk = 750;
 
         assert_eq!(group_size_bytes(&items, &[0]), 750);
+    }
+
+    // -- GT-234: resident NTFS files must not display as "0 Б" --
+
+    #[test]
+    fn resident_file_displays_logical_size_not_a_lying_zero() {
+        let mut resident = item(1, "Game A", FindingSource::Loc(LangKind::Text), 90, 706);
+        resident.row.size_on_disk = 0;
+
+        assert_eq!(
+            display_size_bytes(&resident.row),
+            706,
+            "an NTFS resident file occupies no cluster (size_on_disk == 0) but is not empty \
+             (size == 706 B); the row must show the logical size instead of a zero that reads \
+             as broken detection"
+        );
+    }
+
+    #[test]
+    fn ordinary_file_still_displays_on_disk_size_not_logical() {
+        let mut file = item(
+            1,
+            "Game A",
+            FindingSource::Rule(Category::DevLeftovers),
+            90,
+            10_000,
+        );
+        file.row.size_on_disk = 750;
+
+        assert_eq!(
+            display_size_bytes(&file.row),
+            750,
+            "an ordinary file with cluster slack must keep showing the on-disk size - the \
+             resident-file fallback only fires when size_on_disk is exactly 0, not whenever the \
+             two sizes differ"
+        );
+    }
+
+    #[test]
+    fn genuinely_empty_file_still_displays_zero() {
+        let mut empty = item(
+            1,
+            "Game A",
+            FindingSource::Rule(Category::DevLeftovers),
+            90,
+            0,
+        );
+        empty.row.size_on_disk = 0;
+
+        assert_eq!(
+            display_size_bytes(&empty.row),
+            0,
+            "a file that is truly empty (logical size 0 too) must still show 0, matching \
+             Explorer - the rule is \"no zero where there is something\", not \"no zero ever\""
+        );
+    }
+
+    #[test]
+    fn folder_of_only_resident_files_displays_a_nonzero_total() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Loc(LangKind::Text), 90, 706),
+            item(1, "Game A", FindingSource::Loc(LangKind::Text), 90, 141),
+        ];
+        for it in &mut items {
+            it.row.size_on_disk = 0;
+        }
+
+        assert_eq!(
+            group_display_size_bytes(&items, &[0, 1]),
+            847,
+            "a folder whose members are all resident files must not sum to a lying 0 either"
+        );
+        assert_eq!(
+            group_size_bytes(&items, &[0, 1]),
+            0,
+            "the on-disk sum used for freed-space figures must stay honestly 0 - deleting these \
+             two resident files frees no clusters"
+        );
+    }
+
+    #[test]
+    fn resident_files_leave_selection_and_freed_space_totals_unchanged() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Loc(LangKind::Text), 90, 706),
+            item(2, "Game B", FindingSource::Rule(Category::Bonus), 90, 1_000),
+        ];
+        items[0].row.size_on_disk = 0; // resident: displays 706, contributes 0
+        items[0].selected = true;
+        items[1].row.size_on_disk = 1_000; // ordinary
+        items[1].selected = true;
+
+        let aggregates = ui_aggregates(&items);
+
+        assert_eq!(
+            aggregates.selected_bytes_on_disk, 1_000,
+            "the resident file's 706 B display fallback must not leak into the selection total \
+             - it still contributes its true on-disk 0, so the July 2026 decision (on-disk is \
+             the honest freed-space figure) still holds"
+        );
+        assert_eq!(
+            group_size_bytes(&items, &[0, 1]),
+            1_000,
+            "group_size_bytes (deletion_controller's byte sums, the bottom bar, the delete \
+             confirmation) must be untouched by the display-only fallback"
+        );
     }
 
     #[test]

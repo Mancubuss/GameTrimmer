@@ -227,6 +227,11 @@ going anywhere: `--features headless` restores the mode (`--scan`, `--dry-run`,
   Recycle Bin on removable media. The manual steps for them are in
   [`docs/portability-test-cases.md`](docs/portability-test-cases.md). If you
   hit a problem in any of these, please report it.
+- Some very small files occupy no disk space at all: NTFS stores their
+  content directly inside the file table instead of allocating a cluster for
+  it. GameTrimmer lists these "resident" files with their real size instead
+  of a misleading zero, but removing them frees nothing — there is no disk
+  space to reclaim, only a file table entry.
 
 ## Rule packs
 

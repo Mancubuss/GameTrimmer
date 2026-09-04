@@ -1266,7 +1266,6 @@ fn show_top_row(
         true,
         indent,
         &top_group.all_indices,
-        top_group.total_bytes,
         name,
         lang,
         ctx.selection_changed,
@@ -1378,7 +1377,6 @@ fn show_game_row(
         false,
         indent,
         &game.all_indices,
-        game.total_bytes,
         name,
         lang,
         ctx.selection_changed,
@@ -1522,7 +1520,6 @@ fn show_category_row(
         true,
         indent,
         &category_node.all_indices,
-        category_node.total_bytes,
         name,
         lang,
         ctx.selection_changed,
@@ -1590,7 +1587,7 @@ fn show_folder_row(
     let TreeNode::Folder {
         group_dir,
         item_indices,
-        total_bytes,
+        total_bytes: _,
     } = &category_node.nodes[n]
     else {
         unreachable!("Row::Folder always points at a TreeNode::Folder");
@@ -1616,7 +1613,6 @@ fn show_folder_row(
         false,
         indent,
         item_indices,
-        *total_bytes,
         name,
         lang,
         ctx.selection_changed,
@@ -1653,18 +1649,24 @@ fn show_header_row(
     default_open: bool,
     level: usize,
     indices: &[usize],
-    total_bytes: u64,
     name: impl Into<egui::WidgetText>,
     lang: Lang,
     selection_changed: &std::cell::Cell<bool>,
 ) -> egui::Response {
     let mut name_response = None;
+    // Display-only aggregate (see `model::group_display_size_bytes`): a
+    // folder/category/game/branch whose members are all resident files (see
+    // `model::display_size_bytes`) must not sum to a lying "0 Б" either.
+    // The on-disk total each node also carries (`total_bytes` on
+    // `TreeNode`/`CategoryNode`/`GameNode`/`TopGroup`) stays untouched - it
+    // still drives folder/game sort order and is not read here.
+    let display_bytes = model::group_display_size_bytes(findings, indices);
 
     row_columns(
         ui,
         egui::RichText::new(""),
         egui::RichText::new(indices.len().to_string()),
-        egui::RichText::new(format_size(lang, total_bytes)),
+        egui::RichText::new(format_size(lang, display_bytes)),
         |ui| {
             ui.add_space(INDENT_PX * level as f32);
 
@@ -1960,14 +1962,24 @@ fn show_file_row(
     if item.row.display_category() == DisplayCategory::Intro {
         hover.push_str(&i18n::hover_stub_suffix(lang));
     }
-    // The row shows the on-disk allocated size as primary (allocated-size accounting); when the
-    // logical size differs (cluster slack, NTFS compression), spell it out in
-    // the tooltip so the two figures are both available without cluttering the
-    // row.
-    if item.row.size != item.row.size_on_disk {
-        hover.push_str(&i18n::hover_logical_size_suffix(
+    // The row shows the on-disk allocated size as primary (allocated-size
+    // accounting) - except when that would print a lying "0 Б" for a
+    // resident file, in which case it falls back to the logical size (see
+    // `model::display_size_bytes`). Either way only one of the two figures
+    // is visible on the row itself, so the tooltip spells out whichever one
+    // the row is NOT showing, keeping both reachable.
+    let display_size = model::display_size_bytes(&item.row);
+    if display_size == item.row.size_on_disk {
+        if item.row.size != item.row.size_on_disk {
+            hover.push_str(&i18n::hover_logical_size_suffix(
+                lang,
+                &format_size(lang, item.row.size),
+            ));
+        }
+    } else {
+        hover.push_str(&i18n::hover_on_disk_size_suffix(
             lang,
-            &format_size(lang, item.row.size),
+            &format_size(lang, item.row.size_on_disk),
         ));
     }
     // The anti-cheat verdict is explained once, on the game's own row (see
@@ -1977,7 +1989,7 @@ fn show_file_row(
         ui,
         lang_col,
         egui::RichText::new(""),
-        egui::RichText::new(format_size(lang, item.row.size_on_disk)),
+        egui::RichText::new(format_size(lang, display_size)),
         |ui| {
             ui.add_space(INDENT_PX * level as f32);
             let is_blocked = !item.row.individually_selectable();
