@@ -908,6 +908,11 @@ fn harness_replay_library() {
             .push((rel.to_string(), size));
     }
 
+    // With `GT471_DUMP` set, every finding is also printed as
+    // `game <tab> directory <tab> tag <tab> bytes`, so a threshold can be
+    // swept in a script instead of a rebuild per candidate value.
+    let dump = std::env::var_os("GT471_DUMP").is_some();
+
     let detector = LangDetector::new();
     let mut grand = 0usize;
     let mut grand_bytes = 0u64;
@@ -941,6 +946,34 @@ fn harness_replay_library() {
                 LangEvidence::SubfolderFamilyWithPrefix { .. } => "SubfolderFamilyWithPrefix",
             };
             let bytes = entries[*i].1;
+            if dump {
+                let rel = &entries[*i].0;
+                let dir = rel.rfind('\\').map_or("", |cut| &rel[..cut]);
+                // Whether a *directory* on the path names this language
+                // (`Localization\FRA\`, `fonts\rus\`) as opposed to the file
+                // name alone carrying the token.
+                let segs = tokenize_path(rel);
+                let anchored = collect_occurrences(&LangData::builtin(), &segs)
+                    .iter()
+                    .any(|o| !o.is_filename && o.canonical == f.lang_tag);
+                let token = match &f.reason.evidence {
+                    LangEvidence::LocPair { token }
+                    | LangEvidence::TokenWithMarker { token, .. }
+                    | LangEvidence::BareToken { token } => token.as_str(),
+                    _ => "",
+                };
+                let level = match LangData::builtin().lookup(token) {
+                    Some((_, dict::Level::A)) => "A",
+                    Some((_, dict::Level::B)) => "B",
+                    Some((_, dict::Level::C)) => "C",
+                    None => "-",
+                };
+                println!(
+                    "DUMP\t{game}\t{dir}\t{}\t{bytes}\t{name}\t{}\t{token}\t{level}",
+                    f.lang_tag,
+                    if anchored { "dir" } else { "file" }
+                );
+            }
             let slot = per_ev.entry(name).or_default();
             slot.0 += 1;
             slot.1 += bytes;
@@ -971,4 +1004,171 @@ fn harness_replay_library() {
             *b as f64 / 1_073_741_824.0
         );
     }
+}
+
+// --- GT-471: a label set whose shape says "naming scheme", not "translation".
+
+/// Bungie writes `sr` into every package name in `packages\`. It is a
+/// two-letter code with an asset word beside it, which is exactly the shape
+/// the marker rule trusts - and there is no second language anywhere in the
+/// folder, which is exactly the shape a language pack never has. 41.42 GB of
+/// game packages hung on it.
+#[test]
+fn one_bare_code_repeated_through_a_folder_is_a_naming_scheme() {
+    let paths: Vec<String> = (0..8)
+        .map(|n| format!("packages\\w64_sr_audio_02a{n}_0.pkg"))
+        .chain((0..6).map(|n| format!("packages\\w64_sr_video_035{n}_1.pkg")))
+        .collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    assert!(
+        found.is_empty(),
+        "a lone two-letter code covering a whole folder is not a language, got {:?}",
+        found.iter().map(|(_, f)| &f.lang_tag).collect::<Vec<_>>()
+    );
+}
+
+/// The counter-example that keeps the rule above from being "one language is
+/// never enough": Swelter is a Russian-only Half-Life 2 mod, and its voice
+/// packs say `russian` in full. Spelled-out names are self-sufficient
+/// evidence, so saturation says nothing about them.
+#[test]
+fn a_single_language_named_in_full_survives_a_folder_of_its_own() {
+    let paths: Vec<String> = (0..8)
+        .map(|n| format!("hl2\\hl2_sound_vo_russian_00{n}.vpk"))
+        .collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    assert_eq!(
+        found.len(),
+        8,
+        "a Russian-only mod still ships a removable Russian voice pack"
+    );
+    assert!(found.iter().all(|(_, f)| f.lang_tag == "ru"));
+}
+
+/// Red Faction: Armageddon names its cutscenes `..._CS_...` for *cutscene*,
+/// and the shared-position family reads nineteen of them as Czech - 1.89 GB
+/// of video. The genuine `voices_*.vpp_pc` family sits in the same folder,
+/// two files per language, so the set reads `cs:21` against `:2`: a head ten
+/// times its own third. The whole set goes, the twenty genuine rows with it -
+/// the known and accepted cost of judging a folder rather than a file.
+#[test]
+fn a_label_that_dwarfs_the_rest_takes_the_whole_folder_with_it() {
+    // The folder as the game actually ships it - the cutscene names have to
+    // be the real ones, because the family that misreads them is built from
+    // how they differ from each other.
+    let refs = [
+        "build\\pc\\cache\\M01_CS_00.bik",
+        "build\\pc\\cache\\M02_CS_01_02_MO_EWalk.bik",
+        "build\\pc\\cache\\M03_CS_03_MO_ExoExit.bik",
+        "build\\pc\\cache\\M06_CS_05.bik",
+        "build\\pc\\cache\\M08_CS_10.bik",
+        "build\\pc\\cache\\M09_CS_11.bik",
+        "build\\pc\\cache\\M12_CS_13.bik",
+        "build\\pc\\cache\\M13_CS_14_MO_WBarge.bik",
+        "build\\pc\\cache\\M14_CS_15.bik",
+        "build\\pc\\cache\\M14_MO_WFall_CS_17.bik",
+        "build\\pc\\cache\\M14_MO_WSeal_CS_16.bik",
+        "build\\pc\\cache\\M17_CS_18.bik",
+        "build\\pc\\cache\\M17_MO_TheEnd_CS_19.bik",
+        "build\\pc\\cache\\Q01_CS_04.bik",
+        "build\\pc\\cache\\Q02_CS_04_5.bik",
+        "build\\pc\\cache\\Q04_CS_08_08_5.bik",
+        "build\\pc\\cache\\Q06_CS_09_MO_Thwart.bik",
+        "build\\pc\\cache\\Q07_CS_12.bik",
+        "build\\pc\\cache\\Q08_CS_12_5.bik",
+        "build\\pc\\cache\\legal_hd-demo.bik",
+        "build\\pc\\cache\\legal_hd.bik",
+        "build\\pc\\cache\\legal_hd_PS3-demo.bik",
+        "build\\pc\\cache\\legal_hd_PS3.bik",
+        "build\\pc\\cache\\legal_hd_PS3_no_esrb.bik",
+        "build\\pc\\cache\\legal_hd_no_esrb.bik",
+        "build\\pc\\cache\\logo_SPIKE.bik",
+        "build\\pc\\cache\\logo_SyfyGAMES.bik",
+        "build\\pc\\cache\\logo_THQ-V-RFA.bik",
+        "build\\pc\\cache\\voiceboot_AR.vpp_pc",
+        "build\\pc\\cache\\voiceboot_CZ.vpp_pc",
+        "build\\pc\\cache\\voiceboot_DE.vpp_pc",
+        "build\\pc\\cache\\voiceboot_ES.vpp_pc",
+        "build\\pc\\cache\\voiceboot_FR.vpp_pc",
+        "build\\pc\\cache\\voiceboot_IT.vpp_pc",
+        "build\\pc\\cache\\voiceboot_JP.vpp_pc",
+        "build\\pc\\cache\\voiceboot_KO.vpp_pc",
+        "build\\pc\\cache\\voiceboot_PL.vpp_pc",
+        "build\\pc\\cache\\voiceboot_RU.vpp_pc",
+        "build\\pc\\cache\\voices_AR.vpp_pc",
+        "build\\pc\\cache\\voices_CZ.vpp_pc",
+        "build\\pc\\cache\\voices_DE.vpp_pc",
+        "build\\pc\\cache\\voices_ES.vpp_pc",
+        "build\\pc\\cache\\voices_FR.vpp_pc",
+        "build\\pc\\cache\\voices_IT.vpp_pc",
+        "build\\pc\\cache\\voices_JP.vpp_pc",
+        "build\\pc\\cache\\voices_KO.vpp_pc",
+        "build\\pc\\cache\\voices_PL.vpp_pc",
+        "build\\pc\\cache\\voices_RU.vpp_pc",
+    ];
+
+    let found = find_for(&refs);
+
+    assert!(
+        !found.iter().any(|(i, _)| refs[*i].ends_with(".bik")),
+        "the cutscenes are not Czech, got {:?}",
+        found
+            .iter()
+            .filter(|(i, _)| refs[*i].ends_with(".bik"))
+            .map(|(i, f)| (refs[*i], &f.lang_tag))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The counter-example for the dominance rule. Forza Horizon 5 ships its
+/// radio DJ in seven languages, two files each - the flattest set in the
+/// library, and the one that proves the threshold is not simply "any
+/// unevenness". A stray extra file of one language must not tip it over.
+#[test]
+fn an_even_set_of_languages_survives_being_judged_as_a_set() {
+    let mut paths: Vec<String> = Vec::new();
+    for lang in ["BR", "DE", "ES", "FR", "IT", "JP", "KO"] {
+        paths.push(format!("media\\Audio\\FMODBanks\\VO_DJ_02_{lang}.bank"));
+        paths.push(format!(
+            "media\\Audio\\FMODBanks\\VO_DJ_02_{lang}.assets.bank"
+        ));
+    }
+    paths.push("media\\Audio\\FMODBanks\\VO_DJ_03_DE.bank".to_string());
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    let langs: HashSet<&str> = found.iter().map(|(_, f)| f.lang_tag.as_str()).collect();
+    assert!(
+        langs.len() >= 6,
+        "an even seven-language set must survive, kept only {langs:?}"
+    );
+}
+
+/// A language folder is its own evidence, and its *tail* is the error, not
+/// its head: Deadfall Adventures' `Localization\FRA` reads `fr:201` against
+/// `id:8 ar:4`, a fiftyfold head that is entirely correct. Judging such a
+/// folder by shape would delete the right answer.
+#[test]
+fn a_folder_that_names_its_language_is_not_judged_by_shape() {
+    let mut paths: Vec<String> = (0..12)
+        .map(|n| format!("ADVGame\\Localization\\FRA\\ADVGame_{n}.upk"))
+        .collect();
+    paths.push("ADVGame\\Localization\\FRA\\id_strings.upk".to_string());
+    paths.push("ADVGame\\Localization\\FRA\\ar_strings.upk".to_string());
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    assert!(
+        found.iter().filter(|(_, f)| f.lang_tag == "fr").count() >= 12,
+        "the French folder is French however lopsided its labels look, got {:?}",
+        found.iter().map(|(_, f)| &f.lang_tag).collect::<Vec<_>>()
+    );
 }

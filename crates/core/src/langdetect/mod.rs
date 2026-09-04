@@ -11,6 +11,7 @@
 
 mod data;
 mod dict;
+mod distribution;
 mod family;
 mod markers;
 mod occurrences;
@@ -226,6 +227,10 @@ impl LangDetector {
                 out.push((i, finding));
             }
         }
+        // Findings whose label set reads as a naming scheme rather than a
+        // translation are withdrawn here, once the whole game is decided -
+        // the shape of the set is not visible from any one file.
+        distribution::drop_technical_code_sets(&self.data, files, &occ_lists, &mut out);
         // Only the completed path is charged: a cancelled analysis reports
         // nothing anyway, so the early return above needs no bookkeeping.
         perf::add(perf::Stage::LangDecide, decide_started.elapsed());
