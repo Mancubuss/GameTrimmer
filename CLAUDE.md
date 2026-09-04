@@ -15,6 +15,11 @@
 - **Тести**: `cargo test --workspace`
 - **Лінтер / Кліппі**: `cargo clippy --workspace`
 - **Форматування**: `cargo fmt`
+- **Тести самого застосунку — `--bin`, не `--lib`**: тека `crates/app` містить пакет
+  `gametrimmer` з єдиним бінарним таргетом і без `src/lib.rs`, тож рефлекторне
+  `cargo test -p gametrimmer --lib` падає з «no library targets found», а `cargo test --lib`
+  без `-p` мовчки влучає в `core` і показує «0 passed». Правильно —
+  `cargo test -p gametrimmer --bin gametrimmer`. Пакета `gametrimmer-app` не існує.
 
 ## Борд і коміти (Vikunja)
 - **Коміт без оновлення картки не завершений**: після кожного коміту онови відповідну картку (чи картки) на борді GameTrimmer — допиши, що саме зроблено, і назви хеш коміту.
