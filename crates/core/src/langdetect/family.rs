@@ -63,6 +63,9 @@ const MIN_FAMILY_SIZE_BARE_ONLY: usize = 5;
 /// bundles where de/el/he are body-variant codes, not German/Greek/Hebrew).
 /// Genuine bare-code sets essentially always cover 4+ languages.
 const MIN_SHAPE_FAMILY_SIZE_BARE_ONLY: usize = 4;
+/// Length of the bare two-letter code class (`de`, `es`, `am`) - the only
+/// evidence [`shadowed_bare_codes`] ever second-guesses.
+const BARE_CODE_LEN: usize = 2;
 const SHAPE_PLACEHOLDER: char = '\u{1}';
 
 /// One family-candidate occurrence: (file index, canonical language, trust level).
@@ -170,6 +173,94 @@ fn upsert(map: &mut HashMap<usize, FamilyHit>, file_idx: usize, hit: FamilyHit) 
     }
 }
 
+/// Bare two-letter codes that a language name spelled out in full in the
+/// same directory contradicts, as `(file index, occurrence start)` pairs the
+/// two filename mechanisms must skip.
+///
+/// Rogue Trooper Redux writes the same eight texts twice in one folder:
+/// `Tannoy_American.asr` ... `Tannoy_Spanish.asr` spelled out, and
+/// `t_am.asr` ... `t_sp.asr` abbreviated to the studio's own two letters.
+/// Five of those six short tokens agree with the dictionary anyway - `en`,
+/// `fr`, `it`, plus the curated `ge` and `sp` - so the set reads as an
+/// ordinary bare-code family and the family gate confirms it, exactly as
+/// designed. The sixth does not agree: `am` here is `American`, which is
+/// English, which is on the keep-list - and the file was being offered for
+/// deletion as Amharic, a language the game does not ship (GT-467).
+/// Counting how many of a set's tokens are "real" codes cannot separate
+/// this from a genuine set; the long set beside it can, because a directory
+/// that spells `American` out in full has already said what its `am` stands
+/// for.
+///
+/// So a bare code loses its family evidence when an all-letters language
+/// name in the same directory begins with those two letters and resolves to
+/// a different language. Where the two agree - `sp` beside `Spanish`, `ge`
+/// beside `German` - nothing happens. A directory that spells nothing out is
+/// untouched: Delta Force's `locales` folder holds `am.pak` among nineteen
+/// other bare codes and locale tags with no `American` anywhere, and it
+/// stays Amharic. Locale tags are deliberately outside the spelled-out
+/// pool, since `pt-br` beginning with `pt` says nothing about a sibling
+/// `pt`, and so are folder tokens, whose findings never pass through here
+/// at all.
+fn shadowed_bare_codes(
+    seg_lists: &[Vec<Segment>],
+    occ_lists: &[Vec<Occurrence>],
+    cancel: &AtomicBool,
+) -> CoreResult<HashSet<(usize, usize)>> {
+    fn spelled_out(occ: &Occurrence) -> bool {
+        occ.is_filename
+            && occ.level == Level::A
+            && occ.matched.len() > BARE_CODE_LEN
+            && occ.matched.bytes().all(|b| b.is_ascii_alphabetic())
+    }
+    fn bare_code(occ: &Occurrence) -> bool {
+        occ.is_filename && occ.level == Level::C && occ.matched.len() == BARE_CODE_LEN
+    }
+
+    // parent dir -> first two letters of a spelled-out name -> what those
+    // names mean there (a directory may spell out two languages sharing a
+    // first pair, and then no reading is the obvious one).
+    let mut spelled: HashMap<String, HashMap<&str, HashSet<&'static str>>> = HashMap::new();
+    for (i, segs) in seg_lists.iter().enumerate() {
+        if i % CANCEL_POLL_INTERVAL == 0 {
+            check_cancel(cancel)?;
+        }
+        if segs.is_empty() || !occ_lists[i].iter().any(spelled_out) {
+            continue;
+        }
+        let dir = spelled.entry(dir_key(segs, segs.len() - 1)).or_default();
+        for occ in occ_lists[i].iter().filter(|o| spelled_out(o)) {
+            dir.entry(&occ.matched[..BARE_CODE_LEN])
+                .or_default()
+                .insert(occ.canonical);
+        }
+    }
+
+    let mut shadowed = HashSet::new();
+    if spelled.is_empty() {
+        return Ok(shadowed);
+    }
+    for (i, segs) in seg_lists.iter().enumerate() {
+        if i % CANCEL_POLL_INTERVAL == 0 {
+            check_cancel(cancel)?;
+        }
+        if segs.is_empty() || !occ_lists[i].iter().any(bare_code) {
+            continue;
+        }
+        let Some(dir) = spelled.get(&dir_key(segs, segs.len() - 1)) else {
+            continue;
+        };
+        for occ in occ_lists[i].iter().filter(|o| bare_code(o)) {
+            if dir
+                .get(occ.matched.as_str())
+                .is_some_and(|claims| claims.iter().any(|c| *c != occ.canonical))
+            {
+                shadowed.insert((i, occ.start));
+            }
+        }
+    }
+    Ok(shadowed)
+}
+
 fn dir_key(segs: &[Segment], upto: usize) -> String {
     segs[..upto]
         .iter()
@@ -223,8 +314,16 @@ pub fn compute_family(
     cancel: &AtomicBool,
 ) -> CoreResult<HashMap<usize, FamilyHit>> {
     let mut result = HashMap::new();
-    compute_file_shape_family(seg_lists, occ_lists, keep, cancel, &mut result)?;
-    compute_directory_occurrence_family(seg_lists, occ_lists, keep, cancel, &mut result)?;
+    let shadowed = shadowed_bare_codes(seg_lists, occ_lists, cancel)?;
+    compute_file_shape_family(seg_lists, occ_lists, keep, &shadowed, cancel, &mut result)?;
+    compute_directory_occurrence_family(
+        seg_lists,
+        occ_lists,
+        keep,
+        &shadowed,
+        cancel,
+        &mut result,
+    )?;
     compute_folder_family(data, seg_lists, keep, cancel, &mut result)?;
     compute_prefixed_folder_family(seg_lists, occ_lists, keep, cancel, &mut result)?;
     Ok(result)
@@ -236,6 +335,7 @@ fn compute_file_shape_family(
     seg_lists: &[Vec<Segment>],
     occ_lists: &[Vec<Occurrence>],
     keep: &HashSet<String>,
+    shadowed: &HashSet<(usize, usize)>,
     cancel: &AtomicBool,
     result: &mut HashMap<usize, FamilyHit>,
 ) -> CoreResult<()> {
@@ -251,7 +351,7 @@ fn compute_file_shape_family(
         let parent_dir = dir_key(segs, segs.len() - 1);
 
         for occ in &occ_lists[i] {
-            if !occ.is_filename {
+            if !occ.is_filename || shadowed.contains(&(i, occ.start)) {
                 continue;
             }
             let shape = shape_of(&filename_seg.lower, occ.start, occ.end);
@@ -329,6 +429,7 @@ fn compute_directory_occurrence_family(
     seg_lists: &[Vec<Segment>],
     occ_lists: &[Vec<Occurrence>],
     keep: &HashSet<String>,
+    shadowed: &HashSet<(usize, usize)>,
     cancel: &AtomicBool,
     result: &mut HashMap<usize, FamilyHit>,
 ) -> CoreResult<()> {
@@ -366,7 +467,7 @@ fn compute_directory_occurrence_family(
         let whole_atoms: Vec<_> = filename_seg.atoms.iter().collect();
 
         for occ in &occ_lists[i] {
-            if !occ.is_filename {
+            if !occ.is_filename || shadowed.contains(&(i, occ.start)) {
                 continue;
             }
             // Only atom-aligned occurrences carry a stable position (a

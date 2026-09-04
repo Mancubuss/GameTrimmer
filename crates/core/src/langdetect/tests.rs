@@ -449,3 +449,148 @@ fn a_file_with_two_language_tokens_gets_the_same_label_every_run() {
         );
     }
 }
+
+// --- The abbreviation a directory spells out itself (GT-467) -------------
+
+/// Rogue Trooper Redux, `Misc\L_Text\Tannoy\`: the same eight texts
+/// written twice, once spelled out and once in the studio's own two-letter
+/// shorthand. `t_am` is `Tannoy_American`, not Amharic.
+const TANNOY_FOLDER: &[&str] = &[
+    r"Misc\L_Text\Tannoy\Tannoy_American.asr",
+    r"Misc\L_Text\Tannoy\Tannoy_Chinese_S.asr",
+    r"Misc\L_Text\Tannoy\Tannoy_Chinese_T.asr",
+    r"Misc\L_Text\Tannoy\Tannoy_English.asr",
+    r"Misc\L_Text\Tannoy\Tannoy_French.asr",
+    r"Misc\L_Text\Tannoy\Tannoy_German.asr",
+    r"Misc\L_Text\Tannoy\Tannoy_Italian.asr",
+    r"Misc\L_Text\Tannoy\Tannoy_Spanish.asr",
+    r"Misc\L_Text\Tannoy\t_am.asr",
+    r"Misc\L_Text\Tannoy\t_en.asr",
+    r"Misc\L_Text\Tannoy\t_fr.asr",
+    r"Misc\L_Text\Tannoy\t_ge.asr",
+    r"Misc\L_Text\Tannoy\t_it.asr",
+    r"Misc\L_Text\Tannoy\t_sp.asr",
+    r"Misc\L_Text\Tannoy\t_Zs.asr",
+    r"Misc\L_Text\Tannoy\t_Zt.asr",
+];
+
+/// Delta Force, `Game\DeltaForce\Binaries\Win64\locales\` as it stands on
+/// disk: twenty CEF language packs, every one of them a bare code or a
+/// locale tag, and not one language spelled out in full.
+const DELTA_FORCE_LOCALES: &[&str] = &[
+    r"Game\DeltaForce\Binaries\Win64\locales\am.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\am.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\bn.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\bn.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\ca.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\ca.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\en-GB.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\en-GB.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\en-US.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\en-US.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\et.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\et.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\fa.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\fa.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\fil.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\fil.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\gu.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\gu.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\kn.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\kn.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\lt.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\lt.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\lv.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\lv.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\ml.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\ml.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\mr.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\mr.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\ms.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\ms.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\nb.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\nb.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\sw.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\sw.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\ta.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\ta.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\te.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\te.pak.info",
+    r"Game\DeltaForce\Binaries\Win64\locales\uk.pak",
+    r"Game\DeltaForce\Binaries\Win64\locales\uk.pak.info",
+];
+
+/// `(file name, language tag)` of every flagged file, sorted - the whole
+/// verdict of a directory in one comparable value.
+fn flagged_labels(paths: &[&str]) -> Vec<(String, String)> {
+    let mut labels: Vec<(String, String)> = find_for(paths)
+        .into_iter()
+        .map(|(i, f)| {
+            let name = paths[i].rsplit('\\').next().unwrap_or(paths[i]);
+            (name.to_string(), f.lang_tag)
+        })
+        .collect();
+    labels.sort();
+    labels
+}
+
+/// GT-467: `t_am.asr` became a finding labelled Amharic the moment the
+/// dictionary learned the code `am`, and Amharic is not a language this game
+/// ships. The file is the American text - English - and English is on the
+/// keep-list, so the one file in the set that the keep-list owed protection
+/// to was the one offered for deletion.
+///
+/// Nothing about the set gives that away by counting: five of its six codes
+/// (`en`, `fr`, `it`, and the curated `ge`/`sp`) are ones the dictionary
+/// carries, so it is an ordinary bare-code family and the family gate
+/// confirms it exactly as designed. What gives it away is the long set in the
+/// same folder, which spells `American` out.
+#[test]
+fn a_spelled_out_american_keeps_its_own_abbreviation_out_of_amharic() {
+    let labels = flagged_labels(TANNOY_FOLDER);
+    assert!(
+        !labels.iter().any(|(name, _)| name == "t_am.asr"),
+        "t_am is the American text, not Amharic: {labels:?}"
+    );
+    // The rest of the short set is untouched - the rule only fires where the
+    // spelled-out name and the code disagree.
+    let short: Vec<(String, String)> = labels
+        .iter()
+        .filter(|(name, _)| name.starts_with("t_"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        short,
+        [
+            ("t_fr.asr", "fr"),
+            ("t_ge.asr", "de"),
+            ("t_it.asr", "it"),
+            ("t_sp.asr", "es"),
+        ]
+        .map(|(n, l)| (n.to_string(), l.to_string()))
+        .to_vec(),
+        "{labels:?}"
+    );
+}
+
+/// The counterexample GT-467 must not break: the same `am` code, in a folder
+/// that spells no language out at all, is genuine Amharic and stays a
+/// finding. This is the folder GT-392 was written for.
+#[test]
+fn a_bare_am_stays_amharic_where_no_sibling_spells_american_out() {
+    let labels = flagged_labels(DELTA_FORCE_LOCALES);
+    assert!(
+        labels.contains(&("am.pak".to_string(), "am".to_string())),
+        "Delta Force ships real Amharic: {labels:?}"
+    );
+    assert!(
+        labels.contains(&("sw.pak".to_string(), "sw".to_string())),
+        "and real Swahili beside it: {labels:?}"
+    );
+    // English is the keep language it always was, spelled as a locale tag -
+    // which is deliberately not the kind of name that shadows a bare code.
+    assert!(
+        !labels.iter().any(|(name, _)| name.starts_with("en-")),
+        "{labels:?}"
+    );
+}
