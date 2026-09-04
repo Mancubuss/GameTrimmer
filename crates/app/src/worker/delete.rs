@@ -815,13 +815,14 @@ mod tests {
         let snapshot = gametrimmer_core::safety::capture_safety_snapshot(root, rel_path).unwrap();
         conn.execute(
             "INSERT INTO file_safety \
-             (file_id, scan_id, trusted_root, rel_path, root_identity, \
+             (file_id, scan_id, trusted_root_id, rel_path, root_identity, \
               target_identity, target_kind, tree_fingerprint) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 file_id,
                 scan_id,
-                snapshot.trusted_root.to_string_lossy(),
+                gametrimmer_core::db::intern_path(conn, &snapshot.trusted_root.to_string_lossy())
+                    .unwrap(),
                 snapshot.rel_path.to_string_lossy(),
                 snapshot.root_identity.encode(),
                 snapshot.target_identity.encode(),

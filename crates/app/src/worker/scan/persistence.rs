@@ -475,7 +475,7 @@ pub(super) fn persist_prepared_game(
     )?;
     let mut insert_safety = conn.prepare_cached(
         "INSERT OR REPLACE INTO file_safety
-         (file_id, scan_id, evidence_library_path, trusted_root, rel_path, root_identity,
+         (file_id, scan_id, evidence_library_path_id, trusted_root_id, rel_path, root_identity,
           target_identity, target_kind, tree_fingerprint, block_reason)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
@@ -493,6 +493,14 @@ pub(super) fn persist_prepared_game(
         file_ids.len() >= prepared.findings.len(),
         "store_files_no_tx must return at least one id per finding, in finding order"
     );
+
+    // The two paths this loop used to write into every safety row as text.
+    // One library root for the whole game, and in practice one trusted root
+    // too - the interner turns the second and every later finding into a
+    // hash-map hit instead of another 40-odd bytes on the writer thread
+    // (GT-106).
+    let mut interner = gametrimmer_core::db::PathInterner::new();
+    let evidence_library_path_id = gametrimmer_core::db::intern_path(conn, &evidence_library_path)?;
 
     for (position, finding) in prepared.findings.iter().enumerate() {
         let file_id = file_ids[position];
@@ -530,12 +538,13 @@ pub(super) fn persist_prepared_game(
                 let rel_path = snapshot.rel_path.to_string_lossy();
                 let root_identity = snapshot.root_identity.encode();
                 let target_identity = snapshot.target_identity.encode();
+                let trusted_root_id = interner.intern(conn, &trusted_root)?;
                 let sql_started = std::time::Instant::now();
                 insert_safety.execute(params![
                     file_id,
                     scan_id,
-                    &evidence_library_path,
-                    trusted_root,
+                    evidence_library_path_id,
+                    trusted_root_id,
                     rel_path,
                     root_identity,
                     target_identity,
@@ -548,12 +557,14 @@ pub(super) fn persist_prepared_game(
             }
             Err(reason) => {
                 let reason = reason.clone();
+                let install_dir_id =
+                    interner.intern(conn, &prepared.install_dir.to_string_lossy())?;
                 let sql_started = std::time::Instant::now();
                 insert_safety.execute(params![
                     file_id,
                     scan_id,
-                    &evidence_library_path,
-                    prepared.install_dir.to_string_lossy(),
+                    evidence_library_path_id,
+                    install_dir_id,
                     finding.rel_path,
                     None::<String>,
                     None::<String>,

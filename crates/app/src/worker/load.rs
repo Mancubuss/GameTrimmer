@@ -176,7 +176,7 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
                   ELSE NULL \
                 END, COALESCE(fi.provenance, 'builtin'), \
                 COALESCE(gl.vendor, glo.vendor), \
-                COALESCE(gl.path, fs.evidence_library_path), \
+                COALESCE(gl.path, elp.path), \
                 sle.status, f.game_id IS NULL, g.app_id, \
                 g.anti_cheat_protected \
          FROM findings fi \
@@ -184,10 +184,11 @@ pub fn load_findings(conn: &Connection) -> CoreResult<Vec<FindingRow>> {
          LEFT JOIN games g ON g.id = f.game_id \
          LEFT JOIN game_libraries gl ON gl.id = g.library_id \
          LEFT JOIN file_safety fs ON fs.file_id = f.id \
-         LEFT JOIN game_libraries glo ON glo.path = fs.evidence_library_path \
+         LEFT JOIN path_dictionary elp ON elp.id = fs.evidence_library_path_id \
+         LEFT JOIN game_libraries glo ON glo.path = elp.path \
          LEFT JOIN scan_library_evidence sle \
            ON sle.scan_id = f.scan_id \
-          AND sle.library_path = COALESCE(gl.path, fs.evidence_library_path) \
+          AND sle.library_path = COALESCE(gl.path, elp.path) \
          WHERE f.scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1)",
     )?;
 
@@ -528,12 +529,14 @@ mod tests {
         );
         conn.execute(
             "INSERT INTO file_safety \
-             (file_id, scan_id, evidence_library_path, trusted_root, rel_path) \
+             (file_id, scan_id, evidence_library_path_id, trusted_root_id, rel_path) \
              VALUES (?1, 0, ?2, ?3, 'Leftover')",
             params![
                 orphan_file,
-                r"F:\SteamLibrary",
-                r"F:\SteamLibrary\steamapps\common"
+                gametrimmer_core::db::intern_path(&conn, r"F:\SteamLibrary")
+                    .expect("intern library root"),
+                gametrimmer_core::db::intern_path(&conn, r"F:\SteamLibrary\steamapps\common")
+                    .expect("intern trusted root")
             ],
         )
         .expect("insert orphan safety evidence");

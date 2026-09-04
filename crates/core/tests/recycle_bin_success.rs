@@ -86,13 +86,13 @@ fn recycle_through_authoritative_pipeline(
         .map_err(|error| gametrimmer_core::error::CoreError::Other(error.to_string()))?;
     conn.execute(
         "INSERT INTO file_safety
-         (file_id, scan_id, trusted_root, rel_path, root_identity,
+         (file_id, scan_id, trusted_root_id, rel_path, root_identity,
           target_identity, target_kind, tree_fingerprint)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             file_id,
             scan_id,
-            snapshot.trusted_root.to_string_lossy(),
+            gametrimmer_core::db::intern_path(&conn, &snapshot.trusted_root.to_string_lossy())?,
             snapshot.rel_path.to_string_lossy(),
             snapshot.root_identity.encode(),
             snapshot.target_identity.encode(),

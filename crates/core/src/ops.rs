@@ -335,7 +335,12 @@ fn prepare_delete_plans_for_action(
     let mut anti_cheat_cache: HashMap<i64, Option<String>> = HashMap::new();
     for file_id in file_ids {
         let row = conn.query_row(
-            "SELECT f.scan_id, f.game_id, fs.trusted_root, fs.rel_path,
+            // `trusted_root_id`/`evidence_library_path_id` point into
+            // `path_dictionary` (GT-106). Both joins are `LEFT`, so an id that
+            // somehow resolves to nothing yields `NULL` and lands on the
+            // missing-evidence branch below - the same refusal a wholly absent
+            // safety row gets, never a silent pass.
+            "SELECT f.scan_id, f.game_id, tr.path, fs.rel_path,
                     fs.root_identity, fs.target_identity, fs.target_kind,
                     fs.tree_fingerprint, fs.block_reason, sle.status, g.install_dir,
                     g.anti_cheat_protected
@@ -343,9 +348,11 @@ fn prepare_delete_plans_for_action(
              LEFT JOIN games g ON g.id = f.game_id
              LEFT JOIN game_libraries gl ON gl.id = g.library_id
              LEFT JOIN file_safety fs ON fs.file_id = f.id
+             LEFT JOIN path_dictionary tr ON tr.id = fs.trusted_root_id
+             LEFT JOIN path_dictionary elp ON elp.id = fs.evidence_library_path_id
              LEFT JOIN scan_library_evidence sle
                     ON sle.scan_id = f.scan_id
-                   AND sle.library_path = COALESCE(gl.path, fs.evidence_library_path)
+                   AND sle.library_path = COALESCE(gl.path, elp.path)
              WHERE f.id = ?1",
             [file_id],
             |row| {
@@ -984,13 +991,13 @@ mod tests {
         let snapshot = crate::safety::capture_safety_snapshot(root, rel_path).unwrap();
         conn.execute(
             "INSERT INTO file_safety
-             (file_id, scan_id, trusted_root, rel_path, root_identity,
+             (file_id, scan_id, trusted_root_id, rel_path, root_identity,
               target_identity, target_kind, tree_fingerprint)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 file_id,
                 scan_id,
-                snapshot.trusted_root.to_string_lossy(),
+                crate::db::intern_path(conn, &snapshot.trusted_root.to_string_lossy()).unwrap(),
                 snapshot.rel_path.to_string_lossy(),
                 snapshot.root_identity.encode(),
                 snapshot.target_identity.encode(),
@@ -1785,14 +1792,14 @@ mod tests {
         let snapshot = crate::safety::capture_safety_snapshot(temp.path(), "orphan.bin").unwrap();
         conn.execute(
             "INSERT INTO file_safety
-             (file_id, scan_id, evidence_library_path, trusted_root, rel_path,
+             (file_id, scan_id, evidence_library_path_id, trusted_root_id, rel_path,
               root_identity, target_identity, target_kind, tree_fingerprint)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 file_id,
                 scan_id,
-                temp.path().to_string_lossy(),
-                snapshot.trusted_root.to_string_lossy(),
+                crate::db::intern_path(&conn, &temp.path().to_string_lossy()).unwrap(),
+                crate::db::intern_path(&conn, &snapshot.trusted_root.to_string_lossy()).unwrap(),
                 snapshot.rel_path.to_string_lossy(),
                 snapshot.root_identity.encode(),
                 snapshot.target_identity.encode(),
@@ -2258,13 +2265,13 @@ mod tests {
         let snapshot = crate::safety::capture_safety_snapshot(temp.path(), "two.bin").unwrap();
         conn.execute(
             "INSERT INTO file_safety
-             (file_id, scan_id, trusted_root, rel_path, root_identity,
+             (file_id, scan_id, trusted_root_id, rel_path, root_identity,
               target_identity, target_kind, tree_fingerprint)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 file_two,
                 scan_id,
-                snapshot.trusted_root.to_string_lossy(),
+                crate::db::intern_path(&conn, &snapshot.trusted_root.to_string_lossy()).unwrap(),
                 snapshot.rel_path.to_string_lossy(),
                 snapshot.root_identity.encode(),
                 snapshot.target_identity.encode(),
@@ -2439,8 +2446,11 @@ mod tests {
         // What an orphan-residue or janitor row looks like: safety evidence
         // and library evidence, but no game and so no directory to clear.
         conn.execute(
-            "UPDATE file_safety SET evidence_library_path = ?1 WHERE file_id = ?2",
-            rusqlite::params![temp.path().to_string_lossy(), file_id],
+            "UPDATE file_safety SET evidence_library_path_id = ?1 WHERE file_id = ?2",
+            rusqlite::params![
+                crate::db::intern_path(&conn, &temp.path().to_string_lossy()).unwrap(),
+                file_id
+            ],
         )
         .unwrap();
         conn.execute("UPDATE files SET game_id = NULL", []).unwrap();

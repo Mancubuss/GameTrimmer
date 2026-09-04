@@ -112,11 +112,29 @@ CREATE TABLE IF NOT EXISTS scan_diagnostics (
     message  TEXT NOT NULL
 );
 
+-- Every distinct path `file_safety` refers to, stored once.
+--
+-- The two columns that used to hold text repeat themselves enormously: a real
+-- library measured 2026-08-11 held 720k safety rows spread over ~1600 game
+-- directories and 17 library roots, so `trusted_root` alone was 32.1 MB of the
+-- same 1600 strings written over and over, and `evidence_library_path` a
+-- further 9.7 MB of the same 17. Referencing them by id costs one integer per
+-- row and, more to the point, stops the single writer thread copying those
+-- bytes 720k times during the persist phase.
+CREATE TABLE IF NOT EXISTS path_dictionary (
+    id   INTEGER PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE
+);
+
 CREATE TABLE IF NOT EXISTS file_safety (
     file_id          INTEGER PRIMARY KEY REFERENCES files(id),
     scan_id          INTEGER NOT NULL REFERENCES scan_runs(id),
-    evidence_library_path TEXT,
-    trusted_root     TEXT NOT NULL,
+    evidence_library_path_id INTEGER REFERENCES path_dictionary(id),
+    trusted_root_id  INTEGER NOT NULL REFERENCES path_dictionary(id),
+    -- Deliberately still text: for an orphan row this holds a
+    -- trusted-root-relative path while `files.rel_path` holds an absolute one,
+    -- so the two are genuinely different values and cannot share a dictionary
+    -- without making the orphan delete path conditional. See GT-106.
     rel_path         TEXT NOT NULL,
     root_identity    TEXT,
     target_identity  TEXT,
@@ -134,7 +152,7 @@ CREATE INDEX IF NOT EXISTS idx_diagnostics_scan   ON scan_diagnostics(scan_id);
 /// `user_version` beside the version this build understands - the pair is
 /// what distinguishes "your database is from a newer build" from "it is
 /// damaged".
-pub const CURRENT_SCHEMA_VERSION: i64 = 6;
+pub const CURRENT_SCHEMA_VERSION: i64 = 7;
 
 /// Opens (or creates) the database at `path` and applies the schema.
 /// What reconciling crash-left delete intents found while opening. Advisory:
@@ -307,6 +325,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 6 {
         migrate_v6(conn)?;
         conn.pragma_update(None, "user_version", 6)?;
+        version = 6;
+    }
+    if version < 7 {
+        migrate_v7(conn)?;
+        conn.pragma_update(None, "user_version", 7)?;
     }
     Ok(())
 }
@@ -389,6 +412,15 @@ fn migrate_v1(conn: &Connection) -> Result<()> {
 }
 
 fn migrate_v2(conn: &Connection) -> Result<()> {
+    // Only a table that still has the pre-v7 text shape wants this column.
+    // `apply_schema` runs before `migrate`, so on a database being created
+    // from scratch `file_safety` already arrives in its v7 form - and adding
+    // the retired text column to it would leave every fresh database carrying
+    // a dead, permanently `NULL` column that `migrate_v7` then declines to
+    // clean up, because it has nothing to migrate there.
+    if column_exists(conn, "file_safety", "trusted_root_id")? {
+        return Ok(());
+    }
     add_column_if_missing(conn, "file_safety", "evidence_library_path", "TEXT")?;
     Ok(())
 }
@@ -523,6 +555,162 @@ fn migrate_v6(conn: &Connection) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// The column definitions [`migrate_v7`] rebuilds `file_safety` with.
+///
+/// SQLite cannot change a column's type in place, so the migration has to
+/// create the new table itself rather than reuse `SCHEMA`'s copy - and a
+/// `const` cannot be spliced into another `const` string. The two definitions
+/// are therefore kept honest by a test
+/// (`a_migrated_safety_table_has_the_same_shape_as_a_fresh_one`) that compares
+/// `PRAGMA table_info` for a migrated table against a freshly created one,
+/// rather than by construction.
+const FILE_SAFETY_V7_COLUMNS: &str = "
+    file_id          INTEGER PRIMARY KEY REFERENCES files(id),
+    scan_id          INTEGER NOT NULL REFERENCES scan_runs(id),
+    evidence_library_path_id INTEGER REFERENCES path_dictionary(id),
+    trusted_root_id  INTEGER NOT NULL REFERENCES path_dictionary(id),
+    rel_path         TEXT NOT NULL,
+    root_identity    TEXT,
+    target_identity  TEXT,
+    target_kind      TEXT,
+    tree_fingerprint TEXT,
+    block_reason     TEXT
+";
+
+/// Moves `file_safety`'s two repeating paths into [`path_dictionary`] and
+/// leaves integer references behind.
+///
+/// Measured on the real library 2026-08-11: `file_safety` took the database
+/// from 670 MB to 820 MB, of which 166 MB was plain text - and 41.8 MB of that
+/// was two columns repeating themselves. `trusted_root` held 32.1 MB spread
+/// over roughly 1600 distinct game directories, `evidence_library_path` 9.7 MB
+/// over 17 library roots. The bytes are the visible half; the expensive half is
+/// that all of them are written by the *single* writer thread that is busy 93%
+/// of the persist phase, one row at a time, 720 000 times.
+///
+/// The rewrite is total by construction rather than by hope: the dictionary is
+/// populated from `SELECT DISTINCT` over both columns first, so the copy below
+/// can inner-join on `trusted_root` and every row is guaranteed to find its id.
+/// The row-count check afterwards is the proof, not a formality - a safety row
+/// that quietly failed to come across would read back as missing evidence, and
+/// while that does fail closed (the delete preflight refuses a file with no
+/// safety row), silently losing evidence is not something this table may do.
+/// Failing the migration instead leaves the pre-v7 database untouched and
+/// deletes nothing.
+///
+/// `rel_path` is deliberately left alone. For an orphan row it holds a
+/// trusted-root-relative path while `files.rel_path` holds an absolute one, so
+/// the two are not the same string and collapsing them would make the orphan
+/// delete path conditional - risk in the worst possible place for 36 MB.
+fn migrate_v7(conn: &Connection) -> Result<()> {
+    // Same reason `migrate_v5` guards on the table: the migration tests build
+    // deliberately partial legacy schemas one table at a time, and this
+    // migration reads and rewrites `file_safety` rather than only altering it,
+    // so without the guard the `SELECT` below would be what failed, in a test
+    // that is not about this migration.
+    if !table_exists(conn, "file_safety")? {
+        return Ok(());
+    }
+    // Idempotence, and the fresh-database case in one check: `apply_schema`
+    // runs before `migrate` and already creates the v7 shape on a new
+    // database, so there is nothing to rewrite there either.
+    if column_exists(conn, "file_safety", "trusted_root_id")? {
+        return Ok(());
+    }
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS path_dictionary (
+            id   INTEGER PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE
+        )",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO path_dictionary (path)
+         SELECT DISTINCT trusted_root FROM file_safety",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO path_dictionary (path)
+         SELECT DISTINCT evidence_library_path FROM file_safety
+         WHERE evidence_library_path IS NOT NULL",
+        [],
+    )?;
+    let before: i64 = conn.query_row("SELECT COUNT(*) FROM file_safety", [], |row| row.get(0))?;
+
+    // Enforcement off for the copy: every row already satisfied its
+    // `files`/`scan_runs` references before the rewrite and the copy changes
+    // neither, so re-checking three foreign keys per row on 720 000 rows buys
+    // nothing. Same bargain `clear_scan_data` makes, for the same reason.
+    with_foreign_keys_off(conn, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            &format!("CREATE TABLE file_safety_v7 ({FILE_SAFETY_V7_COLUMNS})"),
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO file_safety_v7
+                 (file_id, scan_id, evidence_library_path_id, trusted_root_id, rel_path,
+                  root_identity, target_identity, target_kind, tree_fingerprint, block_reason)
+             SELECT fs.file_id, fs.scan_id, elp.id, tr.id, fs.rel_path,
+                    fs.root_identity, fs.target_identity, fs.target_kind,
+                    fs.tree_fingerprint, fs.block_reason
+             FROM file_safety fs
+             JOIN path_dictionary tr ON tr.path = fs.trusted_root
+             LEFT JOIN path_dictionary elp ON elp.path = fs.evidence_library_path",
+            [],
+        )?;
+        let after: i64 =
+            tx.query_row("SELECT COUNT(*) FROM file_safety_v7", [], |row| row.get(0))?;
+        if after != before {
+            return Err(CoreError::Other(format!(
+                "schema v7 migration would lose delete-safety evidence: \
+                 {before} row(s) before, {after} after"
+            )));
+        }
+        tx.execute("DROP TABLE file_safety", [])?;
+        tx.execute("ALTER TABLE file_safety_v7 RENAME TO file_safety", [])?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+/// Resolves `path` to its [`path_dictionary`] id, creating the entry if this
+/// is the first time the database has seen it.
+pub fn intern_path(conn: &Connection, path: &str) -> Result<i64> {
+    conn.prepare_cached("INSERT OR IGNORE INTO path_dictionary (path) VALUES (?1)")?
+        .execute([path])?;
+    let id = conn
+        .prepare_cached("SELECT id FROM path_dictionary WHERE path = ?1")?
+        .query_row([path], |row| row.get(0))?;
+    Ok(id)
+}
+
+/// [`intern_path`] with the answers remembered.
+///
+/// The whole point of the dictionary is that a writer stops paying per finding
+/// for a path it has already seen; going back to SQLite 720 000 times to be
+/// told the same id would hand most of that back. A scan sees on the order of
+/// 1600 distinct paths, so the map stays tiny.
+#[derive(Debug, Default)]
+pub struct PathInterner {
+    cache: HashMap<String, i64>,
+}
+
+impl PathInterner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn intern(&mut self, conn: &Connection, path: &str) -> Result<i64> {
+        if let Some(id) = self.cache.get(path) {
+            return Ok(*id);
+        }
+        let id = intern_path(conn, path)?;
+        self.cache.insert(path.to_string(), id);
+        Ok(id)
+    }
 }
 
 fn unix_timestamp() -> i64 {
@@ -1089,6 +1277,9 @@ pub fn clear_scan_data(conn: &Connection) -> Result<()> {
     with_foreign_keys_off(conn, |conn| {
         let tx = conn.unchecked_transaction()?;
         tx.execute("DELETE FROM file_safety", [])?;
+        // After its only referent, so the wipe leaves no dictionary entries
+        // for paths nothing points at any more.
+        tx.execute("DELETE FROM path_dictionary", [])?;
         tx.execute("DELETE FROM findings", [])?;
         tx.execute("DELETE FROM files", [])?;
         tx.execute("DELETE FROM games", [])?;
@@ -1424,9 +1615,13 @@ mod tests {
         )
         .expect("finding");
         conn.execute(
-            "INSERT INTO file_safety (file_id, scan_id, trusted_root, rel_path)
+            "INSERT INTO file_safety (file_id, scan_id, trusted_root_id, rel_path)
              VALUES (?1, ?2, ?3, 'x.bin')",
-            params![file_id, scan_id, library_path],
+            params![
+                file_id,
+                scan_id,
+                intern_path(conn, library_path).expect("intern trusted root")
+            ],
         )
         .expect("safety");
         conn.execute(
@@ -2393,13 +2588,443 @@ mod tests {
 
         migrate(&conn).expect("v1 to v2 migration");
 
+        // `migrate_v2` adds the column as text; `migrate_v7` immediately folds
+        // it into the path dictionary, so what survives a full migrate is the
+        // id column.
         assert!(
-            column_exists(&conn, "file_safety", "evidence_library_path").expect("probe v2 column")
+            column_exists(&conn, "file_safety", "evidence_library_path_id")
+                .expect("probe v2 column")
         );
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read user_version");
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    }
+
+    // ---- schema v7: the `file_safety` path dictionary (GT-106) ----
+
+    /// A database in the shape a v6 build left behind: `file_safety` still
+    /// carries both of its paths as text and there is no dictionary. The rest
+    /// of the schema is current, which is exactly what a real upgrade looks
+    /// like - `apply_schema` runs before `migrate` and creates whatever is
+    /// missing, while the pre-existing `file_safety` keeps its old columns
+    /// because `CREATE TABLE IF NOT EXISTS` is a no-op for it.
+    fn open_schema_v6() -> Connection {
+        let conn = Connection::open_in_memory().expect("open");
+        configure(&conn).expect("configure");
+        apply_schema(&conn).expect("apply schema");
+        migrate(&conn).expect("migrate to current");
+        conn.execute("DROP TABLE file_safety", [])
+            .expect("drop the v7 safety table");
+        conn.execute("DROP TABLE path_dictionary", [])
+            .expect("drop the dictionary");
+        conn.execute(
+            "CREATE TABLE file_safety (
+                file_id          INTEGER PRIMARY KEY REFERENCES files(id),
+                scan_id          INTEGER NOT NULL REFERENCES scan_runs(id),
+                evidence_library_path TEXT,
+                trusted_root     TEXT NOT NULL,
+                rel_path         TEXT NOT NULL,
+                root_identity    TEXT,
+                target_identity  TEXT,
+                target_kind      TEXT,
+                tree_fingerprint TEXT,
+                block_reason     TEXT
+            )",
+            [],
+        )
+        .expect("create the v6 safety table");
+        conn.pragma_update(None, "user_version", 6)
+            .expect("stamp the database as v6");
+        conn
+    }
+
+    /// Inserts a `files` row and its v6-shaped `file_safety` row, returning the
+    /// file id. `rel_path` doubles as the file's own relative path.
+    fn seed_v6_safety_row(
+        conn: &Connection,
+        scan_id: i64,
+        evidence_library_path: Option<&str>,
+        trusted_root: &str,
+        rel_path: &str,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO files (scan_id, game_id, rel_path, size)
+             VALUES (?1, NULL, ?2, 1)",
+            params![scan_id, rel_path],
+        )
+        .expect("file");
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO file_safety
+             (file_id, scan_id, evidence_library_path, trusted_root, rel_path,
+              root_identity, target_identity, target_kind, tree_fingerprint, block_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'root-id', 'target-id', 'file', 'fp', NULL)",
+            params![
+                file_id,
+                scan_id,
+                evidence_library_path,
+                trusted_root,
+                rel_path
+            ],
+        )
+        .expect("v6 safety row");
+        file_id
+    }
+
+    /// Reads both dictionary-backed paths back out, in `file_id` order.
+    fn safety_paths(conn: &Connection) -> Vec<(Option<String>, Option<String>)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT elp.path, tr.path
+                 FROM file_safety fs
+                 LEFT JOIN path_dictionary tr ON tr.id = fs.trusted_root_id
+                 LEFT JOIN path_dictionary elp ON elp.id = fs.evidence_library_path_id
+                 ORDER BY fs.file_id",
+            )
+            .expect("prepare read-back");
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("read back")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect");
+        rows
+    }
+
+    const LIBRARY_ROOT: &str = r"F:\SteamLibrary";
+    const OTHER_LIBRARY_ROOT: &str = r"D:\Epic";
+    const ALPHA_ROOT: &str = r"F:\SteamLibrary\steamapps\common\Alpha";
+    const BETA_ROOT: &str = r"D:\Epic\Beta";
+
+    /// Seeds the four interesting shapes: a repeated trusted root (the whole
+    /// point of the dictionary), a second library, and a row with no library
+    /// evidence at all. Returns the paths each row must still read back as.
+    #[allow(clippy::type_complexity)]
+    fn seed_v6_population(conn: &Connection) -> Vec<(Option<String>, Option<String>)> {
+        let scan_id = begin_scan(conn, "complete").expect("scan");
+        let plan: [(Option<&str>, &str, &str); 4] = [
+            (Some(LIBRARY_ROOT), ALPHA_ROOT, "one.bin"),
+            (Some(LIBRARY_ROOT), ALPHA_ROOT, "two.bin"),
+            (Some(OTHER_LIBRARY_ROOT), BETA_ROOT, "three.bin"),
+            (None, ALPHA_ROOT, "four.bin"),
+        ];
+        for (library, root, rel) in plan {
+            seed_v6_safety_row(conn, scan_id, library, root, rel);
+        }
+        plan.iter()
+            .map(|(library, root, _)| (library.map(str::to_string), Some((*root).to_string())))
+            .collect()
+    }
+
+    /// The migration's whole job, and the one thing it is not allowed to get
+    /// wrong: every row must come out of it pointing at the same two paths it
+    /// went in with, character for character. A row that lost its trusted root
+    /// would not merely be smaller - it would be a delete-safety row that no
+    /// longer says where the delete is allowed to happen.
+    #[test]
+    fn a_populated_v6_database_keeps_every_safety_path_through_the_v7_migration() {
+        let conn = open_schema_v6();
+        let expected = seed_v6_population(&conn);
+
+        migrate(&conn).expect("v6 to v7 migration");
+
+        assert_eq!(
+            safety_paths(&conn),
+            expected,
+            "every safety row must read back the same trusted root and library path it was stored with"
+        );
+        // ... and each distinct path is stored exactly once, which is the
+        // saving the migration exists for.
+        let dictionary: i64 = conn
+            .query_row("SELECT COUNT(*) FROM path_dictionary", [], |row| row.get(0))
+            .expect("count dictionary entries");
+        assert_eq!(
+            dictionary, 4,
+            "four rows referring to four distinct paths must leave four dictionary entries"
+        );
+    }
+
+    /// Migrations run on every open, so `migrate_v7` has to be a no-op the
+    /// second time even though the first run destroyed the columns it reads.
+    #[test]
+    fn the_v7_migration_changes_nothing_when_it_runs_again() {
+        let conn = open_schema_v6();
+        seed_v6_population(&conn);
+        migrate(&conn).expect("v6 to v7 migration");
+
+        let before = safety_paths(&conn);
+        let dictionary_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM path_dictionary", [], |row| row.get(0))
+            .expect("count dictionary entries");
+
+        migrate_v7(&conn).expect("running the v7 migration twice must be harmless");
+
+        assert_eq!(
+            safety_paths(&conn),
+            before,
+            "a second run must change nothing"
+        );
+        let dictionary_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM path_dictionary", [], |row| row.get(0))
+            .expect("count dictionary entries");
+        assert_eq!(dictionary_after, dictionary_before);
+    }
+
+    /// SQLite cannot retype a column in place, so `migrate_v7` builds the new
+    /// `file_safety` from its own copy of the column list rather than from
+    /// `SCHEMA`. Two definitions of one deletion-gating table can drift; this
+    /// is what notices when they do.
+    #[test]
+    fn a_migrated_safety_table_has_the_same_shape_as_a_fresh_one() {
+        fn shape(conn: &Connection) -> Vec<(String, String, bool, bool)> {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(file_safety)")
+                .expect("table_info");
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, i64>(5)? > 0,
+                    ))
+                })
+                .expect("read table_info")
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .expect("collect");
+            rows
+        }
+
+        let migrated = open_schema_v6();
+        seed_v6_population(&migrated);
+        migrate(&migrated).expect("v6 to v7 migration");
+        let fresh = open_in_memory().expect("fresh database");
+
+        assert_eq!(
+            shape(&migrated),
+            shape(&fresh),
+            "the migrated file_safety and a freshly created one must have the same columns, \
+             types, NOT NULL flags and primary key"
+        );
+    }
+
+    /// Seeds one deletable finding against a real directory on disk, writing
+    /// its safety row either in the v6 text shape or the v7 dictionary shape.
+    /// Everything else is identical, so the two databases differ in exactly
+    /// the thing under test.
+    fn seed_deletable_finding(
+        conn: &mut Connection,
+        root: &Path,
+        rel_path: &str,
+        orphan: bool,
+        legacy_text: bool,
+    ) -> i64 {
+        let root_text = root.to_string_lossy().to_string();
+        let scan_id = begin_scan(conn, "complete").expect("scan");
+        conn.execute(
+            "INSERT INTO game_libraries (vendor, path) VALUES ('test', ?1)",
+            [&root_text],
+        )
+        .expect("library");
+        let library_id = conn.last_insert_rowid();
+        let game_id = if orphan {
+            None
+        } else {
+            conn.execute(
+                "INSERT INTO games (scan_id, library_id, name, install_dir, app_id,
+                                    anti_cheat_protected)
+                 VALUES (?1, ?2, 'Game', ?3, 'app', 0)",
+                params![scan_id, library_id, &root_text],
+            )
+            .expect("game");
+            Some(conn.last_insert_rowid())
+        };
+        conn.execute(
+            "INSERT INTO files (scan_id, game_id, rel_path, size) VALUES (?1, ?2, ?3, 1)",
+            params![scan_id, game_id, rel_path],
+        )
+        .expect("file");
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO findings (file_id, category, confidence) VALUES (?1, 'bonus', 90)",
+            [file_id],
+        )
+        .expect("finding");
+        let snapshot = crate::safety::capture_safety_snapshot(root, rel_path).expect("snapshot");
+        // An orphan row is the case that needs `evidence_library_path`: it has
+        // no game, so the library it belongs to is only recorded here.
+        let library = orphan.then_some(root_text.as_str());
+        if legacy_text {
+            conn.execute(
+                "INSERT INTO file_safety
+                 (file_id, scan_id, evidence_library_path, trusted_root, rel_path,
+                  root_identity, target_identity, target_kind, tree_fingerprint)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    file_id,
+                    scan_id,
+                    library,
+                    snapshot.trusted_root.to_string_lossy(),
+                    snapshot.rel_path.to_string_lossy(),
+                    snapshot.root_identity.encode(),
+                    snapshot.target_identity.encode(),
+                    snapshot.target_identity.kind.as_str(),
+                    snapshot.tree_fingerprint,
+                ],
+            )
+            .expect("v6 safety row");
+        } else {
+            let library_path_id =
+                library.map(|path| intern_path(conn, path).expect("intern library root"));
+            let trusted_root_id =
+                intern_path(conn, &snapshot.trusted_root.to_string_lossy()).expect("intern root");
+            conn.execute(
+                "INSERT INTO file_safety
+                 (file_id, scan_id, evidence_library_path_id, trusted_root_id, rel_path,
+                  root_identity, target_identity, target_kind, tree_fingerprint)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    file_id,
+                    scan_id,
+                    library_path_id,
+                    trusted_root_id,
+                    snapshot.rel_path.to_string_lossy(),
+                    snapshot.root_identity.encode(),
+                    snapshot.target_identity.encode(),
+                    snapshot.target_identity.kind.as_str(),
+                    snapshot.tree_fingerprint,
+                ],
+            )
+            .expect("v7 safety row");
+        }
+        record_scan_library_evidence(conn, scan_id, root, "test", "complete").expect("evidence");
+        activate_scan(conn, scan_id).expect("activate");
+        file_id
+    }
+
+    fn plan_for(conn: &Connection, file_id: i64) -> Result<Vec<crate::safety::DeletePlan>> {
+        crate::ops::prepare_delete_plans(
+            conn,
+            &[file_id],
+            crate::settings::DeleteMethod::Permanent,
+            crate::ops::DeleteAttendance::Interactive,
+        )
+    }
+
+    /// The migration is only correct if the *decision* survives it, not just
+    /// the strings. Same fixture written twice - once the old way and
+    /// migrated, once natively - must produce byte-identical delete plans.
+    #[test]
+    fn a_migrated_game_row_yields_the_same_delete_plan_as_a_natively_written_one() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("bonus.bin"), b"x").expect("write");
+
+        let mut migrated = open_schema_v6();
+        let migrated_file =
+            seed_deletable_finding(&mut migrated, temp.path(), "bonus.bin", false, true);
+        migrate(&migrated).expect("v6 to v7 migration");
+
+        let mut native = open_in_memory().expect("fresh database");
+        let native_file =
+            seed_deletable_finding(&mut native, temp.path(), "bonus.bin", false, false);
+
+        let from_migrated = plan_for(&migrated, migrated_file).expect("migrated row must plan");
+        let from_native = plan_for(&native, native_file).expect("native row must plan");
+        assert_eq!(
+            from_migrated.len(),
+            1,
+            "the fixture must be deletable at all"
+        );
+        assert_eq!(
+            from_migrated, from_native,
+            "a migrated safety row must decide exactly what a natively written one decides"
+        );
+    }
+
+    /// The same check for the row shape that actually uses
+    /// `evidence_library_path`: an orphan has no game, so that column is the
+    /// only record of which library vouched for it, and the preflight resolves
+    /// the library evidence through it.
+    #[test]
+    fn a_migrated_orphan_row_yields_the_same_delete_plan_as_a_natively_written_one() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("leftover.bin"), b"x").expect("write");
+
+        let mut migrated = open_schema_v6();
+        let migrated_file =
+            seed_deletable_finding(&mut migrated, temp.path(), "leftover.bin", true, true);
+        migrate(&migrated).expect("v6 to v7 migration");
+
+        let mut native = open_in_memory().expect("fresh database");
+        let native_file =
+            seed_deletable_finding(&mut native, temp.path(), "leftover.bin", true, false);
+
+        let from_migrated = plan_for(&migrated, migrated_file).expect("migrated orphan must plan");
+        let from_native = plan_for(&native, native_file).expect("native orphan must plan");
+        assert_eq!(
+            from_migrated.len(),
+            1,
+            "the orphan fixture must be deletable at all"
+        );
+        assert_eq!(
+            from_migrated, from_native,
+            "a migrated orphan row must decide exactly what a natively written one decides"
+        );
+    }
+
+    /// The orphan the scan could not capture: `Err(block)` writes a row with
+    /// no identities and a reason. It refused deletion before the migration
+    /// and must still refuse it afterwards - this is the case where "smaller
+    /// database" must not become "deletes something it used to refuse".
+    #[test]
+    fn a_migrated_blocked_orphan_row_still_refuses_deletion() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut conn = open_schema_v6();
+        let scan_id = begin_scan(&conn, "complete").expect("scan");
+        conn.execute(
+            "INSERT INTO files (scan_id, game_id, rel_path, size)
+             VALUES (?1, NULL, 'Leftover', 1)",
+            [scan_id],
+        )
+        .expect("file");
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO findings (file_id, category, confidence)
+             VALUES (?1, 'orphan_folder', 90)",
+            [file_id],
+        )
+        .expect("finding");
+        conn.execute(
+            "INSERT INTO file_safety
+             (file_id, scan_id, evidence_library_path, trusted_root, rel_path,
+              root_identity, target_identity, target_kind, tree_fingerprint, block_reason)
+             VALUES (?1, ?2, ?3, ?4, 'Leftover', NULL, NULL, NULL, NULL,
+                     'the trusted root could not be opened')",
+            params![
+                file_id,
+                scan_id,
+                temp.path().to_string_lossy(),
+                temp.path().to_string_lossy()
+            ],
+        )
+        .expect("blocked v6 safety row");
+        // Without these the preflight would refuse for a *different* reason
+        // (no library evidence, no active generation), which would prove
+        // nothing about the recorded block reason surviving the migration.
+        record_scan_library_evidence(&conn, scan_id, temp.path(), "test", "complete")
+            .expect("evidence");
+        activate_scan(&mut conn, scan_id).expect("activate");
+
+        migrate(&conn).expect("v6 to v7 migration");
+
+        let error = plan_for(&conn, file_id)
+            .expect_err("a row that carries a block reason must never produce a plan");
+        assert!(
+            error
+                .to_string()
+                .contains("the trusted root could not be opened"),
+            "the refusal must still quote the recorded reason, got: {error}"
+        );
     }
 
     /// `migrate_v4` must drop `idx_files_scan_id` from a schema-v3 database

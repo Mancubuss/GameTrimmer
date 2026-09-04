@@ -500,10 +500,13 @@ pub(super) fn persist_rootless(
         )?;
         let mut insert_safety = tx.prepare_cached(
             "INSERT OR REPLACE INTO file_safety
-             (file_id, scan_id, evidence_library_path, trusted_root, rel_path, root_identity,
+             (file_id, scan_id, evidence_library_path_id, trusted_root_id, rel_path, root_identity,
               target_identity, target_kind, tree_fingerprint, block_reason)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
+        // Orphans of one library share its root, and every orphan under a
+        // library shares its trusted roots with its siblings (GT-106).
+        let mut interner = gametrimmer_core::db::PathInterner::new();
 
         // Orphans in the same library share their parent directories, so the
         // chain above each one is worth proving once rather than per orphan.
@@ -567,13 +570,17 @@ pub(super) fn persist_rootless(
             // manifests against what is on disk rather than by walking the
             // `$MFT`, so there is no record here to quote and the capture
             // opens it live.
+            let evidence_library_path_id =
+                interner.intern(&tx, &orphan.evidence_library_path.to_string_lossy())?;
             let deletion_block_reason = match capture.capture(&install_dir, &rel_path, None) {
                 Ok(snapshot) => {
+                    let trusted_root_id =
+                        interner.intern(&tx, &snapshot.trusted_root.to_string_lossy())?;
                     insert_safety.execute(params![
                         file_id,
                         scan_id,
-                        orphan.evidence_library_path.to_string_lossy(),
-                        snapshot.trusted_root.to_string_lossy(),
+                        evidence_library_path_id,
+                        trusted_root_id,
                         snapshot.rel_path.to_string_lossy(),
                         snapshot.root_identity.encode(),
                         snapshot.target_identity.encode(),
@@ -585,11 +592,12 @@ pub(super) fn persist_rootless(
                 }
                 Err(block) => {
                     let block = block.to_string();
+                    let install_dir_id = interner.intern(&tx, &install_dir.to_string_lossy())?;
                     insert_safety.execute(params![
                         file_id,
                         scan_id,
-                        orphan.evidence_library_path.to_string_lossy(),
-                        install_dir.to_string_lossy(),
+                        evidence_library_path_id,
+                        install_dir_id,
                         rel_path,
                         None::<String>,
                         None::<String>,

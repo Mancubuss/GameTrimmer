@@ -492,16 +492,19 @@ pub fn retrim_game_with_new_build(
 
         let root_identity = snapshot.root_identity.encode();
         let target_identity = snapshot.target_identity.encode();
+        let evidence_library_path_id = crate::db::intern_path(conn, &lib_path)?;
+        let trusted_root_id =
+            crate::db::intern_path(conn, &snapshot.trusted_root.to_string_lossy())?;
         conn.execute(
             "INSERT OR REPLACE INTO file_safety
-             (file_id, scan_id, evidence_library_path, trusted_root, rel_path, root_identity,
+             (file_id, scan_id, evidence_library_path_id, trusted_root_id, rel_path, root_identity,
               target_identity, target_kind, tree_fingerprint, block_reason)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
             rusqlite::params![
                 file_id,
                 scan_id,
-                &lib_path,
-                snapshot.trusted_root.to_string_lossy(),
+                evidence_library_path_id,
+                trusted_root_id,
                 snapshot.rel_path.to_string_lossy(),
                 root_identity,
                 target_identity,
