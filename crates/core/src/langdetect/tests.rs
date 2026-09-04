@@ -895,21 +895,25 @@ fn harness_replay_library() {
     let path = std::env::var("GT460_PATHS").expect("set GT460_PATHS to the exported tsv");
     let raw = std::fs::read_to_string(&path).expect("read tsv");
 
-    let mut by_game: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut by_game: BTreeMap<String, Vec<(String, u64)>> = BTreeMap::new();
     for line in raw.lines() {
         let mut cols = line.split('\t');
         let (Some(game), Some(rel)) = (cols.next(), cols.next()) else {
             continue;
         };
+        let size = cols.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         by_game
             .entry(game.to_string())
             .or_default()
-            .push(rel.to_string());
+            .push((rel.to_string(), size));
     }
 
     let detector = LangDetector::new();
     let mut grand = 0usize;
-    for (game, paths) in &by_game {
+    let mut grand_bytes = 0u64;
+    let mut per_ev_all: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
+    for (game, entries) in &by_game {
+        let paths: Vec<&String> = entries.iter().map(|(p, _)| p).collect();
         let files: Vec<FileEntry> = paths.iter().map(|p| fe(p)).collect();
         let found = detector.analyze_game(&files);
         grand += found.len();
@@ -925,8 +929,8 @@ fn harness_replay_library() {
                 .map(|(t, n)| format!("{t}:{n}"))
                 .collect()
         };
-        let mut per_ev: BTreeMap<&str, usize> = BTreeMap::new();
-        for (_, f) in &found {
+        let mut per_ev: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
+        for (i, f) in &found {
             let name = match &f.reason.evidence {
                 LangEvidence::LocPair { .. } => "LocPair",
                 LangEvidence::TokenWithMarker { .. } => "TokenWithMarker",
@@ -936,9 +940,19 @@ fn harness_replay_library() {
                 LangEvidence::SubfolderFamily { .. } => "SubfolderFamily",
                 LangEvidence::SubfolderFamilyWithPrefix { .. } => "SubfolderFamilyWithPrefix",
             };
-            *per_ev.entry(name).or_default() += 1;
+            let bytes = entries[*i].1;
+            let slot = per_ev.entry(name).or_default();
+            slot.0 += 1;
+            slot.1 += bytes;
+            let all = per_ev_all.entry(name).or_default();
+            all.0 += 1;
+            all.1 += bytes;
+            grand_bytes += bytes;
         }
-        let ev: Vec<String> = per_ev.iter().map(|(k, n)| format!("{k}={n}")).collect();
+        let ev: Vec<String> = per_ev
+            .iter()
+            .map(|(k, (n, b))| format!("{k}={n}/{:.2}GB", *b as f64 / 1_073_741_824.0))
+            .collect();
         println!(
             "REPLAY {game}\tfiles={}\tfindings={}\t{}\t| {}",
             paths.len(),
@@ -947,5 +961,14 @@ fn harness_replay_library() {
             ev.join(" ")
         );
     }
-    println!("REPLAY TOTAL findings={grand}");
+    println!(
+        "REPLAY TOTAL findings={grand} bytes={:.2}GB",
+        grand_bytes as f64 / 1_073_741_824.0
+    );
+    for (k, (n, b)) in &per_ev_all {
+        println!(
+            "REPLAY BY-EVIDENCE {k}\t{n}\t{:.2}GB",
+            *b as f64 / 1_073_741_824.0
+        );
+    }
 }

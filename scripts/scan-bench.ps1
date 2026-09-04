@@ -242,6 +242,32 @@ foreach ($sidecar in "$DbFile-wal", "$DbFile-shm") {
     Remove-Item $sidecar -Force -ErrorAction SilentlyContinue
 }
 
+# Start from the rules the binary was just built with, not from whatever was
+# lying beside it.
+#
+# The app writes rules.json and l10n_rules.json next to the executable only
+# when they are absent, and never refreshes them afterwards. So a dist folder
+# that has ever been run keeps its first copy for good: on 2026-09-04 the
+# language pack there was dated 22 August and did not know the sixteen
+# languages added since, which means every measurement taken in between was
+# measured against a dictionary nobody was shipping any more. A benchmark that
+# silently measures last month's rules is worse than no benchmark.
+#
+# Deleted rather than copied from the repository root, because deleting is the
+# one action that cannot go stale: the binary regenerates them from what is
+# compiled into it, so what the run reads is what the run was built from.
+#
+# personal_rules.json is deliberately NOT touched - it holds the operator's own
+# exceptions, is never generated from the build, and re-creating it would only
+# throw away something the build has no copy of.
+foreach ($pack in 'rules.json', 'l10n_rules.json') {
+    $packPath = Join-Path $DistDir $pack
+    if (Test-Path $packPath) {
+        Say "Прибираю $pack - бінар перестворить його зі своїх правил..."
+        Remove-Item $packPath -Force
+    }
+}
+
 $reportPath = Join-Path ([IO.Path]::GetTempPath()) "gametrimmer-bench-$([Guid]::NewGuid().ToString('N')).txt"
 $runStart = Get-Date
 Say "Ганяю скан ($BenchExe --scan)..."
