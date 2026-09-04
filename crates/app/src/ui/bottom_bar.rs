@@ -2,31 +2,11 @@
 //! the delete action.
 
 use eframe::egui;
-use gametrimmer_core::settings::SelectionProfile;
 
 use crate::model::{self, format_duration, format_size};
 
 use crate::app::GameTrimmerApp;
 use crate::i18n;
-
-/// The selection profiles offered in the picker, in increasing aggressiveness,
-/// with `Custom` (the bare confidence threshold) last.
-const PROFILE_ORDER: [SelectionProfile; 4] = [
-    SelectionProfile::Cautious,
-    SelectionProfile::Balanced,
-    SelectionProfile::Aggressive,
-    SelectionProfile::Custom,
-];
-
-/// Localized label for one profile.
-fn profile_label(s: &i18n::Strings, profile: SelectionProfile) -> &'static str {
-    match profile {
-        SelectionProfile::Cautious => s.profile_cautious,
-        SelectionProfile::Balanced => s.profile_balanced,
-        SelectionProfile::Aggressive => s.profile_aggressive,
-        SelectionProfile::Custom => s.profile_custom,
-    }
-}
 
 /// Share of the row's width the selection summary may claim before it
 /// truncates. The delete button is laid out right-to-left after it, so this
@@ -115,33 +95,9 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
 
                 ui.add_space(12.0);
 
-                // Selection profile (selection profiles): a one-click policy for which
-                // findings arrive pre-checked. Switching re-checks the current
-                // findings in place (no re-scan).
-                ui.label(s.profile_label).on_hover_text(s.profile_hint);
-                let mut picked_profile = app.settings.selection_profile;
-                egui::ComboBox::from_id_salt("selection_profile")
-                    .selected_text(profile_label(s, picked_profile))
-                    .show_ui(ui, |ui| {
-                        for profile in PROFILE_ORDER {
-                            ui.selectable_value(
-                                &mut picked_profile,
-                                profile,
-                                profile_label(s, profile),
-                            )
-                            .on_hover_text(s.profile_hint);
-                        }
-                    });
-
-                ui.add_space(12.0);
-
                 select_all_clicked = crate::ui::gated_button(ui, s.btn_select_all, busy).clicked();
                 deselect_all_clicked =
                     crate::ui::gated_button(ui, s.btn_deselect_all, needs_selection).clicked();
-
-                if picked_profile != app.settings.selection_profile {
-                    app.set_selection_profile(picked_profile);
-                }
             });
 
             if delete_clicked {
@@ -259,13 +215,13 @@ mod tests {
 
         test.assert_no_label(s.btn_delete_selected);
         test.assert_no_label(s.btn_select_all);
-        test.assert_no_label(s.profile_label);
+        test.assert_no_label(s.btn_deselect_all);
 
         test.seed_findings();
 
         test.assert_label(s.btn_delete_selected);
         test.assert_label(s.btn_select_all);
-        test.assert_label(s.profile_label);
+        test.assert_label(s.btn_deselect_all);
     }
 
     /// A greyed-out button with no explanation reads as broken. Every gated

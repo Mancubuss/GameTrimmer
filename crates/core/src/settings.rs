@@ -187,67 +187,12 @@ impl Theme {
     }
 }
 
-/// Which findings a scan pre-selects for deletion - the "aggressiveness" the
-/// user picks instead of hand-reasoning about per-category confidence. It is a
-/// pure *selection* policy applied over already-scanned findings (see
-/// `gametrimmer_app::model::profile_auto_selects`), so switching profiles
-/// re-selects without re-scanning. Orthogonal to
-/// [`Settings::enabled_categories`], which decides what is *scanned* at all.
-///
-/// `Balanced` is the default: it pre-selects the residue a launcher will not
-/// restore (orphaned leftovers, bonus material, documentation) plus languages
-/// outside the keep-list - the everyday "reclaim the obvious" set - while
-/// leaving redistributables and dev leftovers for the user to opt into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SelectionProfile {
-    /// Only what a launcher will not bring back on its own: orphaned residue,
-    /// bonus material, documentation.
-    Cautious,
-    /// `Cautious` plus non-keep-list localization files (which only ever exist
-    /// for languages already outside the keep-list).
-    #[default]
-    Balanced,
-    /// `Balanced` plus everything else at or above the aggressive confidence
-    /// floor (see `gametrimmer_app::model::AGGRESSIVE_CONFIDENCE_FLOOR`).
-    Aggressive,
-    /// No profile: the plain confidence threshold decides
-    /// (`gametrimmer_app::model::AUTO_SELECT_CONFIDENCE_THRESHOLD`). Entered
-    /// when the user hand-edits the selection, so manual choices are not
-    /// clobbered by a profile policy.
-    Custom,
-}
-
-impl SelectionProfile {
-    /// Stable string form persisted in `gametrimmer.ini`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SelectionProfile::Cautious => "cautious",
-            SelectionProfile::Balanced => "balanced",
-            SelectionProfile::Aggressive => "aggressive",
-            SelectionProfile::Custom => "custom",
-        }
-    }
-
-    /// Inverse of [`as_str`](Self::as_str). `None` for unknown values (e.g.
-    /// written by a future version) - callers fall back to the default.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "cautious" => Some(SelectionProfile::Cautious),
-            "balanced" => Some(SelectionProfile::Balanced),
-            "aggressive" => Some(SelectionProfile::Aggressive),
-            "custom" => Some(SelectionProfile::Custom),
-            _ => None,
-        }
-    }
-}
-
 /// When the delete confirmation modal is shown before a removal runs.
 ///
-/// One of the three independent switches in the settings dialog's "Selection
-/// & deletion" section, alongside [`Settings::default_selection_profile`]
-/// (what a scan pre-checks) and [`DeleteMethod`] (how a file is disposed of).
-/// The old dialog blurred the three together, although none of them affects
-/// the others.
+/// One of the independent switches in the settings dialog's "Selection
+/// & deletion" section, beside [`DeleteMethod`] (how a file is disposed
+/// of). The old dialog blurred them together, although neither affects the
+/// other.
 ///
 /// [`Always`](Self::Always) is the default - skipping the confirmation is a
 /// choice a user should have to make deliberately, not one an accidental
@@ -490,12 +435,6 @@ pub struct Settings {
     /// settings dialog) are responsible for never letting the *last*
     /// checked category be unchecked - see `ui::settings::scanning`.
     pub enabled_categories: Vec<String>,
-    /// The profile the **currently displayed** findings follow. Orthogonal to
-    /// [`Self::enabled_categories`]: that decides what is scanned, this
-    /// decides what is checked among what was scanned. The main-screen picker
-    /// reads and writes it, re-applying it to the tree on the spot, and any
-    /// hand-edited checkbox drops it to [`SelectionProfile::Custom`] so the
-    /// label stops claiming a policy the selection no longer follows.
     /// Registered library roots (see `game_libraries` in the database) the
     /// scan does not descend into. Keyed by path, normalized through
     /// [`crate::providers::comparable_path`] - not by `game_libraries.id`,
@@ -518,15 +457,6 @@ pub struct Settings {
     /// `no_libraries_found` on an empty scan set, so excluding everything
     /// would leave a scan with nothing to do.
     pub excluded_libraries: Vec<String>,
-    pub selection_profile: SelectionProfile,
-    /// The profile a **fresh scan** pre-selects with.
-    ///
-    /// Deliberately separate from [`Self::selection_profile`]: the settings
-    /// dialog edits only this one, so changing it can never silently
-    /// re-check the tree the user is looking at. It takes effect the next
-    /// time a scan finishes, which is also when the live profile is reset to
-    /// match it.
-    pub default_selection_profile: SelectionProfile,
     /// When the delete confirmation modal is shown - see [`ConfirmBehavior`].
     pub confirm_behavior: ConfirmBehavior,
     /// Whether the app writes a `gametrimmer.log` file next to the
@@ -575,8 +505,6 @@ impl Default for Settings {
             theme: Theme::default(),
             enabled_categories: Vec::new(),
             excluded_libraries: Vec::new(),
-            selection_profile: SelectionProfile::default(),
-            default_selection_profile: SelectionProfile::default(),
             confirm_behavior: ConfirmBehavior::default(),
             logging_enabled: DEFAULT_LOGGING_ENABLED,
             has_scanned: false,
@@ -601,8 +529,6 @@ const NEVER_ASK_ELEVATION_KEY: &str = "never_ask_elevation";
 const THEME_KEY: &str = "theme";
 const ENABLED_CATEGORIES_KEY: &str = "enabled_categories";
 const EXCLUDED_LIBRARIES_KEY: &str = "excluded_libraries";
-const SELECTION_PROFILE_KEY: &str = "selection_profile";
-const DEFAULT_SELECTION_PROFILE_KEY: &str = "default_selection_profile";
 const CONFIRM_BEHAVIOR_KEY: &str = "confirm_behavior";
 const LOGGING_ENABLED_KEY: &str = "logging_enabled";
 const HAS_SCANNED_KEY: &str = "has_scanned";
@@ -611,7 +537,7 @@ const WATCH_ENABLED_KEY: &str = "watch_enabled";
 const WATCH_AUTOSTART_KEY: &str = "watch_autostart";
 const WATCH_MODE_KEY: &str = "watch_mode";
 
-const SETTINGS_KEYS: [&str; 17] = [
+const SETTINGS_KEYS: [&str; 15] = [
     DELETE_METHOD_KEY,
     APP_LANGUAGE_KEY,
     KEEP_LANGUAGES_KEY,
@@ -620,8 +546,6 @@ const SETTINGS_KEYS: [&str; 17] = [
     THEME_KEY,
     ENABLED_CATEGORIES_KEY,
     EXCLUDED_LIBRARIES_KEY,
-    SELECTION_PROFILE_KEY,
-    DEFAULT_SELECTION_PROFILE_KEY,
     CONFIRM_BEHAVIOR_KEY,
     LOGGING_ENABLED_KEY,
     HAS_SCANNED_KEY,
@@ -662,12 +586,6 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
         excluded_libraries: value(EXCLUDED_LIBRARIES_KEY)
             .map(parse_excluded_libraries)
             .unwrap_or_default(),
-        selection_profile: value(SELECTION_PROFILE_KEY)
-            .and_then(SelectionProfile::parse)
-            .unwrap_or_default(),
-        default_selection_profile: value(DEFAULT_SELECTION_PROFILE_KEY)
-            .and_then(SelectionProfile::parse)
-            .unwrap_or_default(),
         confirm_behavior: value(CONFIRM_BEHAVIOR_KEY)
             .and_then(ConfirmBehavior::parse)
             .unwrap_or_default(),
@@ -696,7 +614,7 @@ fn settings_from_values(values: &HashMap<String, String>) -> Settings {
 /// reports the parsed settings: `Settings` is not serde-backed, and this is
 /// already the canonical text form of every field, so a `Serialize` derive
 /// would be a second description of the same thing to keep in sync.
-pub fn settings_values(settings: &Settings) -> [(&'static str, String); 16] {
+pub fn settings_values(settings: &Settings) -> [(&'static str, String); 14] {
     [
         (DELETE_METHOD_KEY, settings.delete_method.as_str().into()),
         (APP_LANGUAGE_KEY, settings.app_language.as_str().into()),
@@ -716,14 +634,6 @@ pub fn settings_values(settings: &Settings) -> [(&'static str, String); 16] {
         (
             EXCLUDED_LIBRARIES_KEY,
             serialize_excluded_libraries(&settings.excluded_libraries),
-        ),
-        (
-            SELECTION_PROFILE_KEY,
-            settings.selection_profile.as_str().into(),
-        ),
-        (
-            DEFAULT_SELECTION_PROFILE_KEY,
-            settings.default_selection_profile.as_str().into(),
         ),
         (
             CONFIRM_BEHAVIOR_KEY,
@@ -784,7 +694,7 @@ pub fn load(conn: &Connection) -> Result<Settings> {
 
 /// Persists every settings field.
 ///
-/// All thirteen writes go in one transaction. Outside one, each `INSERT` is its
+/// All fourteen writes go in one transaction. Outside one, each `INSERT` is its
 /// own implicit transaction and costs a WAL sync of its own - thirteen syncs per
 /// flipped radio button, which on a USB flash drive is the difference between
 /// instant and a visible pause (MT-I01, MT-N01). One transaction also makes the
@@ -1360,104 +1270,6 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_balanced_profile_on_empty_database() {
-        let conn = crate::db::open_in_memory().expect("open in-memory db");
-        let settings = load(&conn).expect("load settings");
-        assert_eq!(
-            settings.selection_profile,
-            SelectionProfile::Balanced,
-            "Balanced is the default aggressiveness profile"
-        );
-    }
-
-    #[test]
-    fn save_then_load_round_trips_every_selection_profile() {
-        let conn = crate::db::open_in_memory().expect("open in-memory db");
-        for profile in [
-            SelectionProfile::Cautious,
-            SelectionProfile::Balanced,
-            SelectionProfile::Aggressive,
-            SelectionProfile::Custom,
-        ] {
-            let settings = Settings {
-                selection_profile: profile,
-                ..Settings::default()
-            };
-            save(&conn, &settings).expect("save settings");
-            let loaded = load(&conn).expect("load settings");
-            assert_eq!(loaded.selection_profile, profile);
-        }
-    }
-
-    #[test]
-    fn selection_profile_round_trips_through_as_str_parse() {
-        for profile in [
-            SelectionProfile::Cautious,
-            SelectionProfile::Balanced,
-            SelectionProfile::Aggressive,
-            SelectionProfile::Custom,
-        ] {
-            assert_eq!(SelectionProfile::parse(profile.as_str()), Some(profile));
-        }
-        assert_eq!(SelectionProfile::parse("nonsense"), None);
-    }
-
-    #[test]
-    fn unknown_stored_selection_profile_falls_back_to_balanced() {
-        let conn = crate::db::open_in_memory().expect("open in-memory db");
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('selection_profile', 'reckless')",
-            [],
-        )
-        .expect("insert unknown value");
-        let settings = load(&conn).expect("load settings");
-        assert_eq!(
-            settings.selection_profile,
-            SelectionProfile::Balanced,
-            "a value written by a future version must not break loading"
-        );
-    }
-
-    #[test]
-    fn save_then_load_round_trips_every_default_selection_profile() {
-        let conn = crate::db::open_in_memory().expect("open in-memory db");
-        for profile in [
-            SelectionProfile::Cautious,
-            SelectionProfile::Balanced,
-            SelectionProfile::Aggressive,
-            SelectionProfile::Custom,
-        ] {
-            let settings = Settings {
-                default_selection_profile: profile,
-                ..Settings::default()
-            };
-            save(&conn, &settings).expect("save settings");
-            let loaded = load(&conn).expect("load settings");
-            assert_eq!(loaded.default_selection_profile, profile);
-        }
-    }
-
-    /// The whole reason the field exists: editing the scan default in
-    /// Settings must not disturb the profile the visible tree is following.
-    #[test]
-    fn the_scan_default_is_stored_apart_from_the_live_profile() {
-        let conn = crate::db::open_in_memory().expect("open in-memory db");
-        let settings = Settings {
-            selection_profile: SelectionProfile::Custom,
-            default_selection_profile: SelectionProfile::Aggressive,
-            ..Settings::default()
-        };
-        save(&conn, &settings).expect("save settings");
-
-        let loaded = load(&conn).expect("load settings");
-        assert_eq!(loaded.selection_profile, SelectionProfile::Custom);
-        assert_eq!(
-            loaded.default_selection_profile,
-            SelectionProfile::Aggressive
-        );
-    }
-
-    #[test]
     fn save_then_load_round_trips_every_confirm_behavior() {
         let conn = crate::db::open_in_memory().expect("open in-memory db");
         for behavior in [ConfirmBehavior::Always, ConfirmBehavior::Never] {
@@ -1648,21 +1460,6 @@ mod tests {
                 ..Settings::default()
             });
         }
-        for selection_profile in [
-            SelectionProfile::Cautious,
-            SelectionProfile::Balanced,
-            SelectionProfile::Aggressive,
-            SelectionProfile::Custom,
-        ] {
-            cases.push(Settings {
-                selection_profile,
-                ..Settings::default()
-            });
-            cases.push(Settings {
-                default_selection_profile: selection_profile,
-                ..Settings::default()
-            });
-        }
         for confirm_behavior in [ConfirmBehavior::Always, ConfirmBehavior::Never] {
             cases.push(Settings {
                 confirm_behavior,
@@ -1748,6 +1545,40 @@ mod tests {
         assert!(loaded.enabled_categories.is_empty());
         assert!(loaded.excluded_libraries.is_empty());
         assert_eq!(loaded.keep_languages, default_keep_languages());
+    }
+
+    /// GT-89 removed selection profiles outright, and the two keys they wrote
+    /// are still sitting in every ini this machine has ever saved. An unknown
+    /// key is skipped rather than rejected, so such a file loads - but that is
+    /// a property of `parse_ini`, not a promise anyone made, and the card asks
+    /// for the promise. The other settings must still arrive intact, which is
+    /// the half a bare "it did not error" assertion would miss.
+    #[test]
+    fn an_ini_written_before_selection_profiles_were_removed_still_loads() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("gametrimmer.ini");
+        std::fs::write(
+            &path,
+            "[settings]
+\
+              delete_method=recycle_bin
+\
+              theme=dark
+\
+              selection_profile=custom
+\
+              default_selection_profile=aggressive
+\
+              logging_enabled=true
+",
+        )
+        .expect("write a pre-GT-89 ini");
+
+        let loaded = load_file(&path).expect("a retired key must not fail the load");
+
+        assert_eq!(loaded.delete_method, DeleteMethod::RecycleBin);
+        assert_eq!(loaded.theme, Theme::Dark);
+        assert!(loaded.logging_enabled);
     }
 
     #[test]

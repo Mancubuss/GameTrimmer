@@ -59,32 +59,18 @@ pub(super) const STRINGS: Strings = Strings {
     badge_immediately: "Immediately",
     badge_next_scan: "From the next scan",
     badge_next_delete: "From the next deletion",
-    default_profile_label: "Profile a new scan starts from",
-    default_profile_hint: "Does not change what is currently checked in the tree - only \
-         where the next scan begins.",
-    profile_cautious_hint: "Ticks only what a launcher will not bring back on its own: \
-         leftovers of deleted games, bonus material, documentation.",
-    profile_balanced_hint: "The same, plus localization files for languages outside your \
-         keep-list.",
-    profile_aggressive_hint: "The same, plus everything else the app is reasonably sure \
-         about - redistributables and installer leftovers among them. Worth a look before \
-         you delete.",
-    profile_custom_hint: "Ticks nothing by category - only the individual findings the app \
-         is most certain about. Everything else you tick by hand.",
     confirm_behavior_label: "Ask before deleting",
     confirm_yes_label: "Yes",
     confirm_no_label: "No",
     confirm_behavior_hint: "With this off, the delete starts the moment you press the button \
          - there is no second chance to look at what was ticked.",
-    selection_independent_switches_hint: "What is scanned (the Scanning section), what is \
-         pre-selected (the profile above) and how it is deleted (the method above) are three \
-         independent switches - changing one leaves the other two alone.",
+    selection_independent_switches_hint: "What is scanned (the Scanning section) and how \
+         a file is disposed of (the method above) are independent switches - changing one \
+         leaves the other alone. Neither decides what gets ticked: a scan ticks nothing, \
+         and what goes is only ever what you ticked yourself.",
     keep_languages_add_placeholder: "Add a language\u{2026}",
     categories_table_header_category: "Category",
     categories_table_header_risk: "Risk",
-    categories_table_header_profile_behavior: "Default profile",
-    profile_behavior_auto: "Pre-selected",
-    profile_behavior_manual: "Never automatic",
     disabled_last_keep_language: "At least one language has to stay on the keep-list.",
     disabled_last_category: "At least one category has to stay enabled.",
     disabled_last_library: "At least one library has to stay included in the scan.",
@@ -109,15 +95,6 @@ pub(super) const STRINGS: Strings = Strings {
     disabled_export_running: "An export is already running",
     disabled_disclaimer: "Read and accept the disclaimer on the start screen first",
     disabled_database: "The database could not be opened",
-
-    profile_label: "Profile:",
-    profile_cautious: "Cautious",
-    profile_balanced: "Balanced",
-    profile_aggressive: "Aggressive",
-    profile_custom: "Custom",
-    profile_hint: "Which findings arrive pre-ticked. Switching re-ticks the current findings - \
-         nothing is re-scanned and nothing is deleted. Each profile is described under \
-         Settings \u{2192} Selection & deletion.",
 
     plan_filter_label: "Show:",
     plan_filter_all: "all categories",
@@ -238,10 +215,10 @@ pub(super) const STRINGS: Strings = Strings {
     onboarding_filters_body: "Settings \u{2192} Scanning narrows that: a switched-off category \
          is never analyzed, and a language on the keep-list is never proposed for deletion. \
          The README beside the program describes both detectors and the rule files in full.",
-    onboarding_profile: "The profile decides how boldly findings arrive ticked. You can \
-         always tick and untick by hand.",
-    onboarding_review_mark: "A \u{26a0} beside a file means the app is less sure. Nothing \
-         marked that way is ever ticked for you.",
+    onboarding_selection: "A finished scan arrives with nothing ticked. The app proposes \
+         nothing for deletion on your behalf - what goes is what you tick.",
+    onboarding_review_mark: "A \u{26a0} beside a file means the app is less sure of it - \
+         worth a longer look before you tick it.",
     onboarding_safety: "Scanning changes nothing on disk. Nothing is deleted until you tick \
          it and confirm.",
     onboarding_logging_body:

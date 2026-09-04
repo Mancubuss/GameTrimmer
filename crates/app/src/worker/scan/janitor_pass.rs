@@ -42,9 +42,11 @@ use crate::model::{category_enabled, DisplayCategory, FindingSource};
 /// Confidence for an artifact the janitor considers safe by default (a stale
 /// cache file, a crash dump, a launcher's web cache).
 ///
-/// Below `crate::model::AUTO_SELECT_CONFIDENCE_THRESHOLD` on purpose, for the
-/// same reason the orphan confidences are: these live outside every game
-/// directory, so nothing here is ever pre-ticked by the bare-confidence path.
+/// Below `crate::model::REVIEW_CONFIDENCE_THRESHOLD` on purpose, for the same
+/// reason the orphan confidences are: these live outside every game directory,
+/// so each one carries the review mark and asks to be looked at before it is
+/// ticked. Nothing is pre-ticked anywhere since GT-89; what this figure still
+/// decides is whether the row admits to being a judgement call.
 const JANITOR_SAFE_CONFIDENCE: u8 = 80;
 
 /// Confidence for an artifact the janitor wants a human to look at - today
@@ -379,8 +381,8 @@ mod tests {
 
         assert_eq!(collection.findings.len(), 1);
         assert!(
-            collection.findings[0].confidence < crate::model::AUTO_SELECT_CONFIDENCE_THRESHOLD,
-            "a save is never pre-ticked by confidence alone"
+            collection.findings[0].confidence < crate::model::REVIEW_CONFIDENCE_THRESHOLD,
+            "a save has to carry the review mark: since GT-89 nothing is pre-ticked at all, so the mark is the only thing left that can say to look at this one first"
         );
     }
 

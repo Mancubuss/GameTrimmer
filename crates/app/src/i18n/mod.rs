@@ -244,28 +244,23 @@ pub struct Strings {
     pub badge_next_scan: &'static str,
     pub badge_next_delete: &'static str,
 
-    /// "Selection & deletion": three switches the old dialog conflated.
-    pub default_profile_label: &'static str,
-    pub default_profile_hint: &'static str,
+    /// "Selection & deletion": the switches the old dialog conflated.
     pub confirm_behavior_label: &'static str,
     pub confirm_yes_label: &'static str,
     pub confirm_no_label: &'static str,
     pub confirm_behavior_hint: &'static str,
-    /// Spells out that scanning, auto-selection and deletion are three
+    /// Spells out that what is scanned and how a delete disposes of files are
     /// separate decisions - the section is arranged around that, but the
-    /// users from reading the three independent groups as one pipeline.
+    /// arrangement alone does not stop a reader taking the groups for one
+    /// pipeline.
     pub selection_independent_switches_hint: &'static str,
 
     /// "Scanning": the keep-list search box and the category table's
     /// headings. The table replaces a wall of 36 bare checkboxes with rows
-    /// that say what each category costs to remove and whether the default
-    /// profile would pick it up.
+    /// that say what each category costs to remove.
     pub keep_languages_add_placeholder: &'static str,
     pub categories_table_header_category: &'static str,
     pub categories_table_header_risk: &'static str,
-    pub categories_table_header_profile_behavior: &'static str,
-    pub profile_behavior_auto: &'static str,
-    pub profile_behavior_manual: &'static str,
     /// Why the last remaining keep-language, category, or included library
     /// cannot be switched off. The old dialog silently reverted the click,
     /// which reads as a broken checkbox rather than as a floor.
@@ -315,27 +310,6 @@ pub struct Strings {
     /// disabled-button tooltip, and the long explanation of *why* the
     /// database failed already sits above it in the panel (`db_open_error_long`).
     pub disabled_database: &'static str,
-
-    /// Label preceding the selection-profile picker (selection profiles).
-    pub profile_label: &'static str,
-    pub profile_cautious: &'static str,
-    pub profile_balanced: &'static str,
-    pub profile_aggressive: &'static str,
-    pub profile_custom: &'static str,
-    /// Tooltip explaining what the selection profile changes. Deliberately
-    /// short: it names the switch and points at the settings section that
-    /// describes each profile, rather than trying to fit four definitions
-    /// into a tooltip on the busiest row of the app.
-    pub profile_hint: &'static str,
-    /// One line per profile, shown under its radio button in "Selection &
-    /// deletion". The picker used to offer four bare names - "Cautious",
-    /// "Balanced", "Aggressive", "Custom" - with nothing on the screen saying
-    /// what any of them ticks, in a dialog whose whole subject is what gets
-    /// deleted.
-    pub profile_cautious_hint: &'static str,
-    pub profile_balanced_hint: &'static str,
-    pub profile_aggressive_hint: &'static str,
-    pub profile_custom_hint: &'static str,
 
     // -- plan_panel (plan summary) --
     /// Label in front of the category selector on the summary row above the
@@ -467,10 +441,9 @@ pub struct Strings {
 
     // -- onboarding (first-run onboarding) --
     /// The first-run explanation, shown in the empty tree area until the user
-    /// has started a scan once. Covers the order of operations, the one word
-    /// the main screen otherwise uses without defining ("profile") and the
-    /// one mark it draws without explaining (\u{26a0}), plus the promise that
-    /// scanning is not deleting.
+    /// has started a scan once. Covers the order of operations, what a fresh
+    /// scan does and does not tick, the one mark the main screen draws without
+    /// explaining (\u{26a0}), plus the promise that scanning is not deleting.
     pub onboarding_heading: &'static str,
     pub onboarding_step_scan: &'static str,
     pub onboarding_step_review: &'static str,
@@ -482,7 +455,7 @@ pub struct Strings {
     pub onboarding_how_heading: &'static str,
     pub onboarding_how_body: &'static str,
     pub onboarding_filters_body: &'static str,
-    pub onboarding_profile: &'static str,
+    pub onboarding_selection: &'static str,
     pub onboarding_review_mark: &'static str,
     pub onboarding_safety: &'static str,
     /// Why keeping the diagnostic log is useful, explained where the default
@@ -791,12 +764,6 @@ impl Strings {
         if let Some(val) = map.get("badge_next_delete") {
             s.badge_next_delete = Box::leak(val.clone().into_boxed_str());
         }
-        if let Some(val) = map.get("default_profile_label") {
-            s.default_profile_label = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("default_profile_hint") {
-            s.default_profile_hint = Box::leak(val.clone().into_boxed_str());
-        }
         if let Some(val) = map.get("confirm_behavior_label") {
             s.confirm_behavior_label = Box::leak(val.clone().into_boxed_str());
         }
@@ -820,15 +787,6 @@ impl Strings {
         }
         if let Some(val) = map.get("categories_table_header_risk") {
             s.categories_table_header_risk = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("categories_table_header_profile_behavior") {
-            s.categories_table_header_profile_behavior = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_behavior_auto") {
-            s.profile_behavior_auto = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_behavior_manual") {
-            s.profile_behavior_manual = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("disabled_last_keep_language") {
             s.disabled_last_keep_language = Box::leak(val.clone().into_boxed_str());
@@ -889,36 +847,6 @@ impl Strings {
         }
         if let Some(val) = map.get("disabled_database") {
             s.disabled_database = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_label") {
-            s.profile_label = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_cautious") {
-            s.profile_cautious = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_balanced") {
-            s.profile_balanced = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_aggressive") {
-            s.profile_aggressive = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_custom") {
-            s.profile_custom = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_hint") {
-            s.profile_hint = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_cautious_hint") {
-            s.profile_cautious_hint = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_balanced_hint") {
-            s.profile_balanced_hint = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_aggressive_hint") {
-            s.profile_aggressive_hint = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("profile_custom_hint") {
-            s.profile_custom_hint = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("plan_filter_label") {
             s.plan_filter_label = Box::leak(val.clone().into_boxed_str());
@@ -1166,8 +1094,8 @@ impl Strings {
         if let Some(val) = map.get("onboarding_filters_body") {
             s.onboarding_filters_body = Box::leak(val.clone().into_boxed_str());
         }
-        if let Some(val) = map.get("onboarding_profile") {
-            s.onboarding_profile = Box::leak(val.clone().into_boxed_str());
+        if let Some(val) = map.get("onboarding_selection") {
+            s.onboarding_selection = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("onboarding_review_mark") {
             s.onboarding_review_mark = Box::leak(val.clone().into_boxed_str());
@@ -1538,12 +1466,6 @@ impl Strings {
             ("badge_immediately", self.badge_immediately),
             ("badge_next_scan", self.badge_next_scan),
             ("badge_next_delete", self.badge_next_delete),
-            ("default_profile_label", self.default_profile_label),
-            ("default_profile_hint", self.default_profile_hint),
-            ("profile_cautious_hint", self.profile_cautious_hint),
-            ("profile_balanced_hint", self.profile_balanced_hint),
-            ("profile_aggressive_hint", self.profile_aggressive_hint),
-            ("profile_custom_hint", self.profile_custom_hint),
             ("confirm_behavior_label", self.confirm_behavior_label),
             ("confirm_yes_label", self.confirm_yes_label),
             ("confirm_no_label", self.confirm_no_label),
@@ -1564,12 +1486,6 @@ impl Strings {
                 "categories_table_header_risk",
                 self.categories_table_header_risk,
             ),
-            (
-                "categories_table_header_profile_behavior",
-                self.categories_table_header_profile_behavior,
-            ),
-            ("profile_behavior_auto", self.profile_behavior_auto),
-            ("profile_behavior_manual", self.profile_behavior_manual),
             (
                 "disabled_last_keep_language",
                 self.disabled_last_keep_language,
@@ -1680,7 +1596,7 @@ impl Strings {
             ("onboarding_how_heading", self.onboarding_how_heading),
             ("onboarding_how_body", self.onboarding_how_body),
             ("onboarding_filters_body", self.onboarding_filters_body),
-            ("onboarding_profile", self.onboarding_profile),
+            ("onboarding_selection", self.onboarding_selection),
             ("onboarding_review_mark", self.onboarding_review_mark),
             ("onboarding_safety", self.onboarding_safety),
             ("onboarding_logging_body", self.onboarding_logging_body),

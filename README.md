@@ -102,30 +102,26 @@ Bink 2 (`.bk2`), MP4 (`.mp4`, `.m4v`), WebM/MKV (`.webm`, `.mkv`), Ogg Theora
 skip the intro sequence instantly and launch straight to the main menu without
 crashing.
 
-## Profiles and the ⚠ mark
+## What arrives ticked, and the ⚠ mark
 
-A profile decides what arrives **already ticked** after a scan. It does not
-change what was found — only the initial ticks — and it switches without
-rescanning. Each profile is described in plain words in the settings, right
-under its own switch.
+Nothing arrives ticked. A finished scan hands you a tree with every box empty,
+and what gets deleted is only ever what you ticked yourself.
 
-- **Cautious** — only what the launcher will not bring back on its own:
-  leftovers of deleted games, bonus material, documentation.
-- **Balanced** — the same plus localizations outside the keep-list and intro &
-  startup videos.
-- **Aggressive** — the same plus everything else the engine is fairly
-  confident about, including redistributables and installer residue.
-- **Custom** — not by category, but purely by the engine's confidence in a
-  specific file: only the most reliable findings get ticked.
+It used to be otherwise. A **selection profile** — Cautious, Balanced,
+Aggressive, Custom — decided how boldly findings arrived already ticked, and
+the intent was to save you the reading. What it did instead was propose
+deletions under a name nobody had deliberately chosen, on files the app had
+just decided were disposable, with the reasoning one dialog away. Profiles are
+gone, and so is the bare confidence threshold that quietly did the same thing
+whenever no profile was set.
 
-Internally the engine computes a confidence score (0–100), but the tree does
-not show it. That is its own internal scale, and it does not match the risk of
-deleting: orphaned residue has low confidence and zero risk — the game is
-already gone. Instead of a number, the row carries a **⚠**: the engine did not
-tick this file for you, so look at it before deleting. The number itself
-stayed where it has context — in the row's tooltip (next to the rule that
-produced it) and in the CSV export.
-
+Internally the engine still computes a confidence score (0–100), but the tree
+does not show it. That is its own internal scale, and it does not match the
+risk of deleting: orphaned residue has low confidence and zero risk — the game
+is already gone. Instead of a number, the row carries a **⚠**: the engine is
+less sure of this one, so give it a longer look. The number itself stayed where
+it has context — in the row's tooltip (next to the rule that produced it) and
+in the CSV export.
 ## Reviewing what was found
 
 The tree goes top down: disk → game → category → folder → file. A tick can be
@@ -202,19 +198,22 @@ part of it back.
 **Not part of version 1.0.** Launched with any argument, GameTrimmer says so
 and exits; launched with none, it opens the window as usual.
 
-Two things kept it out. It could not delete: `--apply` is the only path in the
-program where files disappear without a click, it has never been exercised on
-live data, and it stays switched off. And because the exe is built as a Windows
-GUI application, the shell prints its prompt again the moment the process
-starts — the report then arrives underneath that prompt, at a console that
-looks like it has already finished. A read-only reporter that does not hand you
-back your console is not worth shipping.
+It reports and nothing more, and that is now the design rather than a gap. A
+headless run has no one present to tick anything, and since selection profiles
+were removed the app proposes nothing on its own — so there is no set of files
+an unattended delete could act on. Unattended trimming returns under a policy
+that says out loud what it removes, not as a flag that inherits a saved
+default.
+
+What kept the reporter itself out of 1.0 is separate: the exe is built as a
+Windows GUI application, so the shell prints its prompt again the moment the
+process starts — the report then arrives underneath that prompt, at a console
+that looks like it has already finished. A reporter that does not hand you back
+your console is not worth shipping.
 
 The code is compiled, type-checked and unit-tested in every build, so it is not
 going anywhere: `--features headless` restores the mode (`--scan`, `--dry-run`,
-`--report <path>`, `--profile <name>`), and `--features cli-apply` additionally
-restores `--apply` for those who understand the risk. It goes back on by
-default once it works end to end.
+`--report <path>`). It goes back on by default once it hands the console back.
 
 ## Portability and known limits
 

@@ -58,9 +58,11 @@ MAX_REGEX_BYTES = 512
 # `Game\Content\Movies\Startup\`.
 REFERENCE_MAX_DEPTH = 8
 
-# Above `app::model::AUTO_SELECT_CONFIDENCE_THRESHOLD` (85): a catalogue naming
-# this game's intro videos one by one is the strongest evidence the app has,
-# stronger than any pattern that had to generalize.
+# Above `app::model::REVIEW_CONFIDENCE_THRESHOLD` (85), so these rows do not
+# carry the review mark: a catalogue naming this game's intro videos one by one
+# is the strongest evidence the app has, stronger than any pattern that had to
+# generalize. It still arrives unticked - nothing is pre-ticked since GT-89 -
+# but it arrives without the app hedging about it.
 REFERENCE_CONFIDENCE = 96
 
 # The fix method that means "these files are the intro, remove them". A page

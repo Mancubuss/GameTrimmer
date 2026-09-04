@@ -117,9 +117,10 @@ These are deliberate limits, not gaps:
   "anonymous statistics".
 - Anything that writes to launcher folders or registry keys. Launchers are
   read-only.
-- Anything that deletes without an explicit human click. (`--apply` exists,
-  is compiled, and is switched off; it stays off until it can be rehearsed
-  without deleting from a real library.)
+- Anything that deletes without an explicit human click. There is no longer a
+  code path that could: selection profiles are gone, a scan pre-ticks nothing,
+  and the headless mode only reports. Unattended trimming comes back, if at
+  all, under a policy that names what it removes.
 - Anything that writes outside the program's own folder — no `%APPDATA%`, no
   registry, no installer.
 

@@ -1,21 +1,25 @@
 //! Headless (CLI) mode - headless CLI mode.
 //!
-//! The same portable exe runs without a GUI when given CLI flags: it scans,
-//! reports what it would remove, and (only with `--apply`) removes the profile's
-//! auto-selected findings, communicating solely through an exit code and a text
-//! report.
+//! The same portable exe runs without a GUI when given CLI flags: it scans and
+//! reports what it found, communicating solely through an exit code and a text
+//! report. There is nothing else for it to do - GT-89 removed selection
+//! profiles from the whole product, so a fresh scan (headless or GUI) now
+//! pre-selects nothing, and only an explicit human tick in the GUI ever
+//! selects a finding for deletion. Headless mode has no human to tick
+//! anything, so it never had a `--apply`-shaped path to keep: unattended
+//! deletion returns under its own explicitly named policy (board card
+//! GT-EP24, "Авто-трим: unattended повторний трим після оновлення гри"), not
+//! as a resurrected profile-driven `--apply`.
 //!
 //! **The whole mode is switched off in the v1 release build**, behind the
 //! off-by-default `headless` feature - see [`args::HEADLESS_ENABLED`] for the
-//! two reasons. Within it, `--apply` is gated a second time behind `cli-apply`
-//! (apply-feature gating) - see [`args::APPLY_ENABLED`]. Everything below still compiles,
-//! type-checks and unit-tests in the default build, so neither can rot while it
-//! is switched off.
+//! two reasons. Everything below still compiles, type-checks and unit-tests in
+//! the default build, so it cannot rot while it is switched off.
 //!
 //! This is a *second front end over the same worker layer* - it drives
-//! [`crate::worker::scan`] and [`crate::worker::delete`] exactly as the GUI does,
-//! draining their [`WorkerMsg`] stream on this thread instead of the egui event
-//! loop. No scanning/classification/deletion logic is duplicated here.
+//! [`crate::worker::scan`] exactly as the GUI does, draining its
+//! [`WorkerMsg`] stream on this thread instead of the egui event loop. No
+//! scanning/classification logic is duplicated here.
 //!
 //! The worker API takes an [`egui::Context`] (to wake the UI while minimized);
 //! headless mode hands it a default context whose `request_repaint` is a
@@ -30,13 +34,12 @@ use std::sync::Arc;
 
 use gametrimmer_core::settings::{self, Settings};
 
-pub use args::{parse_invocation, HeadlessConfig, Invocation, Mode};
+pub use args::{parse_invocation, HeadlessConfig, Invocation};
 
 use crate::model::{self, FindingItem, FindingRow};
-use crate::worker::delete::{space_tally, DeleteItem};
 use crate::worker::scan::ScanOptions;
-use crate::worker::{self, RemoveOutcome, WorkerMsg};
-use report::{ApplyReport, ReportData, EXIT_RUNTIME, EXIT_USAGE};
+use crate::worker::{self, WorkerMsg};
+use report::{ReportData, EXIT_OK, EXIT_RUNTIME, EXIT_USAGE};
 
 const USAGE_HEAD: &str = "\
 GameTrimmer - headless mode
@@ -50,46 +53,22 @@ does, so press Enter when it finishes.
 
 FLAGS:
     --scan               Scan libraries and report (deletes nothing).
-    --dry-run            Same as --scan: report only, delete nothing (default).
+    --dry-run            Same as --scan: report only, delete nothing. Headless
+                         mode never deletes - there is no --apply.
 ";
 
-/// The `--apply` block of the help, present only in a build that accepts the
-/// flag (apply-feature gating) - help that advertises a flag the build refuses is worse than
-/// no help at all.
-///
-/// No `\`-continuation after the opening quote in this and the blocks below:
-/// that escape also swallows the next line's leading whitespace, which would
-/// silently strip the indentation these blocks are aligned by.
-const USAGE_APPLY: &str = "    --apply              Delete the profile's auto-selected findings.
-                         Requires --profile; the only mode that removes files.
-";
-
-/// Stated rather than silently omitted, so an operator who expected `--apply`
-/// learns why it is missing instead of assuming a typo.
-const USAGE_APPLY_DISABLED: &str = "    (--apply is not part of this build: that deletion path
-     has never been run live, so v1 ships without it.)
-";
-
-const USAGE_TAIL: &str =
-    "    --profile <name>     Selection profile: cautious | balanced | aggressive | custom.
-                         Optional for a dry run (defaults to the saved setting);
-                         mandatory for --apply.
+const USAGE_TAIL: &str = "\
     --report <path>      Also write the full text report to <path>.
     -h, --help, /?       Print this help and exit.
     -V, --version        Print the version and exit.
 
 EXIT CODES:
     0  success            1  bad arguments
-    2  runtime error      3  apply completed with some deletion failures
+    2  runtime error
 ";
 
 fn usage() -> String {
-    let apply_block = if args::APPLY_ENABLED {
-        USAGE_APPLY
-    } else {
-        USAGE_APPLY_DISABLED
-    };
-    format!("{USAGE_HEAD}{apply_block}{USAGE_TAIL}")
+    format!("{USAGE_HEAD}{USAGE_TAIL}")
 }
 
 /// What [`run_from_env`] decided the process should do.
@@ -167,19 +146,16 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         }
     };
 
-    // Diagnostics: always keep a full log for an --apply run (the only mode that
-    // removes files), and honor the user's setting otherwise. Best-effort - a
-    // log that can't be opened never blocks the run.
-    let want_log = matches!(config.mode, Mode::Apply) || settings.logging_enabled;
-    if want_log {
+    // Diagnostics: honor the user's logging setting. Unlike before GT-89,
+    // there is no apply run left to force-enable logging for - headless mode
+    // never deletes anything, so there is no "the one mode that removes
+    // files" case to special-case here any more.
+    if settings.logging_enabled {
         if let Ok(log_path) = worker::log_path() {
             crate::logger::set_enabled(true, elevated, &log_path);
         }
     }
 
-    // An explicit --profile wins; otherwise the persisted profile decides, just
-    // as it does for the GUI's post-scan selection.
-    let profile = config.profile.unwrap_or(settings.selection_profile);
     // The headless mode speaks one language: English (MT-U02).
     //
     // The report body is deliberately fixed English so a script can grep it and
@@ -192,11 +168,7 @@ fn run_headless(config: HeadlessConfig) -> u8 {
     // including the language handed to the scan worker.
     let lang = crate::i18n::Lang::En;
 
-    crate::logger::log(&format!(
-        "CLI run: mode={:?}, profile={}, elevated={elevated}",
-        config.mode,
-        profile.as_str()
-    ));
+    crate::logger::log(&format!("CLI run: elevated={elevated}"));
 
     let options = ScanOptions {
         lang,
@@ -213,85 +185,27 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         }
     };
 
-    // Apply the selection profile exactly like the GUI does on a fresh scan.
-    let items: Vec<FindingItem> = apply_selection_profile(findings, profile);
-
-    let cards = model::plan_cards(&items);
-    let total_findings = items.len();
-    let selected: Vec<&FindingItem> = items.iter().filter(|item| item.selected).collect();
-    let selected_count = selected.len();
-    let selected_size_on_disk: u64 = selected.iter().map(|item| item.row.size_on_disk).sum();
-    // Findings the profile would otherwise pick that a genuine safety
-    // failure keeps read-only (fresh scan required, legacy snapshot, ...).
-    // This also gates `--apply` below: any one of these aborts the whole run
-    // rather than silently deleting less than the operator asked for.
-    let blocked: Vec<String> = items
-        .iter()
-        .filter_map(|item| {
-            let reason = item.row.deletion_block_reason.as_ref()?;
-            model::profile_auto_selects(profile, item.row.display_category(), item.row.confidence)
-                .then(|| {
-                    format!(
-                        "{}: {reason}",
-                        item.row.install_dir.join(&item.row.rel_path).display()
-                    )
-                })
+    // Nothing pre-selected (GT-89): a fresh scan, headless or GUI, checks
+    // nothing on its own. Only an explicit human tick in the GUI ever selects
+    // a finding, and headless mode has no human to tick anything - so every
+    // item starts (and, for this run, ends) unselected and unremoved.
+    let items: Vec<FindingItem> = findings
+        .into_iter()
+        .map(|row| FindingItem {
+            row,
+            selected: false,
+            removed: false,
         })
         .collect();
 
-    if matches!(config.mode, Mode::Apply) && !blocked.is_empty() {
-        for reason in &blocked {
-            eprintln!("Delete blocked: {reason}");
-        }
-        return EXIT_RUNTIME;
-    }
-
-    // For --apply, delete the selected set through the same worker the GUI uses.
-    let apply = match config.mode {
-        Mode::DryRun => None,
-        Mode::Apply => {
-            let delete_items: Vec<DeleteItem> = selected
-                .iter()
-                .map(|item| DeleteItem {
-                    file_id: item.row.file_id,
-                    size_on_disk: item.row.size_on_disk,
-                })
-                .collect();
-
-            if delete_items.is_empty() {
-                // Nothing selected: report an empty apply rather than spawning a
-                // no-op delete job.
-                Some(ApplyReport {
-                    method: settings.delete_method,
-                    expected: 0,
-                    freed: 0,
-                    recycled_pending: 0,
-                    succeeded: 0,
-                    failed: 0,
-                })
-            } else {
-                match run_delete_headless(&db_path, delete_items, settings.delete_method, lang) {
-                    Ok(outcomes) => Some(apply_report(settings.delete_method, &outcomes)),
-                    Err(err) => {
-                        eprintln!("Delete failed: {err}");
-                        return EXIT_RUNTIME;
-                    }
-                }
-            }
-        }
-    };
+    let cards = model::plan_cards(&items);
+    let total_findings = items.len();
 
     let data = ReportData {
-        mode: config.mode,
-        profile,
         elevated,
         scan_summary,
         cards,
         total_findings,
-        selected_count,
-        selected_size_on_disk,
-        blocked,
-        apply,
     };
 
     let text = report::format_report(&data, lang);
@@ -305,33 +219,10 @@ fn run_headless(config: HeadlessConfig) -> u8 {
         eprintln!("Report written: {}", path.display());
     }
 
-    data.exit_code()
-}
-
-/// Turns freshly scanned rows into selectable items, auto-checking exactly
-/// what the GUI would pre-check on a fresh scan (see `WorkerMsg::Done` and
-/// `GameTrimmerApp::set_selection_profile`): the profile's category/confidence
-/// rule *and* `bulk_selectable()`. That second clause is not redundant - it is
-/// what keeps an `imported_untrusted` row (safety evidence an older database
-/// supplied, never re-checked by this scan) unchecked no matter how permissive
-/// the profile is; only an explicit, one-at-a-time tick may select it.
-fn apply_selection_profile(
-    findings: Vec<FindingRow>,
-    profile: settings::SelectionProfile,
-) -> Vec<FindingItem> {
-    findings
-        .into_iter()
-        .map(|row| {
-            let selected =
-                model::profile_auto_selects(profile, row.display_category(), row.confidence)
-                    && row.bulk_selectable();
-            FindingItem {
-                row,
-                selected,
-                removed: false,
-            }
-        })
-        .collect()
+    // Always OK: a headless run only ever scans and reports (GT-89 removed
+    // the one path, `--apply`, that could fail partway through and leave a
+    // partial-success code meaningful).
+    EXIT_OK
 }
 
 /// Opens the database (creating/migrating the schema on first use, same as the
@@ -392,60 +283,6 @@ fn run_scan_headless(
         (Some(result), _) => Ok(result),
         (None, Some(err)) => Err(err),
         (None, None) => Err("the scan finished without a result".to_string()),
-    }
-}
-
-/// Drives one delete batch to completion on this thread, returning the per-file
-/// outcomes once the worker reports `RemoveDone`.
-fn run_delete_headless(
-    db_path: &Path,
-    items: Vec<DeleteItem>,
-    method: settings::DeleteMethod,
-    lang: settings::Lang,
-) -> Result<Vec<RemoveOutcome>, String> {
-    let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
-
-    let handle = worker::delete::spawn_delete(
-        db_path.to_path_buf(),
-        items,
-        method,
-        tx,
-        lang,
-        worker::no_wake(),
-    );
-
-    let mut outcomes: Option<Vec<RemoveOutcome>> = None;
-    let mut error: Option<String> = None;
-    for msg in rx {
-        match msg {
-            WorkerMsg::Warning { msg } => eprintln!("Warning: {msg}"),
-            WorkerMsg::RemoveDone { outcomes: o, .. } => outcomes = Some(o),
-            WorkerMsg::Error { msg } => error = Some(msg),
-            _ => {}
-        }
-    }
-    let _ = handle.join();
-
-    match (outcomes, error) {
-        (Some(outcomes), _) => Ok(outcomes),
-        (None, Some(err)) => Err(err),
-        (None, None) => Err("the delete finished without a result".to_string()),
-    }
-}
-
-/// Folds a delete batch's outcomes into an [`ApplyReport`]: the on-disk space
-/// tally (reusing [`space_tally`], the same accounting the GUI's summary shows)
-/// plus per-file success/failure counts.
-fn apply_report(method: settings::DeleteMethod, outcomes: &[RemoveOutcome]) -> ApplyReport {
-    let tally = space_tally(method, outcomes);
-    let failed = outcomes.iter().filter(|o| o.error.is_some()).count();
-    ApplyReport {
-        method,
-        expected: tally.expected,
-        freed: tally.freed,
-        recycled_pending: tally.recycled_pending,
-        succeeded: outcomes.len() - failed,
-        failed,
     }
 }
 
@@ -510,68 +347,6 @@ mod tests {
             load_settings(&db_path, &settings_path).expect("reload CLI settings"),
             legacy,
             "an existing ini must win over later legacy-database changes"
-        );
-    }
-
-    /// A localization row every profile would otherwise auto-select, but
-    /// `imported_untrusted` still leaves unchecked - see
-    /// `apply_selection_profile`'s doc comment.
-    fn imported_untrusted_loc_row() -> FindingRow {
-        FindingRow {
-            file_id: 1,
-            game_id: 1,
-            game_name: "Test Game".to_string(),
-            app_id: None,
-            install_dir: std::path::PathBuf::from("C:\\Games\\Test"),
-            rel_path: "data/loc.pak".to_string(),
-            size: 1024,
-            size_on_disk: 1024,
-            source: model::FindingSource::Loc(gametrimmer_core::langdetect::LangKind::Text),
-            rule_desc: "test rule".to_string(),
-            confidence: 90,
-            lang_tag: Some("de".to_string()),
-            group_dir: None,
-            deletion_block_reason: None,
-            imported_untrusted: true,
-            library: None,
-            anti_cheat_protected: false,
-        }
-    }
-
-    /// The third of the three exclusion points (GT-109 item 1): a headless
-    /// scan's own selection pass must never bulk-select an `imported_untrusted`
-    /// row, no matter how permissive `--profile` is. `Aggressive` selects
-    /// nearly everything by category or confidence floor - it is the profile
-    /// most likely to hide a missing exclusion.
-    #[test]
-    fn headless_selection_never_auto_selects_an_imported_untrusted_row() {
-        let items = apply_selection_profile(
-            vec![imported_untrusted_loc_row()],
-            settings::SelectionProfile::Aggressive,
-        );
-
-        assert_eq!(items.len(), 1);
-        assert!(
-            !items[0].selected,
-            "an imported_untrusted row was auto-selected by --profile aggressive",
-        );
-    }
-
-    /// The same row, freshly scanned rather than imported, is exactly what
-    /// `Aggressive` is meant to pick up - proof the row above fails because of
-    /// `imported_untrusted`, not because the fixture is unselectable by
-    /// construction.
-    #[test]
-    fn headless_selection_does_auto_select_the_same_row_once_trusted() {
-        let mut row = imported_untrusted_loc_row();
-        row.imported_untrusted = false;
-
-        let items =
-            apply_selection_profile(vec![row], settings::SelectionProfile::Aggressive);
-
-        assert!(
-            items[0].selected,
-            "a trusted, freshly scanned Loc row should be auto-selected by --profile aggressive",
         );
     }
 }

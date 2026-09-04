@@ -65,7 +65,7 @@ use crate::i18n::{self, Lang};
 use crate::model::{
     self, category_display, category_ui_key, format_size, group_selection_state, is_orphan_branch,
     set_group_selection, toggle_group, DisplayCategory, FindingItem, GameNode, GroupAxis,
-    SortColumn, TopGroup, TopKey, TreeNode, TreeSort, AUTO_SELECT_CONFIDENCE_THRESHOLD,
+    SortColumn, TopGroup, TopKey, TreeNode, TreeSort, REVIEW_CONFIDENCE_THRESHOLD,
 };
 use crate::search::SearchIndex;
 use crate::ui::highlight::{self, Part};
@@ -380,15 +380,9 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
         app.tree_viewport_height = output.inner_rect.height();
     });
 
-    // The profile picker claims to describe what is checked. Once the user
-    // has hand-edited any of it, only "Custom" is still true.
-    if selection_changed.get() {
-        app.mark_selection_custom();
-    }
-
     // Apply this after the direct selection edits: dropping the kept row can
-    // clear its own selection, but that is a consequence of the exception
-    // rather than a hand edit of the profile.
+    // clear its own selection, which is a consequence of the exception rather
+    // than something the user ticked.
     if let Some(index) = keep_request.take() {
         apply_keep_request(app, index);
     }
@@ -1054,8 +1048,8 @@ fn handle_keyboard(
     let mut visibility_changed = false;
     if let Some(current) = cursor {
         let row = rows[current.min(last)].row;
-        if keys.toggle_select && toggle_row_selection(&app.tree, &mut app.findings, row) {
-            app.mark_selection_custom();
+        if keys.toggle_select {
+            toggle_row_selection(&app.tree, &mut app.findings, row);
         }
         if keys.expand || keys.collapse {
             match row_toggle_key(&app.tree, row) {
@@ -1949,9 +1943,7 @@ fn show_file_row(
         Some(lang_tag) => egui::RichText::new(format!("[{lang_tag}]")),
         None => egui::RichText::new(""),
     };
-    // The same threshold that decided whether this row was ticked for the
-    // user after the scan - so the mark and the checkbox never disagree.
-    let needs_review = item.row.confidence < AUTO_SELECT_CONFIDENCE_THRESHOLD;
+    let needs_review = item.row.confidence < REVIEW_CONFIDENCE_THRESHOLD;
     let review_hint = i18n::strings(lang).review_mark_hint;
 
     // Absolute path (Windows-native separators): the tooltip's first line, the
@@ -2105,8 +2097,6 @@ fn apply_keep_request(app: &mut GameTrimmerApp, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use gametrimmer_core::settings::SelectionProfile;
 
     use crate::ui::harness::UiTest;
     use crate::ui::plan_panel::CLEAR_SEARCH_GLYPH;
@@ -2569,10 +2559,7 @@ mod tests {
     /// either way - plain above it, warning-coloured below.
     #[test]
     fn no_row_shows_a_confidence_percentage() {
-        for confidence in [
-            AUTO_SELECT_CONFIDENCE_THRESHOLD - 1,
-            AUTO_SELECT_CONFIDENCE_THRESHOLD,
-        ] {
+        for confidence in [REVIEW_CONFIDENCE_THRESHOLD - 1, REVIEW_CONFIDENCE_THRESHOLD] {
             let test = tree_of_files([confidence; 2]);
 
             assert_eq!(
@@ -2597,10 +2584,8 @@ mod tests {
     /// single mark and the mark is visibly per row rather than per tree.
     #[test]
     fn a_finding_left_unticked_carries_a_mark_that_explains_itself() {
-        let mut test = tree_of_files([
-            AUTO_SELECT_CONFIDENCE_THRESHOLD - 1,
-            AUTO_SELECT_CONFIDENCE_THRESHOLD,
-        ]);
+        let mut test =
+            tree_of_files([REVIEW_CONFIDENCE_THRESHOLD - 1, REVIEW_CONFIDENCE_THRESHOLD]);
         assert_eq!(test.count_labels("\u{26a0}"), 1, "one row is below the bar");
 
         test.hover("\u{26a0}");
@@ -2613,7 +2598,7 @@ mod tests {
     /// which would make the mark furniture.
     #[test]
     fn a_confident_finding_carries_no_mark() {
-        let test = tree_of_files([AUTO_SELECT_CONFIDENCE_THRESHOLD; 2]);
+        let test = tree_of_files([REVIEW_CONFIDENCE_THRESHOLD; 2]);
 
         assert_eq!(
             test.count_labels("\u{26a0}"),
@@ -2627,11 +2612,11 @@ mod tests {
     /// column its neighbours line up in.
     #[test]
     fn the_mark_does_not_shift_the_name_column() {
-        let marked = tree_of_files([AUTO_SELECT_CONFIDENCE_THRESHOLD - 1; 2])
+        let marked = tree_of_files([REVIEW_CONFIDENCE_THRESHOLD - 1; 2])
             .rect_of(SEEDED_FILE_NAME)
             .min
             .x;
-        let unmarked = tree_of_files([AUTO_SELECT_CONFIDENCE_THRESHOLD; 2])
+        let unmarked = tree_of_files([REVIEW_CONFIDENCE_THRESHOLD; 2])
             .rect_of(SEEDED_FILE_NAME)
             .min
             .x;
@@ -2720,69 +2705,34 @@ mod tests {
         }
     }
 
-    /// A tree with everything checked under a named profile, so any edit is
-    /// visibly a departure from it.
-    fn tree_under_profile(profile: SelectionProfile) -> UiTest {
-        let mut test = tree_with_cursor();
-        test.app_mut().settings.selection_profile = profile;
-        test.run();
-        test
-    }
-
-    /// The picker said "Balanced" while the checkboxes had
-    /// been hand-edited into something else. `SelectionProfile::Custom` was
-    /// documented as the state for exactly this and nothing ever set it.
-    ///
-    /// Driven through the keyboard toggle specifically, because that is one
-    /// of the paths a per-call-site hook is most likely to miss - it mutates
-    /// `findings` from `handle_keyboard`, nowhere near the checkbox code.
+    /// The keyboard toggle mutates `findings` from `handle_keyboard`, nowhere
+    /// near the checkbox code, so it is the selection path most likely to be
+    /// missed when the others are changed. It used to be tested through the
+    /// selection profile it dropped to `Custom`; GT-89 removed profiles, and
+    /// what is left to assert is the thing that always mattered - the row the
+    /// cursor is on actually changes state, and changes back.
     #[test]
-    fn a_keyboard_toggle_moves_the_profile_to_custom() {
-        let mut test = tree_under_profile(SelectionProfile::Balanced);
+    fn the_keyboard_toggle_ticks_the_row_under_the_cursor() {
+        let mut test = tree_with_cursor();
+        test.run();
+        let before: Vec<bool> = test.app().findings.iter().map(|f| f.selected).collect();
 
         test.press(egui::Key::Space);
-
-        assert_eq!(
-            test.app().settings.selection_profile,
-            SelectionProfile::Custom,
-            "hand-editing the selection must stop the picker claiming a policy",
+        let after: Vec<bool> = test.app().findings.iter().map(|f| f.selected).collect();
+        assert_ne!(
+            after, before,
+            "Space on a cursor row left every checkbox where it was",
         );
-    }
 
-    /// The control: merely looking at the tree is not an edit. Without this,
-    /// the test above would also pass if the profile flipped to Custom on
-    /// every frame.
-    #[test]
-    fn navigating_without_editing_leaves_the_profile_alone() {
-        let mut test = tree_under_profile(SelectionProfile::Balanced);
-
-        test.press(egui::Key::ArrowDown);
-        test.press(egui::Key::ArrowUp);
-        test.run();
-
+        test.press(egui::Key::Space);
         assert_eq!(
-            test.app().settings.selection_profile,
-            SelectionProfile::Balanced,
-            "moving the cursor is not a selection edit",
-        );
-    }
-
-    /// Switching the profile re-checks the findings on purpose, and that must
-    /// not immediately read back as a hand-edit - otherwise picking
-    /// "Cautious" would snap straight to "Custom" on the next frame.
-    #[test]
-    fn choosing_a_profile_does_not_read_back_as_a_hand_edit() {
-        let mut test = tree_under_profile(SelectionProfile::Balanced);
-
-        test.app_mut()
-            .set_selection_profile(SelectionProfile::Cautious);
-        test.run();
-        test.run();
-
-        assert_eq!(
-            test.app().settings.selection_profile,
-            SelectionProfile::Cautious,
-            "applying a profile is not a hand-edit",
+            test.app()
+                .findings
+                .iter()
+                .map(|f| f.selected)
+                .collect::<Vec<bool>>(),
+            before,
+            "a second Space must put the row back rather than latch it",
         );
     }
 

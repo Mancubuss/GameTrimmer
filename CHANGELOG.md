@@ -68,6 +68,30 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Diagnostic logging is enabled for new installations by default, while an
   existing explicit opt-out remains respected.
 
+### Removed
+
+- Selection profiles are gone — Cautious, Balanced, Aggressive and Custom, the
+  main-window picker, the scan default in Settings, and the category table's
+  "Default profile" column with them. A finished scan now hands over a tree
+  with nothing ticked, and what gets deleted is only ever what the user ticked.
+  A profile proposed deletions under a name nobody had deliberately chosen, on
+  files the app had just decided were disposable, with the explanation one
+  dialog away.
+- The bare confidence threshold that pre-ticked findings whenever no profile
+  was set is gone for the same reason: it was an unnamed profile. The figure
+  itself survives as the review threshold — it decides which rows carry the ⚠
+  mark, and nothing else.
+- Headless deletion is gone: `--apply`, `--profile` and the `cli-apply` build
+  feature. Their only source of "what to delete" was a profile's
+  auto-selection, and an unattended run has nobody to tick anything, so the
+  new semantics leave automated deletion with no way to choose files at all.
+  The headless mode remains as a reporter (`--scan`, `--dry-run`, `--report`),
+  and unattended trimming will return under a policy that says out loud what
+  it removes.
+- `selection_profile` and `default_selection_profile` are no longer read from
+  or written to `gametrimmer.ini`. An ini that still carries them loads
+  normally; the keys are ignored and drop out on the next save.
+
 ## [1.0.0] — not yet released
 
 First public release.

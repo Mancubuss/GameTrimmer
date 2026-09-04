@@ -9,31 +9,27 @@ path = "src/main.rs"
 
 [features]
 # Enables the headless (CLI) mode as a whole - GT-10. Off by default, and off
-# in the v1 release build: the mode that shipped could not delete anything
-# (`--apply` is gated separately, see below) and, being a `windows_subsystem =
-# "windows"` exe, handed the shell its prompt back before its own output
-# arrived, so an operator was left pressing Enter at a finished-looking prompt.
-# A read-only reporter that does not return the user to their console is not
-# worth its surface area in a first release; it comes back once it works end to
-# end. Build with `--features headless` to get it now.
+# in the v1 release build: headless mode only ever reports what a scan found
+# and, being a `windows_subsystem = "windows"` exe, hands the shell its prompt
+# back before its own output arrives, so an operator was left pressing Enter
+# at a finished-looking prompt. A read-only reporter that does not return the
+# user to their console is not worth its surface area in a first release; it
+# comes back once it works end to end. Build with `--features headless` to get
+# it now.
+#
+# "Only ever reports" is not a temporary gap awaiting a future `--apply`: GT-89
+# removed selection profiles from the whole product, so a fresh scan
+# pre-selects nothing and only an explicit human tick ever selects a finding.
+# Headless mode has no human to tick anything, so it has no way to choose
+# files to delete - that is the permanent shape of the mode, not a defect.
+# Unattended deletion returns under its own explicitly named policy (board
+# card GT-EP24, "Авто-трим: unattended повторний трим після оновлення гри"),
+# not as a headless `--apply`.
 #
 # A `const` rather than `#[cfg]` on the module (see `cli::args::HEADLESS_ENABLED`):
 # the whole CLI stays compiled, type-checked and unit-tested in the default
 # build, so it cannot rot while it is switched off.
 headless = []
-
-# Enables the CLI's `--apply` flag - the only path in the whole app where
-# files are removed without a human click (GT-15). Off by default, and off in
-# the v1 release build: that path has never been run live, and there is no way
-# yet to point a scan at a single library (see the board card "GT-39 - scanning
-# a chosen library or game"), so a live rehearsal would have to delete from a
-# real game library. Verification is deferred until games can be restored
-# automatically; build with `--features cli-apply` to re-enable it.
-#
-# Implies `headless`: a flag of a mode that is switched off has nothing to
-# enable, and a build with `cli-apply` alone would advertise `--apply` in help
-# text no invocation can reach.
-cli-apply = ["headless"]
 
 [build-dependencies]
 winresource = "0.1.23"

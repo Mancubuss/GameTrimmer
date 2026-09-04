@@ -12,7 +12,7 @@ use eframe::egui;
 
 use gametrimmer_core::mftscan;
 use gametrimmer_core::settings::{
-    ConfirmBehavior, DeleteMethod, Lang, LanguagePreference, SelectionProfile, Settings, Theme,
+    ConfirmBehavior, DeleteMethod, Lang, LanguagePreference, Settings, Theme,
 };
 
 use crate::elevation;
@@ -1079,39 +1079,11 @@ impl GameTrimmerApp {
     /// Selects every non-removed finding (the "Select All" action).
     pub fn select_all(&mut self) {
         crate::deletion_controller::select_all(&mut self.findings);
-        self.mark_selection_custom();
     }
 
     /// Deselects every finding (the "Deselect All" action).
     pub fn deselect_all(&mut self) {
         crate::deletion_controller::deselect_all(&mut self.findings);
-        self.mark_selection_custom();
-    }
-
-    /// Records that the user hand-edited the selection, so the profile stops
-    /// claiming a policy the checkboxes no longer follow.
-    ///
-    /// `SelectionProfile::Custom`'s own doc comment already described it as
-    /// the state "entered when the user hand-edits the selection", but
-    /// nothing ever set it: the picker could read "Balanced" while the actual
-    /// selection had been edited row by row into something else.
-    ///
-    /// Cheap to call on every edit - it returns immediately once the profile
-    /// is already `Custom`, so only the first hand-edit after a profile
-    /// switch rewrites the ini.
-    ///
-    /// Only the live profile moves. What a *fresh scan* pre-checks lives in
-    /// `default_selection_profile` and is untouched here, so hand-editing the
-    /// tree does not quietly rewrite the setting for the next scan.
-    pub fn mark_selection_custom(&mut self) {
-        if self.settings.selection_profile == SelectionProfile::Custom {
-            return;
-        }
-        self.settings = Settings {
-            selection_profile: SelectionProfile::Custom,
-            ..self.settings.clone()
-        };
-        self.persist_settings();
     }
 
     /// Selects the currently-checked, non-removed findings and opens the
@@ -1569,78 +1541,6 @@ impl GameTrimmerApp {
         self.persist_settings();
     }
 
-    /// Switches the selection profile (selection profiles), persists it, and **re-applies**
-    /// it to the currently displayed findings without re-scanning: every
-    /// non-removed finding's checkbox is recomputed from the new profile,
-    /// overwriting any manual tweaks (the point of a profile is to be a
-    /// one-click policy). Removed items are left alone - they are already gone.
-    /// The tree is not rebuilt: its shape is independent of selection, which is
-    /// per-item state the tree reads live.
-    ///
-    /// Also becomes the scan default. Picking a profile from the main screen
-    /// is a deliberate policy choice, and before the two fields were split it
-    /// was the *only* thing a scan read - carrying it forward is what keeps
-    /// that behaviour. Hand-editing a checkbox does not
-    /// ([`Self::mark_selection_custom`] touches the live field alone): that
-    /// says something about these findings, not about the next scan.
-    pub fn set_selection_profile(&mut self, profile: SelectionProfile) {
-        if self.settings.selection_profile == profile
-            && self.settings.default_selection_profile == profile
-        {
-            return;
-        }
-        self.settings = Settings {
-            selection_profile: profile,
-            default_selection_profile: profile,
-            ..self.settings.clone()
-        };
-        self.persist_settings();
-        for item in &mut self.findings {
-            if item.removed {
-                continue;
-            }
-            item.selected = model::profile_auto_selects(
-                profile,
-                item.row.display_category(),
-                item.row.confidence,
-            ) && item.row.bulk_selectable();
-        }
-    }
-
-    /// Records the profile the freshly arrived findings already follow.
-    ///
-    /// Separate from [`Self::set_selection_profile`] because that one also
-    /// re-applies the profile to `self.findings`; here the caller has just
-    /// built them from this very profile, so re-applying would be a wasted
-    /// pass over the whole result set.
-    fn set_live_selection_profile_silently(&mut self, profile: SelectionProfile) {
-        if self.settings.selection_profile == profile {
-            return;
-        }
-        self.settings = Settings {
-            selection_profile: profile,
-            ..self.settings.clone()
-        };
-        self.persist_settings();
-    }
-
-    /// Sets the profile a **future** scan pre-selects with.
-    ///
-    /// Deliberately persist-only: unlike [`Self::set_selection_profile`] it
-    /// never touches `self.findings`, so changing it in Settings cannot look
-    /// as though it silently rewrote the checkboxes the user is looking at.
-    /// See [`Settings::default_selection_profile`].
-    pub fn set_default_selection_profile(&mut self, profile: SelectionProfile) {
-        if self.settings.default_selection_profile == profile {
-            return;
-        }
-        self.settings = Settings {
-            default_selection_profile: profile,
-            ..self.settings.clone()
-        };
-        self.persist_settings();
-    }
-
     /// Sets when the delete confirmation is shown - see [`ConfirmBehavior`]
     /// and [`Self::needs_delete_confirmation`].
     pub fn set_confirm_behavior(&mut self, behavior: ConfirmBehavior) {
@@ -1942,29 +1842,17 @@ impl GameTrimmerApp {
                 self.last_scan_timing = timing;
                 self.last_routing_breakdown = routing_breakdown;
                 let count = findings.len();
-                // selection profiles: a persisted profile decides which findings arrive
-                // pre-checked (see `model::profile_auto_selects`), not a bare
-                // confidence threshold. The *default* profile is the one that
-                // applies here - `selection_profile` describes the tree being
-                // replaced, and may well have drifted to `Custom` through
-                // hand-edits that say nothing about the new results.
-                let profile = self.settings.default_selection_profile;
-                // ... so the live profile is reset to match what was just
-                // applied, rather than left claiming the previous scan's.
-                self.set_live_selection_profile_silently(profile);
+                // GT-89: a fresh scan arrives with nothing checked. There is no
+                // profile, and no bare confidence threshold either - both were a
+                // policy the app applied on the user's behalf to findings it had
+                // just invented, and neither said so on screen. What gets deleted
+                // is now only ever what someone ticked.
                 self.findings = findings
                     .into_iter()
-                    .map(|row| {
-                        let selected = model::profile_auto_selects(
-                            profile,
-                            row.display_category(),
-                            row.confidence,
-                        ) && row.bulk_selectable();
-                        FindingItem {
-                            row,
-                            selected,
-                            removed: false,
-                        }
+                    .map(|row| FindingItem {
+                        row,
+                        selected: false,
+                        removed: false,
                     })
                     .collect();
                 self.occupancy = occupancy;
@@ -2764,83 +2652,6 @@ mod tests {
         );
     }
 
-    /// The other direction of the split. Before the two fields existed, the
-    /// main-screen picker was the only thing a scan read; that has to keep
-    /// working, or picking a profile silently stops affecting the next scan.
-    #[test]
-    fn picking_a_profile_on_the_main_screen_becomes_the_scan_default() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let mut app = app_with_one_selected_finding(dir.path(), 1);
-
-        app.set_selection_profile(SelectionProfile::Aggressive);
-
-        assert_eq!(
-            app.settings.default_selection_profile,
-            SelectionProfile::Aggressive,
-        );
-    }
-
-    /// Second of the three GT-109 exclusion points: re-applying a profile
-    /// (picking it from the main screen after findings already exist) must
-    /// never bulk-select an `imported_untrusted` row, even on `Aggressive` -
-    /// the profile most likely to hide a missing exclusion, since it selects
-    /// almost everything by category or confidence floor. `bulk_selectable()`
-    /// is the second half of the `&&` in `set_selection_profile`; this fails
-    /// if that clause is ever dropped.
-    #[test]
-    fn set_selection_profile_never_selects_an_imported_untrusted_row() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let mut app = app_with_one_selected_finding(dir.path(), 1);
-        app.findings[0].row.imported_untrusted = true;
-        app.findings[0].selected = false;
-
-        app.set_selection_profile(SelectionProfile::Aggressive);
-
-        assert!(
-            !app.findings[0].selected,
-            "an imported_untrusted row was auto-selected by re-applying Aggressive",
-        );
-    }
-
-    /// But a hand-edited checkbox says nothing about the next scan, so it
-    /// must not drag the default to `Custom` with it.
-    #[test]
-    fn hand_editing_the_tree_leaves_the_scan_default_alone() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let mut app = app_with_one_selected_finding(dir.path(), 1);
-        app.set_selection_profile(SelectionProfile::Balanced);
-
-        app.mark_selection_custom();
-
-        assert_eq!(app.settings.selection_profile, SelectionProfile::Custom);
-        assert_eq!(
-            app.settings.default_selection_profile,
-            SelectionProfile::Balanced,
-        );
-    }
-
-    /// Editing the scan default must not disturb the tree on screen: that
-    /// silent re-check is what the split into two fields exists to prevent.
-    #[test]
-    fn changing_the_scan_default_leaves_the_current_selection_alone() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let mut app = app_with_one_selected_finding(dir.path(), 1);
-        app.mark_selection_custom();
-
-        app.set_default_selection_profile(SelectionProfile::Aggressive);
-
-        assert!(app.findings[0].selected, "the tree's checkbox moved");
-        assert_eq!(
-            app.settings.selection_profile,
-            SelectionProfile::Custom,
-            "the live profile followed the scan default",
-        );
-        assert_eq!(
-            app.settings.default_selection_profile,
-            SelectionProfile::Aggressive,
-        );
-    }
-
     /// A save that touches nothing the daemon reads (theme, in this case)
     /// must not be reported as worth notifying it over - this is the
     /// property that keeps `persist_settings` from paying for a pipe round
@@ -2910,21 +2721,19 @@ mod tests {
         assert!(!watch_relevant_settings_changed(&settings, &settings));
     }
 
-    /// Third of the three GT-109 exclusion points: a fresh scan's own
-    /// `WorkerMsg::Done` handler must not bulk-select an `imported_untrusted`
-    /// row either, even under `Aggressive` (see
-    /// `set_selection_profile_never_selects_an_imported_untrusted_row` for why
-    /// that profile is the one worth testing). Drives the message through
-    /// `apply_message` exactly as `drain_messages` would from a real worker.
+    /// GT-89's whole point, and what used to be the third of GT-109's three
+    /// exclusion points: a fresh scan's `WorkerMsg::Done` handler arrives with
+    /// nothing checked. The row below is the one the old code would certainly
+    /// have pre-ticked - a 90-confidence localization finding, above the
+    /// retired threshold and inside every retired profile's category set - so
+    /// this fails the moment any selection policy creeps back in. Driven
+    /// through `apply_message` exactly as `drain_messages` would from a real
+    /// worker.
     #[test]
-    fn worker_msg_done_never_selects_an_imported_untrusted_row() {
+    fn a_fresh_scan_arrives_with_nothing_selected() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let mut app = GameTrimmerApp::new_for_test(dir.path());
         app.accept_disclaimer();
-        app.settings = Settings {
-            default_selection_profile: SelectionProfile::Aggressive,
-            ..app.settings.clone()
-        };
 
         let row = model::FindingRow {
             file_id: 1,
@@ -2941,7 +2750,7 @@ mod tests {
             lang_tag: Some("de".to_string()),
             group_dir: None,
             deletion_block_reason: None,
-            imported_untrusted: true,
+            imported_untrusted: false,
             library: None,
             anti_cheat_protected: false,
         };
@@ -2957,7 +2766,7 @@ mod tests {
         assert_eq!(app.findings.len(), 1);
         assert!(
             !app.findings[0].selected,
-            "an imported_untrusted row from a fresh scan was auto-selected by Aggressive",
+            "a fresh scan pre-checked a finding - nothing may arrive selected",
         );
     }
 }

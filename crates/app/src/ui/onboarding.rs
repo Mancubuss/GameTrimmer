@@ -134,7 +134,7 @@ fn show_content(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     // The word and the mark the main screen otherwise uses without ever
     // explaining them. Both only start mattering once there are findings on
     // screen, which is after this button has been pressed.
-    ui.label(s.onboarding_profile);
+    ui.label(s.onboarding_selection);
     ui.add_space(4.0);
     ui.label(s.onboarding_review_mark);
 
@@ -235,7 +235,7 @@ mod tests {
             s.onboarding_how_heading,
             s.onboarding_how_body,
             s.onboarding_filters_body,
-            s.onboarding_profile,
+            s.onboarding_selection,
             s.onboarding_review_mark,
             s.onboarding_safety,
         ] {
@@ -322,7 +322,7 @@ mod tests {
             s.onboarding_how_heading,
             s.onboarding_how_body,
             s.onboarding_filters_body,
-            s.onboarding_profile,
+            s.onboarding_selection,
             s.onboarding_review_mark,
         ] {
             let top = test.rect_of(label).min.y;

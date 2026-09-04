@@ -1121,9 +1121,10 @@ fn games() -> Vec<(&'static str, Vec<Case>)> {
         // It does not any more. Whether a startup video goes is the player's
         // call, and a veto answered it for them out of sight - while the reel
         // is offered at confidence 80, under
-        // `app::model::AUTO_SELECT_CONFIDENCE_THRESHOLD`, which means it is
-        // never ticked on their behalf in the first place: they see it
-        // unticked in every language and remove the ones they want gone.
+        // `app::model::REVIEW_CONFIDENCE_THRESHOLD`, so it arrives marked as a
+        // judgement call - and, since GT-89, unticked like every other finding:
+        // they see it unticked in every language and remove the ones they want
+        // gone.
         // English here is the copy that actually plays for a user keeping
         // English, and it is offered like all the others.
         (

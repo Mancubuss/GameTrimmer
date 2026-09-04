@@ -16,7 +16,6 @@ pub use gametrimmer_core::worker::{
 };
 
 use gametrimmer_core::orphans::OrphanKind;
-use gametrimmer_core::settings::SelectionProfile;
 
 /// Which game library a finding came from: the launcher that owns the library
 /// and the library's root directory.
@@ -92,8 +91,8 @@ pub struct FindingRow {
     /// this at execution time; the UI uses it only to explain and disable the
     /// selection affordance early.
     pub deletion_block_reason: Option<String>,
-    /// Imported community rules are visible and manually selectable, but no
-    /// profile may preselect them until the user has reviewed the finding.
+    /// Imported community rules are visible and manually selectable, but bulk
+    /// selection never takes them until the user has reviewed the finding.
     pub imported_untrusted: bool,
     /// The library this row came from (see [`LibraryOrigin`]). `None` when the
     /// row cannot be attributed to one - a row from a database written before
@@ -123,8 +122,8 @@ impl FindingRow {
         self.deletion_block_reason.is_none()
     }
 
-    /// A row may be taken by *bulk* selection (select-all, profile
-    /// auto-select) only when nothing blocks its deletion and its safety
+    /// A row may be taken by *bulk* selection (select-all and friends) only
+    /// when nothing blocks its deletion and its safety
     /// evidence came from this scan. `imported_untrusted` rows carry evidence
     /// an older database supplied and this scan never re-checked, so they
     /// must be ticked one at a time, deliberately.
@@ -289,28 +288,27 @@ pub fn is_real_game(game_id: i64) -> bool {
 }
 
 /// Default confidence for an [`OrphanKind::UnmanagedFolder`] finding: a folder
-/// in the launcher's managed area with no matching manifest. Deliberately
-/// below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] so orphaned residue is shown but
-/// never auto-selected - a game installed *past* the launcher (portable,
-/// repack, manual copy) would otherwise be a false positive the user must
-/// opt into deleting, not have pre-checked.
+/// in the launcher's managed area with no matching manifest. Deliberately low:
+/// a game installed *past* the launcher (portable, repack, manual copy) lands
+/// here as a false positive, so the figure has to read as "look at this"
+/// rather than "this is settled". Since GT-89 nothing is pre-selected at all,
+/// so the number is a review signal now, not a selection gate.
 pub const ORPHAN_UNMANAGED_CONFIDENCE: u8 = 60;
 
 /// Default confidence for an [`OrphanKind::ServiceFolder`] finding (e.g.
 /// `steamapps/downloading` - aborted/partial depot downloads). Safer than an
 /// unmanaged folder (it is pure scratch space the launcher itself treats as
-/// disposable), but still kept below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] so
-/// the whole orphan category stays out of the default selection.
+/// disposable), but still kept in the review band with the rest of the orphan
+/// category rather than up among the settled findings.
 pub const ORPHAN_SERVICE_CONFIDENCE: u8 = 80;
 
 /// Default confidence for an [`OrphanKind::UnreferencedFile`] finding (e.g.
 /// Steam's `depotcache/*.manifest` - GT-23): a single file proven
 /// unreferenced by an explicit per-item cross-check (every installed app's
 /// own declared dependencies), stronger evidence than the plain
-/// existence-only [`OrphanKind::ServiceFolder`] sweep. Still kept below
-/// [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] - the whole orphan category stays out
-/// of the default selection regardless of how the evidence for one kind was
-/// gathered.
+/// existence-only [`OrphanKind::ServiceFolder`] sweep. Still kept in the
+/// review band with the rest of the orphan category, regardless of how the
+/// evidence for one kind was gathered.
 pub const ORPHAN_UNREFERENCED_FILE_CONFIDENCE: u8 = 75;
 
 /// Default confidence for an [`OrphanKind::WorkshopItem`] finding (GT-187): a
@@ -319,8 +317,8 @@ pub const ORPHAN_UNREFERENCED_FILE_CONFIDENCE: u8 = 75;
 /// [`ORPHAN_UNMANAGED_CONFIDENCE`], and for a stricter reason than the
 /// evidence alone would suggest: a mod is content the user chose and can want
 /// back, and Steam re-subscribing writes the folder again behind the app's
-/// back, so this stays below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] and is never
-/// pre-ticked. It carries the `Review` badge for the same reason.
+/// back, so this stays in the review band. It carries the `Review` badge for
+/// the same reason.
 pub const ORPHAN_WORKSHOP_ITEM_CONFIDENCE: u8 = 60;
 
 /// The confidence [`FindingSource::Orphan`] carries for a given kind.
@@ -418,67 +416,15 @@ pub fn category_display(lang: crate::i18n::Lang, category: DisplayCategory) -> &
     }
 }
 
-/// Default selection policy: auto-select only high-confidence
-/// findings; lower-confidence ones are shown but left for the user to opt in.
-/// This is the [`SelectionProfile::Custom`] policy - the confidence-only path.
-pub const AUTO_SELECT_CONFIDENCE_THRESHOLD: u8 = 85;
-
-pub fn default_selected(confidence: u8) -> bool {
-    confidence >= AUTO_SELECT_CONFIDENCE_THRESHOLD
-}
-
-/// The confidence floor [`SelectionProfile::Aggressive`] adds on top of the
-/// safe categories: any finding at or above it is pre-selected regardless of
-/// its category. Set below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`] on purpose -
-/// "aggressive" reaches lower than the cautious default, pulling in the
-/// mid-confidence rule findings (70-84) the `Custom` path leaves unchecked.
-pub const AGGRESSIVE_CONFIDENCE_FLOOR: u8 = 70;
-
-/// Whether a finding in `category` with `confidence` is pre-selected under
-/// `profile` (selection profiles). A pure policy over already-scanned findings, so switching
-/// profiles re-selects without re-scanning. Orthogonal to [`category_enabled`],
-/// which decides what is scanned in the first place.
+/// Confidence below which a finding carries the `Review` mark in the tree:
+/// the evidence is good enough to show the row, not good enough to read as
+/// settled.
 ///
-/// The "safe" categories - [`DisplayCategory::Bonus`], [`DisplayCategory::Docs`],
-/// [`DisplayCategory::Orphan`] - are the residue a launcher will not restore on
-/// its own. `Cautious` selects exactly those (at any confidence); `Balanced`
-/// adds [`DisplayCategory::Loc`] (localization files only ever exist for
-/// languages already outside the keep-list); `Aggressive` additionally selects
-/// anything at or above [`AGGRESSIVE_CONFIDENCE_FLOOR`]; `Custom` defers to the
-/// plain confidence threshold ([`default_selected`]).
-///
-/// Note (orphan-residue safety): unlike the confidence-threshold path, a profile *can*
-/// pre-select orphaned residue - by the user's explicit choice of a profile
-/// that includes the `Orphan` category. The orphan confidences deliberately
-/// stay below [`AUTO_SELECT_CONFIDENCE_THRESHOLD`], so the `Custom` (and any
-/// bare-confidence) path still never auto-selects them; the safety contract is
-/// now scoped to that path rather than to every possible selection policy.
-pub fn profile_auto_selects(
-    profile: SelectionProfile,
-    category: DisplayCategory,
-    confidence: u8,
-) -> bool {
-    let is_safe_category = matches!(
-        category,
-        DisplayCategory::Bonus | DisplayCategory::Docs | DisplayCategory::Orphan
-    );
-    match profile {
-        SelectionProfile::Cautious => is_safe_category,
-        // Intro is deliberately absent here: unlike Bonus/Docs/Loc, a false
-        // positive on an intro rule destroys a unique video with nothing to
-        // re-download it from (see `RiskLevel::Low` on `DisplayCategory::Intro`
-        // below), so the default profile leaves it for the user to opt into
-        // rather than pre-checking it at any confidence.
-        SelectionProfile::Balanced => is_safe_category || category == DisplayCategory::Loc,
-        SelectionProfile::Aggressive => {
-            is_safe_category
-                || category == DisplayCategory::Loc
-                || category == DisplayCategory::Intro
-                || confidence >= AGGRESSIVE_CONFIDENCE_FLOOR
-        }
-        SelectionProfile::Custom => default_selected(confidence),
-    }
-}
+/// The figure is 85 because it used to be two things at once - the mark, and
+/// the threshold at which a scan silently ticked the row for the user. GT-89
+/// removed the second job: nothing is pre-selected now, by any policy. What
+/// is left is a reading aid, which is why the name says so.
+pub const REVIEW_CONFIDENCE_THRESHOLD: u8 = 85;
 
 /// Coarse deletion-risk band shown on a [`PlanCard`] (plan-action filtering). Deliberately a
 /// small curated scale, *not* derived from a finding's raw `confidence`: the
@@ -1711,7 +1657,7 @@ mod tests {
                 library: None,
                 anti_cheat_protected: false,
             },
-            selected: default_selected(confidence),
+            selected: false,
             removed: false,
         }
     }
@@ -2735,21 +2681,6 @@ mod tests {
     }
 
     #[test]
-    fn orphan_confidence_is_below_auto_select_threshold_for_every_kind() {
-        // The orphan-residue safety contract: orphaned residue is shown but never
-        // auto-selected, so a game installed past the launcher can't be
-        // pre-checked for deletion. Enforced purely through confidence.
-        for kind in [
-            OrphanKind::UnmanagedFolder,
-            OrphanKind::ServiceFolder,
-            OrphanKind::UnreferencedFile,
-        ] {
-            assert!(orphan_confidence(kind) < AUTO_SELECT_CONFIDENCE_THRESHOLD);
-            assert!(!default_selected(orphan_confidence(kind)));
-        }
-    }
-
-    #[test]
     fn build_tree_merges_orphans_into_one_pseudo_game_per_disk() {
         // Two leftovers in different containers on the same disk, plus a real
         // game on that disk. The orphans must collapse into a single
@@ -2832,159 +2763,6 @@ mod tests {
                 .any(|game| is_orphan_branch(game.game_id)),
             "the D: leftover forms its own orphan branch on its own disk"
         );
-    }
-
-    #[test]
-    fn default_selected_applies_confidence_threshold() {
-        assert!(default_selected(85));
-        assert!(default_selected(95));
-        assert!(!default_selected(84));
-    }
-
-    #[test]
-    fn cautious_profile_selects_only_launcher_wont_restore_categories() {
-        use DisplayCategory::*;
-        // Bonus / Docs / Orphan at ANY confidence - the "safe" residue.
-        for category in [Bonus, Docs, Orphan] {
-            assert!(profile_auto_selects(
-                SelectionProfile::Cautious,
-                category,
-                10
-            ));
-            assert!(profile_auto_selects(
-                SelectionProfile::Cautious,
-                category,
-                95
-            ));
-        }
-        // Everything else is left unchecked, even at high confidence.
-        for category in [Loc, Intro, Redist, DevLeftovers] {
-            assert!(!profile_auto_selects(
-                SelectionProfile::Cautious,
-                category,
-                95
-            ));
-        }
-    }
-
-    #[test]
-    fn balanced_profile_adds_localization_to_cautious() {
-        use DisplayCategory::*;
-        // Everything Cautious selects, plus Loc at any confidence.
-        for category in [Bonus, Docs, Orphan, Loc] {
-            assert!(profile_auto_selects(
-                SelectionProfile::Balanced,
-                category,
-                10
-            ));
-        }
-        // Still leaves redistributables and dev leftovers for the user.
-        assert!(!profile_auto_selects(
-            SelectionProfile::Balanced,
-            Redist,
-            95
-        ));
-        assert!(!profile_auto_selects(
-            SelectionProfile::Balanced,
-            DevLeftovers,
-            95
-        ));
-    }
-
-    /// The bug this guards against: a false-positive intro match is a unique
-    /// video destroyed with no upstream copy, yet `Balanced` - the default
-    /// profile - used to auto-select it at *any* confidence, same as the
-    /// re-downloadable categories. Not even a maximal confidence should tick
-    /// it under the default profile; only `Aggressive`, an explicit user
-    /// escalation, may.
-    #[test]
-    fn balanced_profile_never_auto_selects_intro_regardless_of_confidence() {
-        use DisplayCategory::Intro;
-        assert!(!profile_auto_selects(SelectionProfile::Balanced, Intro, 10));
-        assert!(!profile_auto_selects(
-            SelectionProfile::Balanced,
-            Intro,
-            100
-        ));
-    }
-
-    #[test]
-    fn aggressive_profile_adds_everything_at_or_above_the_floor() {
-        use DisplayCategory::*;
-        // Safe categories, Loc and Intro still selected regardless of confidence.
-        for category in [Bonus, Docs, Orphan, Loc, Intro] {
-            assert!(profile_auto_selects(
-                SelectionProfile::Aggressive,
-                category,
-                10
-            ));
-        }
-        // Redist / DevLeftovers now come in - but only at or above the floor (70).
-        assert!(profile_auto_selects(
-            SelectionProfile::Aggressive,
-            Redist,
-            AGGRESSIVE_CONFIDENCE_FLOOR
-        ));
-        assert!(profile_auto_selects(
-            SelectionProfile::Aggressive,
-            DevLeftovers,
-            90
-        ));
-        assert!(!profile_auto_selects(
-            SelectionProfile::Aggressive,
-            Redist,
-            AGGRESSIVE_CONFIDENCE_FLOOR - 1
-        ));
-    }
-
-    #[test]
-    fn custom_profile_is_the_plain_confidence_threshold() {
-        use DisplayCategory::*;
-        // Category-agnostic: matches default_selected exactly.
-        for category in [Bonus, Docs, Orphan, Loc, Intro, Redist, DevLeftovers] {
-            assert_eq!(
-                profile_auto_selects(SelectionProfile::Custom, category, 85),
-                default_selected(85)
-            );
-            assert_eq!(
-                profile_auto_selects(SelectionProfile::Custom, category, 84),
-                default_selected(84)
-            );
-        }
-    }
-
-    #[test]
-    fn only_a_profile_never_the_confidence_path_can_select_orphans() {
-        use DisplayCategory::Orphan;
-        // orphan-residue safety contract, now profile-scoped: the Custom (confidence-only) path
-        // still never auto-selects orphaned residue (its confidence is < 85)...
-        assert!(!profile_auto_selects(
-            SelectionProfile::Custom,
-            Orphan,
-            ORPHAN_UNMANAGED_CONFIDENCE
-        ));
-        assert!(!profile_auto_selects(
-            SelectionProfile::Custom,
-            Orphan,
-            ORPHAN_SERVICE_CONFIDENCE
-        ));
-        // ...but a chosen non-Custom profile may, by design (user's explicit call).
-        for profile in [
-            SelectionProfile::Cautious,
-            SelectionProfile::Balanced,
-            SelectionProfile::Aggressive,
-        ] {
-            assert!(profile_auto_selects(
-                profile,
-                Orphan,
-                ORPHAN_UNMANAGED_CONFIDENCE
-            ));
-            assert!(profile_auto_selects(
-                profile,
-                Orphan,
-                ORPHAN_SERVICE_CONFIDENCE
-            ));
-        }
     }
 
     #[test]

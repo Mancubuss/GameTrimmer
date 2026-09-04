@@ -557,10 +557,11 @@ fn add_same_name_intro_siblings(
         // pattern in `findings.rule_id` that a user auditing "why is this
         // flagged" can disprove. The confidence *is* the source's, and
         // capped there: the sweep's claim is derived from that verdict and
-        // cannot outrank it, while lowering it would drop the copy below
-        // `AUTO_SELECT_CONFIDENCE_THRESHOLD` and leave it unticked - which
-        // is the GT-206 bug again, the logo still playing out of the copy
-        // nobody stubbed.
+        // cannot outrank it, while lowering it would drop the copy under
+        // `REVIEW_CONFIDENCE_THRESHOLD` and mark it as the weaker guess of the
+        // two, when it is the same verdict about the same reel - and a row a
+        // player skips over is the GT-206 bug again, the logo still playing out
+        // of the copy nobody stubbed.
         let mut swept = combined[position].1.clone();
         swept.rule_id = crate::scanner::SIBLING_FINDING_DESC.to_string();
         combined.push((sibling, swept));

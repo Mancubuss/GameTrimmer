@@ -8,9 +8,8 @@
 //! * The keep-list is chips plus a search box rather than 36 checkboxes in a
 //!   wrapped block. Only the kept languages are on screen; the rest
 //!   are one search away.
-//! * Categories are a table with a risk column and what the default profile
-//!   does with each, instead of bare checkboxes that said nothing about what
-//!   turning one off would cost.
+//! * Categories are a table with a risk column, instead of bare checkboxes
+//!   that said nothing about what turning one off would cost.
 //! * The last remaining language or category renders **disabled with a
 //!   reason on hover** instead of accepting the click and silently reverting
 //!   it. A control that ignores you reads as broken; one that explains
@@ -418,24 +417,21 @@ fn keep_language_candidates<'a>(kept: &[String], query: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// The category table: what is scanned, what removing it risks, and whether
-/// the default profile would pre-select it.
+/// The category table: what is scanned, and what removing it risks.
 fn show_categories(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
     let lang = app.lang();
     let s = i18n::strings(lang);
     super::row_heading(ui, s.categories_label, s.badge_next_scan);
 
     let mut picked = app.settings.enabled_categories.clone();
-    let default_profile = app.settings.default_selection_profile;
 
     ui.add_enabled_ui(!app.busy, |ui| {
         egui::Grid::new("gt_settings_categories_grid")
-            .num_columns(3)
+            .num_columns(2)
             .striped(true)
             .show(ui, |ui| {
                 ui.strong(s.categories_table_header_category);
                 ui.strong(s.categories_table_header_risk);
-                ui.strong(s.categories_table_header_profile_behavior);
                 ui.end_row();
 
                 for category in CATEGORY_ORDER {
@@ -459,18 +455,6 @@ fn show_categories(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
                     }
 
                     ui.label(i18n::risk_level_bare_label(lang, category_risk(category)));
-
-                    // A best-case (confidence 100) projection: `Aggressive`
-                    // and `Custom` also key off each file's own confidence,
-                    // so this answers "can this profile ever pre-select the
-                    // category", not "always will".
-                    ui.label(
-                        if model::profile_auto_selects(default_profile, category, 100) {
-                            s.profile_behavior_auto
-                        } else {
-                            s.profile_behavior_manual
-                        },
-                    );
                     ui.end_row();
                 }
             });
@@ -672,24 +656,17 @@ mod tests {
     }
 
     #[test]
-    fn the_category_table_has_a_row_per_category_with_risk_and_profile_behaviour() {
+    fn the_category_table_has_a_row_per_category_with_its_risk() {
         let test = open_scanning();
         let s = test.strings();
         let lang = test.app().lang();
 
         test.assert_label(s.categories_table_header_category);
         test.assert_label(s.categories_table_header_risk);
-        test.assert_label(s.categories_table_header_profile_behavior);
 
         for category in CATEGORY_ORDER {
             test.assert_label(category_display(lang, category));
         }
-        assert_eq!(
-            test.count_labels(s.profile_behavior_auto)
-                + test.count_labels(s.profile_behavior_manual),
-            CATEGORY_ORDER.len(),
-            "every category row must say what the default profile does with it",
-        );
     }
 
     /// The keep-list shows what is kept, not all 36 languages at once.

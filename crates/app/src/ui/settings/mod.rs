@@ -301,7 +301,7 @@ mod tests {
         match section {
             SettingsSection::General => s.app_language_label,
             SettingsSection::Scanning => s.libraries_header,
-            SettingsSection::Selection => s.default_profile_label,
+            SettingsSection::Selection => s.delete_method_label,
             SettingsSection::Rules => s.rules_pack_category_label,
             SettingsSection::Data => s.db_path_label,
         }

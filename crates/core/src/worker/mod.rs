@@ -606,8 +606,9 @@ mod keep_language_veto_tests {
     /// The attract reel used to, and was the only one. It stopped because
     /// which startup videos a player wants is the player's call, not the
     /// pack's: the reel is offered at confidence 80 - under
-    /// `app::model::AUTO_SELECT_CONFIDENCE_THRESHOLD`, so never ticked on the
-    /// user's behalf - and a player who wants to keep the one in their own
+    /// `app::model::REVIEW_CONFIDENCE_THRESHOLD`, so it arrives marked as worth
+    /// a look, and (since GT-89) unticked like everything else - and a player
+    /// who wants to keep the one in their own
     /// language keeps it by leaving the box alone, or permanently by the
     /// "never touch this" exception. A keep-language veto took that decision
     /// away from them instead, and did it invisibly.

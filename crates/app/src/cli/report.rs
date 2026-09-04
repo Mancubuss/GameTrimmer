@@ -7,10 +7,15 @@
 //! Category labels use the stable English keys (`model::category_ui_key`)
 //! rather than the localized display names, so a report parsed by a script or
 //! diffed across runs does not shift with the UI language.
+//!
+//! GT-89 removed selection profiles and `--apply` from headless mode: a fresh
+//! scan pre-selects nothing, and headless mode has no human to tick anything,
+//! so it only ever reports what a scan found. There is no "selected"
+//! sub-total and no apply result any more - a report that still printed
+//! "0 selected" on every run would be exactly the silence this project treats
+//! as a bug (a real count vs. a permanently-zero one look identical, and only
+//! one of them means "working as designed").
 
-use gametrimmer_core::settings::{DeleteMethod, SelectionProfile};
-
-use super::args::Mode;
 use crate::i18n::Lang;
 use crate::model::{category_ui_key, format_size, PlanCard, RiskLevel};
 
@@ -22,33 +27,12 @@ pub const EXIT_USAGE: u8 = 1;
 /// A runtime failure: no libraries found, a database/scan error, the report
 /// could not be written.
 pub const EXIT_RUNTIME: u8 = 2;
-/// An `--apply` run completed but some files could not be removed.
-pub const EXIT_PARTIAL: u8 = 3;
-
-/// The reclaim outcome of an `--apply` run, mirrored from
-/// [`crate::worker::delete::SpaceTally`] plus per-file success/failure counts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApplyReport {
-    pub method: DeleteMethod,
-    /// Sum of on-disk sizes of everything that was queued for removal.
-    pub expected: u64,
-    /// Freed immediately (permanent deletes + over-quota recycles).
-    pub freed: u64,
-    /// Moved to the Recycle Bin - frees only once the bin is emptied.
-    pub recycled_pending: u64,
-    pub succeeded: usize,
-    pub failed: usize,
-}
 
 /// Everything a headless run computed, ready to render. Precomputing this
 /// (rather than passing the raw findings) keeps [`format_report`] a pure,
 /// trivially-testable string builder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportData {
-    pub mode: Mode,
-    /// The profile that actually decided the selection (already resolved from
-    /// settings when the CLI left it implicit).
-    pub profile: SelectionProfile,
     pub elevated: bool,
     /// The scanner's own one-line summary (MFT vs walkdir counts, elapsed).
     pub scan_summary: String,
@@ -56,27 +40,6 @@ pub struct ReportData {
     /// least-risky first.
     pub cards: Vec<PlanCard>,
     pub total_findings: usize,
-    /// How many findings the profile pre-selected for removal.
-    pub selected_count: usize,
-    /// On-disk total of the pre-selected findings.
-    pub selected_size_on_disk: u64,
-    /// Findings the profile would otherwise select but the safety contract
-    /// keeps read-only, rendered with their local blocking reason.
-    pub blocked: Vec<String>,
-    /// Present only for [`Mode::Apply`], after the delete ran.
-    pub apply: Option<ApplyReport>,
-}
-
-impl ReportData {
-    /// The process exit code this outcome maps to: partial success when an
-    /// apply left files behind, OK otherwise. (Usage and runtime errors are
-    /// returned by the entry point before a `ReportData` is ever built.)
-    pub fn exit_code(&self) -> u8 {
-        match &self.apply {
-            Some(apply) if apply.failed > 0 => EXIT_PARTIAL,
-            _ => EXIT_OK,
-        }
-    }
 }
 
 /// Stable English label for a risk band (the report is not localized).
@@ -88,34 +51,6 @@ fn risk_label(risk: RiskLevel) -> &'static str {
     }
 }
 
-fn mode_label(mode: Mode) -> &'static str {
-    match mode {
-        Mode::DryRun => "dry-run (no files deleted)",
-        Mode::Apply => "apply (files deleted)",
-    }
-}
-
-/// Closing line of a dry run. It must not advertise `--apply` in a build that
-/// refuses the flag (apply-feature gating): `--help` states the flag is absent, and a report
-/// telling the same operator to "re-run with --apply" in the same breath reads
-/// as a broken build rather than a deliberate omission.
-fn dry_run_footer() -> &'static str {
-    if super::args::APPLY_ENABLED {
-        "\nDry run: nothing was deleted. Re-run with --apply --profile <name> to remove \
-         the selected findings.\n"
-    } else {
-        "\nDry run: nothing was deleted. This build has no deletion flag at all - headless \
-         runs only ever report; remove the findings from the graphical app.\n"
-    }
-}
-
-fn method_label(method: DeleteMethod) -> &'static str {
-    match method {
-        DeleteMethod::Permanent => "permanent delete",
-        DeleteMethod::RecycleBin => "recycle bin",
-    }
-}
-
 /// Renders a full text report. `lang` governs only the size-unit suffixes
 /// (via [`format_size`]); every label is fixed English for stable, scriptable
 /// output.
@@ -123,8 +58,6 @@ pub fn format_report(data: &ReportData, lang: Lang) -> String {
     let mut out = String::new();
     out.push_str("GameTrimmer headless report\n");
     out.push_str("===========================\n");
-    out.push_str(&format!("mode:     {}\n", mode_label(data.mode)));
-    out.push_str(&format!("profile:  {}\n", data.profile.as_str()));
     out.push_str(&format!("elevated: {}\n", data.elevated));
     out.push_str(&format!("scan:     {}\n", data.scan_summary));
     out.push('\n');
@@ -133,12 +66,6 @@ pub fn format_report(data: &ReportData, lang: Lang) -> String {
         "Findings by category ({} total):\n",
         data.total_findings
     ));
-    if !data.blocked.is_empty() {
-        out.push_str("Blocked by deletion safety:\n");
-        for blocked in &data.blocked {
-            out.push_str(&format!("  - {blocked}\n"));
-        }
-    }
     if data.cards.is_empty() {
         out.push_str("  (none)\n");
     } else {
@@ -153,43 +80,11 @@ pub fn format_report(data: &ReportData, lang: Lang) -> String {
             ));
         }
     }
-    out.push('\n');
 
-    out.push_str(&format!(
-        "Selected by profile \"{}\": {} finding(s), {}\n",
-        data.profile.as_str(),
-        data.selected_count,
-        format_size(lang, data.selected_size_on_disk),
-    ));
-
-    match &data.apply {
-        None => {
-            out.push_str(dry_run_footer());
-        }
-        Some(apply) => {
-            out.push('\n');
-            out.push_str("Apply result:\n");
-            out.push_str(&format!(
-                "  method:          {}\n",
-                method_label(apply.method)
-            ));
-            out.push_str(&format!("  removed:         {} file(s)\n", apply.succeeded));
-            if apply.failed > 0 {
-                out.push_str(&format!("  failed:          {} file(s)\n", apply.failed));
-            }
-            out.push_str(&format!(
-                "  freed now:       {} (of {} expected)\n",
-                format_size(lang, apply.freed),
-                format_size(lang, apply.expected),
-            ));
-            if apply.recycled_pending > 0 {
-                out.push_str(&format!(
-                    "  in recycle bin:  {} (frees when the bin is emptied)\n",
-                    format_size(lang, apply.recycled_pending),
-                ));
-            }
-        }
-    }
+    out.push_str(
+        "\nNothing was deleted or selected: headless mode only reports what a scan found. \
+         Open the graphical app to review and tick individual findings for removal.\n",
+    );
 
     out
 }
@@ -209,10 +104,8 @@ mod tests {
         }
     }
 
-    fn dry_run_data() -> ReportData {
+    fn report_data() -> ReportData {
         ReportData {
-            mode: Mode::DryRun,
-            profile: SelectionProfile::Balanced,
             elevated: true,
             scan_summary: "12 via MFT, 3 via walkdir, 4.2s".to_string(),
             cards: vec![
@@ -220,114 +113,36 @@ mod tests {
                 card(DisplayCategory::Loc, 87 * 1024 * 1024, 230, 23),
             ],
             total_findings: 235,
-            selected_count: 235,
-            selected_size_on_disk: 41 * 1024 * 1024 * 1024 + 87 * 1024 * 1024,
-            blocked: Vec::new(),
-            apply: None,
         }
     }
 
     #[test]
-    fn dry_run_report_names_mode_profile_and_selection() {
-        let text = format_report(&dry_run_data(), Lang::En);
-        assert!(text.contains("mode:     dry-run"), "{text}");
-        assert!(text.contains("profile:  balanced"), "{text}");
+    fn report_names_scan_summary_and_categories() {
+        let text = format_report(&report_data(), Lang::En);
+        assert!(text.contains("elevated: true"), "{text}");
         assert!(text.contains("orphan"), "{text}");
         assert!(text.contains("risk=none"), "{text}");
-        assert!(
-            text.contains("Selected by profile \"balanced\": 235 finding(s)"),
-            "{text}"
-        );
-        // A dry run must make it explicit that nothing was removed.
-        assert!(text.contains("nothing was deleted"), "{text}");
+        assert!(text.contains("235 total"), "{text}");
+    }
+
+    /// The report must never claim anything was deleted or selected: headless
+    /// mode has no `--apply` any more (GT-89), so a script grepping this
+    /// output for a deletion outcome should find none.
+    #[test]
+    fn report_states_nothing_was_deleted_or_selected() {
+        let text = format_report(&report_data(), Lang::En);
+        assert!(text.contains("Nothing was deleted or selected"), "{text}");
         assert!(!text.contains("Apply result"), "{text}");
-    }
-
-    /// The dry-run footer and `--help` must agree about whether this build
-    /// takes `--apply` (MT-T03): the shipped v1 build says "not part of this
-    /// build" in the help, so its report must not tell the same operator to
-    /// re-run with the flag.
-    #[test]
-    fn dry_run_footer_matches_what_the_build_actually_accepts() {
-        let text = format_report(&dry_run_data(), Lang::En);
-        assert_eq!(
-            text.contains("--apply"),
-            super::super::args::APPLY_ENABLED,
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn dry_run_exit_code_is_ok() {
-        assert_eq!(dry_run_data().exit_code(), EXIT_OK);
-    }
-
-    #[test]
-    fn apply_report_shows_freed_versus_expected() {
-        let mut data = dry_run_data();
-        data.mode = Mode::Apply;
-        data.apply = Some(ApplyReport {
-            method: DeleteMethod::Permanent,
-            expected: 10 * 1024 * 1024,
-            freed: 10 * 1024 * 1024,
-            recycled_pending: 0,
-            succeeded: 235,
-            failed: 0,
-        });
-        let text = format_report(&data, Lang::En);
-        assert!(text.contains("Apply result"), "{text}");
-        assert!(text.contains("method:          permanent delete"), "{text}");
-        assert!(text.contains("removed:         235 file(s)"), "{text}");
-        assert!(text.contains("freed now:"), "{text}");
-        assert!(
-            !text.contains("failed:"),
-            "no failures line when none failed: {text}"
-        );
-        assert_eq!(data.exit_code(), EXIT_OK);
-    }
-
-    #[test]
-    fn apply_with_failures_reports_partial_and_exit_code() {
-        let mut data = dry_run_data();
-        data.mode = Mode::Apply;
-        data.apply = Some(ApplyReport {
-            method: DeleteMethod::Permanent,
-            expected: 10 * 1024 * 1024,
-            freed: 6 * 1024 * 1024,
-            recycled_pending: 0,
-            succeeded: 200,
-            failed: 35,
-        });
-        let text = format_report(&data, Lang::En);
-        assert!(text.contains("failed:          35 file(s)"), "{text}");
-        assert_eq!(data.exit_code(), EXIT_PARTIAL);
-    }
-
-    #[test]
-    fn recycle_apply_reports_pending_space() {
-        let mut data = dry_run_data();
-        data.mode = Mode::Apply;
-        data.apply = Some(ApplyReport {
-            method: DeleteMethod::RecycleBin,
-            expected: 8 * 1024 * 1024,
-            freed: 0,
-            recycled_pending: 8 * 1024 * 1024,
-            succeeded: 235,
-            failed: 0,
-        });
-        let text = format_report(&data, Lang::En);
-        assert!(text.contains("method:          recycle bin"), "{text}");
-        assert!(text.contains("in recycle bin:"), "{text}");
+        assert!(!text.contains("Selected by profile"), "{text}");
     }
 
     #[test]
     fn empty_findings_report_says_none() {
-        let mut data = dry_run_data();
+        let mut data = report_data();
         data.cards.clear();
         data.total_findings = 0;
-        data.selected_count = 0;
-        data.selected_size_on_disk = 0;
         let text = format_report(&data, Lang::En);
         assert!(text.contains("(none)"), "{text}");
+        assert!(text.contains("0 total"), "{text}");
     }
 }

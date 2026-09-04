@@ -348,8 +348,9 @@ pub struct Rule {
     /// `Attract01_French.bik`. It gave the flag up because a keep-language
     /// veto answers "do I want this startup video gone" on the player's
     /// behalf and without telling them, while the reel is already offered
-    /// below `app::model::AUTO_SELECT_CONFIDENCE_THRESHOLD` - shown unticked,
-    /// removed only if the player ticks it, kept for good by a personal
+    /// under `app::model::REVIEW_CONFIDENCE_THRESHOLD`, so it arrives carrying
+    /// the review mark - and, like everything else since GT-89, unticked. It
+    /// is removed only if the player ticks it, and kept for good by a personal
     /// exception if they would rather never see it proposed again. Which
     /// startup screens go is not a decision a shipped pack should be making
     /// out of the player's sight.
