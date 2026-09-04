@@ -81,7 +81,17 @@ impl Descriptions {
         // sides of the mapping are rebuilt from the title here. This is what
         // storing 649 titles buys instead of 935 pairs of sentences: the same
         // translation, from a twentieth of the text.
-        if let Ok(reference) = gametrimmer_core::reference::GameReference::builtin() {
+        if let Ok(mut reference) = gametrimmer_core::reference::GameReference::builtin() {
+            // The installed catalogue too, or its findings would be the only
+            // rows in the window left untranslated.
+            if let Some(path) = super::installed_reference_path() {
+                if let Ok(installed) = gametrimmer_core::reference::GameReference::load_installed_in(
+                    &path,
+                    gametrimmer_core::localized::DEFAULT_LANG,
+                ) {
+                    reference.absorb(installed);
+                }
+            }
             rules.extend(reference.entries().map(|(title, source)| {
                 (
                     gametrimmer_core::reference::intro_desc(

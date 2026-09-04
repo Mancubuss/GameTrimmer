@@ -216,17 +216,40 @@ fn run_scan(
     // absent on every normal install, and folded on top of the built-ins
     // when someone puts one there (see `docs/rules-packs.md`).
     //
-    // The per-game catalogue rides along with them: it is shipped data too
-    // (`core::reference`), just kept as a table instead of as ~950 more
-    // patterns. Both are validated by core tests, so either error here is
-    // unreachable short of a broken build - and both are reported as the
-    // built-in rules being corrupt, because from where the user stands that
-    // is what they are.
-    let mut engine = match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON)
-        .and_then(|engine| {
-            Ok(engine.with_reference(gametrimmer_core::reference::GameReference::builtin()?))
-        }) {
-        Ok(engine) => engine,
+    // The built-in per-game catalogue rides along with them: shipped data too
+    // (`core::reference`), just kept as a table instead of as more patterns.
+    // Both are validated by core tests, so either error here is unreachable
+    // short of a broken build - and both are reported as the built-in rules
+    // being corrupt, because from where the user stands that is what they are.
+    let mut reference = match gametrimmer_core::reference::GameReference::builtin() {
+        Ok(reference) => reference,
+        Err(err) => {
+            notifier.report_error(i18n::Reported::new(lang, |l| {
+                i18n::builtin_rules_corrupted(l, &err)
+            }));
+            return;
+        }
+    };
+
+    // A catalogue the user installed extends it. This is the whole opt-in:
+    // the file is in effect because someone put it there, and a scan without
+    // one is the normal case rather than a degraded one. A file that does not
+    // parse is reported and skipped - refusing to scan because an optional
+    // extra is malformed would be a worse answer than scanning without it,
+    // but it must be *said*, because "the games I installed a catalogue for
+    // are not being found" is otherwise indistinguishable from the app
+    // ignoring the file.
+    if let Some(path) = super::installed_reference_path() {
+        match gametrimmer_core::reference::GameReference::load_installed_in(&path, "en") {
+            Ok(installed) => reference.absorb(installed),
+            Err(err) => notifier.report_warning(i18n::Reported::new(lang, |l| {
+                i18n::installed_reference_load_failed(l, &err)
+            })),
+        }
+    }
+
+    let mut engine = match RuleEngine::from_json(gametrimmer_core::rules::BUILTIN_RULES_JSON) {
+        Ok(engine) => engine.with_reference(reference),
         Err(err) => {
             notifier.report_error(i18n::Reported::new(lang, |l| {
                 i18n::builtin_rules_corrupted(l, &err)

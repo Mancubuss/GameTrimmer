@@ -27,6 +27,15 @@ const LOG_FILE_NAME: &str = "gametrimmer.log";
 pub(crate) const RULES_FILE_NAME: &str = "rules.json";
 /// Localization-detector data pack (community rules).
 pub const L10N_RULES_FILE_NAME: &str = "l10n_rules.json";
+/// A per-game catalogue the user installed - see
+/// [`gametrimmer_core::reference`].
+///
+/// Named for what it is rather than for what it holds today, and named the
+/// same as the file a catalogue project publishes, so installing one is
+/// "copy this file here" with no rename and no doubt about which file is
+/// meant. The table is built to gain columns; `intros.json` would have
+/// promised it never will.
+pub(crate) const GAME_REFERENCE_FILE_NAME: &str = "game_reference.json";
 /// This machine's own exceptions - the files its owner has said never to
 /// touch, one keep rule each (see
 /// [`gametrimmer_core::rules::RulePolarity::Keep`]).
@@ -350,6 +359,18 @@ pub fn l10n_rules_path() -> io::Result<PathBuf> {
 /// `None` means "run on the built-ins alone", which is the normal case and
 /// not a failure - an executable directory that cannot even be resolved
 /// says the same thing.
+/// The per-game catalogue a user installed, if one is actually lying next to
+/// the executable.
+///
+/// Same opt-in as [`overlay_pack_path`] and deliberately not routed through
+/// `PackKind`: a catalogue is not a rule pack, does not merge like one, and
+/// has no personal or importable variant to distinguish. One file, one
+/// question, one answer.
+pub fn installed_reference_path() -> Option<PathBuf> {
+    let path = exe_dir().ok()?.join(GAME_REFERENCE_FILE_NAME);
+    path.is_file().then_some(path)
+}
+
 pub fn overlay_pack_path(kind: gametrimmer_core::packs::PackKind) -> Option<PathBuf> {
     let path = match kind {
         gametrimmer_core::packs::PackKind::CategoryRules => rules_path(),

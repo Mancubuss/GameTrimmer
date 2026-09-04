@@ -256,6 +256,20 @@ pub fn builtin_rules_corrupted(lang: Lang, err: impl std::fmt::Display) -> Strin
     }
 }
 
+/// An installed per-game catalogue that could not be read or parsed.
+///
+/// Says what was lost, not just what failed: without this line, "the games I
+/// installed a catalogue for are not being found" looks exactly like the app
+/// having ignored the file, and the user has no way to tell which.
+pub fn installed_reference_load_failed(lang: Lang, err: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En | Lang::Custom(_) => format!(
+            "Failed to load game_reference.json: {err} - scanning without the installed \
+             catalogue, so games only it knows about will not have their startup videos found."
+        ),
+    }
+}
+
 /// A personal exception pack that could not be read or compiled.
 ///
 /// Says what was lost, not just what failed: the visible symptom is files the

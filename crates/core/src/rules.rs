@@ -1947,18 +1947,18 @@ mod tests {
     }
 
     #[test]
-    fn reference_pack_reaches_an_intro_video_no_heuristic_can_see() {
+    fn the_catalogue_reaches_an_intro_video_no_heuristic_can_see() {
         let engine = shipped_engine();
 
-        // PCGamingWiki names this file for Alice: Madness Returns, Steam
-        // appid 19680. No built-in pattern reaches it: the publisher rule
-        // wants the name to *be* `ea.bik`, and "intro_ea" is neither that nor
-        // anything with "logo" in it. 915 of the wiki's 1509 named files are
-        // out of reach this way.
-        let path = r"Alice2\Movies\intro_ea.bik";
+        // Unknown 9: Awakening, Steam appid 1477940. No built-in pattern
+        // reaches this one: every intro rule that could wants a word meaning
+        // "logo" at a word boundary, and `UnrealWise` glues two vendor names
+        // together with nothing of the sort. Five of that game's eight
+        // boot-flow videos are out of reach this way, two of them 60 MB each.
+        let path = r"U9\Content\Movies\UnrealWise_1080p30.mp4";
 
         let finding = engine
-            .classify(path, Some("19680"))
+            .classify(path, Some("1477940"))
             .flagged()
             .expect("the catalogue names this file for this game");
         assert_eq!(finding.category, Category::Intro);
@@ -1971,29 +1971,34 @@ mod tests {
     }
 
     #[test]
-    fn reference_pack_takes_over_a_file_the_heuristic_was_already_guessing_at() {
+    fn the_catalogue_takes_over_a_file_the_heuristic_was_already_guessing_at() {
         let engine = shipped_engine();
 
-        // Prey (2017), Steam appid 480490. The studio-logo heuristic does
-        // reach this one (`arkane` + `logo`, 95) - so what the catalogue
-        // changes here is not whether the file is found but who answers for
+        // The same game's Reflector logo. Here a heuristic *does* reach the
+        // file - the name carries "logo" between separators - so what the
+        // catalogue changes is not whether it is found but who answers for
         // it, and the answer stops being a guess.
-        let path = r"GameSDK\Videos\ArkaneLogoAnim_Redux_1080p2997_ST-16LUFS.bk2";
+        let path =
+            r"U9\Content\Movies\KWM_awa2308_game_boot_flow-sequence_Reflector_logo_2160p30.mp4";
 
         let guessed = engine
             .classify(path, Some("999999999"))
             .flagged()
-            .expect("the studio-logo heuristic claims it in any game");
-        assert_eq!(guessed.confidence, 95);
+            .expect("a heuristic claims it in any game");
+        assert!(
+            guessed.confidence < REFERENCE_CONFIDENCE,
+            "the heuristic outranks the catalogue on confidence alone, so this \
+             test would pass without origin deciding anything: {guessed:?}",
+        );
 
         let looked_up = engine
-            .classify(path, Some("480490"))
+            .classify(path, Some("1477940"))
             .flagged()
             .expect("the catalogue names it for this game");
         assert_eq!(looked_up.confidence, REFERENCE_CONFIDENCE);
         assert!(
-            looked_up.rule_desc.contains("PCGamingWiki"),
-            "{looked_up:?}"
+            looked_up.rule_desc.contains("Unknown 9"),
+            "the heuristic still answered for this file: {looked_up:?}",
         );
     }
 
@@ -2089,130 +2094,6 @@ mod tests {
                 "{cutscene} is not a vendor logo and is still claimed as one",
             );
         }
-    }
-
-    /// The move out of `rules.json` had one hard requirement: **no file may
-    /// change its verdict**. Two named games cannot show that - a wrong
-    /// lowercase, a lost depth limit or a dropped entry would sail past them -
-    /// so this rebuilds the *old* shape from the catalogue, rule for rule as
-    /// `build_intro_reference_rules.py` used to emit it, and compares the two
-    /// engines over every name the catalogue holds.
-    ///
-    /// Counter-examples ride along in the same loop, because agreement on
-    /// matches alone would also be reported by two engines that flag
-    /// everything: each name is asked again in a game the catalogue does not
-    /// know, and once with no game at all.
-    #[test]
-    fn every_catalogued_file_gets_the_verdict_the_old_rule_shape_gave_it() {
-        use crate::reference::REFERENCE_MAX_DEPTH;
-
-        let catalogue: serde_json::Value =
-            serde_json::from_str(crate::reference::BUILTIN_GAME_REFERENCE_JSON).unwrap();
-        let entries = catalogue["games"].as_array().unwrap();
-
-        // The old shape: one deleting rule per game, pattern `^(a|b|...)$`.
-        let as_rules: Vec<serde_json::Value> = entries
-            .iter()
-            .filter(|entry| !entry["intro_files"].as_array().unwrap().is_empty())
-            .map(|entry| {
-                let names: Vec<String> = entry["intro_files"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|name| regex::escape(name.as_str().unwrap()))
-                    .collect();
-                serde_json::json!({
-                    "category": "intro",
-                    "pattern": format!("^({})$", names.join("|")),
-                    "desc": crate::reference::intro_desc(
-                        entry["title"].as_str().unwrap(),
-                        "en",
-                        crate::reference::ReferenceSource::Harvest,
-                    ),
-                    "confidence": REFERENCE_CONFIDENCE,
-                    "app_id": entry["app_id"],
-                    "origin": "reference",
-                    "max_depth": REFERENCE_MAX_DEPTH,
-                })
-            })
-            .collect();
-
-        let hand_written = std::fs::read_to_string(default_rules_path()).unwrap();
-        let mut old_pack: serde_json::Value = serde_json::from_str(&hand_written).unwrap();
-        old_pack["rules"]
-            .as_array_mut()
-            .unwrap()
-            .extend(as_rules.clone());
-        // The old pattern list is what used to blow past MAX_REGEX_BYTES and
-        // force the generator to split a game across several rules; the limit
-        // is irrelevant to the table, so this reconstruction is exempted from
-        // it by chunking nothing and raising nothing - any game whose rebuilt
-        // pattern is too long is simply skipped, and reported.
-        let over_limit: Vec<&serde_json::Value> = as_rules
-            .iter()
-            .filter(|rule| rule["pattern"].as_str().unwrap().len() > MAX_REGEX_BYTES)
-            .collect();
-        old_pack["rules"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|rule| rule["pattern"].as_str().map(str::len).unwrap_or(0) <= MAX_REGEX_BYTES);
-
-        let old = RuleEngine::from_json(&old_pack.to_string()).expect("the old shape compiles");
-        let new = shipped_engine();
-
-        let mut compared = 0usize;
-        for entry in entries {
-            let app_id = entry["app_id"].as_str().unwrap();
-            if over_limit
-                .iter()
-                .any(|rule| rule["app_id"].as_str() == Some(app_id))
-            {
-                continue;
-            }
-            for name in entry["intro_files"].as_array().unwrap() {
-                let name = name.as_str().unwrap();
-                // The harvest lowercases every name it stores, and the files
-                // on disk are `ArkaneLogoAnim_Redux...bk2`. Asking only in
-                // the catalogue's own spelling would compare two engines on
-                // the one case that cannot tell a folding matcher from a
-                // byte-for-byte one - which is exactly what this test did
-                // until a deliberately case-sensitive matcher passed it.
-                for name in [name.to_string(), name.to_uppercase(), title_case(name)] {
-                    for prefix in ["", r"Movies\", r"Game\Content\Movies\Startup\"] {
-                        let path = format!("{prefix}{name}");
-                        assert_eq!(
-                            old.classify(&path, Some(app_id)),
-                            new.classify(&path, Some(app_id)),
-                            "{path} in {app_id} changed verdict",
-                        );
-                        // The counter-examples: neither engine may claim this
-                        // file for a game that is not this one.
-                        assert_eq!(
-                            old.classify(&path, Some("999999999")),
-                            new.classify(&path, Some("999999999")),
-                            "{path} in an uncatalogued game changed verdict",
-                        );
-                        assert_eq!(
-                            old.classify(&path, None),
-                            new.classify(&path, None),
-                            "{path} with no game changed verdict",
-                        );
-                        compared += 1;
-                    }
-                }
-            }
-        }
-
-        assert!(
-            compared > 9_000,
-            "only {compared} paths compared - the catalogue did not load",
-        );
-        assert!(
-            over_limit.len() < 20,
-            "{} games could not be expressed as one old-shape rule; too many to \
-             call this comparison complete",
-            over_limit.len(),
-        );
     }
 
     #[test]

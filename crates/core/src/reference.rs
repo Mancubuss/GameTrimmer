@@ -1,12 +1,12 @@
-//! What an external catalogue knows about one *named* game, as a table.
+//! What a catalogue knows about one *named* game, as a table.
 //!
 //! # Why this is not a rule pack
 //!
 //! A rule is a pattern: `^(.*[_. -])?logos?.*\.bik$` is a guess someone wrote
 //! because startup videos tend to be named that way, and for a game nobody
 //! has catalogued it is the only answer available. A catalogue entry is not a
-//! guess - PCGamingWiki names this game's intro videos one by one, so there
-//! is nothing left to generalize over.
+//! guess - it names this game's intro videos one by one, so there is nothing
+//! left to generalize over.
 //!
 //! The entries used to be carried as rules anyway, one regex per game
 //! (`"pattern": "^(intro_ea\\.bik|legal\\.bik)$"`, `"origin": "reference"`).
@@ -27,6 +27,23 @@
 //! case-insensitive comparisons, and `rules.json` goes back to being the 51
 //! hand-written rules a person can open and edit.
 //!
+//! # Two catalogues, and why the big one is not here
+//!
+//! What ships is small: the games this project has checked itself
+//! ([`BUILTIN_GAME_REFERENCE_JSON`]). The large catalogue that used to sit
+//! beside it was derived from an external source published under a licence
+//! that forbids commercial use, and GameTrimmer is MIT - which grants exactly
+//! that. Those two cannot both be true of one program however the files are
+//! arranged inside it, so the data left rather than the promise being quietly
+//! broken.
+//!
+//! It comes back as an *installed catalogue*: a `game_reference.json` a user
+//! puts next to the executable, read through [`GameReference::load_installed_in`]
+//! and folded in with [`GameReference::absorb`]. The same opt-in `rules.json`
+//! already has - a file is in effect because someone put it there. This
+//! program ships nothing of it, names no source for it, and states no terms on
+//! its behalf; that is the installed file's own business, and its author's.
+//!
 //! # What did *not* move
 //!
 //! The precedence is unchanged and still lives in the rule engine: within a
@@ -34,7 +51,7 @@
 //! *guessed* it (`rules::RuleOrigin`), and a higher-ranked category still
 //! wins over both. [`Rule::origin`](crate::rules::Rule::origin) also stays -
 //! it is how an imported or hand-written pack declares the same thing, and
-//! this table is simply the shipped catalogue's own storage.
+//! this table is simply a catalogue's own storage.
 //!
 //! # One deliberate narrowing
 //!
@@ -42,11 +59,12 @@
 //! well as the file name, because that category mixes folder rules (a `Logos`
 //! folder) with file rules (a bare `nvidia_logo.bik`). A catalogue entry is
 //! only ever a file name, so this table tests only the file name. The
-//! difference is a folder named byte for byte like one of the wiki's video
-//! files - `Movies\intro_ea.bik\...` - whose contents the old shape would
-//! have flagged as intro. That was a false positive, not a feature.
+//! difference is a folder named byte for byte like one of the catalogue's
+//! video files - `Movies\intro_ea.bik\...` - whose contents the old shape
+//! would have flagged as intro. That was a false positive, not a feature.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -58,32 +76,14 @@ use crate::localized::DEFAULT_LANG;
 /// silently misread it, exactly as [`crate::rules::RULE_PACK_VERSION`] does.
 pub const GAME_REFERENCE_VERSION: u32 = 1;
 
-/// The repo's `game_reference.json`, embedded at build time.
+/// The catalogue this build ships: the entries written by hand, here, for
+/// games no external catalogue covers.
 ///
-/// Embedded rather than shipped beside the executable on purpose: the
-/// catalogue is read-only data that changes only when a new build ships, and
-/// a copy on disk next to the exe is a copy that goes stale silently - the
-/// failure a stale language pack in `dist/` already produced once, where a
-/// fresh binary quietly analysed with a month-old table.
+/// It is small on purpose. A large catalogue derived from an external source
+/// used to be embedded beside it, and it left - see the module docs. What is
+/// left is what this project can vouch for itself, and an installed catalogue
+/// ([`GameReference::absorb`]) extends it.
 pub const BUILTIN_GAME_REFERENCE_JSON: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../game_reference.json"
-));
-
-/// The hand-written half of the catalogue, embedded the same way.
-///
-/// Same format, different author. [`BUILTIN_GAME_REFERENCE_JSON`] is
-/// regenerated from the PCGamingWiki harvest and nothing survives a
-/// regeneration that the wiki does not say; this file is where a game the
-/// wiki has no page for, or a startup video it did not list, is written down
-/// by hand and stays written down. `scripts/build_intro_reference_rules.py`
-/// never opens it.
-///
-/// It is a *second file* rather than a flag inside the first one for the
-/// reason the catalogue was taken out of `rules.json` to begin with: a
-/// hand-maintained list has to stay small enough to read, and eight entries
-/// mixed into nine hundred generated ones is not a list anybody edits.
-pub const BUILTIN_LOCAL_REFERENCE_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../game_reference_local.json"
 ));
@@ -92,7 +92,7 @@ pub const BUILTIN_LOCAL_REFERENCE_JSON: &str = include_str!(concat!(
 ///
 /// The built-in intro *patterns* cap at 2-4 segments, which is right for a
 /// broad regex that must not reach into an asset tree. An exact file name in
-/// one named game is not that pattern, and the wiki's own paths go deeper:
+/// one named game is not that pattern, and real paths go deeper:
 /// `Whiplash\GameSDK\Videos\LegalScreens.bk2` is already 4, and Unreal titles
 /// bury movies under `Game\Content\Movies\Startup\`.
 pub const REFERENCE_MAX_DEPTH: usize = 8;
@@ -105,18 +105,20 @@ pub const REFERENCE_MAX_DEPTH: usize = 8;
 /// so this decides how the row is *marked*, never whether it is selected.
 pub const REFERENCE_CONFIDENCE: u8 = 96;
 
-/// Which half of the catalogue an entry came from.
+/// Where an entry came from.
 ///
 /// It decides one thing, and only one: what the finding says about itself.
-/// A row claiming "PCGamingWiki names this" when the wiki has no page for
-/// the game is a small lie in the one place the user goes to check our
-/// work, so the two halves say what they are.
+/// A row that names a source it did not come from is a small lie in the one
+/// place the user goes to check our work, so the two say what they are - and
+/// neither claims authority it does not have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReferenceSource {
-    /// Harvested from PCGamingWiki - [`BUILTIN_GAME_REFERENCE_JSON`].
-    Harvest,
-    /// Written down by hand - [`BUILTIN_LOCAL_REFERENCE_JSON`].
-    HandWritten,
+    /// Shipped with the program - [`BUILTIN_GAME_REFERENCE_JSON`].
+    BuiltIn,
+    /// Read from a catalogue the user installed beside the executable. Whose
+    /// catalogue it is, and under what terms, is that file's business and its
+    /// author's to state - which is exactly why nothing here names one.
+    Installed,
 }
 
 /// The description a catalogue entry shows, built from the game's title.
@@ -129,14 +131,16 @@ pub enum ReferenceSource {
 /// alone.
 pub fn intro_desc(title: &str, lang: &str, source: ReferenceSource) -> String {
     match (source, lang) {
-        (ReferenceSource::Harvest, "uk") => {
-            format!("Вступне відео, яке PCGamingWiki називає для гри {title}")
-        }
-        (ReferenceSource::Harvest, _) => format!("Intro video PCGamingWiki names for {title}"),
-        (ReferenceSource::HandWritten, "uk") => {
+        (ReferenceSource::BuiltIn, "uk") => {
             format!("Вступне відео, внесене до довідника для гри {title}")
         }
-        (ReferenceSource::HandWritten, _) => format!("Startup video catalogued for {title}"),
+        (ReferenceSource::BuiltIn, _) => format!("Startup video catalogued for {title}"),
+        (ReferenceSource::Installed, "uk") => {
+            format!("Вступне відео зі встановленого довідника для гри {title}")
+        }
+        (ReferenceSource::Installed, _) => {
+            format!("Intro video an installed catalogue names for {title}")
+        }
     }
 }
 
@@ -148,20 +152,20 @@ struct ReferenceFile {
     games: Vec<ReferenceEntry>,
 }
 
-/// One catalogue entry: everything the wiki knows about one game, keyed by
-/// the store id the Steam and GOG providers put in `games.app_id`.
+/// One catalogue entry: what is known about one game, keyed by the store id
+/// the Steam and GOG providers put in `games.app_id`.
 ///
-/// `intro_files` is the only column today. The next ones the harvest already
-/// holds - launch options for 271 games, config edits for 199 - are added
-/// here as further fields when something reads them, which is what makes a
-/// table the right shape: they do not become more regexes in `rules.json`.
+/// `intro_files` is the only column today. Anything else a catalogue may come
+/// to carry - launch flags, config edits - is added here as a further field
+/// when something reads it, which is what makes a table the right shape: they
+/// do not become more regexes in `rules.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReferenceEntry {
     app_id: String,
     title: String,
-    /// Why this entry exists, for the human maintaining the hand-written half
-    /// (see [`BUILTIN_LOCAL_REFERENCE_JSON`]). Never read by the program and
+    /// Why this entry exists, for whoever maintains the file. Never read by
+    /// the program and
     /// never shown - JSON has no comments, and a curated list whose entries
     /// carry no reason is a list nobody dares change later.
     #[serde(default)]
@@ -197,7 +201,7 @@ impl GameReference {
     /// Parses a catalogue, describing its entries in English - the language
     /// the scan stores findings in.
     pub fn from_json(json: &str) -> Result<Self> {
-        Self::from_json_in(json, DEFAULT_LANG, ReferenceSource::Harvest)
+        Self::from_json_in(json, DEFAULT_LANG, ReferenceSource::BuiltIn)
     }
 
     /// Parses a catalogue, resolving every description into `lang` once,
@@ -220,11 +224,11 @@ impl GameReference {
                      a catalogue entry is about one named, identified game"
                 )));
             }
-            // Every name the harvest has ever produced is ASCII, and the
+            // Every name a catalogue has yet carried is ASCII, and the
             // matcher folds case the ASCII way because that is what makes it
             // allocation-free. A non-ASCII name is refused rather than
             // matched case-sensitively behind everyone's back - it means the
-            // wiki started naming files this matcher cannot fold, and that is
+            // a catalogue started naming files this matcher cannot fold, and that is
             // a decision to take in daylight.
             if let Some(name) = entry.intro_files.iter().find(|name| !name.is_ascii()) {
                 return Err(CoreError::Other(format!(
@@ -264,9 +268,9 @@ impl GameReference {
     ///
     /// A game named by both is one game with two sources, so the file lists
     /// are **unioned** rather than one replacing the other: a hand-written
-    /// entry exists because the wiki did not name something, not because it
-    /// named something wrong. The title already here is kept, so the harvest
-    /// stays the authority on what a game is called.
+    /// entry exists because the other did not name something, not because it
+    /// named something wrong. The title already here is kept, so the first
+    /// catalogue read stays the authority on what a game is called.
     pub fn absorb(&mut self, other: GameReference) {
         for (app_id, game) in other.games {
             match self.games.get_mut(&app_id) {
@@ -288,22 +292,25 @@ impl GameReference {
         }
     }
 
-    /// The catalogue this build ships - the harvest plus the hand-written
-    /// entries beside it - in English.
+    /// The catalogue this build ships, in English.
     pub fn builtin() -> Result<Self> {
         Self::builtin_in(DEFAULT_LANG)
     }
 
     /// The catalogue this build ships, described in `lang`.
     pub fn builtin_in(lang: &str) -> Result<Self> {
-        let mut catalogue =
-            Self::from_json_in(BUILTIN_GAME_REFERENCE_JSON, lang, ReferenceSource::Harvest)?;
-        catalogue.absorb(Self::from_json_in(
-            BUILTIN_LOCAL_REFERENCE_JSON,
-            lang,
-            ReferenceSource::HandWritten,
-        )?);
-        Ok(catalogue)
+        Self::from_json_in(BUILTIN_GAME_REFERENCE_JSON, lang, ReferenceSource::BuiltIn)
+    }
+
+    /// Loads a catalogue a user installed beside the executable, described in
+    /// `lang`.
+    ///
+    /// The one way a large catalogue reaches this program. It is read, never
+    /// written, and never materialized: a file is in effect because someone
+    /// put it there, the same opt-in `rules.json` already has.
+    pub fn load_installed_in(path: &Path, lang: &str) -> Result<Self> {
+        let text = std::fs::read_to_string(path)?;
+        Self::from_json_in(&text, lang, ReferenceSource::Installed)
     }
 
     /// How many games the catalogue knows.
@@ -369,13 +376,13 @@ mod tests {
 
         assert_eq!(
             reference.intro_desc_for("480490", "legalscreens.bk2"),
-            Some("Intro video PCGamingWiki names for Prey (2017)"),
+            Some("Startup video catalogued for Prey (2017)"),
         );
         assert_eq!(reference.intro_desc_for("730", "legalscreens.bk2"), None);
         assert_eq!(reference.intro_desc_for("480490", "gameplay.bk2"), None);
     }
 
-    /// The wiki writes file names as they appear on the page, Windows does
+    /// A catalogue writes file names as its author found them, Windows does
     /// not care, and the old shape compiled its regexes case-insensitively.
     #[test]
     fn matching_ignores_case_in_both_directions() {
@@ -451,49 +458,49 @@ mod tests {
         }
     }
 
-    /// A game in both halves is one game: the hand-written entry adds what
-    /// the harvest missed instead of replacing what it found. Written with
+    /// A game in both catalogues is one game: the second adds what the first
+    /// missed instead of replacing what it found. Written with
     /// the two lists overlapping on one name, so a green result cannot be
     /// "the lists were simply concatenated".
     #[test]
-    fn a_game_named_by_both_halves_keeps_every_file_either_names() {
+    fn a_game_named_by_both_catalogues_keeps_every_file_either_names() {
         let mut reference = GameReference::from_json(&catalogue(
             r#"[{"app_id":"480490","title":"Prey (2017)",
                  "intro_files":["legalscreens.bk2","ryzen_bumper.bk2"]}]"#,
         ))
-        .expect("the harvest half parses");
+        .expect("the first catalogue parses");
         reference.absorb(
             GameReference::from_json(&catalogue(
                 r#"[{"app_id":"480490","title":"Prey, hand-written","note":"why",
                      "intro_files":["RYZEN_BUMPER.BK2","hand_written.bk2"]}]"#,
             ))
-            .expect("the hand-written half parses"),
+            .expect("the second catalogue parses"),
         );
 
         for name in ["legalscreens.bk2", "ryzen_bumper.bk2", "hand_written.bk2"] {
             assert!(
                 reference.intro_desc_for("480490", name).is_some(),
-                "{name} was lost when the two halves met",
+                "{name} was lost when the two catalogues met",
             );
         }
-        // The overlapping name must not have been stored twice, and the
-        // harvest's title is the one that survives.
+        // The overlapping name must not have been stored twice, and the first
+        // title is the one that survives.
         assert_eq!(reference.len(), 1);
         assert_eq!(
             reference.intro_desc_for("480490", "legalscreens.bk2"),
-            Some(intro_desc("Prey (2017)", DEFAULT_LANG, ReferenceSource::Harvest).as_str()),
+            Some(intro_desc("Prey (2017)", DEFAULT_LANG, ReferenceSource::BuiltIn).as_str()),
         );
     }
 
     #[test]
-    fn a_game_only_the_hand_written_half_names_is_added_whole() {
-        let mut reference = GameReference::from_json(&prey()).expect("the harvest half parses");
+    fn a_game_only_the_second_catalogue_names_is_added_whole() {
+        let mut reference = GameReference::from_json(&prey()).expect("the first catalogue parses");
         reference.absorb(
             GameReference::from_json(&catalogue(
                 r#"[{"app_id":"1477940","title":"Unknown 9: Awakening",
                      "intro_files":["UnrealWise_1080p30.mp4"]}]"#,
             ))
-            .expect("the hand-written half parses"),
+            .expect("the second catalogue parses"),
         );
 
         assert_eq!(reference.len(), 2);
@@ -507,71 +514,76 @@ mod tests {
         );
     }
 
-    /// The whole point of a second file: regenerating the harvest must not be
-    /// able to take the hand-written entries with it. The generator writes
-    /// `game_reference.json` and never opens this one, so the guard is that
-    /// the two files stay *disjoint sources* - this test fails the moment a
-    /// hand-written game is only reachable because the harvest happens to
-    /// name it too.
+    /// The whole mechanism the large catalogue left through: a file beside
+    /// the executable is read, folded in, and says where it came from.
+    ///
+    /// The counter-example is in the same test and is the point of it: the
+    /// built-in entry must still be there afterwards and must still describe
+    /// itself as built-in, or "the installed file works" would be
+    /// indistinguishable from "the installed file replaced everything".
     #[test]
-    fn the_hand_written_half_stands_on_its_own() {
-        let harvest =
-            GameReference::from_json(BUILTIN_GAME_REFERENCE_JSON).expect("the harvest parses");
-        let local =
-            GameReference::from_json(BUILTIN_LOCAL_REFERENCE_JSON).expect("the hand list parses");
-        let shipped = GameReference::builtin().expect("the shipped catalogue parses");
+    fn an_installed_catalogue_extends_the_built_in_one_without_replacing_it() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let installed = dir.path().join("game_reference.json");
+        std::fs::write(
+            &installed,
+            catalogue(
+                r#"[{"app_id":"480490","title":"Prey (2017)",
+                     "intro_files":["LegalScreens.bk2"]}]"#,
+            ),
+        )
+        .expect("write the installed catalogue");
 
-        assert!(!local.is_empty(), "the hand-written half is empty");
-        for (title, _) in local.entries() {
-            assert!(
-                shipped
-                    .entries()
-                    .any(|(shipped_title, _)| shipped_title == title),
-                "{title} is in the hand-written half but not in the shipped catalogue",
-            );
-        }
-        // Unknown 9: Awakening has no PCGamingWiki page at all, and two of
-        // its boot-flow videos are 60 MB each. If the harvest ever grows a
-        // page for it this stays true - the file list is still ours.
+        let mut reference = GameReference::builtin().expect("the built-in catalogue parses");
+        let built_in_titles = reference.len();
         assert!(
-            harvest
-                .intro_desc_for("1477940", "unrealwise_1080p30.mp4")
+            reference
+                .intro_desc_for("480490", "legalscreens.bk2")
                 .is_none(),
-            "the harvest now names this file too - pick a different witness",
+            "this game must not already be built in, or the test proves nothing",
+        );
+
+        reference.absorb(
+            GameReference::load_installed_in(&installed, DEFAULT_LANG)
+                .expect("the installed catalogue loads"),
+        );
+
+        assert_eq!(reference.len(), built_in_titles + 1);
+        assert_eq!(
+            reference.intro_desc_for("480490", "legalscreens.bk2"),
+            Some(intro_desc("Prey (2017)", DEFAULT_LANG, ReferenceSource::Installed).as_str()),
+            "an installed entry must not describe itself as built in",
         );
         assert!(
-            shipped
+            reference
                 .intro_desc_for("1477940", "unrealwise_1080p30.mp4")
-                .is_some(),
-            "the hand-written entry did not reach the shipped catalogue",
+                .is_some_and(|desc| desc.starts_with("Startup video catalogued")),
+            "the built-in entry was lost, or now claims to be installed",
         );
     }
 
-    /// The shipped catalogue is data, and data can be broken by a harvest as
-    /// easily as by a hand edit. Every invariant above is checked against it
-    /// here so a bad regeneration fails the build rather than a scan.
+    /// The shipped catalogue is data, and data can be broken by a hand edit
+    /// as easily as by anything else. Every invariant above is checked
+    /// against it here so a bad edit fails the build rather than a scan.
     #[test]
-    fn the_shipped_catalogue_parses_and_names_real_games() {
+    fn the_shipped_catalogue_parses_and_names_the_games_it_claims() {
         let reference = GameReference::builtin().expect("the built-in catalogue parses");
 
-        assert!(
-            reference.len() > 500,
-            "the catalogue shrank to {} games - a harvest or generator regression",
-            reference.len(),
-        );
-        // Prey is the precedence case (a studio heuristic also matches this
-        // file at confidence 95) and Alice is the reach case (no built-in
-        // rule sees this name at all). Both are named in GT-223 and both must
-        // survive the move out of rules.json.
+        assert!(!reference.is_empty(), "the built-in catalogue is empty");
         assert!(
             reference
-                .intro_desc_for("480490", "arkanelogoanim_redux_1080p2997_st-16lufs.bk2")
-                .is_some(),
-            "Prey (2017) lost its catalogue entry",
+                .entries()
+                .all(|(_, source)| source == ReferenceSource::BuiltIn),
+            "an entry in the shipped file claims to come from somewhere else",
         );
+        // Unknown 9: Awakening ships eight boot-logo videos, five of which no
+        // built-in rule can see - two of those 60 MB each. It is here because
+        // nothing else was going to reach them.
         assert!(
-            reference.intro_desc_for("19680", "intro_ea.bik").is_some(),
-            "Alice: Madness Returns lost its catalogue entry",
+            reference
+                .intro_desc_for("1477940", "unrealwise_1080p30.mp4")
+                .is_some(),
+            "Unknown 9: Awakening lost its catalogue entry",
         );
     }
 }
