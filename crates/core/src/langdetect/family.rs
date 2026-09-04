@@ -608,6 +608,66 @@ fn compute_directory_occurrence_family(
             }
         }
 
+        // C1b (GT-469): an atom the whole neighbourhood shares is the
+        // *strongest* sign a file belongs to the set, and the frequency cut
+        // above reads it as the weakest - a stem carried by more than half
+        // the group is dismissed as a naming convention and stops supporting
+        // anything. Rogue Trooper's `Misc\L_Text\Tannoy\` holds the same
+        // eight texts twice, spelled out (`Tannoy_French`) and in the
+        // studio's shorthand (`t_fr`). `tannoy` covers eight of the group's
+        // thirteen members, so it is written off, and the spelled-out set
+        // then hangs on whether `Tannoy_Chinese_T` happens to share the
+        // letter `t` with the short set. Two more `t_*` files tip `t` over
+        // half as well and both Chinese files vanish; a third tips `tannoy`
+        // back under and they return. A verdict that flickers with the file
+        // count is not a verdict.
+        //
+        // So the cut moves from "more than half" to "literally all", and the
+        // question becomes *linguistic spread*. An atom carried by
+        // `MIN_FAMILY_SIZE` different languages in the same slot is what a
+        // per-language naming stem looks like; a framework suffix shared by a
+        // texture and a subtitle covers one or two.
+        //
+        // The atom every single neighbour carries stays worthless, because
+        // that is what a format tail is, and letting it through costs real
+        // findings: Wreckfest's `data\menu\textures` holds eleven genuine
+        // `startup_screen_3_<lang>_1920x1080_raw.bmap` screens beside ten
+        // `*_bg_*` backgrounds, and `raw` is in every one of the thirty-two.
+        // Supported on `raw` alone, the ten backgrounds join the set as
+        // Bulgarian, the folder's label distribution tips, and GT-471 then
+        // throws the whole folder out - eleven real languages lost to one
+        // meaningless suffix.
+        //
+        // Nor is a number a word, however many languages carry it: Shadowrun
+        // Dragonfall's `ar 2 lady (luckystrike)`, `sr 3 eiger's rifle` and
+        // `russian grenade 3 (frag)` agree on a literal `3` and on nothing
+        // else, and "ar" is an assault rifle (GT-224).
+        //
+        // Nor is a one- or two-letter atom, which is the very shape a
+        // language code has - which is why it collides with one in the first
+        // place. XCOM: Chimera Squad's `wp_consp_ar_SF.upk` is a weapon, and
+        // the `_SF` engine suffix it shares with the rest of the folder is
+        // not a word about language any more than `_BW` (Burial at Sea) is in
+        // BioShock Infinite. Three characters is the shortest thing a studio
+        // writes when it means a word rather than a code.
+        const MIN_STEM_ATOM_LEN: usize = 3;
+
+        let mut naming_atom_freq: HashMap<&str, usize> = HashMap::new();
+        let mut naming_atom_canonicals: HashMap<&str, HashSet<&'static str>> = HashMap::new();
+        for m in &survivors {
+            for atom in &m.naming_atoms {
+                if atom.len() < MIN_STEM_ATOM_LEN || !atom.chars().any(|c| c.is_alphabetic()) {
+                    continue;
+                }
+                *naming_atom_freq.entry(atom.as_str()).or_default() += 1;
+                naming_atom_canonicals
+                    .entry(atom.as_str())
+                    .or_default()
+                    .insert(m.canonical);
+            }
+        }
+        naming_atom_canonicals.retain(|atom, _| naming_atom_freq[atom] < total);
+
         let mut naming_pair_canonicals: HashMap<(&str, &str), HashSet<&'static str>> =
             HashMap::new();
         for (si, m) in survivors.iter().enumerate() {
@@ -633,6 +693,15 @@ fn compute_directory_occurrence_family(
                     .is_some_and(|s| s.len() >= 2)
             });
             if c1 {
+                is_supported[si] = true;
+                continue;
+            }
+            let c1b = m.naming_atoms.iter().any(|a| {
+                naming_atom_canonicals
+                    .get(a.as_str())
+                    .is_some_and(|s| s.len() >= MIN_FAMILY_SIZE)
+            });
+            if c1b {
                 is_supported[si] = true;
                 continue;
             }

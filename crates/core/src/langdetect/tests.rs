@@ -1006,6 +1006,142 @@ fn harness_replay_library() {
     }
 }
 
+// --- GT-469: a set must not hang on which side of half an atom falls -----
+
+/// The Tannoy folder held its two Chinese files by accident. `tannoy` is the
+/// stem eight of its members share and the plainest sign they belong
+/// together, but the shared-position family wrote off any atom carried by
+/// more than half the group - so the spelled-out set was left resting on
+/// `Tannoy_Chinese_T` happening to share the letter `t` with the short
+/// `t_fr` / `t_ge` set.
+///
+/// That is a verdict decided by arithmetic on the file count: two more `t_*`
+/// files tipped `t` over half as well and both Chinese files vanished
+/// silently; a third tipped `tannoy` back under half and they returned.
+/// Whatever else the folder holds, the answer about these two files must not
+/// move.
+#[test]
+fn the_chinese_pair_holds_however_many_short_names_join_the_folder() {
+    let extras = [
+        vec![],
+        vec![r"Misc\L_Text\Tannoy\t_pl.asr"],
+        vec![
+            r"Misc\L_Text\Tannoy\t_pl.asr",
+            r"Misc\L_Text\Tannoy\t_ru.asr",
+        ],
+        vec![
+            r"Misc\L_Text\Tannoy\t_pl.asr",
+            r"Misc\L_Text\Tannoy\t_ru.asr",
+            r"Misc\L_Text\Tannoy\t_ja.asr",
+        ],
+    ];
+
+    for extra in extras {
+        let paths: Vec<&str> = TANNOY_FOLDER.iter().copied().chain(extra.clone()).collect();
+        let found = flagged_labels(&paths);
+        let chinese: Vec<&String> = found
+            .iter()
+            .filter(|(name, _)| name.starts_with("Tannoy_Chinese"))
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            chinese.len(),
+            2,
+            "both Chinese texts must survive {} extra short-set files, got {found:?}",
+            extra.len()
+        );
+    }
+}
+
+/// The counter-example that keeps the rule above from becoming "anything the
+/// neighbours share is evidence". Wreckfest's `data\menu\textures` holds
+/// eleven genuine `startup_screen_3_<lang>_<size>_raw.bmap` screens beside
+/// ten `*_bg_*` backgrounds - and `raw` is on every single file in the
+/// folder. Supported on `raw` alone the backgrounds would join the set as
+/// Bulgarian, and the folder's label distribution would then tip far enough
+/// for GT-471 to throw all of it out: eleven real languages lost to one
+/// meaningless suffix.
+#[test]
+fn the_suffix_every_file_carries_supports_nothing() {
+    let mut paths: Vec<String> = Vec::new();
+    for part in [
+        "angle_meter",
+        "gearbox",
+        "mainmenu",
+        "pc_button",
+        "result_player",
+        "serverbrowser",
+        "settings",
+        "wf_levelnumber",
+        "result_reward_avatar",
+        "wf_element_tournament",
+    ] {
+        paths.push(format!("data\\menu\\textures\\{part}_bg_400x48_raw.bmap"));
+    }
+    for lang in [
+        "de", "es", "fi", "fr", "it", "ja", "ko", "pl", "pt", "ru", "zh",
+    ] {
+        paths.push(format!(
+            "data\\menu\\textures\\startup_screen_3_{lang}_1920x1080_raw.bmap"
+        ));
+        paths.push(format!(
+            "data\\menu\\textures\\startup_screen_3_{lang}_3840x2160_raw.bmap"
+        ));
+    }
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    assert!(
+        !found.iter().any(|(i, _)| refs[*i].contains("_bg_")),
+        "a background is not Bulgarian: {:?}",
+        found
+            .iter()
+            .filter(|(i, _)| refs[*i].contains("_bg_"))
+            .map(|(i, f)| (refs[*i], &f.lang_tag))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        found
+            .iter()
+            .filter(|(i, _)| refs[*i].contains("startup_screen"))
+            .count()
+            >= 18,
+        "and the startup screens stay findings: {found:?}"
+    );
+}
+
+/// Homefront: The Revolution writes Brazilian Portuguese as two words, and
+/// once the family above started confirming that folder by its shared
+/// `xml`/`dialog` stems the family's own label - plain `pt`, read off the
+/// second word - outranked the `brazilian` token that had been getting it
+/// right. A wrong label is worse than a missing one: the keep-list is applied
+/// to the label, so a player keeping Brazilian Portuguese would have had this
+/// file offered for deletion (the GT-455 argument).
+#[test]
+fn brazilian_portuguese_written_as_two_words_is_not_plain_portuguese() {
+    let mut paths = vec![r"localization\brazilian_portuguese_xml.pak".to_string()];
+    for lang in [
+        "czech", "french", "german", "italian", "japanese", "polish", "russian", "spanish",
+    ] {
+        paths.push(format!("localization\\{lang}_xml.pak"));
+        paths.push(format!("localization\\{lang}_dialog.pak"));
+    }
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+    let brazilian = found
+        .iter()
+        .find(|(i, _)| refs[*i].contains("brazilian"))
+        .map(|(_, f)| f.lang_tag.as_str());
+
+    assert_eq!(
+        brazilian,
+        Some("pt-br"),
+        "`brazilian_portuguese` is pt-br, not pt: {found:?}"
+    );
+}
+
 // --- GT-471: a label set whose shape says "naming scheme", not "translation".
 
 /// Bungie writes `sr` into every package name in `packages\`. It is a
