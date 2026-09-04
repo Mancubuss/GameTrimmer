@@ -2124,7 +2124,11 @@ mod tests {
                 serde_json::json!({
                     "category": "intro",
                     "pattern": format!("^({})$", names.join("|")),
-                    "desc": crate::reference::intro_desc(entry["title"].as_str().unwrap(), "en"),
+                    "desc": crate::reference::intro_desc(
+                        entry["title"].as_str().unwrap(),
+                        "en",
+                        crate::reference::ReferenceSource::Harvest,
+                    ),
                     "confidence": REFERENCE_CONFIDENCE,
                     "app_id": entry["app_id"],
                     "origin": "reference",

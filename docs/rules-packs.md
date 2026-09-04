@@ -89,6 +89,17 @@ Three things set it apart from the two packs above:
   with no regex metacharacter in it, so the engine spent 156 ms per scan
   compiling automata to do a string comparison. As a table it costs a hash
   lookup per file.
+- **It has a hand-written half**, `game_reference_local.json`, in the same
+  format and embedded the same way. The generator rebuilds the harvest file
+  from scratch on every run and never opens this one, so a game PCGamingWiki
+  has no page for — or a startup video it did not list — is written down here
+  and stays written down. A game named by both files keeps every file either
+  one names: a hand-written entry exists because the wiki missed something,
+  not because it got something wrong. Entries may carry a `note` field, which
+  the program ignores; it is there because JSON has no comments and a curated
+  list whose entries carry no reason is a list nobody dares change later.
+  Findings say which half they came from, so a row never claims the wiki
+  named a file when the wiki has no page for the game.
 - **There is no overlay for it.** Nothing beside the executable extends it. A
   personal or community per-game rule is written as an ordinary rule with
   `app_id` and `origin` in a `rules.json` overlay, which is exactly what

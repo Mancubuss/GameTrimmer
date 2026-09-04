@@ -82,13 +82,14 @@ impl Descriptions {
         // storing 649 titles buys instead of 935 pairs of sentences: the same
         // translation, from a twentieth of the text.
         if let Ok(reference) = gametrimmer_core::reference::GameReference::builtin() {
-            rules.extend(reference.titles().map(|title| {
+            rules.extend(reference.entries().map(|(title, source)| {
                 (
                     gametrimmer_core::reference::intro_desc(
                         title,
                         gametrimmer_core::localized::DEFAULT_LANG,
+                        source,
                     ),
-                    gametrimmer_core::reference::intro_desc(title, lang.as_str()),
+                    gametrimmer_core::reference::intro_desc(title, lang.as_str(), source),
                 )
             }));
         }

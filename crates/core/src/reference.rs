@@ -70,6 +70,24 @@ pub const BUILTIN_GAME_REFERENCE_JSON: &str = include_str!(concat!(
     "/../../game_reference.json"
 ));
 
+/// The hand-written half of the catalogue, embedded the same way.
+///
+/// Same format, different author. [`BUILTIN_GAME_REFERENCE_JSON`] is
+/// regenerated from the PCGamingWiki harvest and nothing survives a
+/// regeneration that the wiki does not say; this file is where a game the
+/// wiki has no page for, or a startup video it did not list, is written down
+/// by hand and stays written down. `scripts/build_intro_reference_rules.py`
+/// never opens it.
+///
+/// It is a *second file* rather than a flag inside the first one for the
+/// reason the catalogue was taken out of `rules.json` to begin with: a
+/// hand-maintained list has to stay small enough to read, and eight entries
+/// mixed into nine hundred generated ones is not a list anybody edits.
+pub const BUILTIN_LOCAL_REFERENCE_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../game_reference_local.json"
+));
+
 /// How deep into a game's tree a catalogue entry may match.
 ///
 /// The built-in intro *patterns* cap at 2-4 segments, which is right for a
@@ -87,17 +105,38 @@ pub const REFERENCE_MAX_DEPTH: usize = 8;
 /// so this decides how the row is *marked*, never whether it is selected.
 pub const REFERENCE_CONFIDENCE: u8 = 96;
 
+/// Which half of the catalogue an entry came from.
+///
+/// It decides one thing, and only one: what the finding says about itself.
+/// A row claiming "PCGamingWiki names this" when the wiki has no page for
+/// the game is a small lie in the one place the user goes to check our
+/// work, so the two halves say what they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceSource {
+    /// Harvested from PCGamingWiki - [`BUILTIN_GAME_REFERENCE_JSON`].
+    Harvest,
+    /// Written down by hand - [`BUILTIN_LOCAL_REFERENCE_JSON`].
+    HandWritten,
+}
+
 /// The description a catalogue entry shows, built from the game's title.
 ///
-/// Generated rather than stored because it is the same sentence 649 times
-/// over, and storing it was most of the old shape's bulk. English is the
-/// language the scan stores findings in; the window translates at display
+/// Generated rather than stored because it is the same sentence hundreds of
+/// times over, and storing it was most of the old shape's bulk. English is
+/// the language the scan stores findings in; the window translates at display
 /// time through the same function (see the app's `descriptions` module),
-/// which is why the mapping has to be reproducible from the title alone.
-pub fn intro_desc(title: &str, lang: &str) -> String {
-    match lang {
-        "uk" => format!("Вступне відео, яке PCGamingWiki називає для гри {title}"),
-        _ => format!("Intro video PCGamingWiki names for {title}"),
+/// which is why the mapping has to be reproducible from title and source
+/// alone.
+pub fn intro_desc(title: &str, lang: &str, source: ReferenceSource) -> String {
+    match (source, lang) {
+        (ReferenceSource::Harvest, "uk") => {
+            format!("Вступне відео, яке PCGamingWiki називає для гри {title}")
+        }
+        (ReferenceSource::Harvest, _) => format!("Intro video PCGamingWiki names for {title}"),
+        (ReferenceSource::HandWritten, "uk") => {
+            format!("Вступне відео, внесене до довідника для гри {title}")
+        }
+        (ReferenceSource::HandWritten, _) => format!("Startup video catalogued for {title}"),
     }
 }
 
@@ -121,6 +160,13 @@ struct ReferenceFile {
 struct ReferenceEntry {
     app_id: String,
     title: String,
+    /// Why this entry exists, for the human maintaining the hand-written half
+    /// (see [`BUILTIN_LOCAL_REFERENCE_JSON`]). Never read by the program and
+    /// never shown - JSON has no comments, and a curated list whose entries
+    /// carry no reason is a list nobody dares change later.
+    #[serde(default)]
+    #[allow(dead_code)]
+    note: Option<String>,
     intro_files: Vec<String>,
 }
 
@@ -129,6 +175,7 @@ struct ReferenceEntry {
 #[derive(Debug, Clone)]
 struct ReferenceGame {
     title: String,
+    source: ReferenceSource,
     desc: String,
     /// ASCII-lowercased. See [`GameReference::intro_desc_for`] for why a
     /// `Vec` beats a `HashSet` here.
@@ -150,12 +197,12 @@ impl GameReference {
     /// Parses a catalogue, describing its entries in English - the language
     /// the scan stores findings in.
     pub fn from_json(json: &str) -> Result<Self> {
-        Self::from_json_in(json, DEFAULT_LANG)
+        Self::from_json_in(json, DEFAULT_LANG, ReferenceSource::Harvest)
     }
 
     /// Parses a catalogue, resolving every description into `lang` once,
     /// here, rather than per matched file.
-    pub fn from_json_in(json: &str, lang: &str) -> Result<Self> {
+    pub fn from_json_in(json: &str, lang: &str, source: ReferenceSource) -> Result<Self> {
         let file: ReferenceFile = serde_json::from_str(json)?;
         if file.version > GAME_REFERENCE_VERSION {
             return Err(CoreError::Other(format!(
@@ -188,7 +235,8 @@ impl GameReference {
                 )));
             }
             let game = ReferenceGame {
-                desc: intro_desc(&entry.title, lang),
+                source,
+                desc: intro_desc(&entry.title, lang, source),
                 title: entry.title,
                 intro_files: entry
                     .intro_files
@@ -211,9 +259,51 @@ impl GameReference {
         Ok(Self { games })
     }
 
-    /// The catalogue this build ships, in English.
+    /// Folds another catalogue into this one, as the shipped catalogue does
+    /// with its hand-written half.
+    ///
+    /// A game named by both is one game with two sources, so the file lists
+    /// are **unioned** rather than one replacing the other: a hand-written
+    /// entry exists because the wiki did not name something, not because it
+    /// named something wrong. The title already here is kept, so the harvest
+    /// stays the authority on what a game is called.
+    pub fn absorb(&mut self, other: GameReference) {
+        for (app_id, game) in other.games {
+            match self.games.get_mut(&app_id) {
+                Some(existing) => {
+                    for name in game.intro_files {
+                        if !existing
+                            .intro_files
+                            .iter()
+                            .any(|have| have.eq_ignore_ascii_case(&name))
+                        {
+                            existing.intro_files.push(name);
+                        }
+                    }
+                }
+                None => {
+                    self.games.insert(app_id, game);
+                }
+            }
+        }
+    }
+
+    /// The catalogue this build ships - the harvest plus the hand-written
+    /// entries beside it - in English.
     pub fn builtin() -> Result<Self> {
-        Self::from_json(BUILTIN_GAME_REFERENCE_JSON)
+        Self::builtin_in(DEFAULT_LANG)
+    }
+
+    /// The catalogue this build ships, described in `lang`.
+    pub fn builtin_in(lang: &str) -> Result<Self> {
+        let mut catalogue =
+            Self::from_json_in(BUILTIN_GAME_REFERENCE_JSON, lang, ReferenceSource::Harvest)?;
+        catalogue.absorb(Self::from_json_in(
+            BUILTIN_LOCAL_REFERENCE_JSON,
+            lang,
+            ReferenceSource::HandWritten,
+        )?);
+        Ok(catalogue)
     }
 
     /// How many games the catalogue knows.
@@ -230,8 +320,10 @@ impl GameReference {
     /// The window uses this to rebuild the English-to-interface-language
     /// description mapping without a second copy of the text - see
     /// [`intro_desc`].
-    pub fn titles(&self) -> impl Iterator<Item = &str> {
-        self.games.values().map(|game| game.title.as_str())
+    pub fn entries(&self) -> impl Iterator<Item = (&str, ReferenceSource)> {
+        self.games
+            .values()
+            .map(|game| (game.title.as_str(), game.source))
     }
 
     /// The description to report when `file_name` is one of the intro videos
@@ -306,13 +398,16 @@ mod tests {
     #[test]
     fn a_title_reproduces_the_description_the_scan_stored() {
         let reference = GameReference::from_json(&prey()).expect("the catalogue parses");
-        let title = reference.titles().next().expect("one game");
+        let (title, source) = reference.entries().next().expect("one game");
 
         assert_eq!(
             reference.intro_desc_for("480490", "legalscreens.bk2"),
-            Some(intro_desc(title, DEFAULT_LANG).as_str()),
+            Some(intro_desc(title, DEFAULT_LANG, source).as_str()),
         );
-        assert_ne!(intro_desc(title, "uk"), intro_desc(title, DEFAULT_LANG));
+        assert_ne!(
+            intro_desc(title, "uk", source),
+            intro_desc(title, DEFAULT_LANG, source)
+        );
     }
 
     #[test]
@@ -354,6 +449,102 @@ mod tests {
                 .expect_err("an entry with no identity must be refused");
             assert!(err.to_string().contains("no app_id or no title"), "{err}");
         }
+    }
+
+    /// A game in both halves is one game: the hand-written entry adds what
+    /// the harvest missed instead of replacing what it found. Written with
+    /// the two lists overlapping on one name, so a green result cannot be
+    /// "the lists were simply concatenated".
+    #[test]
+    fn a_game_named_by_both_halves_keeps_every_file_either_names() {
+        let mut reference = GameReference::from_json(&catalogue(
+            r#"[{"app_id":"480490","title":"Prey (2017)",
+                 "intro_files":["legalscreens.bk2","ryzen_bumper.bk2"]}]"#,
+        ))
+        .expect("the harvest half parses");
+        reference.absorb(
+            GameReference::from_json(&catalogue(
+                r#"[{"app_id":"480490","title":"Prey, hand-written","note":"why",
+                     "intro_files":["RYZEN_BUMPER.BK2","hand_written.bk2"]}]"#,
+            ))
+            .expect("the hand-written half parses"),
+        );
+
+        for name in ["legalscreens.bk2", "ryzen_bumper.bk2", "hand_written.bk2"] {
+            assert!(
+                reference.intro_desc_for("480490", name).is_some(),
+                "{name} was lost when the two halves met",
+            );
+        }
+        // The overlapping name must not have been stored twice, and the
+        // harvest's title is the one that survives.
+        assert_eq!(reference.len(), 1);
+        assert_eq!(
+            reference.intro_desc_for("480490", "legalscreens.bk2"),
+            Some(intro_desc("Prey (2017)", DEFAULT_LANG, ReferenceSource::Harvest).as_str()),
+        );
+    }
+
+    #[test]
+    fn a_game_only_the_hand_written_half_names_is_added_whole() {
+        let mut reference = GameReference::from_json(&prey()).expect("the harvest half parses");
+        reference.absorb(
+            GameReference::from_json(&catalogue(
+                r#"[{"app_id":"1477940","title":"Unknown 9: Awakening",
+                     "intro_files":["UnrealWise_1080p30.mp4"]}]"#,
+            ))
+            .expect("the hand-written half parses"),
+        );
+
+        assert_eq!(reference.len(), 2);
+        assert!(reference
+            .intro_desc_for("1477940", "unrealwise_1080p30.mp4")
+            .is_some());
+        // And it did not leak into the game that was already there.
+        assert_eq!(
+            reference.intro_desc_for("480490", "unrealwise_1080p30.mp4"),
+            None,
+        );
+    }
+
+    /// The whole point of a second file: regenerating the harvest must not be
+    /// able to take the hand-written entries with it. The generator writes
+    /// `game_reference.json` and never opens this one, so the guard is that
+    /// the two files stay *disjoint sources* - this test fails the moment a
+    /// hand-written game is only reachable because the harvest happens to
+    /// name it too.
+    #[test]
+    fn the_hand_written_half_stands_on_its_own() {
+        let harvest =
+            GameReference::from_json(BUILTIN_GAME_REFERENCE_JSON).expect("the harvest parses");
+        let local =
+            GameReference::from_json(BUILTIN_LOCAL_REFERENCE_JSON).expect("the hand list parses");
+        let shipped = GameReference::builtin().expect("the shipped catalogue parses");
+
+        assert!(!local.is_empty(), "the hand-written half is empty");
+        for (title, _) in local.entries() {
+            assert!(
+                shipped
+                    .entries()
+                    .any(|(shipped_title, _)| shipped_title == title),
+                "{title} is in the hand-written half but not in the shipped catalogue",
+            );
+        }
+        // Unknown 9: Awakening has no PCGamingWiki page at all, and two of
+        // its boot-flow videos are 60 MB each. If the harvest ever grows a
+        // page for it this stays true - the file list is still ours.
+        assert!(
+            harvest
+                .intro_desc_for("1477940", "unrealwise_1080p30.mp4")
+                .is_none(),
+            "the harvest now names this file too - pick a different witness",
+        );
+        assert!(
+            shipped
+                .intro_desc_for("1477940", "unrealwise_1080p30.mp4")
+                .is_some(),
+            "the hand-written entry did not reach the shipped catalogue",
+        );
     }
 
     /// The shipped catalogue is data, and data can be broken by a harvest as

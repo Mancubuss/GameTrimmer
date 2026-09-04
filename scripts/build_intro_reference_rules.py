@@ -45,6 +45,11 @@ Idempotent: the catalogue is rebuilt from scratch on every run, and any
 leftover ``"origin": "reference"`` rule still sitting in ``rules.json`` from
 the old shape is dropped. Hand-written rules are left untouched.
 
+Rebuilt from scratch is exactly why the hand-written half lives in its own
+file. ``game_reference_local.json`` holds the games the wiki has no page for,
+and the startup videos it did not list; this script must never open it, in
+either direction. The two are merged at load time by ``core::reference``.
+
 Standard library only. Run from the repository root:
 
     python scripts/build_intro_reference_rules.py
@@ -56,6 +61,12 @@ import sys
 DATASET_PATH = "docs/pcgw_skip_intro_dataset.json"
 RULES_PATH = "rules.json"
 REFERENCE_PATH = "game_reference.json"
+
+# Named here only so it is obvious that it is *not* used below. The
+# hand-written half of the catalogue is nobody's output; a regeneration that
+# touched it would throw away the entries that exist precisely because the
+# harvest cannot produce them.
+NEVER_WRITTEN_BY_THIS_SCRIPT = "game_reference_local.json"
 
 # Mirrors `core::reference::GAME_REFERENCE_VERSION`.
 GAME_REFERENCE_VERSION = 1
