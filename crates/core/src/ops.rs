@@ -463,16 +463,15 @@ fn prepare_delete_plans_for_action(
             // janitor artifact) has no install directory to clear, and "no
             // directory to check" is not the same claim as "checked, clear".
             //
-            // Two detectors, and the union of them, because they do not agree.
-            // The stored verdict comes from `is_safe_from_relative_paths` over
-            // the scan's whole inventory and matches substrings, so it sees a
-            // `Vanguard\` directory; the live walk below matches exact file
-            // names and does not. Neither is a superset of the other, and both
-            // fail closed, so asking only one leaves that one's blind spot as a
-            // hole in the gate. The stored answer also cannot see a game that
-            // acquired anti-cheat since the scan - which is precisely the case
-            // an after-an-update re-trim runs in - so the live walk cannot be
-            // dropped for it either.
+            // Two detectors, and the union of them - but for one reason now,
+            // not two. They no longer disagree about what anti-cheat looks
+            // like: since 7db284b both read the same tables one path segment
+            // at a time through `match_segment`, and a test pins it, so
+            // neither has a blind spot the other covers. What the stored
+            // verdict still cannot see is a game that acquired anti-cheat
+            // *after* the scan that produced it - precisely the case an
+            // after-an-update re-trim runs in - and that is what the live walk
+            // is here for. Both fail closed.
             let reason = match (game_id, install_dir.as_deref()) {
                 (Some(game_id), Some(install_dir)) => {
                     if stored_anti_cheat.unwrap_or(true) {
