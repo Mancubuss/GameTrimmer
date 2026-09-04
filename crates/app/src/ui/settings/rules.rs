@@ -1,12 +1,16 @@
-//! "Rules": whether either optional overlay pack is lying next to the
-//! executable, and whether the one that is there still parses.
+//! "Rules": that GameTrimmer can be extended with a rule file of your own,
+//! where to put one, and - only when one is actually there - whether it is
+//! in effect.
 //!
-//! There is nothing to press here. The rules a scan runs on are compiled
-//! into the app, so they are always current and there is nothing to restore
-//! them from or export them to. An overlay is in effect because someone put
-//! a file of that name next to the executable - and that is exactly why this
-//! readout has to exist: an overlay that does not parse is ignored, and
-//! being ignored looks precisely like being wrong about the library.
+//! There is nothing to press and nothing to configure. The rules a scan runs
+//! on are compiled into the app, so there is nothing here to restore them
+//! from or export them to, and no reason for this section to describe them
+//! at all. An overlay next to the executable is the one thing about rules a
+//! user can act on, so it is the only thing this section talks about.
+//!
+//! The state readout exists for one reason: an overlay that does not parse
+//! is ignored, and being ignored looks exactly like being wrong about the
+//! library. Without a line saying so, a broken pack is a silent one.
 
 use eframe::egui;
 
@@ -19,77 +23,80 @@ use crate::worker::{self, rules_io};
 
 use super::SUCCESS_GREEN;
 
-/// The packs, in the order the section lists them, with the file each one
-/// lives in - the file name is the whole instruction for putting one there.
-fn packs(s: &i18n::Strings) -> [(PackKind, &'static str, &'static str); 2] {
+/// The two file names an overlay can have, in the order the section lists
+/// them. The file name is the whole instruction: putting a file with that
+/// name in the folder is the entire mechanism.
+fn pack_files() -> [(PackKind, &'static str); 2] {
     [
-        (
-            PackKind::CategoryRules,
-            s.rules_pack_category_label,
-            worker::RULES_FILE_NAME,
-        ),
-        (
-            PackKind::LangPack,
-            s.rules_pack_lang_label,
-            worker::L10N_RULES_FILE_NAME,
-        ),
+        (PackKind::CategoryRules, worker::RULES_FILE_NAME),
+        (PackKind::LangPack, worker::L10N_RULES_FILE_NAME),
     ]
 }
 
 pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
-    let _ = app;
     let s = i18n::strings(app.lang());
 
-    for (kind, label, file_name) in packs(s) {
-        show_pack(ui, s, kind, label, file_name);
-        ui.add_space(10.0);
+    ui.label(s.rules_hint);
+    ui.add_space(8.0);
+    show_folder(ui, s);
+
+    // Only packs that are actually there get a line. On the overwhelmingly
+    // common install nothing follows, which is the honest answer: there is
+    // no overlay, and the built-in rules need no reporting on.
+    let found: Vec<(PackKind, &str)> = pack_files()
+        .into_iter()
+        .filter(|(kind, file_name)| pack_state(ui.ctx(), *kind, file_name).present)
+        .collect();
+    if found.is_empty() {
+        return;
     }
 
-    ui.small(s.rules_hint);
-}
-
-/// What the line beside a pack's name says, and whether it is an error.
-///
-/// Split out from the drawing so the three-way mapping can be tested without
-/// depending on which files happen to sit next to the test binary - the
-/// distinction that matters is "no file" versus "broken file", and reading a
-/// missing overlay as a broken one is the mistake worth guarding against.
-fn state_line<'a>(s: &'a i18n::Strings, present: bool, valid: bool) -> (&'a str, bool) {
-    match (present, valid) {
-        (false, _) => (s.rules_pack_absent_label, false),
-        (true, true) => (s.rules_valid_label, false),
-        (true, false) => (s.rules_invalid_label, true),
+    ui.add_space(10.0);
+    ui.label(s.rules_found_label);
+    for (kind, file_name) in found {
+        ui.horizontal(|ui| {
+            ui.strong(file_name);
+            if pack_state(ui.ctx(), kind, file_name).valid {
+                ui.colored_label(SUCCESS_GREEN, s.rules_valid_label);
+            } else {
+                ui.colored_label(ui.visuals().error_fg_color, s.rules_invalid_label);
+            }
+        });
     }
 }
 
-/// One pack: its name, whether a file is there at all, whether that file
-/// parses, and where it would go.
-fn show_pack(ui: &mut egui::Ui, s: &i18n::Strings, kind: PackKind, label: &str, file_name: &str) {
-    let state = pack_state(ui.ctx(), kind, file_name);
+/// The folder an overlay goes in, with the same copy/open pair the database
+/// path gets in "Data & diagnostics" - "where do I put one?" is the section's
+/// first question, and a path you cannot open is only half an answer.
+fn show_folder(ui: &mut egui::Ui, s: &i18n::Strings) {
+    let Ok(path) = rules_io::pack_path(PackKind::CategoryRules) else {
+        return;
+    };
+    let Some(folder) = path.parent() else {
+        return;
+    };
+    let display_path = row_actions::windows_path_string(folder);
+
+    // Truncated rather than wrapped, for the same reason as the database
+    // path: a deep path would push the buttons out of the viewport, and the
+    // full text is one click away on "Copy".
+    ui.add(egui::Label::new(&display_path).truncate());
     ui.horizontal(|ui| {
-        ui.strong(label);
-        let (line, is_error) = state_line(s, state.present, state.valid);
-        if is_error {
-            ui.colored_label(ui.visuals().error_fg_color, line);
-        } else if state.present {
-            ui.colored_label(SUCCESS_GREEN, line);
-        } else {
-            ui.label(line);
+        if ui.button(s.btn_copy).clicked() {
+            ui.ctx().copy_text(display_path.clone());
+        }
+        if ui.button(s.btn_open_folder).clicked() {
+            let (program, args) = row_actions::open_folder_args(folder);
+            if let Err(err) = row_actions::launch(program, &args) {
+                crate::logger::error(&format!("Failed to open Explorer: {err}"));
+            }
         }
     });
-    // Where to look - to fix a pack that does not parse, or to put one there
-    // in the first place. Same reason the database path is shown in
-    // "Data & diagnostics".
-    if let Some(path) = &state.path {
-        ui.small(row_actions::windows_path_string(path));
-    }
 }
 
-/// A pack's readout: where its file would be, whether it is there, and
-/// whether it parses.
+/// A pack's readout: whether a file is there, and whether it parses.
 #[derive(Clone)]
 struct PackState {
-    path: Option<std::path::PathBuf>,
     present: bool,
     valid: bool,
     checked: std::time::Instant,
@@ -124,7 +131,6 @@ fn pack_state(ctx: &egui::Context, kind: PackKind, file_name: &str) -> PackState
 
     let present = rules_io::pack_is_present(kind);
     let state = PackState {
-        path: rules_io::pack_path(kind).ok(),
         present,
         valid: present && rules_io::pack_is_valid(kind),
         checked: std::time::Instant::now(),
@@ -169,56 +175,55 @@ mod tests {
         test
     }
 
+    /// What the section is for: say that an overlay is possible and where it
+    /// goes. Both of those must be on screen with no file present.
     #[test]
-    fn the_section_lists_both_packs() {
+    fn the_section_explains_the_overlay_and_where_to_put_one() {
         let test = open_rules();
         let s = test.strings();
 
-        test.assert_label(s.rules_pack_category_label);
-        test.assert_label(s.rules_pack_lang_label);
+        test.assert_label(s.rules_hint);
+        test.assert_label(s.btn_open_folder);
     }
 
-    /// The section's reason to exist: each pack says what state it is in.
-    /// Nothing writes an overlay next to the test binary, so on a clean run
-    /// both read as absent - and "absent" has to be a state the section can
-    /// say, or a fresh install would read as two broken packs.
+    /// The section must not describe the built-in rules. With no overlay
+    /// installed it says nothing about any pack at all - no file names, no
+    /// per-pack state, no "not present" placeholder.
+    ///
+    /// Asserted by the absence of both file names, because those are what a
+    /// pack line is built from: a section that listed the packs could not
+    /// pass this, and neither could one that reported their state.
     #[test]
-    fn every_pack_reports_its_state() {
+    fn nothing_is_said_about_a_pack_when_no_overlay_is_installed() {
         let test = open_rules();
         let s = test.strings();
 
+        // Guard the guard: if an overlay ever did sit next to the test
+        // binary this test would be asserting nothing, so say so instead of
+        // passing quietly.
+        let installed = [
+            crate::worker::RULES_FILE_NAME,
+            crate::worker::L10N_RULES_FILE_NAME,
+        ]
+        .into_iter()
+        .filter(|name| {
+            crate::worker::rules_io::pack_is_present(match *name {
+                n if n == crate::worker::RULES_FILE_NAME => {
+                    gametrimmer_core::packs::PackKind::CategoryRules
+                }
+                _ => gametrimmer_core::packs::PackKind::LangPack,
+            })
+        })
+        .count();
         assert_eq!(
-            test.count_labels(s.rules_pack_absent_label)
-                + test.count_labels(s.rules_valid_label)
-                + test.count_labels(s.rules_invalid_label),
-            2,
-            "each of the two packs must carry exactly one state readout",
+            installed, 0,
+            "an overlay is sitting next to the test binary; this test cannot judge",
         );
-    }
 
-    /// The counter-example to the test above: it would pass just as happily
-    /// if every pack read "does not parse". A missing overlay is the normal
-    /// state and must never be dressed up as a broken one - that would send
-    /// someone hunting a syntax error in a file they never wrote. Asserted on
-    /// the mapping rather than on a rendered frame, because what sits next to
-    /// the test binary is whatever earlier builds left there.
-    #[test]
-    fn a_pack_with_no_file_reads_as_absent_not_as_broken() {
-        let s = crate::i18n::strings(crate::i18n::Lang::En);
-
-        assert_eq!(
-            super::state_line(s, false, false),
-            (s.rules_pack_absent_label, false),
-            "a missing overlay was reported as a broken one",
-        );
-        assert_eq!(
-            super::state_line(s, true, false),
-            (s.rules_invalid_label, true),
-            "an overlay that does not parse must be reported as an error",
-        );
-        assert_eq!(
-            super::state_line(s, true, true),
-            (s.rules_valid_label, false),
-        );
+        assert_eq!(test.count_labels(s.rules_found_label), 0);
+        assert_eq!(test.count_labels(crate::worker::RULES_FILE_NAME), 0);
+        assert_eq!(test.count_labels(crate::worker::L10N_RULES_FILE_NAME), 0);
+        assert_eq!(test.count_labels(s.rules_valid_label), 0);
+        assert_eq!(test.count_labels(s.rules_invalid_label), 0);
     }
 }

@@ -280,12 +280,10 @@ pub struct Strings {
     pub keep_english_absent: &'static str,
     pub btn_keep_english_again: &'static str,
 
-    /// "Rules": the two analysis packs, each with a live validity readout.
-    pub rules_pack_category_label: &'static str,
-    pub rules_pack_lang_label: &'static str,
+    /// "Rules": the optional overlay packs a user may put next to the exe.
+    pub rules_found_label: &'static str,
     pub rules_valid_label: &'static str,
     pub rules_invalid_label: &'static str,
-    pub rules_pack_absent_label: &'static str,
 
     /// "Data & diagnostics": the database file and the irreversible wipe.
     pub db_path_label: &'static str,
@@ -801,20 +799,14 @@ impl Strings {
         if let Some(val) = map.get("btn_keep_english_again") {
             s.btn_keep_english_again = Box::leak(val.clone().into_boxed_str());
         }
-        if let Some(val) = map.get("rules_pack_category_label") {
-            s.rules_pack_category_label = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("rules_pack_lang_label") {
-            s.rules_pack_lang_label = Box::leak(val.clone().into_boxed_str());
+        if let Some(val) = map.get("rules_found_label") {
+            s.rules_found_label = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("rules_valid_label") {
             s.rules_valid_label = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("rules_invalid_label") {
             s.rules_invalid_label = Box::leak(val.clone().into_boxed_str());
-        }
-        if let Some(val) = map.get("rules_pack_absent_label") {
-            s.rules_pack_absent_label = Box::leak(val.clone().into_boxed_str());
         }
         if let Some(val) = map.get("db_path_label") {
             s.db_path_label = Box::leak(val.clone().into_boxed_str());
@@ -1475,11 +1467,9 @@ impl Strings {
             ("keep_english_warning", self.keep_english_warning),
             ("keep_english_absent", self.keep_english_absent),
             ("btn_keep_english_again", self.btn_keep_english_again),
-            ("rules_pack_category_label", self.rules_pack_category_label),
-            ("rules_pack_lang_label", self.rules_pack_lang_label),
+            ("rules_found_label", self.rules_found_label),
             ("rules_valid_label", self.rules_valid_label),
             ("rules_invalid_label", self.rules_invalid_label),
-            ("rules_pack_absent_label", self.rules_pack_absent_label),
             ("db_path_label", self.db_path_label),
             ("btn_copy", self.btn_copy),
             ("btn_open_folder", self.btn_open_folder),
