@@ -210,6 +210,28 @@ pub struct GameTrimmerApp {
     #[allow(dead_code)]
     pub last_ipc_poll: Option<std::time::Instant>,
 
+    /// What `WorkerMsg::ReturnedSinceLastScan` reported at startup (GT-09):
+    /// which games' launcher build ids moved since the last scan, and how
+    /// much of a previous trim came back with them - see
+    /// `gametrimmer_core::gamestate::returned_since_last_scan`. Empty before
+    /// that message arrives and whenever the check found nothing changed;
+    /// `ui::top_bar` renders a line for it only while this is non-empty.
+    ///
+    /// Deliberately not `updated_games` above, and not merged into it. That
+    /// map is a *live* nudge from the watch daemon while the app is already
+    /// open, keyed by `app_id`, feeding a per-row tree marker; this is a
+    /// *one-time startup summary* read from the database, keyed by
+    /// `game_id`, feeding a dismissible top-bar line. One has no `game_id`
+    /// to key a summary by and the other has no per-row detail to mark a
+    /// tree with, so folding them into one field would only lose one side's
+    /// information to gain nothing.
+    pub returned_games: Vec<gametrimmer_core::gamestate::ReturnedGame>,
+    /// Whether the user has dismissed the startup banner above for this
+    /// session (see [`Self::dismiss_returned_games_banner`]). Never
+    /// persisted - a fresh launch is a fresh "what came back", worth saying
+    /// again.
+    pub returned_banner_dismissed: bool,
+
     pub findings: Vec<FindingItem>,
     /// Turns each finding's stored (English) description into the one the
     /// window shows - see `worker::descriptions`.
@@ -552,6 +574,8 @@ impl GameTrimmerApp {
             watch_daemon_running: false,
             updated_games: std::collections::HashMap::new(),
             last_ipc_poll: None,
+            returned_games: Vec::new(),
+            returned_banner_dismissed: false,
         };
 
         // Show the previous scan's results immediately rather than an empty
@@ -935,6 +959,12 @@ impl GameTrimmerApp {
         self.status_message.clear();
         self.remove_summary = None;
         self.last_scan_timing = None;
+        // The startup banner's whole claim is "since the last scan", and this
+        // is the moment that stops being true: the run about to start records
+        // today's build ids, so what it reported is answered rather than
+        // merely old. Left on screen it would keep asserting an update the
+        // user has just dealt with.
+        self.returned_games.clear();
 
         let handle = worker::scan::spawn_scan(
             db_path,
@@ -977,6 +1007,15 @@ impl GameTrimmerApp {
 
     pub fn cancel_scan(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Dismisses the startup "what came back" banner (GT-09,
+    /// `ui::top_bar`) for the rest of this session. Does not touch
+    /// `returned_games` itself - the data stays true, only the banner's
+    /// visibility changes - so a later `✕` click can't be mistaken for the
+    /// underlying answer changing back to "nothing".
+    pub fn dismiss_returned_games_banner(&mut self) {
+        self.returned_banner_dismissed = true;
     }
 
     /// Selects every non-removed finding (the "Select All" action).
@@ -1974,6 +2013,13 @@ impl GameTrimmerApp {
                         };
                     }
                 }
+            }
+            WorkerMsg::ReturnedSinceLastScan { games } => {
+                // Fresh data for a fresh session's banner - see
+                // `dismiss_returned_games_banner`'s doc comment for why a
+                // stale dismissal must never survive to hide it.
+                self.returned_banner_dismissed = false;
+                self.returned_games = games;
             }
             WorkerMsg::ClearDone { error } => {
                 self.end_job();

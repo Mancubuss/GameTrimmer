@@ -615,6 +615,39 @@ pub fn load_previous_results_failed(lang: Lang, err: impl std::fmt::Display) -> 
     }
 }
 
+/// Logged (never shown) when `gamestate::returned_since_last_scan` itself
+/// fails - a launcher's own records could not be read. Distinct from
+/// `load_previous_results_failed`: the saved results loaded fine, this is
+/// only the extra "what changed while you were away" check on top of them.
+pub fn returned_since_last_scan_failed(lang: Lang, err: impl std::fmt::Display) -> String {
+    match lang {
+        Lang::En | Lang::Custom(_) => {
+            format!("Failed to check what changed since the last scan: {err}")
+        }
+    }
+}
+
+/// The startup "what came back" banner (GT-09): how many games' launcher
+/// build ids moved since the last scan, and - only when it is not zero - how
+/// much of a previous trim's deletions are back on disk right now (see
+/// `gametrimmer_core::gamestate::returned_since_last_scan`).
+///
+/// `bytes == 0` is the common case (a user who has never deleted anything,
+/// and the case in the owner's own database), and it is deliberately worded
+/// without a size clause at all rather than "0 B is back" - a figure that
+/// would read as a bug rather than as the true, unremarkable answer.
+pub fn returned_games_banner(lang: Lang, game_count: usize, bytes: u64) -> String {
+    match lang {
+        Lang::En | Lang::Custom(_) if bytes == 0 => {
+            format!("{game_count} game(s) updated since the last scan")
+        }
+        Lang::En | Lang::Custom(_) => format!(
+            "{game_count} game(s) updated since the last scan - {} is back",
+            crate::model::format_size(lang, bytes)
+        ),
+    }
+}
+
 // -- worker::rules_io --
 
 pub fn prepare_rules_file_failed(lang: Lang, err: impl std::fmt::Display) -> String {
@@ -1248,6 +1281,29 @@ mod tests {
         assert_ne!(
             ukrainian, english,
             "it should still be translated, not passed through"
+        );
+    }
+
+    /// Zero bytes back must not print "0 B is back" - that reads as a bug to
+    /// a user who has simply never deleted anything (the common case, and
+    /// the owner's own database today).
+    #[test]
+    fn returned_games_banner_drops_the_size_clause_at_zero_bytes() {
+        let text = returned_games_banner(Lang::En, 3, 0);
+
+        assert_eq!(text, "3 game(s) updated since the last scan");
+    }
+
+    /// A non-zero figure must say how much, formatted through the same
+    /// `format_size` every other size in the app uses.
+    #[test]
+    fn returned_games_banner_states_the_size_when_something_came_back() {
+        let text = returned_games_banner(Lang::En, 1, 3 * 1024 * 1024);
+
+        assert!(text.contains("1 game(s) updated since the last scan"));
+        assert!(
+            text.contains(&crate::model::format_size(Lang::En, 3 * 1024 * 1024)),
+            "expected the formatted size in: {text}"
         );
     }
 }

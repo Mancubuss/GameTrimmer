@@ -173,6 +173,32 @@ pub enum WorkerMsg {
     /// `error` is `None` on success, in which case the UI resets to the
     /// empty startup state (no findings, nothing scanned yet).
     ClearDone { error: Option<String> },
+    /// What happened while the app was closed, for the startup banner
+    /// (GT-09) - see `gametrimmer_core::gamestate::returned_since_last_scan`.
+    /// Sent once, from `worker::load`, alongside (never blocking) the saved
+    /// results in `Done`: this is a handful of small per-launcher reads, not
+    /// a rescan, so there is no reason to make the user wait on it.
+    ///
+    /// `games` empty means the check ran and found nothing changed - the
+    /// normal, silent case `ui::top_bar` renders as no banner at all. That is
+    /// deliberately different from a check that could not run at all: a
+    /// `returned_since_last_scan` error is reported through
+    /// `Notifier::report_warning` instead, and *nothing* is sent for it, so a
+    /// failed check can never be read as "nothing changed" - only "we don't
+    /// know".
+    ///
+    /// Distinct from `GameUpdatedIpc` above despite both being about a game
+    /// changing: that one is a live nudge from the background watch daemon
+    /// while the app is already open, keyed by `app_id`, and drives a
+    /// per-row tree marker. This one is a one-time startup summary read
+    /// straight from the database, keyed by `game_id`, and drives a
+    /// dismissible top-bar line. Neither can stand in for the other - one
+    /// has no `game_id` to key a summary by, the other has no per-row detail
+    /// to mark a tree with - so they stay two fields fed by two messages
+    /// rather than being folded into one.
+    ReturnedSinceLastScan {
+        games: Vec<gametrimmer_core::gamestate::ReturnedGame>,
+    },
 }
 
 /// Outcome of removing one file, matched back to its `files.id` row.

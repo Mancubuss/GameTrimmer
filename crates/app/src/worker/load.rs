@@ -11,6 +11,7 @@ use std::thread::JoinHandle;
 
 use gametrimmer_core::db;
 use gametrimmer_core::error::Result as CoreResult;
+use gametrimmer_core::gamestate;
 use rusqlite::Connection;
 
 use crate::i18n::{self, Lang};
@@ -105,6 +106,21 @@ fn run_load(db_path: &Path, notifier: &Notifier, lang: Lang) {
                 i18n::load_previous_results_failed(l, &err)
             }));
         }
+    }
+
+    // What happened while the app was closed (GT-09's startup banner): a
+    // handful of small per-launcher reads, run *after* the saved results
+    // above are already on their way to the window, so a slow or unreachable
+    // launcher can never delay showing findings the user is waiting on.
+    match gamestate::returned_since_last_scan(&conn) {
+        Ok(games) => notifier.send(WorkerMsg::ReturnedSinceLastScan { games }),
+        // A failed check is not evidence that nothing changed - see
+        // `WorkerMsg::ReturnedSinceLastScan`'s doc comment. Warned, not
+        // errored: the saved results already loaded just fine, and this is
+        // one extra piece of information about them, not the load itself.
+        Err(err) => notifier.report_warning(i18n::Reported::new(lang, |l| {
+            i18n::returned_since_last_scan_failed(l, &err)
+        })),
     }
 }
 

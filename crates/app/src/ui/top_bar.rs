@@ -79,6 +79,26 @@ pub fn show(app: &mut GameTrimmerApp, ui: &mut egui::Ui) {
             ui.colored_label(ui.visuals().error_fg_color, db_error);
         }
 
+        // The startup "what came back" banner (GT-09,
+        // `WorkerMsg::ReturnedSinceLastScan`). One line inside the panel
+        // that is already here, not a new panel - the owner's standing rule
+        // is that this window is already crowded, and a fourth panel for one
+        // dismissible sentence would be exactly the kind of feature this UI
+        // cannot keep absorbing. Silent (no line at all) whenever nothing
+        // changed or the banner has been dismissed this session - a user who
+        // has nothing to be told about must see nothing, not an empty or
+        // zeroed-out line that reads as broken detection.
+        if !app.returned_banner_dismissed && !app.returned_games.is_empty() {
+            let bytes: u64 = app.returned_games.iter().map(|game| game.bytes).sum();
+            let text = i18n::returned_games_banner(lang, app.returned_games.len(), bytes);
+            ui.horizontal(|ui| {
+                ui.label(text);
+                if ui.button("\u{2715}").on_hover_text(s.btn_close).clicked() {
+                    app.dismiss_returned_games_banner();
+                }
+            });
+        }
+
         if let Some(progress) = app.progress.clone() {
             let fraction = if progress.total == 0 {
                 0.0
@@ -500,6 +520,111 @@ mod tests {
         // exactly the base text, though it still starts with it.
         test.assert_no_label(&base_text);
         test.assert_label_containing(&base_text);
+    }
+
+    /// GT-09. A game whose build id moved *and* whose deletion is back
+    /// (non-zero bytes) must state both the count and the size, formatted
+    /// through `i18n::returned_games_banner` - looked up via that function
+    /// rather than a literal string, per this module's own doc comment on
+    /// why (renames must not silently stop being tested).
+    #[test]
+    fn the_returned_games_banner_shows_the_count_and_size_when_something_came_back() {
+        let mut test = UiTest::new(show);
+        let bytes = 3 * 1024 * 1024 * 1024;
+        test.app_mut()
+            .apply_message(WorkerMsg::ReturnedSinceLastScan {
+                games: vec![gametrimmer_core::gamestate::ReturnedGame {
+                    game_id: 1,
+                    name: "Test Game".to_string(),
+                    files: 4,
+                    bytes,
+                }],
+            });
+        test.run();
+
+        let expected = i18n::returned_games_banner(test.app().lang(), 1, bytes);
+        test.assert_label_containing(&expected);
+    }
+
+    /// The common case (and the owner's own database today): games updated
+    /// but nothing a previous trim deleted is back, because nothing was ever
+    /// deleted. "0 B is back" would read as a bug, so the line must state
+    /// only the count.
+    #[test]
+    fn the_returned_games_banner_omits_the_size_at_zero_bytes() {
+        let mut test = UiTest::new(show);
+        test.app_mut()
+            .apply_message(WorkerMsg::ReturnedSinceLastScan {
+                games: vec![gametrimmer_core::gamestate::ReturnedGame {
+                    game_id: 1,
+                    name: "Test Game".to_string(),
+                    files: 0,
+                    bytes: 0,
+                }],
+            });
+        test.run();
+
+        // Exact, not "containing": the non-zero wording *starts with* the
+        // zero wording, so a `contains` check would pass even if the size
+        // clause were appended.
+        //
+        // What this pins is the wiring - that the bar draws exactly what the
+        // message function returns for this input - not the wording, because
+        // both sides read the same function and move together when it is
+        // edited. The wording is pinned separately, and deliberately, by
+        // `i18n::messages`'
+        // `returned_games_banner_drops_the_size_clause_at_zero_bytes`; break
+        // the zero-bytes branch and that one goes red while this one stays
+        // green, which is the division of labour intended here.
+        let expected = i18n::returned_games_banner(test.app().lang(), 1, 0);
+        test.assert_label(&expected);
+    }
+
+    /// Silence is the correct normal state: an empty list means the check
+    /// ran and found nothing changed, which must not print an empty or
+    /// zeroed-out line - that would read as broken detection, not as "all
+    /// clear".
+    #[test]
+    fn the_returned_games_banner_is_silent_when_nothing_changed() {
+        let mut test = UiTest::new(show);
+        test.app_mut()
+            .apply_message(WorkerMsg::ReturnedSinceLastScan { games: Vec::new() });
+        test.run();
+
+        // Asserted against what the banner *would* say for an empty list, not
+        // against a literal phrase: a reworded sentence must break this test
+        // rather than make it pass by accident.
+        let would_say = i18n::returned_games_banner(test.app().lang(), 0, 0);
+        test.assert_no_label(&would_say);
+    }
+
+    /// Dismissing hides the banner for the rest of the session without
+    /// discarding the data behind it - only its visibility changes (see
+    /// `GameTrimmerApp::dismiss_returned_games_banner`).
+    #[test]
+    fn dismissing_the_returned_games_banner_hides_it_but_keeps_the_data() {
+        let mut test = UiTest::new(show);
+        test.app_mut()
+            .apply_message(WorkerMsg::ReturnedSinceLastScan {
+                games: vec![gametrimmer_core::gamestate::ReturnedGame {
+                    game_id: 1,
+                    name: "Test Game".to_string(),
+                    files: 1,
+                    bytes: 1024,
+                }],
+            });
+        test.run();
+        let expected = i18n::returned_games_banner(test.app().lang(), 1, 1024);
+        test.assert_label_containing(&expected);
+
+        test.click("\u{2715}");
+
+        test.assert_no_label(&expected);
+        assert_eq!(
+            test.app().returned_games.len(),
+            1,
+            "dismissing the banner must not discard what it reported",
+        );
     }
 
     // At 8 fps each frame lasts 0.125s; sample the middle of each slot.

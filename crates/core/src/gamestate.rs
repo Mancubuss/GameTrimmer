@@ -12,6 +12,7 @@
 //! (`SteamAppState`, `EpicItemState`, `GogGameState`), and database query helpers.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -221,6 +222,169 @@ impl GogGameState {
             _ => true,
         }
     }
+}
+
+/// Build ids for one library right now, keyed by the app id its provider
+/// reports - the right-hand side of [`changed_games`].
+///
+/// The single place that knows which launcher publishes a content version and
+/// where. Both callers need the identical answer for opposite reasons: the
+/// scan records it so a later run has something to compare against, and the
+/// startup check compares against what the last scan recorded. Two copies of
+/// this list would diverge exactly once - the day a launcher is added to one
+/// and not the other - and the symptom would be a banner that reports every
+/// game of that launcher as changed on every start, because "the value moved"
+/// and "nobody read the value" are indistinguishable downstream.
+///
+/// Steam and GOG answer per library root. The other four keep one
+/// machine-wide record each and ignore `library_root` entirely; the caller
+/// looks the result up by its own games' app ids, so a wider answer cannot
+/// put a foreign game's build id on a local row.
+///
+/// A vendor that publishes nothing yields an empty map rather than an error.
+pub fn current_build_ids(vendor: &str, library_root: &Path) -> Result<HashMap<String, String>> {
+    use crate::providers;
+
+    match vendor {
+        "steam" => Ok(providers::steam::manifest_states(library_root)?
+            .into_iter()
+            .filter_map(|state| Some((state.app_id, state.build_id?)))
+            .collect()),
+        "epic" => providers::epic::build_ids(),
+        "gog" => providers::folderscan::gog_build_ids(library_root),
+        "amazon" => providers::amazon::build_ids(),
+        "itch" => providers::itch::build_ids(),
+        "humble" => providers::humble::build_ids(),
+        _ => Ok(HashMap::new()),
+    }
+}
+
+/// What a previous trim took out of one game and the filesystem has since put
+/// back: the files this app deleted whose paths hold a file again.
+///
+/// Returns the count and the sum of their sizes *as they are on disk now*,
+/// not as they were when they were deleted. The question the number answers
+/// is "how much space is occupied again", and the launcher is free to have
+/// re-downloaded a differently-sized file under the same path.
+///
+/// Only deletions made since the last scan can be counted, and that is the
+/// right window rather than a limitation: a scan replaces a game's `files`
+/// rows, so the journal entries pointing at the previous generation stop
+/// joining - which is exactly when their subject stopped being current.
+///
+/// A game with no deletion history returns `(0, 0)`. That is a real answer,
+/// not a missing one: nothing was removed, so nothing can have come back.
+pub fn returned_since_trim(conn: &Connection, game_id: i64) -> Result<(usize, u64)> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT o.src_path \
+         FROM operations o \
+         JOIN files f ON f.id = o.file_id \
+         WHERE o.status = 'done' AND f.game_id = ?1",
+    )?;
+    let paths = stmt.query_map([game_id], |row| row.get::<_, String>(0))?;
+
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    for path in paths {
+        // A path that is not there is the ordinary case - the deletion still
+        // holds. Anything that cannot be examined at all (a permission error,
+        // a drive that went away) is counted as "not back" for the same
+        // reason: this figure exists to tell the user what their trim lost,
+        // and inventing a loss out of an unreadable path is the one failure
+        // that would make the banner untrustworthy.
+        if let Ok(meta) = std::fs::metadata(path?) {
+            if meta.is_file() {
+                files += 1;
+                bytes += meta.len();
+            }
+        }
+    }
+
+    Ok((files, bytes))
+}
+
+/// One updated game, with what its update put back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReturnedGame {
+    pub game_id: i64,
+    pub name: String,
+    /// Files a previous trim deleted that are on disk again.
+    pub files: usize,
+    /// Their combined size right now, in bytes.
+    pub bytes: u64,
+}
+
+/// Everything the app can say at startup about what happened while it was
+/// closed, for the price of reading each launcher's own small records.
+///
+/// Deliberately reports only games whose build id *moved*. `changed_games`
+/// also reports games that vanished from their launcher's manifests, and
+/// those matter - their stored findings are stale - but they are a different
+/// sentence to a different question ("this game is gone" rather than "your
+/// trim was undone"), and folding both into one count would produce a banner
+/// that cannot be acted on.
+///
+/// That filter is also the whole defence against the worst failure available
+/// here. A launcher that answers with nothing - an external drive unplugged,
+/// a renamed library, a config the app cannot read this morning - makes every
+/// one of its games look "missing from the manifests", and a report that
+/// counted those would announce that two hundred games were uninstalled
+/// overnight. Dropping them means "no answer" produces silence, which is the
+/// only honest thing it can produce. Anything that later wants to report
+/// uninstalls has to solve "no" versus "no answer" first, and it is not
+/// solved here.
+pub fn returned_since_last_scan(conn: &Connection) -> Result<Vec<ReturnedGame>> {
+    let mut libraries = conn.prepare(
+        "SELECT id, vendor, path FROM game_libraries \
+         WHERE id IN (SELECT DISTINCT library_id FROM games \
+                      WHERE scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1))",
+    )?;
+    let libraries: Vec<(i64, String, String)> = libraries
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+
+    let mut updated = Vec::new();
+    for (library_id, vendor, path) in libraries {
+        // A launcher that cannot be read is not evidence of anything, and
+        // this whole report is only ever additive information - so a failure
+        // costs this library's line and nothing else. Empty is not special-
+        // cased: it flows through `changed_games` and comes out as
+        // uninstalls, which the filter below drops for exactly this reason.
+        let Ok(current) = current_build_ids(&vendor, Path::new(&path)) else {
+            continue;
+        };
+
+        let mut stored = conn.prepare(
+            "SELECT id, name, app_id, build_id FROM games \
+             WHERE library_id = ?1 \
+               AND scan_id = (SELECT active_scan_id FROM scan_state WHERE singleton = 1)",
+        )?;
+        let stored: Vec<StoredGameState> = stored
+            .query_map([library_id], |row| {
+                Ok(StoredGameState {
+                    game_id: row.get(0)?,
+                    name: row.get(1)?,
+                    app_id: row.get(2)?,
+                    build_id: row.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+
+        for change in changed_games(&stored, &current) {
+            if change.kind != ChangeKind::Updated {
+                continue;
+            }
+            let (files, bytes) = returned_since_trim(conn, change.game_id)?;
+            updated.push(ReturnedGame {
+                game_id: change.game_id,
+                name: change.name,
+                files,
+                bytes,
+            });
+        }
+    }
+
+    Ok(updated)
 }
 
 /// Finds a stored game in SQLite by its launcher app/vendor ID.
@@ -452,6 +616,174 @@ mod tests {
 "#;
         let dlc_state = GogGameState::parse(json_dlc).expect("parse gog dlc");
         assert!(!dlc_state.is_base_game());
+    }
+
+    /// A database holding one GOG library, one game in it, and an active scan
+    /// generation - the shape both startup checks read. `library_root` is a
+    /// real directory so `current_build_ids` can answer from actual
+    /// `goggame-*.info` files rather than from a mock, which is the whole
+    /// point: the map's keys have to match what discovery calls `app_id`, and
+    /// a mock is exactly the thing that cannot prove that.
+    fn gog_fixture(library_root: &std::path::Path, stored_build_id: Option<&str>) -> Connection {
+        let conn = crate::db::open_in_memory().expect("open memory db");
+        let scan_id = crate::db::begin_scan(&conn, "complete").expect("begin scan");
+        // `apply_schema` already seeds the singleton row, so this activates
+        // the generation rather than creating the row.
+        conn.execute(
+            "INSERT INTO scan_state (singleton, active_scan_id) VALUES (1, ?1)
+             ON CONFLICT(singleton) DO UPDATE SET active_scan_id = excluded.active_scan_id",
+            [scan_id],
+        )
+        .expect("activate scan");
+        conn.execute(
+            "INSERT INTO game_libraries (id, vendor, path) VALUES (1, 'gog', ?1)",
+            [library_root.to_string_lossy()],
+        )
+        .expect("insert library");
+        conn.execute(
+            "INSERT INTO games (id, scan_id, library_id, name, install_dir, app_id, build_id)
+             VALUES (7, ?1, 1, 'A.D. 2044', ?2, '2075976504', ?3)",
+            rusqlite::params![
+                scan_id,
+                library_root.join("AD2044").to_string_lossy(),
+                stored_build_id,
+            ],
+        )
+        .expect("insert game");
+        conn
+    }
+
+    fn write_gog_manifest(library_root: &std::path::Path, build_id: &str) {
+        let dir = library_root.join("AD2044");
+        std::fs::create_dir_all(&dir).expect("create game dir");
+        std::fs::write(
+            dir.join("goggame-2075976504.info"),
+            format!(
+                r#"{{"gameId":"2075976504","rootGameId":"2075976504","name":"A.D. 2044","buildId":"{build_id}"}}"#
+            ),
+        )
+        .expect("write manifest");
+    }
+
+    /// Records a finished deletion of `path` for game 7, the way `ops` does.
+    fn record_deletion(conn: &Connection, file_id: i64, path: &std::path::Path, size: i64) {
+        conn.execute(
+            "INSERT INTO files (id, scan_id, game_id, rel_path, size)
+             VALUES (?1, (SELECT active_scan_id FROM scan_state WHERE singleton = 1), 7, ?2, ?3)",
+            rusqlite::params![file_id, path.to_string_lossy(), size],
+        )
+        .expect("insert file");
+        conn.execute(
+            "INSERT INTO operations (ts, action, src_path, status, file_id)
+             VALUES (0, 'delete', ?1, 'done', ?2)",
+            rusqlite::params![path.to_string_lossy(), file_id],
+        )
+        .expect("insert operation");
+    }
+
+    #[test]
+    fn returned_since_trim_counts_only_the_deleted_files_that_are_back() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        let conn = gog_fixture(root, Some("100"));
+
+        let back = root.join("came_back.pak");
+        std::fs::write(&back, vec![0u8; 1234]).expect("write returned file");
+        record_deletion(&conn, 1, &back, 1234);
+
+        // Still deleted: the trim held, so it must not be counted.
+        record_deletion(&conn, 2, &root.join("still_gone.pak"), 5678);
+
+        let (files, bytes) = returned_since_trim(&conn, 7).expect("query returned files");
+        assert_eq!(files, 1);
+        assert_eq!(bytes, 1234);
+    }
+
+    #[test]
+    fn returned_since_trim_measures_the_file_that_is_there_now() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        let conn = gog_fixture(root, Some("100"));
+
+        // The launcher re-downloaded a bigger file under the same path. The
+        // honest answer to "how much is occupied again" is the size on disk
+        // now, not the size the deletion freed.
+        let back = root.join("came_back.pak");
+        std::fs::write(&back, vec![0u8; 4096]).expect("write returned file");
+        record_deletion(&conn, 1, &back, 1024);
+
+        let (files, bytes) = returned_since_trim(&conn, 7).expect("query returned files");
+        assert_eq!(files, 1);
+        assert_eq!(bytes, 4096);
+    }
+
+    #[test]
+    fn returned_since_last_scan_reports_a_game_whose_launcher_moved_on() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        write_gog_manifest(root, "200");
+        let conn = gog_fixture(root, Some("100"));
+
+        let back = root.join("AD2044").join("came_back.pak");
+        std::fs::write(&back, vec![0u8; 2048]).expect("write returned file");
+        record_deletion(&conn, 1, &back, 2048);
+
+        let returned = returned_since_last_scan(&conn).expect("query changes");
+        assert_eq!(returned.len(), 1);
+        assert_eq!(returned[0].game_id, 7);
+        assert_eq!(returned[0].name, "A.D. 2044");
+        assert_eq!(returned[0].files, 1);
+        assert_eq!(returned[0].bytes, 2048);
+    }
+
+    #[test]
+    fn returned_since_last_scan_says_nothing_when_the_build_id_did_not_move() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        write_gog_manifest(root, "200");
+        let conn = gog_fixture(root, Some("200"));
+
+        assert!(
+            returned_since_last_scan(&conn)
+                .expect("query changes")
+                .is_empty(),
+            "an unchanged build id is not an update"
+        );
+    }
+
+    #[test]
+    fn returned_since_last_scan_stays_silent_when_the_library_answers_with_nothing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        // No manifest written at all: the drive is there but the launcher's
+        // records are not, which is what an unplugged or renamed library
+        // looks like. This pins the user-visible guarantee, not the line that
+        // happens to enforce it today - announcing that every game on the
+        // drive vanished overnight is the failure, wherever it gets stopped.
+        let conn = gog_fixture(root, Some("100"));
+
+        assert!(
+            returned_since_last_scan(&conn)
+                .expect("query changes")
+                .is_empty(),
+            "an empty answer from a launcher is not evidence of a change"
+        );
+    }
+
+    #[test]
+    fn returned_since_last_scan_reports_an_updated_game_with_no_trim_history() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        write_gog_manifest(root, "200");
+        let conn = gog_fixture(root, Some("100"));
+
+        // Nothing was ever deleted from this game, so nothing came back. The
+        // update is still worth reporting - it is the size that is absent,
+        // not the event.
+        let returned = returned_since_last_scan(&conn).expect("query changes");
+        assert_eq!(returned.len(), 1);
+        assert_eq!(returned[0].files, 0);
+        assert_eq!(returned[0].bytes, 0);
     }
 
     #[test]

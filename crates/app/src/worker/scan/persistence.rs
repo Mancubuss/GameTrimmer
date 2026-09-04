@@ -9,8 +9,9 @@ use rusqlite::{params, Connection};
 
 use gametrimmer_core::db;
 use gametrimmer_core::error::{CoreError, Result as CoreResult};
+use gametrimmer_core::gamestate;
 use gametrimmer_core::perf;
-use gametrimmer_core::providers::{self, DiscoveredLibrary};
+use gametrimmer_core::providers::DiscoveredLibrary;
 use gametrimmer_core::rules::RuleProvenance;
 use gametrimmer_core::scanner::{store_files_no_tx, ScanStats};
 
@@ -334,24 +335,12 @@ pub(super) fn persist_libraries(
 /// in a summary, and nothing in the deletion path consults it. Failing the
 /// whole scan here would mean a Steam library that went offline mid-scan takes
 /// every other library's results down with it, which is the opposite of what
-/// per-library evidence is for.
+/// per-library evidence is for. That is the whole of what this wrapper adds
+/// over `gamestate::current_build_ids`: the list of who publishes what lives
+/// there, because the startup check has to read it the same way or the two
+/// would disagree about what "changed" means.
 fn build_ids_for(library: &DiscoveredLibrary) -> HashMap<String, String> {
-    let read = match library.vendor {
-        "steam" => providers::steam::manifest_states(&library.path).map(|states| {
-            states
-                .into_iter()
-                .filter_map(|state| Some((state.app_id, state.build_id?)))
-                .collect()
-        }),
-        "epic" => providers::epic::build_ids(),
-        "gog" => providers::folderscan::gog_build_ids(&library.path),
-        "amazon" => providers::amazon::build_ids(),
-        "itch" => providers::itch::build_ids(),
-        "humble" => providers::humble::build_ids(),
-        _ => return HashMap::new(),
-    };
-
-    match read {
+    match gamestate::current_build_ids(library.vendor, &library.path) {
         Ok(ids) => ids,
         Err(err) => {
             crate::logger::error(&format!(
