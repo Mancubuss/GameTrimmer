@@ -377,7 +377,7 @@
     },
     {
       "category": "intro",
-      "pattern": "^(amd.*|nvidia.*|intel.*|geforce.*|radeon.*|ryzen.*|bink.*|havok.*|dolby.*|dts.*|unreal.*|crytek.*|cryengine.*|unity.*|autodesk.*|speedtree.*|wwise.*|fmod.*|cri_?.*|scaleform.*|ignite.*|radvideo.*|physx.*|apex.*)\\.(bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
+      "pattern": "^(?:(?:amd|nvidia|intel|geforce|radeon|ryzen|havok|dolby|dts|unreal|crytek|cryengine|unity|autodesk|speedtree|wwise|fmod|scaleform|ignite|physx)(?:|[_. -].*|.*(?:logo|splash|bumper|sting|presents|powered|ident).*)|(?:bink|cri|radvideo)(?:|.*(?:logo|splash|bumper|sting|presents|powered|ident).*))\\.(?:bik|bk2|mp4|webm|ogv|wmv|avi|usm|mkv|m4v)$",
       "desc": {
         "en": "Engine, middleware or hardware vendor logo video (NVIDIA, AMD, Bink, Unreal, Havok, etc.)",
         "uk": "Відео логотипу рушія, технологій або обладнання (NVIDIA, AMD, Bink, Unreal, Havok тощо)"

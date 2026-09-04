@@ -2006,6 +2006,79 @@ mod tests {
         }
     }
 
+    /// The vendor-logo rule used to read "starts with a vendor's name", and
+    /// that claimed 4.46 GB of a 4.6 GB haul in a 1637-game library without a
+    /// vendor logo among it. Two different mistakes were hiding in one `.*`:
+    ///
+    /// * the vendor token did not have to *end* anywhere, so `intel` matched
+    ///   `INTELLIGENCE.bk2` - Fallout 4's S.P.E.C.I.A.L. perk video, 369 MB,
+    ///   in four installed editions - and `cri` matched `CRITERION.MP4`,
+    ///   `CriticalHit_Final.bk2` and `Crimes_in_Shanty.bik`;
+    /// * `bink` is a *codec* brand, and games routinely prefix every video
+    ///   they encode with it, so `Bink_*` claimed Hellblade II's 1.75 GB
+    ///   story recap, Stray's six cutscenes and Saints Row's thirteen.
+    ///
+    /// Hence two shapes, not one: a hardware or engine vendor may be followed
+    /// by anything after a separator (`nvidia_4k.bik` is a logo, nobody names
+    /// a cutscene that way), while a codec brand has to be backed up by a
+    /// word that actually means "logo" somewhere in the name.
+    ///
+    /// The counter-examples are the point of the test: a rule that stopped
+    /// claiming cutscenes by claiming nothing at all would pass the first
+    /// half and fail the second.
+    #[test]
+    fn the_vendor_logo_rule_knows_a_logo_from_a_video_that_merely_starts_like_one() {
+        let engine = shipped_engine();
+        let claimed = |name: &str| {
+            matches!(
+                engine.classify(&format!(r"Movies\{name}"), None),
+                Verdict::Flagged(ref finding) if finding.rule_desc.contains("vendor logo"),
+            )
+        };
+
+        for logo in [
+            // The vendor name alone, and the separator forms.
+            "nvidia.bik",
+            "NVidia_4K.bik",
+            "nvidia_engl_none_30.bik",
+            "AMD_sting.bik",
+            "intel_e.bik",
+            "fmod.ogv",
+            "Havok.bik",
+            // CamelCase with no separator at all, which is why the fix is
+            // not simply "require a separator".
+            "AMDParadeLogo.bk2",
+            "AMDLogo720p.bik",
+            "UnrealLogo.bik",
+            "ScaleFormParadeLogo.bk2",
+            // A codec brand that does name a logo.
+            "bink_uplaysplash.bik",
+            "Bink_Krafton_SDS_Logos.bk2",
+        ] {
+            assert!(
+                claimed(logo),
+                "{logo} is a vendor logo and stopped being found"
+            );
+        }
+
+        for cutscene in [
+            "INTELLIGENCE.bk2",
+            "CRITERION.MP4",
+            "CriticalHit_Final.bk2",
+            "Crimes_in_Shanty.bik",
+            "Bink_Recap.bk2",
+            "Bink_EndCineOpeningCity.bk2",
+            "Bink_ExtractionFacility.bk2",
+            "Bink_PCAP_Escape_Elias_Plan.bk2",
+            "Apex_Festival000.bk2",
+        ] {
+            assert!(
+                !claimed(cutscene),
+                "{cutscene} is not a vendor logo and is still claimed as one",
+            );
+        }
+    }
+
     /// The move out of `rules.json` had one hard requirement: **no file may
     /// change its verdict**. Two named games cannot show that - a wrong
     /// lowercase, a lost depth limit or a dropped entry would sail past them -
