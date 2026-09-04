@@ -1482,6 +1482,82 @@ fn an_even_set_of_languages_survives_being_judged_as_a_set() {
     );
 }
 
+// --- GT-460: a code that means something other than a language ----------
+
+/// Underrail keeps its text in `data\locale\`, and the word *locale* on the
+/// path is what makes every file under it a language file. It is not a
+/// translation tree: it is the game's own text database, one folder per
+/// creature and one file per field. `id.xnb` is the identifier field, `th`
+/// another field, and the five `id_<part>.xnb` beside them are parts of the
+/// same one - 6,476 findings and 1.16 GB of it, the largest single false
+/// cluster left in the library.
+///
+/// Two guards had to miss for this to pass. The saturation test asks whether
+/// every finding rests on nothing better than a bare two-letter code, and it
+/// asked the dictionary alone - which does not carry `id_ap`, so five of the
+/// seven files read as stronger evidence than they are. And a folder with two
+/// labels was exempt from being judged at all, however lopsided the two were.
+#[test]
+fn a_field_name_repeated_through_every_folder_of_a_database_is_not_a_language() {
+    let mut paths: Vec<String> = Vec::new();
+    for creature in ["ag1", "ag2", "arch", "at", "az"] {
+        for field in ["id", "id_ap", "id_ep", "id_ra", "id_rs", "id_sm", "th"] {
+            paths.push(format!("data\\locale\\creatures\\{creature}\\{field}.xnb"));
+        }
+    }
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    assert!(
+        found.is_empty(),
+        "a field name is not Indonesian, got {:?}",
+        found
+            .iter()
+            .map(|(i, f)| (refs[*i], &f.lang_tag))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The counter-example that keeps the rule above from reading "two languages
+/// are never enough". A game translated into two languages ships them evenly,
+/// and evenness is what the dominance ratio measures - so the same folder
+/// shape, minus the steep head, must keep every finding.
+#[test]
+fn a_two_language_folder_survives_being_judged_as_a_set() {
+    let mut paths: Vec<String> = Vec::new();
+    for n in 0..6 {
+        paths.push(format!("data\\locale\\sounds_de_{n}.pck"));
+        paths.push(format!("data\\locale\\sounds_fr_{n}.pck"));
+    }
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+
+    let found = find_for(&refs);
+
+    let langs: HashSet<&str> = found.iter().map(|(_, f)| f.lang_tag.as_str()).collect();
+    assert_eq!(
+        found.len(),
+        12,
+        "an even two-language set must survive whole, got {langs:?}"
+    );
+
+    // And the same folder with the second language reduced to a single file
+    // is the Underrail shape again: six against one, on nothing but bare
+    // codes. This half is what proves the check above can go red - without
+    // it, "twelve findings survived" is equally consistent with the guard
+    // never running.
+    let mut lopsided: Vec<String> = (0..6)
+        .map(|n| format!("data\\locale\\sounds_de_{n}.pck"))
+        .collect();
+    lopsided.push("data\\locale\\sounds_fr_0.pck".to_string());
+    let refs: Vec<&str> = lopsided.iter().map(String::as_str).collect();
+
+    assert!(
+        find_for(&refs).is_empty(),
+        "six of one label against one of another is a naming scheme"
+    );
+}
+
 /// A language folder is its own evidence, and its *tail* is the error, not
 /// its head: Deadfall Adventures' `Localization\FRA` reads `fr:201` against
 /// `id:8 ar:4`, a fiftyfold head that is entirely correct. Judging such a

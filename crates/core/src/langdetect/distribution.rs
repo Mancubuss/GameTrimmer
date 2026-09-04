@@ -111,13 +111,29 @@ fn is_technical(
     let mut counts: Vec<usize> = per_label.values().copied().collect();
     counts.sort_unstable_by(|a, b| b.cmp(a));
     match counts.len() {
-        1 => {
-            slots.len() >= MIN_SATURATED_FILES
+        // One label, or one label with a stray beside it. Underrail's
+        // `data\locale\creatures\` holds 1,226 creature folders, each with
+        // the same seven files: `id.xnb` and five `id_<part>.xnb` beside a
+        // single `th.xnb`. The word *locale* three folders up makes every
+        // one of them a language file, and the second label - one Thai
+        // against six Indonesian - was enough to buy the folder out of the
+        // saturation test entirely, because two labels used to read as "a
+        // two-language game" no matter how lopsided they were. A steep head
+        // is a steep head at two labels as much as at three; what keeps the
+        // real two-language folder safe is not the exemption but the
+        // bare-code bar, which a game translated into two languages passes
+        // on the strength of its own naming (`Localization\FRA`, `_LOC_DEU`,
+        // `sounds_spa.pck`) and a naming scheme cannot.
+        1 | 2 => {
+            counts[0] >= MIN_SATURATED_FILES
+                && counts
+                    .get(1)
+                    .is_none_or(|second| counts[0] as f32 >= *second as f32 * MIN_DOMINANCE)
                 && slots
                     .iter()
                     .all(|slot| rests_on_a_bare_code(data, &findings[*slot].1))
         }
-        0 | 2 => false,
+        0 => false,
         _ => counts[0] as f32 >= counts[2] as f32 * MIN_DOMINANCE,
     }
 }
@@ -133,10 +149,19 @@ fn language_is_named_by_a_directory(occurrences: &[Occurrence], lang_tag: &str) 
 /// Whether the finding rests on nothing better than a two-letter code with an
 /// asset word beside it — the weakest thing the engine acts on, and the only
 /// evidence a saturated folder is allowed to be rejected for.
+///
+/// The token is resolved the same two ways the occurrence that produced it
+/// was: a direct dictionary hit, or a `<lang>_<REGION>` tag read through
+/// [`LangData::lookup_locale_tag`]. Asking only the dictionary was a second,
+/// weaker copy of that lookup, and it disagreed exactly where it mattered:
+/// Underrail's `id_ap.xnb` is Indonesian to the detector and unknown to this
+/// guard, so five of the seven files in every creature folder counted as
+/// resting on something stronger than a bare code, and the folder walked.
 fn rests_on_a_bare_code(data: &LangData, finding: &LangFinding) -> bool {
     let token = match &finding.reason.evidence {
         LangEvidence::TokenWithMarker { token, .. } | LangEvidence::BareToken { token } => token,
         _ => return false,
     };
-    matches!(data.lookup(token), Some((_, Level::C)))
+    let resolved = data.lookup(token).or_else(|| data.lookup_locale_tag(token));
+    matches!(resolved, Some((_, Level::C)))
 }
