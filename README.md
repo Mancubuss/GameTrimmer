@@ -40,9 +40,9 @@ This matters more than the feature list, so it comes first:
   statistics". The program opens no network connection at all.
 - **It does not install itself and leaves no traces.** All of its state lives
   next to the executable: disposable scan data in `gametrimmer.db`, user
-  settings in the readable `gametrimmer.ini`, `rules.json`, `l10n_rules.json`,
-  plus the default-on local diagnostic log `gametrimmer.log` (which you can
-  switch off) and `*.bak` files after a rules import. Nothing outside its own
+  settings in the readable `gametrimmer.ini`, your own exceptions in
+  `personal_rules.json`, plus the default-on local diagnostic log
+  `gametrimmer.log` (which you can switch off). Nothing outside its own
   folder (except the Windows Recycle Bin, if
   that is the deletion method you chose). Delete the folder and nothing is
   left. Deleting only `gametrimmer.db*` resets scan data without resetting your
@@ -235,52 +235,52 @@ going anywhere: `--features headless` restores the mode (`--scan`, `--dry-run`,
 
 ## Rule packs
 
-The analyzer is driven by two JSON files in the repository root:
+The analyzer is driven by two JSON files in the repository root -
+[`rules.json`](rules.json) and [`l10n_rules.json`](l10n_rules.json):
 
-- [`rules.json`](rules.json) — category rules (redistributables,
-  documentation, bonus material and so on): path pattern → category →
-  confidence. A rule's `desc` is what the tooltip and the CSV export show, so
-  it can be written per language — `{"en": "...", "uk": "..."}` — or as a
-  single string when the text is a product name and needs no translation.
-  Unknown interface languages fall back to `en`.
-- [`l10n_rules.json`](l10n_rules.json) — the localization engine's data: the
-  language dictionary (canonical keys and their aliases by confidence tier),
-  marker words (audio/text/video/fonts, negative markers) and the default
-  language keep-list.
+- **`rules.json`** - category rules (redistributables, documentation, bonus
+  material and so on): path pattern to category to confidence. A rule's
+  `desc` is what the tooltip and the CSV export show, so it can be written
+  per language - `{"en": "...", "uk": "..."}` - or as a single string when
+  the text is a product name and needs no translation. Unknown interface
+  languages fall back to `en`.
+- **`l10n_rules.json`** - the localization engine's data: the language
+  dictionary (canonical keys and their aliases by confidence tier), marker
+  words (audio/text/video/fonts, negative markers) and the default language
+  keep-list.
 
-Both carry a top-level `version`, and a file declaring a version newer than
-the running build supports is refused rather than half-read. A pack you edit
-by hand keeps the version it came with; the app writes the current one
-whenever it produces a pack itself (import merge, restore to built-in).
+Both are a canonical part of the repository, not generated artifacts, and
+both are compiled into the exe at build time. **That is the whole rule set a
+scan runs on, and GameTrimmer ships no copy of it beside the executable** -
+so updating GameTrimmer updates its rules, with nothing to do and nothing to
+go stale.
 
-Both files are a canonical part of the repository (not generated artifacts)
-and are embedded into the exe at build time. They are simultaneously program
-source and standalone downloadable artifacts: they can be fetched straight
-from GitHub, independently of the program itself (raw, branch `master`):
+They are also standalone downloadable artifacts and can be fetched straight
+from GitHub, independently of the program (raw, branch `master`):
 
 ```
 https://raw.githubusercontent.com/Mancubuss/GameTrimmer/master/rules.json
 https://raw.githubusercontent.com/Mancubuss/GameTrimmer/master/l10n_rules.json
 ```
 
-### Importing a rule pack
+### Extending the rules with your own file
 
-1. Download the file you want (your own rule set, a community-extended
-   language dictionary, and so on) — the format is detected from the JSON
-   structure, so the file name does not matter.
-2. In the app, open **Settings → Rules → Import rules** and pick the
-   downloaded file (several at once is fine).
-3. The app merges the imported pack with the current one: new
-   rules/languages/words are added, matches (same category+pattern, same
-   language key) are updated with the pack's data — **nothing is removed**.
-   Before writing, the current file is copied to `*.bak` automatically.
-4. Changes take effect from the next scan.
+There is no import button, and nothing to press: a pack is in effect because
+it is there, the way `winapp2.ini` is for CCleaner.
 
-**Settings → Rules → Export rules** saves the current effective set of both
-files into a folder of your choice — a convenient starting point for your own
-edits, or for proposing changes to the community set.
+1. Write a `rules.json` and/or an `l10n_rules.json` of your own. The release
+   zip ships `rules-packs.md` (the format, field by field) and a `templates`
+   folder with a minimal valid example of each.
+2. Put the file next to `gametrimmer.exe`.
+3. It is folded **on top of** the built-in rules: new rules, languages,
+   aliases and marker words are added, and **nothing built in is removed**.
+   To stop the program proposing something it currently flags, write a keep
+   rule - a veto, which outranks everything.
+4. Changes take effect from the next scan. **Settings -> Rules** says whether
+   a pack was found and whether it still parses - an overlay that does not
+   parse is ignored, and being ignored looks exactly like being wrong.
 
-Contributions to the rule packs are very welcome — see
+Contributions to the rule packs themselves are very welcome - see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## For developers

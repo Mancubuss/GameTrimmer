@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use gametrimmer_core::db;
 use gametrimmer_core::error::{CoreError, Result as CoreResult};
-use gametrimmer_core::langdetect::{LangData, LangDetector, LangPack};
+use gametrimmer_core::langdetect::LangDetector;
 use gametrimmer_core::mftscan;
 use gametrimmer_core::packs::PackKind;
 use gametrimmer_core::perf;

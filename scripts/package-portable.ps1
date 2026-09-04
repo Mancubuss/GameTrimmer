@@ -5,10 +5,14 @@
 #   `-- GameTrimmer-<version>/
 #       |-- gametrimmer.exe   (release, strip=true, with the icon and the DPI
 #       |                      manifest)
-#       |-- rules.json        (shipped so the first run needs no write access
-#       |                      to materialize it - ensure_rules_path() would
-#       |                      create it anyway if the file were missing)
-#       |-- l10n_rules.json   (the same, for the localization rules)
+#       |-- rules-packs.md    (how to write an optional overlay pack; the
+#       |                      analysis rules themselves are compiled into
+#       |                      the exe and are NOT shipped as files - a copy
+#       |                      of them next to the exe would be an overlay
+#       |                      frozen at release day, silently overriding
+#       |                      every later build's rules)
+#       |-- templates/        (a minimal valid example of each pack, the
+#       |                      starting point rules-packs.md hands out)
 #       |-- README.md         (English - what most people who downloaded a
 #       |                      release zip read)
 #       |-- README.uk.md      (Ukrainian; both files ship, because inside an
@@ -86,8 +90,8 @@ try {
 
     Copy-Item $exePath (Join-Path $stageDir "gametrimmer.exe") -Force
     Copy-Item $watchExePath (Join-Path $stageDir "gametrimmer-watch.exe") -Force
-    Copy-Item "$repoRoot\rules.json" (Join-Path $stageDir "rules.json") -Force
-    Copy-Item "$repoRoot\l10n_rules.json" (Join-Path $stageDir "l10n_rules.json") -Force
+    Copy-Item "$repoRoot\docs\rules-packs.md" (Join-Path $stageDir "rules-packs.md") -Force
+    Copy-Item "$repoRoot\docs\templates" $stageDir -Recurse -Force
     Copy-Item "$repoRoot\README.md" (Join-Path $stageDir "README.md") -Force
     Copy-Item "$repoRoot\README.uk.md" (Join-Path $stageDir "README.uk.md") -Force
     Copy-Item "$repoRoot\LICENSE" (Join-Path $stageDir "LICENSE") -Force
@@ -120,8 +124,8 @@ try {
     try {
         Copy-Item $exePath (Join-Path $zipTempDir "gametrimmer.exe")
         Copy-Item $watchExePath (Join-Path $zipTempDir "gametrimmer-watch.exe")
-        Copy-Item "$repoRoot\rules.json" (Join-Path $zipTempDir "rules.json")
-        Copy-Item "$repoRoot\l10n_rules.json" (Join-Path $zipTempDir "l10n_rules.json")
+        Copy-Item "$repoRoot\docs\rules-packs.md" (Join-Path $zipTempDir "rules-packs.md")
+        Copy-Item "$repoRoot\docs\templates" $zipTempDir -Recurse
         Copy-Item "$repoRoot\README.md" (Join-Path $zipTempDir "README.md")
         Copy-Item "$repoRoot\README.uk.md" (Join-Path $zipTempDir "README.uk.md")
         Copy-Item "$repoRoot\LICENSE" (Join-Path $zipTempDir "LICENSE")
