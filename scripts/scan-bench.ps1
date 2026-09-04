@@ -245,17 +245,19 @@ foreach ($sidecar in "$DbFile-wal", "$DbFile-shm") {
 # Start from the rules the binary was just built with, not from whatever was
 # lying beside it.
 #
-# The app writes rules.json and l10n_rules.json next to the executable only
-# when they are absent, and never refreshes them afterwards. So a dist folder
-# that has ever been run keeps its first copy for good: on 2026-09-04 the
-# language pack there was dated 22 August and did not know the sixteen
-# languages added since, which means every measurement taken in between was
-# measured against a dictionary nobody was shipping any more. A benchmark that
-# silently measures last month's rules is worse than no benchmark.
+# The app no longer writes these files at all - it analyses with the rules
+# compiled into it, and a rules.json or l10n_rules.json next to the executable
+# is an optional overlay folded on top of them (docs/rules-packs.md). That is
+# exactly why an old one left in dist must go: it is no longer inert, it
+# silently overrides the fresh built-in rules. On 2026-09-04 the language pack
+# there was dated 22 August and did not know the sixteen languages added
+# since, which means every measurement taken in between was measured against a
+# dictionary nobody was shipping any more. A benchmark that silently measures
+# last month's rules is worse than no benchmark.
 #
-# Deleted rather than copied from the repository root, because deleting is the
-# one action that cannot go stale: the binary regenerates them from what is
-# compiled into it, so what the run reads is what the run was built from.
+# Deleted rather than replaced, because deleting is the one action that cannot
+# go stale: with no overlay present, what the run reads is what the run was
+# built from.
 #
 # personal_rules.json is deliberately NOT touched - it holds the operator's own
 # exceptions, is never generated from the build, and re-creating it would only
@@ -263,7 +265,7 @@ foreach ($sidecar in "$DbFile-wal", "$DbFile-shm") {
 foreach ($pack in 'rules.json', 'l10n_rules.json') {
     $packPath = Join-Path $DistDir $pack
     if (Test-Path $packPath) {
-        Say "Прибираю $pack - бінар перестворить його зі своїх правил..."
+        Say "Прибираю $pack - інакше стара накладка перекриє вбудовані правила..."
         Remove-Item $packPath -Force
     }
 }
