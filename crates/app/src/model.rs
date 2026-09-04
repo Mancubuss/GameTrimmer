@@ -1375,24 +1375,32 @@ fn cmp_member_files(
 /// is, it is really queued for deletion - so it must never be invisible to
 /// the header, or the checkbox lies about there being nothing selected here.
 ///
-/// "All selected" is judged against the bulk-selectable set when the group
-/// has one: that is what a click on the header would actually select, and
-/// it is what let an otherwise-complete group stay checked even with an
-/// untouched blocked row sitting in it (see
-/// `group_selection_never_selects_imported_untrusted_rows`). But a group
-/// that is *entirely* individually-selectable-but-not-bulk-selectable - every
-/// row in it still `imported_untrusted` - has no bulk-selectable rows to
-/// judge against at all. Falling back to the individually-selectable set
-/// there is what lets such a group read as indeterminate while partly
-/// hand-ticked, and as fully checked once every row in it has been ticked by
-/// hand, instead of being stuck reporting "nothing selected" or "nothing to
-/// complete" forever.
+/// "All selected" is judged against the bulk-selectable set, but only when
+/// every row in the group *is* bulk-selectable: a header only ever reads as
+/// fully checked when a click on it would genuinely leave nothing more to
+/// select. The owner's decision (2026-09-04): a group holding even one row
+/// bulk selection will not take - blocked (`deletion_block_reason`) or merely
+/// untrusted (`imported_untrusted`) - must show indeterminate, not a full
+/// checkmark, even when that row can never be ticked at all (a blocked row).
+/// No count of the unavailable rows is shown; the per-row disabled-checkbox
+/// hover text already names the reason (see `tree_view.rs`), and that is
+/// where the user is expected to go looking.
+///
+/// A group that is *entirely* individually-selectable-but-not-bulk-selectable,
+/// every row in it still `imported_untrusted`, has no bulk-selectable rows to
+/// judge against at all, so the rule above is vacuous for it. Falling back to
+/// the individually-selectable set there is what lets such a group read as
+/// indeterminate while partly hand-ticked, and as fully checked once every
+/// row in it has been ticked by hand, instead of being stuck reporting
+/// "nothing selected" or "nothing to complete" forever.
 ///
 /// An anti-cheat protected monolithic archive never lands in that fallback:
 /// the same clause that excludes it from bulk selection already excludes it
 /// from [`FindingRow::individually_selectable`] (which [`FindingRow::bulk_selectable`]
 /// calls first), so it contributes to neither tally here - same as a row
-/// with a `deletion_block_reason`.
+/// with a `deletion_block_reason`, and same reason both still force the
+/// mixed-group indeterminate above (`indices.len()` sees them even though
+/// neither tally does).
 pub fn group_selection_state(items: &[FindingItem], indices: &[usize]) -> (bool, bool) {
     let mut bulk_total = 0usize;
     let mut bulk_selected = 0usize;
@@ -1419,7 +1427,11 @@ pub fn group_selection_state(items: &[FindingItem], indices: &[usize]) -> (bool,
     }
 
     let all_selected = if bulk_total > 0 {
-        bulk_selected == bulk_total
+        // `indices.len()` (not `selectable_total`) is the guard: it also
+        // sees a `deletion_block_reason` row, which contributes to neither
+        // tally but must still hold the group indeterminate forever per the
+        // owner's 2026-09-04 decision above.
+        bulk_selected == bulk_total && bulk_total == indices.len()
     } else {
         selectable_total > 0 && selectable_selected == selectable_total
     };
@@ -3028,7 +3040,10 @@ mod tests {
     /// The tree's header rows are a bulk-selection path like any other, so an
     /// `imported_untrusted` row inside a game, category or folder must survive
     /// its header being toggled. Deselecting the same group still clears it -
-    /// a row the user ticked by hand is theirs to untick in bulk.
+    /// a row the user ticked by hand is theirs to untick in bulk. And per the
+    /// owner's 2026-09-04 decision, the header itself must keep reporting
+    /// indeterminate for as long as that untrusted row sits unticked - a full
+    /// checkmark here would be the lie the header used to tell.
     #[test]
     fn group_selection_never_selects_imported_untrusted_rows() {
         let mut items = vec![
@@ -3045,8 +3060,9 @@ mod tests {
         assert!(!items[1].selected, "the untrusted row stays untouched");
         assert_eq!(
             group_selection_state(&items, &indices),
-            (true, true),
-            "blocked rows do not leave an otherwise fully-selected group indeterminate"
+            (false, true),
+            "an untrusted row left unticked keeps an otherwise fully-selected group \
+             indeterminate, not fully checked"
         );
 
         items[1].selected = true;
@@ -3054,6 +3070,54 @@ mod tests {
         assert!(
             items.iter().all(|i| !i.selected),
             "the second group toggle deselects both selectable and stale blocked selections"
+        );
+    }
+
+    /// The bug the owner's 2026-09-04 decision fixes: a group mixing
+    /// ordinary rows with a row bulk selection will never take must not
+    /// report `all_selected` just because every bulk-selectable row is
+    /// ticked. Here the third row is blocked outright
+    /// (`deletion_block_reason`), not merely untrusted, so it can *never* be
+    /// ticked - and the header must still hold indeterminate rather than
+    /// pretend completion is reachable.
+    #[test]
+    fn group_selection_state_stays_indeterminate_with_an_unselectable_row_mixed_in() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+        ];
+        items[2].row.deletion_block_reason = Some("fresh scan required".to_string());
+        items[0].selected = true;
+        items[1].selected = true;
+        items[2].selected = false;
+
+        assert_eq!(
+            group_selection_state(&items, &[0, 1, 2]),
+            (false, true),
+            "every bulk-selectable row is ticked, but the blocked row can never join them, \
+             so the group must read indeterminate, not fully selected"
+        );
+    }
+
+    /// Guard against over-correcting the fix above into "any header with a
+    /// bulk-selectable row is always indeterminate": an ordinary group where
+    /// every row is bulk-selectable and every row is ticked must still read
+    /// fully selected.
+    #[test]
+    fn group_selection_state_reports_fully_selected_when_every_row_is_bulk_selectable_and_ticked() {
+        let mut items = vec![
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+            item(1, "Game A", FindingSource::Rule(Category::Bonus), 90, 10),
+        ];
+        items[0].selected = true;
+        items[1].selected = true;
+
+        assert_eq!(
+            group_selection_state(&items, &[0, 1]),
+            (true, true),
+            "a group with nothing left out of bulk selection reports fully selected once \
+             every row is ticked"
         );
     }
 
