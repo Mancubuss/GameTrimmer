@@ -2,6 +2,7 @@ pub mod anti_cheat;
 pub mod atomic_file;
 pub mod autostart;
 pub mod bundle;
+pub mod casc;
 pub mod db;
 pub mod error;
 pub mod gamestate;

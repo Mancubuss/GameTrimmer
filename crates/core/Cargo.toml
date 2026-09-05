@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["now"] }
 crc32fast = "1.5.0"
+flate2 = "1.1.9"
 # The 0.4.0 crates.io release pins binrw 0.11, which Rust 1.97 reports as
 # future-incompatible. Upstream has merged the binrw 0.15 fix but has not cut
 # a release yet; keep the exact reviewed commit reproducible through Cargo.lock.

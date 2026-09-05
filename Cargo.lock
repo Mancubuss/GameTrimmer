@@ -1304,6 +1304,7 @@ version = "1.0.0"
 dependencies = [
  "chrono",
  "crc32fast",
+ "flate2",
  "ntfs",
  "rayon",
  "regex",
