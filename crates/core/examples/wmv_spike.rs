@@ -26,7 +26,8 @@ fn main() -> windows::core::Result<()> {
     let width: u32 = args[3].parse().expect("width");
     let height: u32 = args[4].parse().expect("height");
 
-    let source = StorageFile::GetFileFromPathAsync(&HSTRING::from(source_path.as_os_str()))?.join()?;
+    let source =
+        StorageFile::GetFileFromPathAsync(&HSTRING::from(source_path.as_os_str()))?.join()?;
 
     // StorageFolder sits behind another feature gate; an empty file made the
     // ordinary way and then opened is the same thing with less ceremony.
