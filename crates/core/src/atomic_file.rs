@@ -26,7 +26,7 @@ fn cleanup_temps(staged: &[StagedReplacement]) {
 }
 
 #[cfg(windows)]
-fn replace(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn replace(from: &Path, to: &Path) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
@@ -53,7 +53,7 @@ fn replace(from: &Path, to: &Path) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn replace(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn replace(from: &Path, to: &Path) -> Result<()> {
     fs::rename(from, to)
 }
 
