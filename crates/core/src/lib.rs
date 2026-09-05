@@ -27,7 +27,6 @@ pub mod settings;
 pub mod standalone;
 pub mod stub;
 pub mod sysinfo;
-pub mod video;
 pub mod worker;
 
 pub use models::Finding;
