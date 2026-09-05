@@ -378,6 +378,36 @@ pub struct ManifestState {
     /// installed files changed - i.e. trimmed files may well be back.
     /// `None` when the manifest omits it (older/partial manifests).
     pub build_id: Option<String>,
+    /// Steam's own promise that the *next* update to this game will run a
+    /// full content validation - re-downloading and re-verifying every file
+    /// regardless of what the patch itself touches. A game flagged this way
+    /// will have any language/asset trim undone wholesale on its next
+    /// update, not just the files the patch actually changes; reading this
+    /// turns "this might come back" into a fact stated before the user
+    /// deletes anything.
+    ///
+    /// `false` covers three cases on purpose, all read the same way: the key
+    /// is absent (checked on real libraries: absent on roughly a third to a
+    /// half of manifests, older or never-updated installs never write it),
+    /// the key is present but `"0"`, or the key holds anything else. Every
+    /// value actually observed on real manifests was `"1"`; Steam appears to
+    /// omit the key entirely rather than ever write a `"0"`, so treating
+    /// "absent" as equivalent to "not pending" - never as a reason to warn -
+    /// is the only reading that doesn't turn every older manifest into a
+    /// false alarm.
+    pub pending_full_validate: bool,
+    /// Steam's own update-cadence choice for this game (`"0"` = keep the
+    /// game updated; libraries on this machine also show `"2"` on a handful
+    /// of manifests). Kept as raw text rather than an enum: Valve doesn't
+    /// publish the full value set, and asserting semantics for `"2"` we
+    /// can't verify would be worse than passing the string through
+    /// unchanged. `None` when the manifest doesn't carry the key.
+    pub auto_update_behavior: Option<String>,
+    /// The unix timestamp of a pending scheduled auto-update, or `"0"` when
+    /// none is scheduled - raw text for the same reason as
+    /// `auto_update_behavior` above. `None` when the manifest doesn't carry
+    /// the key.
+    pub scheduled_auto_update: Option<String>,
 }
 
 /// Reads one `appmanifest_*.acf`'s state fields. Pure (text in, data out), so
@@ -416,8 +446,21 @@ pub fn parse_manifest_state(acf: &str) -> Option<ManifestState> {
 
     let app_id = get_field("appid").filter(|s| !s.trim().is_empty())?;
     let build_id = get_field("buildid").filter(|s| !s.trim().is_empty());
+    // Only the literal "1" counts as pending; absent, "0", and anything
+    // malformed all fall through to `false` - see the field's doc comment
+    // for why absence must never read as a warning.
+    let pending_full_validate =
+        get_field("FullValidateAfterNextUpdate").is_some_and(|s| s.trim() == "1");
+    let auto_update_behavior = get_field("AutoUpdateBehavior").filter(|s| !s.trim().is_empty());
+    let scheduled_auto_update = get_field("ScheduledAutoUpdate").filter(|s| !s.trim().is_empty());
 
-    Some(ManifestState { app_id, build_id })
+    Some(ManifestState {
+        app_id,
+        build_id,
+        pending_full_validate,
+        auto_update_behavior,
+        scheduled_auto_update,
+    })
 }
 
 /// Collects the [`ManifestState`] of every game in one Steam library root.
@@ -1081,6 +1124,69 @@ mod tests {
             state.build_id, None,
             "a blank buildid is no build id, not an empty-string one"
         );
+    }
+
+    #[test]
+    fn parse_manifest_state_reads_pending_full_validate_when_set() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"buildid"		"17038203"
+	"AutoUpdateBehavior"		"0"
+	"ScheduledAutoUpdate"		"0"
+	"FullValidateAfterNextUpdate"		"1"
+}
+"#;
+        let state = parse_manifest_state(acf).expect("expected a parsed state");
+        assert!(state.pending_full_validate);
+        assert_eq!(state.auto_update_behavior.as_deref(), Some("0"));
+        assert_eq!(state.scheduled_auto_update.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn parse_manifest_state_reads_pending_full_validate_when_clear() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"buildid"		"17038203"
+	"FullValidateAfterNextUpdate"		"0"
+}
+"#;
+        let state = parse_manifest_state(acf).expect("expected a parsed state");
+        assert!(!state.pending_full_validate);
+    }
+
+    #[test]
+    fn parse_manifest_state_treats_a_missing_validate_key_as_not_pending() {
+        // The failure mode to avoid: older manifests that never write this
+        // key must not read as "warn" just because the key isn't there.
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"buildid"		"17038203"
+}
+"#;
+        let state = parse_manifest_state(acf).expect("expected a parsed state");
+        assert!(!state.pending_full_validate);
+        assert_eq!(state.auto_update_behavior, None);
+        assert_eq!(state.scheduled_auto_update, None);
+    }
+
+    #[test]
+    fn parse_manifest_state_treats_a_malformed_validate_value_as_not_pending() {
+        let acf = r#"
+"AppState"
+{
+	"appid"		"620"
+	"buildid"		"17038203"
+	"FullValidateAfterNextUpdate"		"yes please"
+}
+"#;
+        let state = parse_manifest_state(acf).expect("expected a parsed state");
+        assert!(!state.pending_full_validate);
     }
 
     #[test]

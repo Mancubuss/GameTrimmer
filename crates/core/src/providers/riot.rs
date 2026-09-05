@@ -2,13 +2,22 @@
 //! `%ProgramData%\Riot Games\Metadata\<product>.<region>\
 //! <product>.<region>.product_settings.yaml`.
 //!
-//! Two lines are needed, so the YAML is read with a targeted line scan rather
-//! than a full YAML parser (no extra dependency; the file is machine-written
-//! and flat):
+//! A handful of flat `key: value` lines are needed, so the YAML is read with a
+//! targeted line scan rather than a full YAML parser (no extra dependency;
+//! the file is machine-written and, aside from one short block list, flat):
 //!
 //! ```text
+//! auto_patching_enabled_by_player: false
+//! locale_data:
+//!     available_locales:
+//!     - "en_US"
+//!     - "de_DE"
+//!     default_locale: "en_US"
+//! patching_policy: "manual"
 //! product_install_full_path: "H:/Riot Games/VALORANT/live"
 //! product_install_root: "H:/Riot Games"
+//! settings:
+//!     locale: "en_US"
 //! ```
 //!
 //! The root matters because Riot installs games as `<root>\<game>\<channel>` -
@@ -17,6 +26,14 @@
 //! therefore name `H:\Riot Games\VALORANT` a library, one level too deep, and
 //! the vendor-folder scan's `H:\Riot Games` would not merge with it - Riot then
 //! shows up twice. Riot states the real root itself, so it is used verbatim.
+//!
+//! The same file also settles whether a trim on this product survives past
+//! the next launch: Riot's patcher re-downloads whatever it thinks is missing
+//! unless patching is manual, so `read_product`'s single read is extended
+//! (not repeated - see [`extract_patch_info`]) to pull the patch-policy and
+//! installed-locale facts alongside the two path keys above. See
+//! [`AutoPatching`] for the policy tiebreak and [`RiotPatchInfo`] for the
+//! shape a caller joins to a game by `app_id`.
 
 use std::path::{Path, PathBuf};
 
@@ -36,6 +53,10 @@ const METADATA_RELATIVE_PATH: &str = r"Riot Games\Metadata";
 const DEFAULT_PROGRAM_DATA: &str = r"C:\ProgramData";
 const INSTALL_PATH_KEY: &str = "product_install_full_path:";
 const INSTALL_ROOT_KEY: &str = "product_install_root:";
+const AUTO_PATCHING_ENABLED_KEY: &str = "auto_patching_enabled_by_player:";
+const PATCHING_POLICY_KEY: &str = "patching_policy:";
+const AVAILABLE_LOCALES_HEADER: &str = "available_locales:";
+const ACTIVE_LOCALE_KEY: &str = "locale:";
 
 /// Metadata entries that are launcher infrastructure, not games.
 ///
@@ -70,16 +91,38 @@ impl LibraryProvider for RiotProvider {
     }
 }
 
+/// Thin projection of [`discover_riot_scan`] for the [`LibraryProvider`]
+/// trait, which only has room for libraries. Still one directory walk, one
+/// read per file - see `discover_riot_scan`'s doc comment.
 fn discover_riot() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
+    let report = discover_riot_scan();
+    DiscoveryReport {
+        data: report.data.libraries,
+        status: report.status,
+        diagnostics: report.diagnostics,
+    }
+}
+
+/// Same scan as `discover_riot`, but also carrying the patch-policy and
+/// locale facts read from each product's settings file. Public so a future
+/// caller that needs both the libraries and the patch info can get them from
+/// one walk instead of two.
+pub fn discover_riot_scan() -> DiscoveryReport<RiotScan> {
     let metadata_dir = program_data_dir().join(METADATA_RELATIVE_PATH);
     let entries = match std::fs::read_dir(&metadata_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return DiscoveryReport::not_installed(Vec::new())
+            return DiscoveryReport::not_installed(RiotScan {
+                libraries: Vec::new(),
+                patch_info: Vec::new(),
+            })
         }
         Err(err) => {
             return DiscoveryReport::failed(
-                Vec::new(),
+                RiotScan {
+                    libraries: Vec::new(),
+                    patch_info: Vec::new(),
+                },
                 diagnostic("riot", "metadata-enumeration", Some(metadata_dir), err),
             )
         }
@@ -141,29 +184,56 @@ fn discover_riot() -> DiscoveryReport<Vec<DiscoveredLibrary>> {
             }
         }
     }
+    // Patch info is cloned out of `products` *before* `group_by_declared_root`
+    // consumes it - a second directory walk or a second `read_to_string` per
+    // file would cost the same file read twice for the one scan. Cloning a
+    // few small strings is not that; see [`RiotScan`].
+    let patch_info: Vec<RiotPatchInfo> = products.iter().map(|p| p.patch_info.clone()).collect();
     let mut libraries = group_by_declared_root(products);
     if degrades_evidence(&diagnostics) {
         for library in &mut libraries {
             library.orphan_evidence = OrphanEvidence::Degraded;
         }
-        DiscoveryReport::degraded(libraries, diagnostics)
+        DiscoveryReport::degraded(
+            RiotScan {
+                libraries,
+                patch_info,
+            },
+            diagnostics,
+        )
     } else {
         // Complete, but not necessarily silent: a `GAME_ABSENT` note still
         // travels so it reaches the log and `scan_diagnostics`.
         DiscoveryReport {
-            data: libraries,
+            data: RiotScan {
+                libraries,
+                patch_info,
+            },
             status: DiscoveryStatus::Complete,
             diagnostics,
         }
     }
 }
 
+/// Everything one metadata-directory scan produces: the libraries the
+/// [`LibraryProvider`] trait needs, and the per-product patch/locale facts a
+/// caller can join to a game by `app_id`. Both come from the same walk and
+/// the same read of each settings file - a caller that wants both must call
+/// [`discover_riot_scan`] once rather than pairing `discover()` with a
+/// second, separate read of these files.
+pub struct RiotScan {
+    pub libraries: Vec<DiscoveredLibrary>,
+    pub patch_info: Vec<RiotPatchInfo>,
+}
+
 /// One product's metadata: the game, plus the library root Riot itself declared
-/// for it (absent only if the settings file omitted the key).
+/// for it (absent only if the settings file omitted the key), plus the
+/// patch-policy and locale facts read from the same settings file.
 #[derive(Debug)]
 struct ProductEntry {
     game: GameInstall,
     root: Option<PathBuf>,
+    patch_info: RiotPatchInfo,
 }
 
 /// Groups products into libraries by the root Riot declared, falling back to
@@ -244,6 +314,9 @@ fn read_product(product_dir: &Path) -> std::result::Result<Option<ProductEntry>,
         return Ok(None);
     };
     let path = PathBuf::from(install_path);
+    // Computed before `dir_name` is moved into `app_id` below - same string,
+    // used as the join key for both.
+    let patch_info = extract_patch_info(&contents, &dir_name);
 
     Ok(Some(ProductEntry {
         game: GameInstall {
@@ -252,22 +325,143 @@ fn read_product(product_dir: &Path) -> std::result::Result<Option<ProductEntry>,
             app_id: Some(dir_name),
         },
         root: extract_path(&contents, INSTALL_ROOT_KEY).map(PathBuf::from),
+        patch_info,
     }))
 }
 
-/// Extracts one `key: "value"` line from the settings YAML - a flat file whose
-/// path values use forward slashes.
-fn extract_path(yaml: &str, key: &str) -> Option<String> {
+/// Extracts one `key: "value"` line's raw value, quotes and surrounding
+/// whitespace stripped - `None` if the key is absent or the value empty.
+/// Nesting is irrelevant here: every line is trimmed before comparison, so a
+/// key several levels deep in the YAML (e.g. `settings.locale`) is found the
+/// same way as a top-level one. Shared by [`extract_path`] (which additionally
+/// normalizes slashes for path values) and the patch/locale extractors below,
+/// which want the string untouched.
+fn extract_raw<'a>(yaml: &'a str, key: &str) -> Option<&'a str> {
     let raw = yaml
         .lines()
         .map(str::trim)
         .find_map(|line| line.strip_prefix(key))?
         .trim()
         .trim_matches('"');
+    (!raw.is_empty()).then_some(raw)
+}
 
+/// Extracts one `key: "value"` line from the settings YAML - a flat file whose
+/// path values use forward slashes.
+fn extract_path(yaml: &str, key: &str) -> Option<String> {
+    let raw = extract_raw(yaml, key)?;
     let normalized = raw.replace('/', "\\");
     let trimmed = normalized.trim_end_matches('\\');
     (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Extracts one `key: true`/`key: false` line. Anything else on that line
+/// (missing key, or a value that is neither literal) comes back as `None` -
+/// this must never guess, since callers ([`auto_patching_status`]) treat
+/// `None` as "unresolved" rather than picking a default.
+fn extract_bool(yaml: &str, key: &str) -> Option<bool> {
+    match extract_raw(yaml, key)? {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Extracts the `available_locales:` block list:
+/// ```text
+/// available_locales:
+/// - "en_US"
+/// - "de_DE"
+/// ```
+/// Returns an empty `Vec` when the header is absent or has no `- "..."` lines
+/// under it - never fabricated, since an empty result here means "Riot did
+/// not say", not "no locales installed".
+fn extract_locale_list(yaml: &str) -> Vec<String> {
+    let mut lines = yaml.lines().map(str::trim);
+    if lines
+        .by_ref()
+        .find(|line| *line == AVAILABLE_LOCALES_HEADER)
+        .is_none()
+    {
+        return Vec::new();
+    }
+    lines
+        .take_while(|line| line.starts_with('-'))
+        .filter_map(|line| {
+            let value = line.trim_start_matches('-').trim().trim_matches('"');
+            (!value.is_empty()).then(|| value.to_string())
+        })
+        .collect()
+}
+
+/// Whether Riot will re-download patches for a product without the player
+/// asking - and therefore whether a file trim on it survives past the next
+/// launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoPatching {
+    /// Riot will fetch and apply updates on its own; a trim will not survive.
+    Automatic,
+    /// The player (or Riot, for this product) patches by hand; a trim
+    /// survives until the next manual patch.
+    Manual,
+    /// The file did not say clearly enough to answer either way. Must never
+    /// be reported as `Manual` - see the module doc for why a wrong "it will
+    /// survive" is the dangerous mistake here, not a merely inconvenient one.
+    Unknown,
+}
+
+/// Resolves [`AutoPatching`] from the two fields Riot writes, which can
+/// disagree:
+///
+/// - `auto_patching_enabled_by_player` is a plain boolean answering exactly
+///   the question this function asks, with no vocabulary to misread.
+/// - `patching_policy` is a free-form string; the only value seen in
+///   practice, and the only one this code trusts, is `"manual"`.
+///
+/// The boolean wins whenever it parses, disagreement included: it is Riot's
+/// most direct, least ambiguous statement of what will actually happen, and
+/// trusting an opaque string over an explicit boolean for no reason would be
+/// backwards. `patching_policy` is consulted only as a fallback when the
+/// boolean is missing or unparseable, and only for that one recognized
+/// value - an unrecognized string, or both keys absent, resolves to
+/// `Unknown` rather than a guessed `Manual` or `Automatic`.
+fn auto_patching_status(yaml: &str) -> AutoPatching {
+    if let Some(enabled) = extract_bool(yaml, AUTO_PATCHING_ENABLED_KEY) {
+        return if enabled {
+            AutoPatching::Automatic
+        } else {
+            AutoPatching::Manual
+        };
+    }
+    match extract_raw(yaml, PATCHING_POLICY_KEY) {
+        Some("manual") => AutoPatching::Manual,
+        _ => AutoPatching::Unknown,
+    }
+}
+
+/// Patch-policy and locale facts read from one product's settings file,
+/// keyed by `app_id` (the metadata directory name, e.g. `valorant.live`) so a
+/// caller can join it to the matching [`GameInstall`].
+#[derive(Debug, Clone)]
+pub struct RiotPatchInfo {
+    pub app_id: String,
+    pub auto_patching: AutoPatching,
+    /// Locales Riot has installed for this product (`locale_data.available_locales`).
+    /// Empty when the file does not say - never fabricated.
+    pub available_locales: Vec<String>,
+    /// The locale currently active (`settings.locale`), if the file says.
+    pub active_locale: Option<String>,
+}
+
+/// Builds a [`RiotPatchInfo`] from the same `contents` string `read_product`
+/// already read - no second file read for any of these fields.
+fn extract_patch_info(yaml: &str, app_id: &str) -> RiotPatchInfo {
+    RiotPatchInfo {
+        app_id: app_id.to_string(),
+        auto_patching: auto_patching_status(yaml),
+        available_locales: extract_locale_list(yaml),
+        active_locale: extract_raw(yaml, ACTIVE_LOCALE_KEY).map(str::to_string),
+    }
 }
 
 /// Maps Riot's internal product slugs to display names, falling back to the
@@ -288,11 +482,24 @@ fn display_name_for(slug: &str, install_dir: &Path) -> String {
 mod tests {
     use super::*;
 
-    /// Verbatim shape of a real `valorant.live.product_settings.yaml`.
+    /// Verbatim shape of a real `valorant.live.product_settings.yaml`
+    /// (captured 2026-09-05, `auto_patching_enabled_by_player: false` /
+    /// `patching_policy: "manual"` agreeing - both `teamfighttactics.live`
+    /// and `.pbe` match this shape too).
     const VALORANT_YAML: &str = concat!(
+        "auto_patching_enabled_by_player: false\n",
         "channel: live\n",
+        "locale_data:\n",
+        "    available_locales:\n",
+        "    - \"en_US\"\n",
+        "    - \"de_DE\"\n",
+        "    - \"ja_JP\"\n",
+        "    default_locale: \"en_US\"\n",
+        "patching_policy: \"manual\"\n",
         "product_install_full_path: \"H:/Riot Games/VALORANT/live\"\n",
         "product_install_root: \"H:/Riot Games\"\n",
+        "settings:\n",
+        "    locale: \"en_US\"\n",
     );
 
     #[test]
@@ -340,6 +547,13 @@ mod tests {
                 app_id: None,
             },
             root: root.map(PathBuf::from),
+            // These grouping tests don't care about patch info.
+            patch_info: RiotPatchInfo {
+                app_id: name.to_string(),
+                auto_patching: AutoPatching::Unknown,
+                available_locales: Vec::new(),
+                active_locale: None,
+            },
         }
     }
 
@@ -475,5 +689,82 @@ mod tests {
             result.is_err(),
             "an unreadable settings file must not be mistaken for 'nothing installed': {result:?}"
         );
+    }
+
+    #[test]
+    fn auto_patching_status_reads_manual_from_the_real_valorant_shape() {
+        assert_eq!(auto_patching_status(VALORANT_YAML), AutoPatching::Manual);
+    }
+
+    #[test]
+    fn auto_patching_status_detects_automatic_from_the_player_toggle() {
+        let yaml = "auto_patching_enabled_by_player: true\n";
+        assert_eq!(auto_patching_status(yaml), AutoPatching::Automatic);
+    }
+
+    /// The disagreement case: the boolean is Riot's most direct statement of
+    /// what will happen, so it wins over a `patching_policy` string that
+    /// says the opposite - see `auto_patching_status`'s doc comment.
+    #[test]
+    fn auto_patching_status_lets_the_player_toggle_override_a_disagreeing_policy() {
+        let yaml = "auto_patching_enabled_by_player: true\npatching_policy: \"manual\"\n";
+        assert_eq!(
+            auto_patching_status(yaml),
+            AutoPatching::Automatic,
+            "the boolean says automatic; the opaque policy string must not win"
+        );
+    }
+
+    /// Missing entirely must never default to `Manual` - a wrong "it will
+    /// survive" is the dangerous mistake, not a merely inconvenient one.
+    #[test]
+    fn auto_patching_status_is_unknown_when_both_keys_are_absent() {
+        assert_eq!(
+            auto_patching_status("channel: live\n"),
+            AutoPatching::Unknown
+        );
+    }
+
+    /// An unrecognized `patching_policy` value (no boolean present to
+    /// resolve it) must also stay `Unknown`, never guessed as `Manual`.
+    #[test]
+    fn auto_patching_status_is_unknown_for_an_unrecognized_policy_value() {
+        assert_eq!(
+            auto_patching_status("patching_policy: \"scheduled\"\n"),
+            AutoPatching::Unknown
+        );
+    }
+
+    #[test]
+    fn extract_locale_list_reads_the_real_valorant_shape() {
+        assert_eq!(
+            extract_locale_list(VALORANT_YAML),
+            vec!["en_US", "de_DE", "ja_JP"]
+        );
+    }
+
+    #[test]
+    fn extract_locale_list_is_empty_when_locale_data_is_absent() {
+        assert!(extract_locale_list("channel: live\n").is_empty());
+    }
+
+    #[test]
+    fn extract_locale_list_is_empty_when_the_header_has_no_items() {
+        assert!(extract_locale_list("available_locales:\ndefault_locale: \"en_US\"\n").is_empty());
+    }
+
+    #[test]
+    fn extract_patch_info_reads_the_active_locale_from_settings() {
+        let info = extract_patch_info(VALORANT_YAML, "valorant.live");
+        assert_eq!(info.app_id, "valorant.live");
+        assert_eq!(info.active_locale.as_deref(), Some("en_US"));
+        assert_eq!(info.auto_patching, AutoPatching::Manual);
+        assert_eq!(info.available_locales, vec!["en_US", "de_DE", "ja_JP"]);
+    }
+
+    #[test]
+    fn extract_patch_info_leaves_active_locale_none_when_settings_is_absent() {
+        let info = extract_patch_info("channel: live\n", "riftbound.live");
+        assert_eq!(info.active_locale, None);
     }
 }
