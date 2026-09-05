@@ -265,16 +265,32 @@ pub struct Cap {
 }
 
 impl Cap {
-    /// Steam Deck, ROG Ally in saver mode, Legion Go at integer 2x.
-    pub const HANDHELD: Cap = Cap {
-        width: 1280,
-        height: 800,
-    };
-    /// A desktop monitor, where 800p would be visible and 1080p is not.
+    /// A desktop monitor, and the default: on a library measured at 20 Mbit/s
+    /// for 1080p content, this takes back 115 GB without touching the frame
+    /// size of anything already at 1080p or below - the saving there comes
+    /// out of the bitrate nobody was watching.
     pub const DESKTOP: Cap = Cap {
         width: 1920,
         height: 1080,
     };
+    /// Steam Deck, ROG Ally in saver mode, Legion Go at integer 2x. 159 GB on
+    /// the same library, and visibly softer on a monitor.
+    pub const HANDHELD: Cap = Cap {
+        width: 1280,
+        height: 800,
+    };
+    /// For a 64 GB handheld or a full drive, where the cutscene playing at
+    /// all matters more than how it looks.
+    pub const SAVER: Cap = Cap {
+        width: 960,
+        height: 540,
+    };
+}
+
+impl Default for Cap {
+    fn default() -> Self {
+        Cap::DESKTOP
+    }
 }
 
 /// Decides what to do with one file. Pure: it looks at the probe result and
@@ -576,6 +592,32 @@ mod tests {
         assert_eq!(fit(3840, 1600, Cap::HANDHELD), (1280, 532));
         assert_eq!(fit(1024, 576, Cap::HANDHELD), (1024, 576));
         assert_eq!(fit(3840, 2160, Cap::DESKTOP), (1920, 1080));
+        assert_eq!(fit(3840, 2160, Cap::SAVER), (960, 540));
+        assert_eq!(fit(1920, 1080, Cap::SAVER), (960, 540));
+    }
+
+    /// The default is the monitor, not the handheld: this is a desktop app,
+    /// and 800p is the choice you make for a 7-inch screen, not the one you
+    /// get without asking.
+    #[test]
+    fn the_default_cap_is_the_desktop_one() {
+        assert_eq!(Cap::default(), Cap::DESKTOP);
+    }
+
+    /// A 1080p file under the 1080p cap is not a no-op: nothing is scaled,
+    /// and the whole saving comes out of a bitrate set for a master copy.
+    /// 164 GB of the library is in exactly this state.
+    #[test]
+    fn a_1080p_source_still_shrinks_under_the_1080p_cap() {
+        let plan = plan(
+            Path::new("Movies/cutscene.mp4"),
+            &info("h264", 1920, 1080, 120.0, 300_000_000),
+            Cap::DESKTOP,
+        )
+        .expect("1080p at 20 Mbit/s has plenty to give back");
+
+        assert_eq!((plan.target_width, plan.target_height), (1920, 1080));
+        assert!(plan.estimated_saving(300_000_000) > 200_000_000);
     }
 
     /// A lossless 2-second clip, big enough to be worth shrinking.
